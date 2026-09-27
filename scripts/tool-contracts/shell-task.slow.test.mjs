@@ -65,7 +65,7 @@ test('shell rejects retired args and absorbs timeout edge values', () => {
   }
   const shellZeroTimeoutErr = validateBuiltinArgs('shell', { command: 'node --version', timeout_ms: 0 });
   const shellNegativeTimeoutErr = validateBuiltinArgs('shell', { command: 'node --version', timeout_ms: -1 });
-  if (shellZeroTimeoutErr || !/non-negative number/.test(String(shellNegativeTimeoutErr))) {
+  if (shellZeroTimeoutErr || !/non-negative integer/.test(String(shellNegativeTimeoutErr))) {
     throw new Error(
       `shell timeout_ms must absorb 0 and reject negatives: zero=${shellZeroTimeoutErr} negative=${shellNegativeTimeoutErr}`
     );
@@ -363,4 +363,31 @@ test('auto-promotion returns a tracked task with completion guidance', async () 
   }
   const shellAutoPromoteTaskId = assertBackgroundStart('shell auto-promotion', shellAutoPromoteOut);
   await assertSingleShellCompletion(shellAutoNotifyEvents, shellAutoPromoteTaskId, 'shell auto-promotion');
+});
+
+test('a promoted task that printed nothing reads back as empty output', async () => {
+  const _priorAutoBgBudget = process.env.MIXDOG_SHELL_AUTO_BACKGROUND_MS;
+  process.env.MIXDOG_SHELL_AUTO_BACKGROUND_MS = '50';
+  const events = [];
+  const options = shellNotifyOptions(events, 'silent');
+  let startOut;
+  try {
+    startOut = await executeBuiltinTool(
+      'shell',
+      { command: 'node -e "setTimeout(() => {}, 600)"', timeout_ms: 5000 },
+      root,
+      options
+    );
+  } finally {
+    if (_priorAutoBgBudget === undefined) delete process.env.MIXDOG_SHELL_AUTO_BACKGROUND_MS;
+    else process.env.MIXDOG_SHELL_AUTO_BACKGROUND_MS = _priorAutoBgBudget;
+  }
+  const taskId = assertBackgroundStart('silent promoted shell', startOut);
+  await assertSingleShellCompletion(events, taskId, 'silent promoted shell');
+  const tail = String(
+    await executeBuiltinTool('task', { action: 'read', task_id: taskId, output: 'tail' }, root, options)
+  );
+  if (!/status:\s*completed/i.test(tail) || /read error/i.test(tail) || !/\(no output\)/.test(tail)) {
+    throw new Error(`a silent promoted task must read back as empty output, not a missing log:\n${tail}`);
+  }
 });

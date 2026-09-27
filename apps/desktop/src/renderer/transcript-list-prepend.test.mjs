@@ -325,22 +325,60 @@ test('a row first measured across the viewport top grows upward, not into the ro
   try {
     await mount.render(rows);
     await mount.settle();
-    // A fling toward rows never mounted before: they arrive at the estimate.
+    // A fling toward rows never mounted before, whose content has no box yet
+    // when they mount: the commit cannot measure them, so they hold the
+    // estimate until their first observer delivery.
     gesture = true;
+    const real = new Map(heights);
+    heights.clear();
     const total = Number.parseFloat(mount.viewport.querySelector('.transcript-virtual-space').style.height);
     await mount.jump(Math.floor(total / 2));
     const crossing = mount.positioned().find((row, i, all) => {
       const next = all[i + 1];
-      return next && next.index === row.index + 1 && next.top - row.top === 60 && heights.get(row.key) > 60;
+      return next && next.index === row.index + 1 && next.top - row.top === 60 && real.get(row.key) > 60;
     });
     assert.ok(crossing, 'a row still at the estimate');
     // The viewport top cuts through it.
     await mount.jump(crossing.top + 30);
     const next = mount.positioned().find((row) => row.index === crossing.index + 1);
     const before = next.top - mount.viewport.scrollTop;
+    for (const [key, height] of real) heights.set(key, height);
     await mount.measure();
     const after = mount.positioned().find((row) => row.key === next.key).top - mount.viewport.scrollTop;
     assert.ok(Math.abs(after - before) <= 1, `the row below moved ${after - before} px`);
+  } finally {
+    await mount.cleanup();
+  }
+});
+
+test('an appended row is laid out at its real size before any observer delivery', async () => {
+  const { projectSettledTranscriptRows } = await import('./transcript-rows.ts');
+  const { transcriptTurnKeys } = await import('./renderer-logic.mjs');
+  const project = (items) => {
+    const { rows } = projectSettledTranscriptRows({
+      sessionKey: 'append-measure',
+      items,
+      turnKeys: transcriptTurnKeys(items),
+      failedTurns: new Set(),
+    });
+    return rows;
+  };
+  const items = turnItems(2);
+  const first = project(items.slice(0, 6));
+  const appended = project(items);
+  const heights = new Map(appended.map((row) => [row.key, rowHeight(row)]));
+  const mount = await mountTranscript(heights, 'append-measure');
+  try {
+    await mount.render(first);
+    await mount.settle();
+    // A new turn lands: its gap, prompt, and tool rows mount in this commit.
+    await mount.render(appended);
+    const rows = mount.positioned();
+    const misplaced = rows.filter((row, i) => {
+      const next = rows[i + 1];
+      return next && next.index === row.index + 1 && next.top - row.top !== heights.get(row.key);
+    });
+    assert.deepEqual(misplaced, [], 'no mounted row is laid out at the estimate');
   } finally {
     await mount.cleanup();
   }

@@ -14,6 +14,7 @@ const { runGrepPatternFanout } = await import('./lib/grep-pattern-fanout.mjs');
 const { executeGrepTool } = await import('./search-grep-tool.mjs');
 const { executeBuiltinTool } = await import('../builtin.mjs');
 const { flushReadRangeIndexesSync } = await import('./read-range-index.mjs');
+const { readRowsForDisplay } = await import('../../../../shared/read-row-numbers.mjs');
 
 after(async () => {
   flushReadRangeIndexesSync();
@@ -268,7 +269,7 @@ test('full read tool reuses one handle and sample across range classification an
     return handle;
   });
   const out = await executeBuiltinTool('read', { path: file, offset: 0, limit: 5 }, root);
-  assert.match(String(out), /1→hello/);
+  assert.match(readRowsForDisplay(String(out)), /1→hello/);
   assert.equal(opens, 1);
   assert.ok(bytes <= 68 * 1024, `range classification read ${bytes} bytes`);
 });
@@ -285,7 +286,7 @@ test('shared classification retains UTF-16 byte order and binary tail detection'
       ])
     );
     const out = await executeBuiltinTool('read', { path: file, offset: 0, limit: 2 }, root);
-    assert.match(String(out), /1→한글\n2→한글/);
+    assert.match(readRowsForDisplay(String(out)), /1→한글\n2→한글/);
   }
   const file = join(root, 'binary-tail.bin');
   await fs.writeFile(file, Buffer.concat([Buffer.alloc(200000, 65), Buffer.from([0])]));

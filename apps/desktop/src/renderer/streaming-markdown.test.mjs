@@ -330,6 +330,19 @@ test('streamed chunks, keys and live tail match the parse-based splitter', () =>
   }
 });
 
+test('a rewritten live tail keeps the frozen blocks it still starts with', () => {
+  const cache = createStreamingMarkdownCache();
+  const before = resolveStreamingMarkdownChunks('# Plan\n\nFirst paragraph.\n\nA tail that keeps growing', true, cache);
+  assert.deepEqual(before.stableChunks, ['# Plan\n\n', 'First paragraph.\n\n']);
+  const rewritten = resolveStreamingMarkdownChunks('# Plan\n\nFirst paragraph.\n\nA tail\n\n```js\nrun();', true, cache);
+  assert.deepEqual(rewritten.stableChunks, ['# Plan\n\n', 'First paragraph.\n\n', 'A tail\n\n']);
+  assert.deepEqual(rewritten.stableChunkKeys.slice(0, 2), before.stableChunkKeys);
+  assert.equal(rewritten.unstableText, '```js\nrun();');
+  const replaced = resolveStreamingMarkdownChunks('Another reply', true, cache);
+  assert.deepEqual(replaced.stableChunks, []);
+  assert.equal(replaced.unstableText, 'Another reply');
+});
+
 test('the live tail freezes every completed top-level block', () => {
   const cache = createStreamingMarkdownCache();
   const text = '# Plan\n\n- one\n- two\n\n```js\nrun();\n```\n\n| a |\n|---|\n\nTail';

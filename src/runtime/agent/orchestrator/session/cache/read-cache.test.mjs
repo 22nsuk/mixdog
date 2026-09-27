@@ -18,6 +18,7 @@ const { setScopedToolCached } = await import('./scoped-cache.mjs');
 const { executeBuiltinTool } = await import('../../tools/builtin.mjs');
 const { BUILTIN_TOOLS } = await import('../../tools/builtin/builtin-tools.mjs');
 const { processToolBatch } = await import('../tool-batch.mjs');
+const { readRowsForDisplay } = await import('../../../../shared/read-row-numbers.mjs');
 const { createEagerDispatcher } = await import('../eager-dispatch.mjs');
 // The read tools flush range indexes and read snapshots into the data dir from
 // their own exit hooks. Registered after those modules loaded, this removal
@@ -135,7 +136,7 @@ for (const firstPublic of [true, false]) {
         fx.cwd
       )
     );
-    assert.match(resume, /^3→LINE_3/);
+    assert.match(readRowsForDisplay(resume), /^3→LINE_3/);
   });
 }
 
@@ -170,8 +171,8 @@ for (const publicInput of [false, true]) {
         : { [key]: paths, offset, limit: 1 };
       const readState = captureReadCacheState({ args, cwd: fx.cwd });
       const content = String(await executeRead(fx)('read', args, fx.cwd));
-      assert.match(content, /2→LINE_2/);
-      assert.match(content, /2→OTHER_2/);
+      assert.match(readRowsForDisplay(content), /2→LINE_2/);
+      assert.match(readRowsForDisplay(content), /2→OTHER_2/);
       setReadCached({ ...fx, args, content, readState });
       assert.equal(tryReadCached({ ...fx, args })?.content, content);
       invalidatePathForSession(fx.sessionId, other, fx.cwd);

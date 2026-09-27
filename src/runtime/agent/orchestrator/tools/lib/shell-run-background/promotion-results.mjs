@@ -13,7 +13,7 @@ import {
 } from '../shell-run-state.mjs';
 
 const BACKGROUND_GUIDANCE =
-  'Completion is automatic; unless periodic task reports were requested, continue independent work or end the turn. When the next step needs the result or the next report interval, call task wait instead of polling task read: it returns the moment the task settles, or hands back the current output at its ceiling so you can re-decide.';
+  'Completion arrives automatically; call task wait (not task read polling) when the result is due.';
 
 export function promotedSpillPaths(taskOutput) {
   return {

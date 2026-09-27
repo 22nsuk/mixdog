@@ -10,6 +10,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { BrowserWindow } from 'electron';
 import { assistantMarkdown, coldHistoryItems, paragraph } from './jitter-probe-fixtures';
+import { waitForProbeSessionRow } from './jitter-probe-session';
 
 interface KeysProbeDeps {
   window: BrowserWindow;
@@ -40,8 +41,7 @@ export async function runKeysProbe({
   };
   prepareColdResume(keysSnapshot);
   await window.webContents.executeJavaScript(`(async () => {
-    const row = document.querySelector('[data-session-id="probe_session_cold"]');
-    if (!(row instanceof HTMLElement)) throw new Error('Missing cold probe session row');
+    const row = ${waitForProbeSessionRow('probe_session_cold', 'Missing cold probe session row')};
     row.click();
     await new Promise((resolve) => setTimeout(resolve, 600));
     return true;

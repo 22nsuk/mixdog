@@ -77,22 +77,6 @@ function taskInputRetains(entry, task) {
   return clean(entry.id) ? clean(entry.id) === task.id : clean(entry.text) === task.text;
 }
 
-// Only an explicit work-start signal resumes a paused Goal. A full snapshot
-// can carry an old in-progress row while merely recording an approval request;
-// a partial in_progress patch, however, explicitly starts/restarts that task.
-export function goalTasksStartWork(previous, next, args = {}, { partial = false } = {}) {
-  const previousById = new Map(previous.map((task) => [task.id, task]));
-  const restarted = new Set(
-    (partial && Array.isArray(args.updates) ? args.updates : [])
-      .filter((patch) => clean(patch?.status).toLowerCase() === 'in_progress')
-      .map((patch) => clean(patch.id))
-  );
-  return next.some(
-    (task) =>
-      task.status === 'in_progress' && (previousById.get(task.id)?.status !== 'in_progress' || restarted.has(task.id))
-  );
-}
-
 export function patchGoalTasks(previous, { updates, tasks } = {}) {
   const patches = updates ?? [];
   const additions = tasks ?? [];

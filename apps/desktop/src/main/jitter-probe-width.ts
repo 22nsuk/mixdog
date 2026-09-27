@@ -7,6 +7,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { BrowserWindow } from 'electron';
 import { paragraph, probeItems } from './jitter-probe-fixtures';
+import { waitForProbeSessionRow } from './jitter-probe-session';
 import { WIDTH_TRACE_COLLECT_SCRIPT, WIDTH_TRACE_INSTALL_SCRIPT } from './jitter-probe-width-scripts';
 import { dragProbeSash, readProbeSash } from './jitter-probe-sash';
 
@@ -55,8 +56,7 @@ export async function runWidthProbe({
   await sleep(400);
   prepareColdResume(widthSnapshot);
   await window.webContents.executeJavaScript(`(async () => {
-    const row = document.querySelector('[data-session-id="probe_session_cold"]');
-    if (!(row instanceof HTMLElement)) throw new Error('Missing cold probe session row');
+    const row = ${waitForProbeSessionRow('probe_session_cold', 'Missing cold probe session row')};
     row.click();
     await new Promise((resolve) => setTimeout(resolve, 700));
     return true;
@@ -210,22 +210,12 @@ export async function runWidthProbe({
     const writes = Number(report.writes);
     const reversals = Number(report.scrollReversals);
     const writeStacks = Array.isArray(report.writeStacks) ? report.writeStacks.map(String) : [];
-    // The content observer may resolve the discrete 768px row-inset
-    // reflow with ONE pin per crossing, and the down-then-up window sweep
-    // crosses that breakpoint twice. The pin lands in the same pre-paint
-    // ResizeObserver transaction, so no frame ever shows the gap. A physical
-    // pane drag has no viewport breakpoint, so it must remain entirely
-    // write-free. More writes, another reversal, or any non-observer writer
-    // means two scroll authorities are competing.
-    const stableWrites = sash
-      ? writes === 0 && reversals === 0
-      : (writes === 0 && reversals === 0) ||
-        (writes <= 2 &&
-          // Each observer write can yield two sampled direction changes:
-          // pre-write → requested scrollHeight → Chromium-clamped bottom.
-          reversals <= 2 * writes &&
-          writeStacks.length === 1 &&
-          writeStacks[0].includes('ResizeObserver.'));
+    // A followed tail is held by ONE authority: the timeline's end pin, which
+    // writes the new bottom in the same pre-paint transaction as every rewrap
+    // (narrowing grows the content, so the bottom offset must be written).
+    // Two writers, or any reversal of the offset, means two scroll
+    // authorities are competing.
+    const stableWrites = reversals === 0 && (writes === 0 || writeStacks.length === 1);
     return (
       !stableWrites ||
       Number(report.maxNarrowBottomDistance) > 2 ||

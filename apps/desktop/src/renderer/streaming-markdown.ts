@@ -61,6 +61,17 @@ function resetCache(cache: StreamingMarkdownCache): void {
   Object.assign(cache, createStreamingMarkdownCache());
 }
 
+/** A rewritten tail under intact frozen blocks: keep the blocks (and their
+ *  mounted, parsed chunks) and rescan from the last frozen boundary. Frozen
+ *  boundaries are top-level block starts outside any fence, so the scan
+ *  resumes at a line start with no fence open. */
+function rewindTail(cache: StreamingMarkdownCache): void {
+  cache.scanOffset = cache.stableText.length;
+  cache.fenceMarker = '';
+  cache.fenceLength = 0;
+  cache.boundaries = [];
+}
+
 function markdownChunkKey(offset: number): string {
   return `chunk-${Math.max(0, Math.round(offset))}`;
 }
@@ -832,7 +843,13 @@ export function resolveStreamingMarkdownChunks(
   cache: StreamingMarkdownCache
 ): StreamingMarkdownParts {
   const value = String(text ?? '');
-  if (!continuesStreamingText(cache.sourceText, value)) resetCache(cache);
+  // Resetting on every rewrite dropped the frozen blocks above it: their
+  // chunks unmounted and the first one briefly stood in for the whole reply,
+  // collapsing the row until the new parse landed.
+  if (!continuesStreamingText(cache.sourceText, value)) {
+    if (cache.stableText && value.startsWith(cache.stableText)) rewindTail(cache);
+    else resetCache(cache);
+  }
   if (!streaming) {
     // Keep already-parsed blocks mounted when the stream settles. Resetting
     // here used to make the final token reparse the complete response in one

@@ -821,7 +821,7 @@ export const Composer = memo(function Composer(props: ComposerProps) {
             />
           )}
           <ComposerAddMenu
-            key={identityScope}
+            key={recoveryScope}
             anchor={paletteAnchor}
             sessionId={sessionId}
             disabled={transitioning || !paneActive}

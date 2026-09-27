@@ -71,6 +71,18 @@ test('the report splits resolved from missing engines and keeps hints', () => {
   assert.equal(report.ok, true);
 });
 
+test('check names engines briefly while scan keeps resolution details', () => {
+  const check = buildTidyReport({ action: 'check', engines, results: [] });
+  assert.deepEqual(check.engines, [{ id: 'ruff' }]);
+  assert.deepEqual(check.missing, [
+    { id: 'shfmt', installable: true, installHint: 'install mvdan/sh' },
+    { id: 'rustfmt', installHint: 'rustup component add rustfmt' },
+  ]);
+  const scan = buildTidyReport({ action: 'scan', engines });
+  assert.equal(scan.engines[0].path, '/repo/.venv/bin/ruff');
+  assert.deepEqual(scan.missing[1].languages, ['rust']);
+});
+
 test('per-engine diagnostics are capped with a `more` count and exact totals', () => {
   const report = buildTidyReport({
     action: 'check',
@@ -92,7 +104,9 @@ test('per-engine diagnostics are capped with a `more` count and exact totals', (
   assert.equal(result.filesChanged.length, 25);
   assert.equal(result.filesChangedMore, 15);
   assert.equal(result.filesChangedCount, 40);
-  assert.deepEqual(result.byRule, { F401: { count: 55, severity: 'error', fixable: 55 } });
+  assert.deepEqual(result.byRule, {
+    F401: { count: 55, severity: 'error', fixable: 55, message: 'imported but unused' },
+  });
   assert.deepEqual(result.byDir, { src: 55 });
 });
 
@@ -130,6 +144,12 @@ test('the working-tree split, a failed git and a missing git stay three distingu
   assert.deepEqual(split.workingTree.modified, { files: ['src/a.py'], fileCount: 1, findings: 2 });
   assert.deepEqual(split.workingTree.clean, { files: ['scripts/build.mjs'], fileCount: 1, findings: 1 });
   assert.match(split.notes.join(' '), /workingTree\.clean: 1 file\(s\)/);
+  const modifiedOnly = buildTidyReport({
+    action: 'check',
+    engines,
+    workingTree: { modified: { files: ['src/a.py'], findings: 2 }, clean: { files: [], findings: 0 } },
+  });
+  assert.deepEqual(modifiedOnly.workingTree, { modified: { files: ['src/a.py'], fileCount: 1, findings: 2 } });
 
   const failed = buildTidyReport({ action: 'check', engines, workingTree: { error: 'not a git repository' } });
   assert.deepEqual(failed.workingTree, { error: 'not a git repository' });
@@ -165,17 +185,19 @@ test('an oversized report trims samples but keeps counts and marks truncation', 
       { id: 'shellcheck', source: 'path', filesChecked: 40, filesChanged: [], diagnostics: diagnostics(300) },
     ],
     structural: { matches: [{ file: 'src/runtime/a.js', ruleId: 'no-debugger', severity: 'warning', fix: null }] },
-    maxBytes: 3500,
+    maxBytes: 2500,
   });
   assert.equal(report.truncated, true);
   assert.ok(
-    Buffer.byteLength(tidyToolResult(report).content[0].text, 'utf8') <= 3500,
+    Buffer.byteLength(tidyToolResult(report).content[0].text, 'utf8') <= 2500,
     'wire report must fit the budget'
   );
   assert.equal(report.results[0].diagnosticsCount, 300);
   assert.ok(report.results[0].diagnostics.length < DIAGNOSTIC_CAP, 'samples must shrink under budget pressure');
   assert.equal(report.results[0].more, 300 - report.results[0].diagnostics.length);
-  assert.deepEqual(report.results[0].byRule, { F401: { count: 300, severity: 'error', fixable: 300 } });
+  assert.deepEqual(report.results[0].byRule, {
+    F401: { count: 300, severity: 'error', fixable: 300, message: 'imported but unused' },
+  });
   assert.deepEqual(report.results[0].byDir, { src: 300 });
   assert.deepEqual(report.structural.byRule, { 'no-debugger': { count: 1, severity: 'warning', fixable: 0 } });
   assert.deepEqual(report.structural.byDir, { 'src/runtime': 1 });
@@ -303,21 +325,121 @@ test('the tool result is one JSON text block, like the other runtime tools', () 
   assert.equal(tidyToolResult({ ok: false }, true).isError, true);
 });
 
-test('results omits the header while scan/check/fix retain it', () => {
+test('scan keeps the full header, check/fix only the engines that ran, results none', () => {
   const header = {
     languages: [{ id: 'python', files: 12 }],
     languageSource: 'git',
     engines,
     policy: { downloads: 'ask' },
   };
-  for (const action of ['scan', 'check', 'fix', 'results']) {
+  const full = ['languages', 'languageSource', 'engines', 'missing', 'policy'];
+  const expected = { scan: full, install: full, check: ['engines'], fix: ['engines'], results: [] };
+  for (const action of ['scan', 'install', 'check', 'fix', 'results']) {
     const report = buildTidyReport({ action, ...header, scope: ['.'], results: [] });
-    for (const key of ['languages', 'languageSource', 'engines', 'missing', 'policy']) {
-      assert.equal(Object.hasOwn(report, key), action !== 'results', `${action}.${key}`);
+    for (const key of full) {
+      assert.equal(Object.hasOwn(report, key), expected[action].includes(key), `${action}.${key}`);
     }
-    assert.deepEqual(report.scope, ['.']);
+    assert.equal(Object.hasOwn(report, 'scope'), action !== 'check' && action !== 'fix', `${action}.scope`);
     assert.deepEqual(report.results, []);
   }
+  const install = buildTidyReport({ action: 'install', ...header, results: [] });
+  assert.deepEqual(
+    install.missing.map((engine) => engine.id),
+    ['shfmt', 'rustfmt'],
+    'install lists every missing engine, covered or not'
+  );
+});
+
+test('a results page that only overflows its changed-file list still reports paging', () => {
+  const report = buildTidyReport({
+    action: 'results',
+    engines,
+    results: [
+      {
+        id: 'ruff',
+        filesChecked: 12,
+        filesChanged: Array.from({ length: 12 }, (_unused, index) => `src/f${index}.py`),
+        diagnostics: [],
+      },
+    ],
+    limit: 10,
+  });
+  assert.equal(report.results[0].filesChangedMore, 2);
+  assert.deepEqual(report.paging, { offset: 0, limit: 10 });
+});
+
+test('a clean check is only the verdict, the engines that ran and per-engine totals', () => {
+  const report = buildTidyReport({
+    action: 'check',
+    languages: [{ id: 'javascript', files: 2 }],
+    engines: [
+      { id: 'biome', source: 'managed', kind: ['format', 'lint'], languages: ['javascript', 'json'] },
+      { id: 'dprint', source: 'managed', kind: ['format'], languages: ['javascript'], skipped: 'no project config' },
+      {
+        id: 'prettier',
+        missing: true,
+        kind: ['format'],
+        languages: ['javascript', 'markdown'],
+        installHint: 'npm i -D prettier',
+      },
+    ],
+    shadows: [{ id: 'biome', via: 'npx-cache', shadow: { path: 'x', version: '1' }, engine: { source: 'managed' } }],
+    scope: ['a.js', 'b.js'],
+    results: [
+      {
+        id: 'biome',
+        filesChecked: 2,
+        filesChanged: [],
+        diagnostics: [],
+        counts: { filesToFormat: 0, diagnostics: 0, bySeverity: { error: 0 }, byFixability: { safe: 0 } },
+      },
+    ],
+    elapsedMs: 5,
+  });
+  assert.deepEqual(report, {
+    ok: true,
+    status: 'complete',
+    action: 'check',
+    engines: [{ id: 'biome' }],
+    results: [{ id: 'biome', filesChecked: 2, diagnosticsCount: 0 }],
+    elapsedMs: 5,
+  });
+});
+
+test('rows keep severity and message only where they differ from their rule summary', () => {
+  const rows = [
+    { file: 'a.js', line: 1, ruleId: 'no-unused', severity: 'warning', message: "'x' is unused" },
+    { file: 'b.js', line: 2, ruleId: 'no-unused', severity: 'error', message: "'y' is unused" },
+    { file: 'c.js', line: 3, ruleId: 'no-unused', severity: 'warning', message: "'x' is unused", fix: {} },
+  ];
+  const report = buildTidyReport({ action: 'check', structural: { matches: rows } });
+  assert.deepEqual(report.structural.byRule['no-unused'], {
+    count: 3,
+    severity: 'error',
+    fixable: 1,
+    message: "'x' is unused",
+  });
+  assert.deepEqual(report.structural.matches, [
+    { loc: 'a.js:1:0', rule: 'no-unused', severity: 'warning' },
+    { loc: 'b.js:2:0', rule: 'no-unused', message: "'y' is unused" },
+    { loc: 'c.js:3:0', rule: 'no-unused', severity: 'warning', fix: true },
+  ]);
+});
+
+test('format-only engines have no byRule, so their rows stay complete', () => {
+  const report = buildTidyReport({
+    action: 'check',
+    engines: [{ id: 'gofumpt', kind: ['format'] }],
+    results: [
+      {
+        id: 'gofumpt',
+        diagnostics: [{ file: 'a.go', line: 1, code: 'fmt', severity: 'warning', message: 'reformat' }],
+      },
+    ],
+  });
+  assert.deepEqual(report.results[0].diagnostics, [
+    { loc: 'a.go:1:0', rule: 'fmt', severity: 'warning', message: 'reformat' },
+  ]);
 });
 
 test('flat report rows do not mutate full cached/write payloads', (t) => {
@@ -337,20 +459,15 @@ test('flat report rows do not mutate full cached/write payloads', (t) => {
   };
   const original = structuredClone(source);
   const report = buildTidyReport(source);
-  assert.deepEqual(report.results[0].diagnostics[0], {
-    loc: 'src/f0.py:1:1',
-    rule: 'F401',
+  assert.deepEqual(report.results[0].diagnostics[0], { loc: 'src/f0.py:1:1', rule: 'F401', fix: true });
+  assert.deepEqual(report.results[0].byRule.F401, {
+    count: 1,
     severity: 'error',
+    fixable: 1,
     message: 'imported but unused',
-    fix: true,
   });
-  assert.deepEqual(report.structural.matches[0], {
-    loc: 'src/runtime/a.js:2:3',
-    rule: 'no-debugger',
-    severity: 'warning',
-    message: 'Remove debugger.',
-    fix: true,
-  });
+  assert.deepEqual(report.structural.matches[0], { loc: 'src/runtime/a.js:2:3', rule: 'no-debugger', fix: true });
+  assert.equal(report.structural.byRule['no-debugger'].message, 'Remove debugger.');
   assert.deepEqual(source, original);
   const before = Buffer.byteLength(JSON.stringify(match, null, 2));
   const after = Buffer.byteLength(JSON.stringify(report.structural.matches[0]));
@@ -387,7 +504,7 @@ test('summaries group directories, mixed fixability and severity, and survive ze
   }
   assert.deepEqual(report.results[0].diagnostics, []);
   assert.deepEqual(report.structural.matches, []);
-  assert.deepEqual(report.results[1].byRule, {});
+  assert.equal(report.results[1].byRule, undefined);
   assert.equal(report.truncated, true);
   assert.equal(report.ok, true, 'sample trimming is not an engine failure');
 });

@@ -67,7 +67,7 @@ test('settling an assistant preserves its rendered Markdown without an empty int
   assert.ok(document.querySelector('.response-footer'));
 });
 
-test('completion reserves the review slot through stale and queued final responses, including an empty final diff', async (t) => {
+test('the review slot takes no space until the review bar actually renders, including an empty final diff', async (t) => {
   const { root, document, window } = mount(t);
   // ComposerDock loads the review bar lazily; with the chunk cached it mounts
   // in the first commit.
@@ -89,7 +89,6 @@ test('completion reserves the review slot through stale and queued final respons
       goalSubmissionId: '',
       showProjectSelector: false,
       softCollapseContextBar: { current: false },
-      reviewStreamingTail: null,
       reviewActive: true,
       reviewSessionId: sessionId,
       reviewCwd: 'C:/work',
@@ -98,15 +97,15 @@ test('completion reserves the review slot through stale and queued final respons
     const render = (busy, reviewItems) =>
       act(async () =>
         root.render(
-          React.createElement(ComposerDock, { ...props, reviewItems, reviewTurnLive: busy, reviewBusy: busy })
+          React.createElement(ComposerDock, { ...props, reviewItems, reviewBusy: busy })
         )
       );
     const slot = () => document.querySelector('.turn-review-slot');
     await render(true, items);
     assert.equal(pending.length, 1);
-    assert.equal(slot().dataset.reserved, 'true');
+    assert.equal(slot().childElementCount, 0, 'an in-flight read holds no blank space');
     await render(false, [...items, { kind: 'turndone', id: 'done', status: 'complete' }]);
-    assert.equal(slot().dataset.reserved, 'true', 'completion must not release an unanswered boundary');
+    assert.equal(slot().childElementCount, 0);
     const response = (files) => ({
       value: {
         supported: true,
@@ -120,12 +119,12 @@ test('completion reserves the review slot through stale and queued final respons
     });
     await act(async () => pending.shift()(response([])));
     assert.equal(pending.length, 1);
-    assert.equal(slot().dataset.reserved, 'true', 'an older response must not release the queued final read');
+    assert.equal(slot().childElementCount, 0, 'an empty response renders nothing');
     await act(async () =>
       pending.shift()(response(hasDiff ? [{ path: 'demo.ts', status: 'M', additions: 1, deletions: 1 }] : []))
     );
-    assert.equal(slot().dataset.reserved, 'false');
     assert.equal(Boolean(document.querySelector('.turn-review-bar')), hasDiff);
+    assert.equal(slot().childElementCount, hasDiff ? 1 : 0);
     assert.equal(pending.length, 0);
     await act(async () => root.render(null));
   }

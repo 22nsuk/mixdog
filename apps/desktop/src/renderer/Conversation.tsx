@@ -1149,10 +1149,6 @@ export function Conversation({
             </>
           }
           reviewItems={reviewItems}
-          reviewStreamingTail={activeStreamingTail}
-          reviewTurnLive={Boolean(
-            snapshot.busy || snapshot.commandBusy || activeStreamingTail || optimisticActivityStartedAt
-          )}
           reviewActive={reviewActive}
           reviewBusy={Boolean(snapshot.busy || routeSnapshot.commandBusy)}
           reviewSessionId={draftMode ? '' : String(sessionAddress || routeSnapshot.sessionId || '')}

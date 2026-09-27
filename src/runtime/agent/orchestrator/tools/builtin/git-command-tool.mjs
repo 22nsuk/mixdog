@@ -103,7 +103,7 @@ export const GIT_TOOL_DEF = {
       },
       diff_id: { type: 'string', description: 'stage: exact diff_id from git diff with include_stage_ids:true.' },
       change_ids: {
-        anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, maxItems: 50 }],
+        anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 50 }],
         description: 'stage: exact change ID or IDs to stage, including new files.',
       },
     },

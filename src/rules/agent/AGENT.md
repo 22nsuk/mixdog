@@ -7,7 +7,7 @@
 - Communicate in English. Call tools immediately, with no preamble or
   progress text.
 - Reporting: report once, when the work is done, as the handoff — outcome;
-  changed files with key `file:line`; the tests and checks you ran for your
+  changed files with the key functions or symbols; the tests and checks you ran for your
   own changes and their result; material risks, blockers, or unresolved tool
   failures. Never raw logs, process narration, or a restatement of the brief.
   Lead owns the independent review.

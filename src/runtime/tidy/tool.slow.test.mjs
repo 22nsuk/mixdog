@@ -87,7 +87,8 @@ test('check runs read-only and reports one result row per runnable engine', asyn
   assert.equal(report.structural, undefined);
   for (const result of report.results) {
     assert.equal(typeof result.filesChecked, 'number');
-    assert.ok(Array.isArray(result.diagnostics));
+    assert.equal(typeof result.diagnosticsCount, 'number');
+    assert.equal(Array.isArray(result.diagnostics), result.diagnosticsCount > 0);
   }
 });
 
@@ -734,14 +735,18 @@ test('results filters cached rules and directory prefixes before paging without 
   assert.equal(report.results[0].more, 1);
   assert.equal(report.results[0].nextOffset, 1);
   assert.equal(report.results[0].diagnostics[0].loc, 'src/runtime/a.js:1:2');
-  assert.equal(report.counts.diagnostics, 5);
+  assert.equal(report.results[0].counts.diagnostics, 5);
   assert.equal(report.results[0].filesChangedCount, 3);
-  assert.deepEqual(report.results[0].byRule, { 'no-debugger': { count: 2, severity: 'warning', fixable: 0 } });
+  assert.deepEqual(report.results[0].byRule, {
+    'no-debugger': { count: 2, severity: 'warning', fixable: 0, message: 'debugger' },
+  });
   assert.deepEqual(report.results[0].byDir, { 'src/runtime': 2 });
   assert.equal(report.structural.matchesCount, 2);
   assert.equal(report.structural.more, 1);
   assert.equal(report.structural.nextOffset, 1);
-  assert.deepEqual(report.structural.byRule, { 'no-debugger': { count: 2, severity: 'warning', fixable: 2 } });
+  assert.deepEqual(report.structural.byRule, {
+    'no-debugger': { count: 2, severity: 'warning', fixable: 2, message: 'debugger' },
+  });
   assert.deepEqual(report.structural.byDir, { 'src/runtime': 2 });
 
   const last = parseResult(

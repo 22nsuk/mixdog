@@ -7,6 +7,7 @@ import {
   BIOME_TRUNCATED_NOTE,
   applyBiomeFixKinds,
   biomeCounts,
+  biomeStderrTail,
   mergeBiomeParses,
   parseBiomeJson,
   parseExplainFix,
@@ -228,15 +229,29 @@ test('engine truncation is surfaced on the report with counts and a split-scope 
   assert.equal(report.results[0].truncated, true);
   assert.equal(report.results[0].counts.filesToFormat, 40);
   assert.equal(report.results[0].diagnosticsCount, 1);
-  assert.deepEqual(report.results[0].diagnostics, [
-    { loc: 'a.js:1:1', rule: 'format', severity: 'error', message: 'fmt', fix: true },
-  ]);
-  assert.deepEqual(report.results[0].byRule, { format: { count: 1, severity: 'error', fixable: 1 } });
+  assert.deepEqual(report.results[0].diagnostics, [{ loc: 'a.js:1:1', rule: 'format', fix: true }]);
+  assert.deepEqual(report.results[0].byRule, {
+    format: { count: 1, severity: 'error', fixable: 1, message: 'fmt' },
+  });
   assert.deepEqual(report.results[0].byDir, { '.': 1 });
-  assert.equal(report.counts.byFixability.safe, 40);
-  assert.equal(report.counts.byFixability.unsafe, 20);
-  assert.equal(report.counts.byFixability.manual, 30);
+  assert.equal(report.results[0].counts.byFixability.safe, 40);
+  assert.equal(report.results[0].counts.byFixability.unsafe, 20);
+  assert.equal(report.results[0].counts.byFixability.manual, 30);
+  assert.equal(report.results[0].counts.bySeverity.info, undefined, 'zero counts are dropped');
+  assert.equal(report.counts, undefined, 'one engine carries no duplicate totals');
   assert.ok(report.notes.includes(BIOME_TRUNCATED_NOTE));
+});
+
+test('the fixed Biome stderr banner never becomes a stderrTail', () => {
+  const banner = [
+    'The `json` and `json-pretty` reporters are experimental and may change in patch releases.',
+    'check ━━━━━━━━━━━━━━━━━━━━━━━━',
+    '',
+    '  × Some errors were emitted while running checks.',
+    '  ',
+  ].join('\n');
+  assert.equal(biomeStderrTail(banner), '');
+  assert.equal(biomeStderrTail(`${banner}\nerror: configuration is invalid`), 'error: configuration is invalid');
 });
 
 // Captured from Biome 2.5.13 `--reporter=json` on src/runtime/tidy/tool.mjs:

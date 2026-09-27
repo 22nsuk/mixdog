@@ -5,6 +5,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { executeBuiltinTool } from '../../src/runtime/agent/orchestrator/tools/builtin.mjs';
+import { readRowsForDisplay } from '../../src/runtime/shared/read-row-numbers.mjs';
 
 function fixture(files) {
   const cwd = mkdtempSync(join(tmpdir(), 'mixdog-routing-batch-'));
@@ -26,7 +27,10 @@ test('one read array preserves separate windows of the same file and other files
   };
   const original = structuredClone(args);
   const result = String(await executeBuiltinTool('read', args, cwd));
-  const lines = result.split('\n').filter((line) => /^\d+→/.test(line));
+  assert.doesNotMatch(result, /^\d+[→\t]/m);
+  const lines = readRowsForDisplay(result)
+    .split('\n')
+    .filter((line) => /^\d+→/.test(line));
   assert.deepEqual(lines, ['2→ALPHA_2', '3→ALPHA_3', '7→ALPHA_7', '8→ALPHA_8', '2→BETA_2']);
   assert.deepEqual(args, original);
 });

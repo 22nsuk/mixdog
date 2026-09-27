@@ -22,7 +22,7 @@ const taskFields = {
     type: 'string',
     enum: GOAL_TASK_STATUSES,
     description:
-      'completed only when fully done; dropped only after user scope change; awaiting_approval for user-dependent work.',
+      "completed only when fully done; dropped only after user scope change; awaiting_approval only for the user's own action, out-of-scope work, or irreversible steps.",
   },
 };
 
@@ -49,7 +49,7 @@ export const GOAL_TOOL_DEFS = Object.freeze([
           type: 'string',
           enum: ['status', 'create', 'pause', 'resume', 'set_tasks', 'update_tasks', 'complete', 'block', 'abandon'],
           description:
-            'create starts approved work once any previous Goal has ended; resume continues unfinished work with optional time and task changes; set_tasks replaces, update_tasks patches/adds; pause waits for a user answer; abandon retires superseded work.',
+            'create starts approved work once any previous Goal has ended; resume continues unfinished work with optional time and task changes; set_tasks replaces, update_tasks patches/adds; pause only at the user\'s explicit request; abandon retires superseded work.',
         },
         objective: { type: 'string', description: 'create: requested outcome.' },
         time_limit_minutes: {
@@ -99,7 +99,7 @@ export const GOAL_TOOL_DEFS = Object.freeze([
           minLength: 1,
           maxLength: 1_000,
           description:
-            'pause: the required user answer. block: stable description of the same external impasse, reported once per turn; the runtime stops after 3.',
+            'block: stable description of the same impasse only external state or the user can clear, reported once per turn; the runtime stops after 3.',
         },
       },
       required: ['action'],
@@ -111,7 +111,7 @@ export const GOAL_TOOL_DEFS = Object.freeze([
 const ACTION_FIELDS = Object.freeze({
   status: ['action'],
   create: ['action', 'objective', 'time_limit_minutes', 'time_mode', 'tasks'],
-  pause: ['action', 'revision', 'blocker'],
+  pause: ['action', 'revision'],
   resume: ['action', 'time_limit_minutes', 'time_mode', 'tasks', 'updates', 'revision'],
   set_tasks: ['action', 'tasks', 'revision'],
   update_tasks: ['action', 'tasks', 'updates', 'revision'],

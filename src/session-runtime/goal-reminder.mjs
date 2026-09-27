@@ -7,8 +7,8 @@
 //
 // Lifecycle mirrors deferred-tool-delta.mjs exactly (mark → snapshot →
 // acknowledge on acceptance), so a cancelled or failed turn re-sends it instead
-// of losing it. Request preparation also recovers paused state directly:
-// intake can precede session hydration or the previous turn's pause.
+// of losing it. Request preparation also recovers paused or blocked state
+// directly: intake can precede session hydration or the previous turn's stop.
 import { resolvePluginData } from '../runtime/shared/plugin-paths.mjs';
 import { readStoredGoalSnapshot } from './goal-runtime.mjs';
 import { goalStateReminder } from './goal-text.mjs';
@@ -60,8 +60,8 @@ export function snapshotPendingGoalReminder(session, { dataDir = null, readGoal 
     return null;
   }
   if (!revision) {
-    if (goal.status !== 'paused') return null;
-    revision = markPendingGoalReminder(session, 'paused').revision;
+    if (!['paused', 'blocked'].includes(goal.status)) return null;
+    revision = markPendingGoalReminder(session, goal.status).revision;
   }
   const reason = clean(session.pendingGoalReminder?.reason);
   const content = goalStateReminder(goal, { reason });

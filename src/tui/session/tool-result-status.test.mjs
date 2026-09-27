@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   aggregateRawResult,
+  aggregateRawResultForDisplay,
   aggregateResultPatch,
   aggregateToolMembers,
   assignUiDiffFromMessage,
@@ -40,11 +41,24 @@ test('the aggregate raw result numbers each resolved member output exactly as be
   }
   const joined = aggregateRawResult(calls);
   assert.equal(joined, reference.join('\n\n'));
-  assert.ok(joined.startsWith('1. grep\na.js:1: hit\n\n2. Search\nonly display text\n\n3. tool\nline of tool output\n'));
+  assert.ok(
+    joined.startsWith('1. grep\na.js:1: hit\n\n2. Search\nonly display text\n\n3. tool\nline of tool output\n')
+  );
   assert.ok(joined.endsWith('\ntail'));
   assert.equal(aggregateRawResult([]), '');
   assert.equal(aggregateRawResult([{ resolved: false, rawResultText: 'x' }]), '');
   assert.equal(aggregateRawResult(null), '');
+});
+
+test('expanded aggregates rebuild numbered rows for read members only', () => {
+  const joined = aggregateRawResult([
+    { resolved: true, name: 'read', rawResultText: 'a.js [ok]\n[lines 1-2]\nconst a = 1;\n  b();' },
+    { resolved: true, name: 'git', rawResultText: '[lines 1-1]\n12\t3\tsrc/a.js' },
+  ]);
+  assert.equal(
+    aggregateRawResultForDisplay(joined),
+    '1. read\na.js [ok]\n1→const a = 1;\n2→  b();\n\n2. git\n[lines 1-1]\n12\t3\tsrc/a.js'
+  );
 });
 
 // Outcome taxonomy contract (user report: "Exit 0" rendered as if failed):

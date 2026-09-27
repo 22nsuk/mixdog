@@ -4,6 +4,7 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { JSDOM } from 'jsdom';
 import { TurnReviewBar } from './TurnReview';
+import { _runIdleReclaimForTest } from './idle-reclaim';
 
 function mount(t) {
   const dom = new JSDOM('<!doctype html><div id="root"></div>', {
@@ -37,13 +38,22 @@ function mount(t) {
     act(async () =>
       root.render(React.createElement(TurnReviewBar, { items, sessionId: 'sess-review-calls', active: true, busy }))
     );
-  const answer = () =>
+  const answer = (value = {}) =>
     act(async () =>
       pending.shift()({
-        value: { supported: true, authoritative: true, snapshotKind: 'worktree', patch: '', files: [], agents: [] },
+        value: {
+          supported: true,
+          authoritative: true,
+          snapshotKind: 'worktree',
+          patch: '',
+          files: [],
+          agents: [],
+          ...value,
+        },
       })
     );
-  return { render, answer, pending, requests };
+  const bar = () => dom.window.document.querySelector('.turn-review-bar');
+  return { render, answer, bar, pending, requests };
 }
 
 const prompt = { kind: 'user', id: 'prompt', text: 'Change a file' };
@@ -77,4 +87,39 @@ test('a boundary that moves while its read is in flight still gets its own read'
   await answer();
   assert.equal(pending.length, 0);
   assert.equal(requests.length, 2);
+});
+
+test("a new prompt never shows the previous turn's review the runtime still answers with", async (t) => {
+  const { render, answer, bar } = mount(t);
+  const earlier = [
+    { kind: 'user', id: 'turn-1', text: 'First' },
+    edit('earlier'),
+    { kind: 'turndone', id: 'done-1' },
+    { kind: 'user', id: 'turn-2', text: 'Second' },
+    { kind: 'status', id: 'thinking', status: 'Thinking' },
+  ];
+  const changed = { files: [{ path: 'a.txt', status: 'M', additions: 2, deletions: 0 }] };
+  await render(earlier, true);
+  await answer({ ...changed, snapshotKind: 'scoped', checkpointId: 'turn-1' });
+  assert.equal(bar(), null);
+
+  await render([...earlier, edit('current')], true);
+  await answer({ ...changed, checkpointId: 'turn-2' });
+  assert.ok(bar(), "the current turn's own review shows");
+});
+
+test('a review tag is only sent while the review it names is still cached', async (t) => {
+  const { render, answer, requests } = mount(t);
+  const tagged = { kind: 'user', id: 'tagged', text: 'Tagged' };
+  const etag = 'a'.repeat(32);
+  await render([tagged, edit('first')], true);
+  await answer({ etag });
+  await render([tagged, edit('first'), edit('second')], true);
+  assert.equal(requests.at(-1).args[0].known, etag);
+  await answer({ etag });
+
+  _runIdleReclaimForTest();
+  await render([tagged, edit('first'), edit('second'), edit('third')], true);
+  assert.equal(requests.at(-1).args[0].known, undefined, 'a dropped review is read in full again');
+  await answer();
 });

@@ -15,6 +15,7 @@ const { sliceReadBodyByLines } = await import('./read-batch.mjs');
 const { BUILTIN_TOOLS } = await import('./builtin-tools.mjs');
 const { getReadSnapshot } = await import('./read-snapshot-runtime.mjs');
 const { tryExecuteExternalToolAdapter } = await import('./external-tool-adapters.mjs');
+const { readRowsForDisplay } = await import('../../../../shared/read-row-numbers.mjs');
 after(async () => {
   await closeNativePatchServerForTests();
 });
@@ -33,13 +34,39 @@ function nextOffset(output) {
   return Number(match[1]);
 }
 
+// Model-facing rows carry no numbers; rebuild them first.
 function rows(output) {
-  return [...String(output).matchAll(/^(\d+)→(.*)$/gm)].map((match) => [Number(match[1]), match[2]]);
+  return [...readRowsForDisplay(String(output)).matchAll(/^(\d+)→(.*)$/gm)].map((match) => [
+    Number(match[1]),
+    match[2],
+  ]);
 }
 
 function readArgs(file, base, offset, limit, batch = false) {
   const key = base === 1 ? 'file_path' : 'path';
   return batch ? { [key]: [{ [key]: file, offset, limit }] } : { [key]: file, offset, limit };
+}
+
+for (const shape of ['buffered', 'streamed', 'batch']) {
+  test(`model-facing reads carry bare rows under a range marker (${shape})`, async () => {
+    const fx = fixture(
+      `${Array.from({ length: 30 }, (_, i) => `${i % 2 ? '\t\t' : '    '}LINE_${i + 1}`).join('\n')}\n`
+    );
+    const output = String(
+      await executeBuiltinTool('read', readArgs(fx.file, 1, 3, 20, shape === 'batch'), fx.dir, {
+        sessionId: fx.sessionId,
+        forceReadRangeStream: shape === 'streamed',
+      })
+    );
+    const lines = output.split('\n');
+    const at = lines.indexOf('[lines 3-22]');
+    assert.ok(at >= 0, output);
+    assert.deepEqual(
+      lines.slice(at + 1, at + 21),
+      Array.from({ length: 20 }, (_, i) => `${(i + 2) % 2 ? '\t\t' : '    '}LINE_${i + 3}`)
+    );
+    assert.doesNotMatch(output, /^\d+[→\t]/m);
+  });
 }
 
 for (const base of [0, 1]) {

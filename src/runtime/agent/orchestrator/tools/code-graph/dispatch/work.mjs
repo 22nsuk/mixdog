@@ -5,6 +5,7 @@
 import { _stripEmptyArgs } from '../project-root.mjs';
 import { _collectGraphFileList } from '../aggregate-roots.mjs';
 import { collectGraphSymbolList } from '../modes/shared.mjs';
+import { CODE_GRAPH_FILE_MODES } from '../../code-graph-tool-defs.mjs';
 
 const CODE_GRAPH_BATCHABLE_MODES = new Set([
   'symbol',
@@ -14,7 +15,7 @@ const CODE_GRAPH_BATCHABLE_MODES = new Set([
   'callees',
   'references',
 ]);
-const CODE_GRAPH_FILE_BATCHABLE_MODES = new Set(['imports', 'dependents', 'related', 'impact', 'symbols', 'overview']);
+const CODE_GRAPH_FILE_BATCHABLE_MODES = new Set([...CODE_GRAPH_FILE_MODES, 'symbols']);
 const CODE_GRAPH_BATCH_CONCURRENCY = 20;
 const DECLARATION_MODES = new Set(['symbol', 'find_symbol']);
 

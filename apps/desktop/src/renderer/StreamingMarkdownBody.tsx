@@ -21,12 +21,20 @@ function promoteMarkdownAst(
   current: RenderedMarkdownAst | null,
   root: MarkdownAstRoot,
   parsedText: string,
-  source: string
+  source: string,
+  visibleSource: string
 ): RenderedMarkdownAst | null {
   if (current?.text === parsedText) return current;
   // Results are single-flight, but never let an older parse replace a newer
-  // one if one ever lands out of order.
-  if (current && current.source.length > source.length && current.source.startsWith(source)) {
+  // one if one ever lands out of order. A current parse the visible text has
+  // since been cut or rewritten under is stale, not newer: the parse of the
+  // shorter text on screen replaces it.
+  if (
+    current &&
+    current.source.length > source.length &&
+    current.source.startsWith(source) &&
+    visibleSource.startsWith(current.source)
+  ) {
     return current;
   }
   return { text: parsedText, source, root };
@@ -62,7 +70,7 @@ const ParsedMarkdownBody = memo(function ParsedMarkdownBody({
   if (parse && current?.text !== parseText) {
     const cachedRoot = readCachedStreamingMarkdownAst(parseText);
     if (cachedRoot) {
-      const promoted = promoteMarkdownAst(current, cachedRoot, parseText, text);
+      const promoted = promoteMarkdownAst(current, cachedRoot, parseText, text, text);
       if (promoted !== current) {
         current = promoted;
         setRendered(promoted);
@@ -71,11 +79,14 @@ const ParsedMarkdownBody = memo(function ParsedMarkdownBody({
   }
   const exact = current?.text === parseText ? current : null;
   // While a newer parse is in flight, the last COMPLETED parse stays on
-  // screen. Our parse runs in a
-  // worker, so the equivalent guarantee is "the parsed source is a prefix of
-  // what is on screen now" — append-only streaming keeps that true and a
-  // truncation/replacement drops it back to source.
-  const usable = exact ?? (current && text.startsWith(current.source) ? current : null);
+  // screen — also when the text was cut or rewritten under it. The live tail
+  // chunk is cut to its frozen block every time the next block starts, and
+  // dropping the stale parse there blanked the block (and the tail below it)
+  // for a whole worker round trip: the transcript collapsed and regrew at
+  // every paragraph (user: 웹앱에서 트랜스크립트가 튄다). The stale parse is
+  // one worker round trip old and is replaced by the parse of the text on
+  // screen as soon as it lands.
+  const usable = exact ?? current;
   const renderedRoot = usable?.root ?? null;
   // A cold web Worker can trail the first streamed tokens by a network round
   // trip. Fenced scripts still reserve their final card/mono geometry during
@@ -100,7 +111,8 @@ const ParsedMarkdownBody = memo(function ParsedMarkdownBody({
         return;
       }
       // One landed parse, one commit.
-      setRendered((latest) => promoteMarkdownAst(latest, root, parsedText, source));
+      const visibleSource = requestedSource.current;
+      setRendered((latest) => promoteMarkdownAst(latest, root, parsedText, source, visibleSource));
     });
   }, [parse, parseText]);
   useEffect(() => () => queue.current?.dispose(), []);

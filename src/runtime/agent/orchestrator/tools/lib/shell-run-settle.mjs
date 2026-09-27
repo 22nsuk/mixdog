@@ -28,10 +28,9 @@ export function createPromotedCaptureRelease(run) {
     if (run.child?.exitCode == null && run.child?.signalCode == null) return;
     released = true;
     try {
-      // An empty spill pair is garbage nothing can reference; captured
-      // bytes stay, because the promoted task record points at these files.
-      if (run.taskOutput.spilled && run.taskOutput.totalDiskBytes() === 0) run.taskOutput.deleteFiles();
-      else run.taskOutput.closeFds();
+      // The spill files stay, even when empty: the promoted task record and
+      // its completion notice point at these paths.
+      run.taskOutput.closeFds();
     } catch {
       /* best-effort */
     }

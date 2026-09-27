@@ -73,19 +73,24 @@ interface TranscriptRowBuilder {
 }
 
 /** pending:${id} and turn:${id} are one submission. The virtualizer identifies
- *  the thinking row by this key, so the prefix flip must not remount its timer. */
+ *  rows by key, so the prefix flip must not re-key the submission's rows: a
+ *  re-keyed row remounts (the thinking timer restarts) and paints one frame at
+ *  the flat row estimate (the turn gap bounced the transcript by 40px). */
+function submissionIdentity(turnKey: string): string {
+  if (turnKey.startsWith('pending:')) return turnKey.slice('pending:'.length);
+  if (turnKey.startsWith('turn:')) return turnKey.slice('turn:'.length);
+  return turnKey;
+}
+
 function thinkingRowKey(sessionKey: string, turnKey: string): string {
-  let identity = turnKey;
-  if (identity.startsWith('pending:')) identity = identity.slice('pending:'.length);
-  else if (identity.startsWith('turn:')) identity = identity.slice('turn:'.length);
-  return `${sessionKey}:thinking:${identity}`;
+  return `${sessionKey}:thinking:${submissionIdentity(turnKey)}`;
 }
 
 function beginBuilderTurn(builder: TranscriptRowBuilder, sessionKey: string, turnKey: string): void {
   if (builder.rows.length > 0 && builder.currentTurnKey && turnKey !== builder.currentTurnKey) {
     builder.rows.push({
       _tag: 'TurnGap',
-      key: `${sessionKey}:gap:${turnKey}`,
+      key: `${sessionKey}:gap:${submissionIdentity(turnKey)}`,
       turnKey,
     });
     builder.previousRowWasUser = false;

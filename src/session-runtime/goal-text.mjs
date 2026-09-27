@@ -104,7 +104,7 @@ export function continuationPrompt(goal, { idleReview = false, includeRules = tr
       ...continuationStateLines(goal),
       'Rules: the full continuation rules were delivered earlier in this Goal and still apply unchanged. State update only:',
       '- A turn may end while this Goal remains active. Report that turn as progress, not as completion of the whole objective.',
-      '- Finish every approved task without stepwise approval, park work that needs a user response as awaiting_approval, and pause only once nothing else can proceed.',
+      "- Finish every approved task without stepwise approval and decide choices within the objective yourself. Park only work that needs the user as awaiting_approval, keep other work moving, and never pause on your own initiative.",
       goalTimeModeRule(goal),
       '- Complete only on an audit that proves every user condition met, and never complete or block merely because time is low or the turn is ending.',
       '</system-reminder>',
@@ -117,8 +117,8 @@ export function continuationPrompt(goal, { idleReview = false, includeRules = tr
     '- A turn may end while this Goal remains active. Report that turn as progress, not as completion of the whole objective; ending a turn does not complete the Goal.',
     '- Preserve the full objective and scope; use current files and external state rather than prior narration. Never redefine success around a smaller, easier, or already-finished subset.',
     '- Finish every approved task without stepwise approval. Record user additions, park new approval-dependent work, and continue unaffected approved work; routine errors and retries are not reasons to stop.',
-    // The full deferred-pause contract stays in the cached tool description.
-    '- Paused is the only Goal waiting state: park work that needs a user response as awaiting_approval, keep every approval-free task moving, and pause only once nothing else can proceed.',
+    "- Decide choices within the objective yourself, including any option you would recommend, and report them instead of asking. Park as awaiting_approval only work that needs the user's own action, scope outside the objective, or an irreversible step, and keep every other task moving.",
+    "- Pause only at the user's explicit request, never on your own initiative. When nothing can proceed without the user, report it with block.",
     '- Update durable tasks at meaningful milestones or scope changes, not for every action. Administrative updates and repeated plans are not progress.',
     '- Classify the previous turn as concrete progress, a verified wait, or no progress. Progress completes work, changes authoritative state, or produces evidence that determines a different next action.',
     '- Wait only on a currently live process, job, or tool handle. An observation timeout is not termination: continue observing the same handle rather than restarting its work.',
@@ -129,19 +129,20 @@ export function continuationPrompt(goal, { idleReview = false, includeRules = tr
     // the duration on the deadline timer if this turn records nothing new.
     ...(idleReview
       ? [
-          '- Every recorded task is settled while the requested duration still has time left. Record the next concrete work for that time with set_tasks and carry it out, or, when only a user response can unblock the objective, park the dependent work as awaiting_approval and pause. A status report or a repeated plan is not an answer to this turn.',
+          '- Every recorded task is settled while the requested duration still has time left. Record the next concrete work for that time with set_tasks and carry it out, or, when only the user can unblock the objective, report that impasse with block. A status report or a repeated plan is not an answer to this turn.',
         ]
       : []),
     '- Before completing, audit each user condition on its own: name the evidence that would prove it, inspect current state for it, and match the check to the claim. The audit must prove completion, not merely fail to find remaining work.',
     '- Missing or insufficient evidence means incomplete; keep working. Complete only when every user condition is proven met and no required work remains. Existing checks need not be repeated and verification need not be a separate task row.',
     '- Only the user retires a condition: drop a task because the user changed the objective, never to reach completion — a task dropped this turn blocks completion.',
-    '- Report a genuine external impasse with block once per turn using the same stable blocker description. The runtime keeps the Goal active until 3 consecutive turns confirm it. Never block for difficulty, uncertainty, or merely incomplete work.',
+    '- Report an impasse that only external state or the user can clear with block once per turn using the same stable blocker description. The runtime keeps the Goal active until 3 consecutive turns confirm it. Never block for difficulty, uncertainty, merely incomplete work, a choice you can make, or clarification that would only help.',
     '- Never complete or block merely because time is low or the turn is ending.',
     '</system-reminder>',
   ].join('\n');
 }
 
-// How a paused Goal is to be treated, by why it paused.
+// How a paused Goal is to be treated, by why it paused. `waiting` survives only
+// on records stored before the model lost its own pause.
 const PAUSE_LINES = Object.freeze({
   waiting:
     'Waiting for a user answer. Resume with task changes only when that answer permits approved work to continue.',
@@ -149,6 +150,9 @@ const PAUSE_LINES = Object.freeze({
     'A cancelled turn paused this Goal: the user stopped that turn, not the objective. Judge the newest instruction — resume and carry the work forward when it continues or redirects this objective, and leave the Goal paused when it is unrelated or asks you to stay stopped.',
   user: 'The user paused this Goal. Do not resume for bookkeeping, notifications, or unrelated questions; resume only when the user asks to continue.',
 });
+
+const BLOCKED_LINE =
+  'Blocked on the reason below. Resume with task changes when the newest user message supplies what was missing or asks to continue; otherwise leave it blocked.';
 
 // Advance notice is not a stop or a request for an early final report.
 export function goalDeadlineWarning(goal) {
@@ -225,6 +229,7 @@ export function goalStateReminder(goal, { reason = '' } = {}) {
     '<goal_state>',
     lead,
     ...(goal.status === 'paused' ? [PAUSE_LINES[goal.pauseReason] || PAUSE_LINES.user] : []),
+    ...(goal.status === 'blocked' ? [BLOCKED_LINE] : []),
     '',
     `Objective: ${escapeGoalPromptText(goal.objective)}`,
     `Status: ${escapeGoalPromptText(goal.status)} · tasks ${tasksCompleted}/${tasksTotal}`,

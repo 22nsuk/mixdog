@@ -43,6 +43,15 @@ export function summarizeReductionTraceRows(rows) {
       rawBytes: 0,
       visibleBytes: 0,
       savedBytes: 0,
+      // savedBytes clamps each row at zero; netSavedBytes keeps the growth
+      // (status headers, background notices) so a net increase stays visible.
+      netSavedBytes: 0,
+      grownResults: 0,
+    },
+    toolResults: {
+      results: 0,
+      bytes: 0,
+      byTool: {},
     },
     activity: {
       providerRequests: 0,
@@ -92,6 +101,8 @@ export function summarizeReductionTraceRows(rows) {
       summary.shell.rawBytes += before;
       summary.shell.visibleBytes += visible;
       summary.shell.savedBytes += saved(before, visible);
+      summary.shell.netSavedBytes += before - visible;
+      if (visible > before) summary.shell.grownResults += 1;
       continue;
     }
     if (kind === 'usage_raw') {
@@ -108,6 +119,14 @@ export function summarizeReductionTraceRows(rows) {
     if (kind === 'tool') {
       summary.activity.toolCalls += 1;
       const name = String(row.tool_name || row.payload?.tool_name || '').toLowerCase();
+      const bytes = metric(row, 'result_bytes_est');
+      const key = name || 'unknown';
+      summary.toolResults.byTool[key] ??= { results: 0, bytes: 0 };
+      const entry = summary.toolResults.byTool[key];
+      entry.results += 1;
+      entry.bytes += bytes;
+      summary.toolResults.results += 1;
+      summary.toolResults.bytes += bytes;
       if (name === 'read' && /[\\/]tool-results[\\/]|[\\/]shell-output(?:-compact)?[\\/]/i.test(toolArgsText(row))) {
         summary.activity.artifactReads += 1;
       }

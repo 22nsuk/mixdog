@@ -9,6 +9,7 @@ import { CODE_GRAPH_TOOL_DEFS } from '../../tools/code-graph-tool-defs.mjs';
 import { buildSkillToolDefs } from '../../context/collect.mjs';
 import { filterModelEditTools } from '../../../../shared/edit-tool-dialect.mjs';
 import { filterMcpToolsForSession } from '../../../../../session-runtime/extension-scopes.mjs';
+import { ROUTE_TOOL_ORDER } from '../../../../../session-runtime/tool-catalog-data.mjs';
 
 // Merge externally-connected MCP tools with the plugin's in-process tools
 // (registered by agent's toolExecutor adapter). Internal tools are exposed
@@ -39,28 +40,13 @@ function _getMcpTools(mcpScopeId = null, cwd = null) {
   return [...mcp, ...internal].sort((a, b) => compareCodePoints(a?.name || '', b?.name || ''));
 }
 
-// Canonical route order (mirrors the shared Tool Workflow and the deferred
-// catalog's ROUTE_TOOL_ORDER): locator → path → content → symbol → read →
-// edit → execute → web.
-const SESSION_ROUTE_TOOL_ORDER = [
-  'find',
-  'glob',
-  'list',
-  'grep',
-  'code_graph',
-  'read',
-  'edit',
-  'apply_patch',
-  'git',
-  'github',
-  'shell',
-  'task',
-  'web_search',
-  'web_fetch',
-];
-const SESSION_ROUTE_TOOL_RANK = new Map(SESSION_ROUTE_TOOL_ORDER.map((name, index) => [name, index]));
+// Canonical route order from the deferred catalog, followed by web tools:
+// locator → path → content → symbol → read → edit → execute → web.
+const SESSION_ROUTE_TOOL_RANK = new Map(
+  [...ROUTE_TOOL_ORDER, 'web_search', 'web_fetch'].map((name, index) => [name, index])
+);
 const FILESYSTEM_TOOL_NAMES = new Set(['code_graph', 'find', 'glob', 'list', 'grep', 'read', 'edit', 'apply_patch']);
-const READONLY_TOOL_NAMES = new Set(['code_graph', 'find', 'glob', 'list', 'grep', 'read']);
+const READONLY_FS_TOOL_NAMES = new Set(['code_graph', 'find', 'glob', 'list', 'grep', 'read']);
 
 export function finalizeSessionToolList(
   tools,
@@ -159,7 +145,7 @@ function _computeBaseTools(toolSpec, mcp, skillTools) {
           addMany(ALL_BUILTIN_SESSION_TOOLS.filter((t) => FILESYSTEM_TOOL_NAMES.has(t.name)));
           break;
         case 'tools:readonly':
-          addMany(ALL_BUILTIN_SESSION_TOOLS.filter((t) => READONLY_TOOL_NAMES.has(t.name)));
+          addMany(ALL_BUILTIN_SESSION_TOOLS.filter((t) => READONLY_FS_TOOL_NAMES.has(t.name)));
           break;
         case 'tools:shell':
         case 'tools:analysis':
@@ -191,7 +177,7 @@ function _computeBaseTools(toolSpec, mcp, skillTools) {
     case 'mcp':
       return orderSessionTools(_dedupByName([...mcp, ...skillTools]));
     case 'readonly': {
-      const readTools = ALL_BUILTIN_SESSION_TOOLS.filter((t) => READONLY_TOOL_NAMES.has(t.name));
+      const readTools = ALL_BUILTIN_SESSION_TOOLS.filter((t) => READONLY_FS_TOOL_NAMES.has(t.name));
       return orderSessionTools(_dedupByName([...readTools, ...mcp, ...skillTools]));
     }
     // 'full' and any unknown spec.

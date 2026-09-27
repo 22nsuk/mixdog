@@ -59,7 +59,7 @@ function survivingDescendantsWarning(result, taskContext) {
   const heading = result.descendants?.reachable
     ? SURVIVING_DESCENDANTS_WARNING
     : SURVIVING_DESCENDANTS_UNREACHABLE_WARNING;
-  return [heading, renderBackgroundTask(task)].join('\n');
+  return [heading, renderBackgroundTask(task, { ownerTool: true })].join('\n');
 }
 
 // Filter-swallow rescue: the tee file is ALWAYS consumed (deleted) here; its

@@ -41,9 +41,14 @@ export async function runJitterProbe({
   publish,
   outPath,
 }: ProbeDeps): Promise<{ reversals: number }> {
-  const send = (state: Record<string, unknown>) => {
-    window.webContents.send(stateChannel, state);
-  };
+  // Panes paint their session's lane: a frame pushed only on the bare state
+  // channel never reaches a session transcript, so every pass publishes
+  // through the host (state + per-session channels) when it can.
+  const send =
+    publish ??
+    ((state: Record<string, unknown>) => {
+      window.webContents.send(stateChannel, state);
+    });
   // MIXDOG_JITTER_PROBE=entry runs ONLY the cold-entry/tool-toggle pass, so
   // the streaming pass keeps its pristine (never-visited) starting state.
   const entryMode = process.env.MIXDOG_JITTER_PROBE === 'entry';
@@ -97,7 +102,7 @@ export async function runJitterProbe({
       window,
       baseSnapshot,
       prepareColdResume,
-      send: publish ?? send,
+      send,
       outPath,
     });
   }

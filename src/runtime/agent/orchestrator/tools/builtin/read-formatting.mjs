@@ -1,3 +1,4 @@
+import { READ_LINE_NO_SEP } from '../../../../shared/read-row-numbers.mjs';
 import { mergeReadRanges } from './read-ranges.mjs';
 import { TOOL_OUTPUT_MAX_BYTES } from './tool-output-limit.mjs';
 
@@ -14,15 +15,12 @@ export const SMART_READ_MAX_LINES = _readEnvInt('MIXDOG_READ_MAX_LINES', 2000);
 export const SMART_READ_HEAD_LINES = _readEnvInt('MIXDOG_READ_HEAD_LINES', 1200);
 export const SMART_READ_TAIL_LINES = _readEnvInt('MIXDOG_READ_TAIL_LINES', 400);
 const READ_MAX_RENDERED_LINE_CHARS = 2_000;
-// The read line-prefix separator is `→` (the `→`
-// arrow), matching default cat -n format `<n>→<content>`. It
-// MUST be a NON-WHITESPACE glyph: a tab/space separator collides with the
-// content's own leading indentation, so a model hand-reconstructing an edit
-// old_string cannot tell the separator from the indent and produces
-// byte-mismatched anchors (grep finds the substring, edit cannot). All
-// read/edit parsers accept `[\t│→]`, so any in-flight tab/pipe-rendered
-// output stays backward-compatible.
-export const LINE_NO_SEP = '→';
+// Internal read rows are `<n>→<content>`. The separator MUST be a
+// NON-WHITESPACE glyph so the read parsers never confuse it with the
+// content's own leading indentation; they also accept `[\t│→]` from older
+// rendered text. The model-facing result drops the numbers entirely
+// (runtime/shared/read-row-numbers.mjs).
+export const LINE_NO_SEP = READ_LINE_NO_SEP;
 
 export function buildSmartReadTruncationMarker(totalLines, fileBytes, _filePath = '') {
   const kb = Math.max(1, Math.round((Number(fileBytes) || 0) / 1024));

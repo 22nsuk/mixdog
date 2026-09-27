@@ -157,6 +157,7 @@ export class CaptureService implements DesktopService {
   private jitterStoredSnapshot: SessionSnapshot = null;
   private jitterLiveSnapshot: SessionSnapshot = null;
   private jitterColdSnapshot: SessionSnapshot = null;
+  private visibleProbeSessions = new Set<string>();
   private snapshot: SessionSnapshot = {
     sessionId: '',
     items: [],
@@ -265,7 +266,13 @@ export class CaptureService implements DesktopService {
   async prefetchSession(_sessionId?: string, _transcriptItemLimit?: number): Promise<boolean> {
     return true;
   }
-  async setVisibleSessions(): Promise<boolean> {
+  async setVisibleSessions(sessionIds: string[] = []): Promise<boolean> {
+    if (jitterProbeEnabled()) {
+      for (const sessionId of sessionIds) {
+        if (!this.visibleProbeSessions.has(sessionId)) void this.openProbeSession(sessionId);
+      }
+      this.visibleProbeSessions = new Set(sessionIds);
+    }
     return true;
   }
   async searchProjectFiles(): Promise<string[]> {
@@ -322,8 +329,8 @@ export class CaptureService implements DesktopService {
   }
 
   // Cold-entry pass: a settled session with history, resumed through the real
-  // sidebar → resumeSession path (a pushed snapshot for a foreign session id
-  // never reaches a route).
+  // sidebar → visible-session lane path (a pushed snapshot for a session no
+  // pane shows never reaches a transcript).
   prepareJitterColdResume(snapshot: SessionSnapshot): void {
     this.jitterColdSnapshot = snapshot;
   }
@@ -378,7 +385,10 @@ export class CaptureService implements DesktopService {
     return [];
   }
 
-  async resumeSession(sessionId: string): Promise<SessionSnapshot> {
+  /** A pane shows a session by making it visible; the host then publishes that
+   *  session's lane. Probe sessions answer the same way, each after the delay
+   *  its real load path takes. */
+  private async openProbeSession(sessionId: string): Promise<void> {
     if (process.env.MIXDOG_JITTER_PROBE === 'switch' && /^probe_switch_[abc]$/.test(sessionId)) {
       await new Promise((resolvePromise) => setTimeout(resolvePromise, 180));
       const suffix = sessionId.slice(-1).toUpperCase();
@@ -414,17 +424,15 @@ export class CaptureService implements DesktopService {
         streamingTail: null,
       } as SessionSnapshot;
       this.publish(snapshot);
-      return snapshot;
+      return;
     }
-    if (jitterProbeEnabled() && sessionId === 'probe_session_cold') {
+    if (sessionId === 'probe_session_cold') {
       if (!this.jitterColdSnapshot) throw new Error('Jitter probe cold snapshot is not prepared.');
       await new Promise((resolvePromise) => setTimeout(resolvePromise, 120));
       this.publish(this.jitterColdSnapshot);
-      return this.jitterColdSnapshot;
+      return;
     }
-    if (!jitterProbeEnabled() || sessionId !== 'probe_session_b') {
-      return this.snapshot;
-    }
+    if (sessionId !== 'probe_session_b') return;
     const stored = this.jitterStoredSnapshot as Record<string, unknown> | null;
     const live = this.jitterLiveSnapshot as Record<string, unknown> | null;
     if (!stored || !live || stored.sessionId !== sessionId || live.sessionId !== sessionId) {
@@ -434,7 +442,6 @@ export class CaptureService implements DesktopService {
     // exists first, but resume resolves only after live-share supplies FULL.
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 180));
     this.publish(this.jitterLiveSnapshot);
-    return this.jitterLiveSnapshot;
   }
 
   // Keep model-route rows fully populated without starting the isolated

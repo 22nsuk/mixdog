@@ -12,6 +12,7 @@ import {
   unlinkSync,
   statSync,
 } from 'node:fs';
+import { readdir, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import * as nodeUtil from 'node:util';
@@ -217,6 +218,29 @@ function _readHeadTail(filePath, fileSize) {
   }
 }
 
+// Spill files outlive their task record (30 min), and transcripts keep naming
+// them ("full output at <path>"), so a session resumed days later may still
+// read them. Keep a week, then drop them: swept once per process, in the
+// background, when the first command spills.
+export const SHELL_OUTPUT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+let shellOutputSweepStarted = false;
+
+export async function sweepExpiredShellOutput(dir, now = Date.now()) {
+  let names;
+  try {
+    names = await readdir(dir);
+  } catch {
+    return;
+  }
+  const cutoff = now - SHELL_OUTPUT_RETENTION_MS;
+  for (const name of names) {
+    const file = join(dir, name);
+    try {
+      if ((await stat(file)).mtimeMs < cutoff) await rm(file, { force: true });
+    } catch {}
+  }
+}
+
 // Owns the captured stdout/stderr buffers for a single command run. Starts
 // fully in memory; once the combined byte total exceeds the spill threshold
 // (SHELL_OUTPUT_INLINE_CAP), opens append-only files in
@@ -257,6 +281,10 @@ export class TaskOutput {
     try {
       mkdirSync(dir, { recursive: true });
     } catch {}
+    if (!shellOutputSweepStarted) {
+      shellOutputSweepStarted = true;
+      void sweepExpiredShellOutput(dir);
+    }
     this.stdoutPath = join(dir, `${this.taskId}.stdout`);
     this.stderrPath = join(dir, `${this.taskId}.stderr`);
     // openSync failure (EMFILE, EACCES, ENOSPC, ENOTDIR after a race) used

@@ -11,6 +11,7 @@
 
 import { coerceReadFamilyPathArg, coerceShapeFlex, hasGlobMagic } from './path-utils.mjs';
 import { hasOwn } from '../../../../shared/object.mjs';
+import { CODE_GRAPH_FILE_MODES, CODE_GRAPH_MODES } from '../code-graph-tool-defs.mjs';
 
 const MAX_INT = 100000;
 export const PUBLIC_PATH_BATCH_LIMIT = 10;
@@ -751,11 +752,8 @@ function guardShell(a) {
   if (a.command.length === 0) {
     return 'Error: shell arg "command" must be a non-empty string';
   }
-  if (
-    hasOwn(a, 'timeout_ms') &&
-    (typeof a.timeout_ms !== 'number' || !Number.isFinite(a.timeout_ms) || a.timeout_ms < 0)
-  ) {
-    return `Error: shell arg "timeout_ms" must be a non-negative number (got ${describeType(a.timeout_ms)})`;
+  if (hasOwn(a, 'timeout_ms') && (!Number.isInteger(a.timeout_ms) || a.timeout_ms < 0)) {
+    return `Error: shell arg "timeout_ms" must be a non-negative integer (got ${describeType(a.timeout_ms)})`;
   }
   return null;
 }
@@ -902,24 +900,8 @@ function guardGlob(a) {
   return checkHeadLimit(a, 'glob');
 }
 
-// Valid code_graph modes — mirrors the enum in code-graph-tool-defs.mjs.
-// Covers the work the removed standalone find_* tools used to do:
-// find_symbol, references, callers, imports, dependents.
-const CODE_GRAPH_MODES = new Set([
-  'overview',
-  'imports',
-  'dependents',
-  'related',
-  'impact',
-  'symbols',
-  'find_symbol',
-  'symbol_search',
-  'search',
-  'references',
-  'callers',
-  'callees',
-  'prewarm',
-]);
+// Valid code_graph modes: the public schema enum plus the internal prewarm mode.
+const CODE_GRAPH_MODE_SET = new Set([...CODE_GRAPH_MODES, 'prewarm']);
 
 function guardCodeGraph(a) {
   if (!isPresent(a, 'mode')) {
@@ -929,8 +911,8 @@ function guardCodeGraph(a) {
     return `Error: code_graph arg "mode" must be a string (got ${describeType(a.mode)})`;
   }
   const mode = a.mode.trim();
-  if (!CODE_GRAPH_MODES.has(mode)) {
-    return `Error: code_graph arg "mode" must be one of ${[...CODE_GRAPH_MODES].join('|')} (got ${JSON.stringify(a.mode)})`;
+  if (!CODE_GRAPH_MODE_SET.has(mode)) {
+    return `Error: code_graph arg "mode" must be one of ${[...CODE_GRAPH_MODE_SET].join('|')} (got ${JSON.stringify(a.mode)})`;
   }
   // Absorb: file/files arriving as a JSON-stringified array
   // (file:"[\"a.mjs\",\"b.mjs\"]") — parse to a real array so the graph
@@ -945,7 +927,7 @@ function guardCodeGraph(a) {
     a.files = Array.isArray(a.files) ? [...a.file, ...a.files] : a.file;
     delete a.file;
   }
-  if (['overview', 'imports', 'dependents', 'related', 'impact'].includes(mode)) {
+  if (CODE_GRAPH_FILE_MODES.includes(mode)) {
     delete a.symbol;
     delete a.symbols;
   }

@@ -12,9 +12,12 @@ import { snapshotCoversFullFile, statMatchesSnapshot } from './snapshot-helpers.
 
 export const READ_PREFIX_HASH_BYTES = 65536;
 
+// A mutation snapshot claims the full file because it knows the bytes it
+// wrote; it proves the session holds the body only when bodyDelivered says so.
 function snapshotBodyWasReturnedByRead(snapshot) {
   const source = String(snapshot?.source || '');
-  return source.startsWith('read') || source === 'edit' || source.startsWith('apply_patch_');
+  if (source.startsWith('read')) return true;
+  return (source === 'edit' || source.startsWith('apply_patch_')) && snapshot.bodyDelivered === true;
 }
 
 function unchangedStub(filePath, helpers) {

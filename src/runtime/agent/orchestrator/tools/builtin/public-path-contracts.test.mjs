@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { executeBuiltinTool } from '../builtin.mjs';
+import { readRowsForDisplay } from '../../../../shared/read-row-numbers.mjs';
 
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'mixdog-public-path-contract-'));
@@ -17,20 +18,22 @@ function fixture(t) {
 
 test('public read batches apply shared defaults and per-target windows without hiding absence', async (t) => {
   const root = fixture(t);
-  const out = String(
-    await executeBuiltinTool(
-      'read',
-      {
-        file_path: [
-          'a.txt',
-          { file_path: 'b.txt', offset: 3, limit: 1 },
-          { file_path: 'a.txt', offset: 5, limit: 1 },
-          'missing.txt',
-        ],
-        offset: 2,
-        limit: 2,
-      },
-      root
+  const out = readRowsForDisplay(
+    String(
+      await executeBuiltinTool(
+        'read',
+        {
+          file_path: [
+            'a.txt',
+            { file_path: 'b.txt', offset: 3, limit: 1 },
+            { file_path: 'a.txt', offset: 5, limit: 1 },
+            'missing.txt',
+          ],
+          offset: 2,
+          limit: 2,
+        },
+        root
+      )
     )
   );
   assert.match(out, /2→alpha2/);
@@ -59,7 +62,7 @@ test('literal read strings are not split or repaired into different operands', a
   for (const file_path of ['a.txt b.txt', '["a.txt", "b.txt"]', '["a.txt', '[""]a.txt[""]']) {
     const out = String(await executeBuiltinTool('read', { file_path, limit: 2 }, root));
     assert.match(out, /^(?:Error:|\[path absent\])/);
-    assert.doesNotMatch(out, /1→alpha1|1→beta1/);
+    assert.doesNotMatch(out, /\[lines |^alpha1$|^beta1$/m);
   }
 });
 
@@ -175,8 +178,8 @@ test('public continuation coordinates resume after the last returned line across
           root
         )
       );
-      assert.match(following, /3→third/);
-      assert.doesNotMatch(following, /2→second|4→fourth/);
+      assert.match(readRowsForDisplay(following), /3→third/);
+      assert.doesNotMatch(readRowsForDisplay(following), /2→second|4→fourth/);
     }
   }
 });
@@ -186,7 +189,7 @@ test('byte-capped public reads continue without repeating or skipping the bounda
   const lines = Array.from({ length: 200 }, (_, index) => `row-${index + 1} ${'x'.repeat(1000)}`);
   writeFileSync(join(root, 'large.txt'), lines.join('\n'));
   const first = String(await executeBuiltinTool('read', { file_path: 'large.txt', limit: 200 }, root));
-  const returned = [...first.matchAll(/^(\d+)→/gm)].map((match) => Number(match[1]));
+  const returned = [...readRowsForDisplay(first).matchAll(/^(\d+)→/gm)].map((match) => Number(match[1]));
   const next = Number(first.match(/\boffset:\s*(\d+)/)?.[1]);
   assert.ok(returned.length > 0 && returned.length < lines.length);
   assert.equal(next, returned.at(-1) + 1);
@@ -201,7 +204,7 @@ test('byte-capped public reads continue without repeating or skipping the bounda
       root
     )
   );
-  assert.match(following, new RegExp(`^${next}→row-${next} `, 'm'));
+  assert.match(readRowsForDisplay(following), new RegExp(`^${next}→row-${next} `, 'm'));
 });
 
 test('escaped regex pipes remain literal in scalar and batch execution', async (t) => {

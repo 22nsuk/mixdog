@@ -14,6 +14,7 @@ import {
 import { readSkillToolDependencies, skillToolDependenciesRoot } from '../../../shared/skill-tool-dependencies.mjs';
 import { loadConfig, normalizeSkillsConfig } from '../config.mjs';
 import { builtinFeatureActive, withGrandfatheredBuiltins } from '../../../../session-runtime/builtin-features.mjs';
+import { SKILL_TOOL } from '../../../../session-runtime/tool-defs.mjs';
 import { extensionScopesFromConfig, skillAllowedForCwd } from '../../../shared/extension-scopes.mjs';
 import { currentSkillContext, latestSkillBodies, skillMessageText } from './skill-state.mjs';
 import { compactPromptManifestText } from './deferred-tools.mjs';
@@ -494,29 +495,6 @@ export function buildSkillToolDefs(skills, { ownerIsAgentSession = false } = {})
   if (skillsDisabled()) return [];
   if (!ownerIsAgentSession && !skills.length) return [];
   if (_skillToolDefsCache) return _skillToolDefsCache;
-  _skillToolDefsCache = [
-    {
-      name: 'Skill',
-      title: 'Skill',
-      annotations: {
-        title: 'Skill',
-        readOnlyHint: true,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: false,
-        agentHidden: false,
-      },
-      description:
-        'Load or refresh an available skill’s SKILL.md before task actions when its body is missing or needs an update.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          name: { type: 'string', description: 'Exact name from available-skills.' },
-        },
-        required: ['name'],
-        additionalProperties: false,
-      },
-    },
-  ];
+  _skillToolDefsCache = [SKILL_TOOL];
   return _skillToolDefsCache;
 }

@@ -1,9 +1,9 @@
 # Agent-level cleanup
 
 Read this before the agent-level layer of `code-tidy`. It owns the deletion
-ladder, the lens checklists, what counts as slop, the risk tiers, and the
-final report template. The skill body owns scope, order, approvals, and the list of
-things that are never removed or renamed.
+ladder, the lens checklists, what counts as slop, and the risk tiers. The skill
+body owns scope, order, approvals, and the list of things that are never
+removed or renamed.
 
 ## Behavior boundary
 
@@ -45,7 +45,7 @@ last rung goes on to the lenses.
 
 | Rung | Question | Typical win |
 |---|---|---|
-| Delete | Is there evidence the behavior is no longer needed? Check callers, requirements, flags, and compatibility obligations | remove the verified obsolete unit; retire tests only under the test-suite rules below |
+| Delete | Is there evidence the behavior is no longer needed? Check callers, requirements, flags, and compatibility obligations | remove the verified obsolete unit; retire tests only under the test-suite slop rules |
 | Reuse | Does a helper in this repo already do it? (`code_graph symbol_search`, `grep` for the pattern's distinctive call) | reimplementation replaced by a call |
 | Platform | Does the stdlib, runtime, or an already-installed dependency do it? (`URLSearchParams`, `path.relative`, `Array.prototype.at`, `pathlib`, an imported util) | hand-rolled parser/formatter/debounce replaced |
 | Simplify | It must exist here; make it smaller | proceeds to the lenses |
@@ -57,7 +57,7 @@ in-place cleanup; take it before analysing the unit's smells.
 
 Each lens judges the current partition's units and may search the whole
 repository for evidence (an existing helper, a sibling call site); a finding
-without a `file:line` pointer is dropped. Run every lens unless the user named a focus.
+without a path-plus-symbol pointer is dropped. Run every lens unless the user named a focus.
 Judge each selected function or class in its full context, including relevant
 callers and tests, even when it has no pending diff. Do not restrict review to
 recently edited lines or silently widen the edit scope to its consumers.
@@ -110,77 +110,9 @@ here.
 | Placeholder naming | numbered or filler names on new code (`data2`, `helper1`, `tmp`, `handleStuff`, a `Manager` holding two functions) | names the project's own idioms establish | rename locals after their intent; an exported rename is a contract change, so RISKY |
 | Oversized modules | files past the skill's 1,000-line review threshold or mixing responsibilities | a cohesive module or script with no useful responsibility boundary | split confirmed independent responsibilities; never `utils`/`helpers`/`common`/`part2` dump files |
 
-## Test-suite slop
+## Risk tiers
 
-Only when tests are in scope. Tests accumulate through repeated
-agent corrections the same way production code does:
-
-First distinguish redundant coverage from removing a supported behavior.
-Keep distinct observable success, rejection, error, and compatibility cases.
-Before removing a behavior and its tests, require independent evidence from
-current requirements, real callers, or a specification; tests existing only
-for that branch are neither proof of necessity nor permission to delete it.
-
-- **Dominated tests** — several tests reach the same branch and the same
-  result; one asserts the observable output, the others only check
-  construction, type, or non-emptiness. Keep the strongest, delete the rest
-  and the fixtures that served only them.
-- **Accumulated regression tests** — a near-identical test appended after each
-  correction, or parameter permutations whose values never cross a new branch,
-  equivalence class, or failure mode. Keep the smallest set that still covers
-  distinct regressions, and a permutation only where it marks a real boundary.
-- **Tautological assertions** — assertions that cannot fail: `assert True`,
-  two equal literals compared, a state the fixture itself guarantees, a mock
-  verifying the setup that fed it. Delete, or rewrite against the observable
-  result.
-- **Verification theater** — checksums, receipts, validators, or
-  recomputation where producer and verifier share the same information and
-  failure domain. They cannot fail independently; delete.
-- **Closed justification loop** — a fallback exists because a test exercises
-  it and the test exists because the fallback was added. Neither is evidence
-  for deleting the pair. Apply the independent-evidence gate above first;
-  unresolved intent blocks deletion. A distinct externally observable
-  rejection, error, or compatibility test is not a loop; preserve its coverage.
-
-## Candidate inventory and risk tiers
-
-The candidate inventory grows as rounds reveal findings. Register candidates
-using stable candidate IDs:
-
-```text
-[ID] file:line → problem → cost (what it duplicates, wastes, or makes harder) → planned action | tier: SAFE/CAREFUL/RISKY | confidence: high/medium/low | status: completed/kept/unfinished | verification: <test/check>
-```
-
-- **Stable IDs & Grouping**: Assign stable IDs (e.g. `C-01`, `C-02` or `MOD-01`).
-  When multiple locations share an identical root cause (e.g. an unused helper
-  referenced across three call sites, or repeated boilerplate), group them under
-  one ID without losing individual `file:line` member locations. Counts track
-  candidate IDs, not raw diagnostics or individual member locations.
-- **Origin tracking**: When code moves during extraction or splitting, retain
-  the origin candidate ID and record the new target location under that ID.
-- **Candidate classification**: Register only a lens finding with `file:line`,
-  a cost, and an action. Mechanical threshold hits (files > 1,000 lines,
-  functions > 50 lines, nesting > 3) are investigation signals only; without a
-  finding, do not register them or write a Keep justification.
-- **Cost, Confidence & Nits**: A finding that cannot name its cost is a nit:
-  do not register it. An unresolved registered finding remains `unfinished`;
-  uncertainty is not evidence for keeping it. Confidence is `low` when
-  current code, callers, contracts, and tests do not explain why the code exists.
-  Consult history only to resolve a specific remaining question. Medium/low
-  confidence candidates stay unfinished until that question is resolved; apply
-  approval does not authorize guessing that they are safe to delete.
-- **Statuses & Reconciliation Invariants**:
-  - `completed`: verified done, with evidence of what and how changed.
-  - `kept`: preserved with concrete evidence (documented keep rule or external contract).
-  - `unfinished`: work remaining, with substatuses: `pending`, `in_progress`, `blocked`, `deferred`, or `unverified`.
-  - Formula for registered candidates: `Total Candidate IDs = Completed + Kept + Unfinished Remaining`. Counts must reconcile exactly.
-
-Report round outcome separately from overall cleanup status. Overall cleanup
-is complete only when all partitions and applicable stages are verified and
-every registered candidate is completed or evidenced as kept. A completed round
-with remaining partitions or candidates is **round complete, overall partial**,
-with the remaining paths, IDs, and next work.
-Skipped, failed, or unverified checks never count as passed.
+Every finding carries one tier:
 
 | Tier | Meaning | Examples | Handling |
 |---|---|---|---|
@@ -201,44 +133,3 @@ variants of the same pattern to one form; put coupled functions next to each
 other; declare a variable where it is initialized; blank line between chunks
 that do different things; merge over-fragmented pieces back into one readable
 block before re-splitting. One tidying per change set.
-
-## Final report template
-
-This is the shape of the closing reply after the last round; earlier rounds
-close as the skill body's section 7 describes, while the inventory accumulates
-in the form above.
-
-```text
-Scope: <user-selected paths | explicit whole project> · Mode: report|apply
-Round: Round <N> <completed|partial> · Overall: <complete|partial>
-Inventory: Total <N> · Completed <X> · Kept <Y> · Unfinished <Z> (X + Y + Z = N)
-Stages: baseline / engines / structural / ladder + lenses / tiered changes / final verification
-  <stage>: completed <evidence> | not applicable <reason> | unfinished <blocker>
-Baseline: tests <green|N pre-existing failures excluded> · typecheck <ok|…>
-Deterministic: engines used/missing · files changed · diagnostics remaining · structural matches applied/skipped
-
-Completed (what changed and how)
-  [ID] path/file.ts:line
-    ✓ [Quality/SAFE]   removed comment narrating the change (L31) → deleted redundant comment
-    ✓ [Reuse/CAREFUL]  replaced manual join with `joinPath` from src/shared/path.mjs (L53) → consolidated helper
-
-Kept / Not Applicable (evidenced)
-  [ID] path/file.ts:line
-    - [Keep/Contract]  public export `parseConfig` kept (L12) → external contract
-    - [Keep/Rule]      redundant-looking guard kept (L42) → validates untrusted network input
-
-Unfinished (remaining candidates)
-  [ID] path/file.ts:line
-    ☐ [Structure/CAREFUL] split handler responsibility (L105) · Status: pending|in_progress|blocked|deferred|unverified
-      Remaining: extract auth sub-handler · Reason: waiting for auth test fixture · Next: Round <N+1>
-
-Noticed but not applied (report-only or out of scope)
-  [ID] ⚠ [Altitude/RISKY] special case for caller X in src/core/run.mjs:88 — separate correction · coverage: none · Status: deferred
-  [ID] ⚠ [Quality]        two equal rewrites of parseInput (L70-74); principles could not decide · Status: blocked
-
-Bugs found (not fixed here): <correctness issues surfaced while cleaning>
-Verification: tests <passed/failed/skipped/baseline-excluded counts> · typecheck <result> · lint <remaining diagnostics>
-Blocked or unavailable verification (required; write "none"): <check> — <engine unresolved through tidy | runner broken | lane conflict> → <paths left unverified>
-Needs your decision: <one consolidated list — RISKY findings, bugs found, unresolved intent, unfinished candidates>
-Next round: <scope and IDs planned for next round, or none if overall complete>
-```

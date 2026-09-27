@@ -37,6 +37,7 @@ import {
   SMART_READ_TAIL_LINES,
   smartReadTruncate,
 } from './builtin/read-formatting.mjs';
+import { readRowsForModel } from '../../../shared/read-row-numbers.mjs';
 import { findSimilarFile, normalizeErrorMessage } from './builtin/path-diagnostics.mjs';
 import { isBinaryFile } from './builtin/binary-file.mjs';
 import { normaliseReadLineWindowArgs } from './builtin/read-args.mjs';
@@ -427,8 +428,10 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
   }
   const workDir = cwd || pwd();
   const readStateScope = options?.readStateScope ?? options?.sessionId ?? null;
+  // Children return internal (fully numbered) text to the parent executor,
+  // which may re-slice it; only the outermost result is shaped for the model.
   const executeChildBuiltinTool = (childName, childArgs, childCwd = workDir, childOptions = null) =>
-    executeBuiltinTool(childName, childArgs, childCwd, childOptions ? { ...options, ...childOptions } : options);
+    executeBuiltinTool(childName, childArgs, childCwd, { ...options, ...childOptions, builtinChild: true });
   // Path policy: host settings.json permissions (mcp__* allow) are the
   // sole arbiter for workspace-boundary decisions.
   const _toolResult = await (async () => {
@@ -487,7 +490,7 @@ export async function executeBuiltinTool(name, args, cwd, options = {}) {
     options.resultTelemetry.shellResultBytes = Buffer.byteLength(_toolResult, 'utf8');
     options.resultTelemetry.toolResultBytes = Buffer.byteLength(_finalResult, 'utf8');
   }
-  return _finalResult;
+  return toolName === 'read' && options.builtinChild !== true ? readRowsForModel(_finalResult) : _finalResult;
 }
 
 function _budgetBuiltinOutput(toolName, args, result, options) {

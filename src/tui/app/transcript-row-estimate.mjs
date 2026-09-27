@@ -15,6 +15,8 @@ import { isBackgroundTaskResponseArgs } from '../../runtime/shared/tool-card-mod
 import { SKILL_SURFACE_NAMES } from '../../runtime/shared/tool-card-model/agent-surface.mjs';
 import { parseBackgroundTaskResult } from '../../runtime/shared/tool-card-model/background-task.mjs';
 import { stripLeadingStatusMarkerFromText } from '../../runtime/shared/tool-card-model/terminal-status.mjs';
+import { readRowsForDisplay } from '../../runtime/shared/read-row-numbers.mjs';
+import { aggregateRawResultForDisplay } from '../session/tool-result-status.mjs';
 import { hasAgentResponseResultText } from '../session/agent-envelope.mjs';
 import { formatExpandedResult, wrapExpandedResultLines } from '../components/tool-output-format.mjs';
 import {
@@ -100,7 +102,9 @@ function toolDisplayedResultTextForRows(item) {
       return stripLeadingStatusMarkerFromText(String(meta.body));
     }
   }
-  return stripLeadingStatusMarkerFromText(errorOnlyResult ? '' : rt || '');
+  const body = stripLeadingStatusMarkerFromText(errorOnlyResult ? '' : rt || '');
+  // Same text the read card renders (resolveDisplayedResult).
+  return normalizedName === 'read' ? readRowsForDisplay(body) : body;
 }
 
 function toolHasDisplayResultForRows(item) {
@@ -118,7 +122,7 @@ function toolHasDisplayResultForRows(item) {
 }
 
 function toolExpandedRawTextForRows(item, rawRt) {
-  if (item?.aggregate || item?.agentResponseAggregate) return rawRt;
+  if (item?.aggregate || item?.agentResponseAggregate) return aggregateRawResultForDisplay(rawRt);
   if (toolHasDisplayResultForRows(item)) return toolDisplayedResultTextForRows(item);
   return stripLeadingStatusMarkerFromText(rawRt || '');
 }
@@ -275,7 +279,11 @@ export function estimateTranscriptItemRows(item, columns, toolOutputExpanded, at
         }
         return isSkillSurface ? TOOL_MARGIN_TOP + 1 : TOOL_MARGIN_TOP + 1 + 1;
       }
-      const resultText = backgroundMeta?.hasResponse ? backgroundMeta.body : rt;
+      const resultText = backgroundMeta?.hasResponse
+        ? backgroundMeta.body
+        : normalizedName === 'read'
+          ? readRowsForDisplay(rt)
+          : rt;
       const resultRows = estimateToolRenderedResultRows(resultText, {
         pathArg: toolArgPathForRows(item),
         isShell: isShellSurfaceForToolItem(item, normalizedName),

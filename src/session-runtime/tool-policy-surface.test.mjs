@@ -169,13 +169,12 @@ test('shared tool rules keep workflow and shell-boundary anchors', () => {
   // Read call shape lives in the read description; the rule names the stage only.
   assert.match(full, /one read stage over every located\s+site/i);
   assert.doesNotMatch(full, /window per site|≤10 per call/i);
-  assert.match(
-    full,
-    /A search after a read that could have\s+run before it is a wasted round; content in context is never read again/i
-  );
+  assert.match(full, /A search after\s+a read that could have\s+run before it is a wasted round\./i);
+  // Each shared rule states its point once: no repeats across sections.
+  assert.doesNotMatch(full, /content in context is never read again|need no locator|direct references/i);
   assert.match(full, /Trust documented guarantees; no availability checks or defensive branches —\s+in scripts too/i);
   assert.match(full, /Back up only when changes risk irreversible loss, not for routine code edits/i);
-  assert.match(full, /direct references, no surveys or history/i);
+  assert.match(full, /patch from it with no surveys or history/i);
   assert.match(full, /Reuse content\s+already delivered; changed sources and omitted ranges are new evidence/i);
   assert.match(full, /Use supplied commands unchanged except inputs, else documented defaults/i);
   assert.match(full, /Route by missing evidence: files\/ranges→`read`, text or regex→`grep`/i);
@@ -198,7 +197,7 @@ test('shared tool rules keep workflow and shell-boundary anchors', () => {
     full,
     /Check required behavior, exact outputs and essential integrity, security,\s+compatibility and buildability/i
   );
-  assert.match(full, /Supplied\/home\/environment paths need no locator/i);
+  assert.match(full, /supplied\/home\/environment paths: one parent listing, not sibling\s+walks/i);
   assert.match(full, /keep backups unless the user requests removal/i);
   assert.match(full, /temp workspaces come from a unique-directory\s+allocator/i);
   assert.match(full, /files\/ranges→`read`, text or regex→`grep`,\s+declarations and relations→`code_graph`/i);
@@ -209,10 +208,7 @@ test('shared tool rules keep workflow and shell-boundary anchors', () => {
   assert.match(full, /never bypass denial or cancellation/i);
   assert.match(full, /never hide errors, timeouts or cancellation\s+behind later success/i);
   assert.doesNotMatch(full, /fallback/i);
-  assert.match(
-    full,
-    /locate every site \(`grep` `context:0`\/`mode:files`, `code_graph`; known\s+locations skip straight to the read\)/i
-  );
+  assert.match(full, /locate every\s+site \(known locations skip straight to the read\)/i);
   assert.match(full, /separate calls of the same tool only when the targets need\s+different options/i);
   assert.doesNotMatch(full, /UI\/edit sites/i);
   assert.match(

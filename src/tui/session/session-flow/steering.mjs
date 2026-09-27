@@ -12,6 +12,7 @@ import {
   STEERING_SUPPRESSED_DISPLAY,
 } from '../queue-helpers.mjs';
 import { dropTuiSteeringPersist, drainTuiSteeringPersist } from '../tui-steering-persist.mjs';
+import { getBackgroundTask } from '../../../runtime/shared/background-tasks.mjs';
 
 const RESTORE_DEDUP_WINDOW = 80;
 
@@ -24,7 +25,16 @@ function isSteerableEntry(entry) {
   return mode === 'prompt' || mode === 'task-notification' || mode === 'goal-closeout';
 }
 
+// A completion is queued the moment its task settles, which is usually before
+// the model's own `task wait`/`task read` returns that same result and ACKs it.
+// Delivering the queued twin afterwards repeats a result the model already has.
+function isAcknowledgedCompletion(entry) {
+  if (entry?.mode !== 'task-notification' || !entry.execution?.id) return false;
+  return getBackgroundTask(entry.execution.id)?.completionAcknowledged === true;
+}
+
 function steeringMessageFromEntry(entry) {
+  if (isAcknowledgedCompletion(entry)) return null;
   const content = entry.content;
   const meta = {
     id: entry.id,

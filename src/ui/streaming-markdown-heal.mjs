@@ -5,7 +5,7 @@ const EMPHASIS_MARKERS = new Set(['*', '_', '~']);
 const MARKDOWN_PUNCTUATION = /[!-/:-@[-`{-~\u00a1-\u00bf\u2010-\u2027\u2030-\u205e]/;
 const HEALABLE_MARKDOWN_SYNTAX = /[`*_~[]/;
 
-function hasOpenFence(text) {
+function openFence(text) {
   let marker = '';
   let length = 0;
   for (const rawLine of String(text ?? '').split('\n')) {
@@ -20,7 +20,18 @@ function hasOpenFence(text) {
       length = 0;
     }
   }
-  return Boolean(marker);
+  return marker ? { marker, length } : null;
+}
+
+// A closing fence arrives a token at a time. Until its run is long enough to
+// close, the partial marker line is not code: parsed, it became one more code
+// line that vanished again once the fence closed — the block grew a line and
+// shrank back (the source fallback already hides it the same way).
+function trimPartialClosingFence(text, fence) {
+  const partial = /(?:^|\r?\n) {0,3}([`~]+)$/.exec(text);
+  const run = partial?.[1] || '';
+  if (!partial || !run || run[0] !== fence.marker || run.length >= fence.length) return text;
+  return text.slice(0, partial.index);
 }
 
 function closeInlineCode(text, isPendingLocalPath) {
@@ -205,7 +216,9 @@ function healIncompleteLink(text, isPendingLocalPath) {
 export function healStreamingMarkdownTail(text, isPendingLocalPath) {
   const value = String(text ?? '');
   const hasSyntax = HEALABLE_MARKDOWN_SYNTAX.test(value);
-  if (!value || (!hasSyntax && !isPendingLocalPath) || hasOpenFence(value)) return value;
+  if (!value || (!hasSyntax && !isPendingLocalPath)) return value;
+  const fence = openFence(value);
+  if (fence) return trimPartialClosingFence(value, fence);
   const healed = hasSyntax
     ? closeEmphasis(healIncompleteLink(closeInlineCode(value, isPendingLocalPath), isPendingLocalPath))
     : value;

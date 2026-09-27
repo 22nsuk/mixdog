@@ -48,7 +48,7 @@ export const BUILTIN_TOOLS = [
       compressible: false,
     },
     description:
-      'Read file windows or images. One call per read stage: {file_path, offset, limit} entries for every located site (≤10 per call), never a whole large file. Content in context is never read again. Missing paths are reported, never replaced. Directories: list. Binaries: bounded hex.',
+      "Read file windows or images. One call per read stage: {file_path, offset, limit} entries for every located site (≤10 per call), never a whole large file. Content in context is never read again. Missing paths are reported, never replaced. Directories: list. Binaries: bounded hex. Rows carry no line numbers; `[lines a-b]` gives each block's range. Never count rows: before writing a line number, copy it from grep, code_graph or git diff output; otherwise cite path and symbol.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -153,7 +153,7 @@ export const BUILTIN_TOOLS = [
       properties: {
         command: { type: 'string', description: `Command.${_shellSyntaxCheat}` },
         timeout_ms: {
-          type: 'number',
+          type: 'integer',
           minimum: 0,
           description:
             'Hard kill deadline in ms (omit or 0 = none), separate from the 10s foreground window; set one for throwaway probes so a slow check fails fast.',
@@ -174,20 +174,6 @@ export const BUILTIN_TOOLS = [
     // inherit that hint and drops `task` out of read-only-selectable
     // surfaces, so the honest static shape is non-destructive; the cancel
     // path states its own outcome in the result body.
-    //
-    // FUTURE (action-scoped destructiveness, not implemented here):
-    //   1. `task` would declare `destructiveHint: false` plus
-    //      `destructiveActions: ['cancel']` in these annotations.
-    //   2. Enforcement CANNOT live in catalog/selection code:
-    //      `isReadonlySelectable(tool)` (tool-catalog.mjs:262-268) receives
-    //      only the tool definition and runs while the surface is being
-    //      assembled — before any invocation exists, so no `action`
-    //      argument is available to match against the list.
-    //   3. It must therefore live in dispatch/approval, where validated
-    //      call arguments exist: that layer resolves destructiveness per
-    //      invocation (`destructiveActions.includes(args.action)`) and
-    //      gates approval on the result, while selection keeps treating the
-    //      tool as non-destructive.
     annotations: {
       title: 'Task',
       readOnlyHint: false,
@@ -265,7 +251,7 @@ export const BUILTIN_TOOLS = [
           type: 'integer',
           minimum: 0,
           description:
-            'Requested results; default 250. Context output caps at 40 blocks; continue via the returned offset.',
+            'Requested results; default 250; 0 unlimited. Context output caps at 40 blocks; continue via the returned offset.',
         },
         offset: { type: 'integer', minimum: 0, description: 'Result offset.' },
         context: {

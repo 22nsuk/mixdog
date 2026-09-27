@@ -44,6 +44,19 @@ function shapeEngine(engine) {
   };
 }
 
+/** check/fix header entry: which engine ran, or how to install a missing one.
+ *  Resolution details (path, version, source, kind, languages) belong to scan. */
+function briefEngine(engine) {
+  return {
+    id: engine.id,
+    ...(engine.configFile ? { configFile: engine.configFile } : {}),
+    ...(engine.suppressedBy ? { suppressedBy: engine.suppressedBy } : {}),
+    ...(engine.skipped ? { skipped: engine.skipped } : {}),
+    ...(engine.installable ? { installable: true } : {}),
+    ...(engine.installHint ? { installHint: engine.installHint } : {}),
+  };
+}
+
 function rollupEngineCounts(results) {
   if (!Array.isArray(results) || results.length === 0) return null;
   const byFixability = { safe: 0, unsafe: 0, manual: 0, fixable: 0, unfixable: 0 };
@@ -79,6 +92,20 @@ function shapeDiagnostic(row) {
   };
 }
 
+// A page row states only what its rule's byRule entry does not: severity and
+// message when they differ from the rule's, and fix only when true.
+function compactDiagnostic(row, byRule) {
+  const finding = shapeDiagnostic(row);
+  const rule = byRule && Object.hasOwn(byRule, finding.rule) ? byRule[finding.rule] : null;
+  return {
+    loc: finding.loc,
+    rule: finding.rule,
+    ...(rule?.severity === finding.severity ? {} : { severity: finding.severity }),
+    ...(!finding.message || rule?.message === finding.message ? {} : { message: finding.message }),
+    ...(finding.fix ? { fix: true } : {}),
+  };
+}
+
 // Summarize the full selection, never the page or trimmed sample. fixable is a
 // count; severity is the highest severity when a rule has mixed severities.
 function summarizeDiagnostics(rows = [], includeRules = true) {
@@ -97,7 +124,13 @@ function summarizeDiagnostics(rows = [], includeRules = true) {
         .join('/') || '.';
     byDir.set(dir, (byDir.get(dir) || 0) + 1);
     if (!includeRules || !finding.rule) continue;
-    const tally = byRule.get(finding.rule) || { count: 0, severity: finding.severity, fixable: 0 };
+    // message is the rule's first-seen text; rows repeating it omit theirs.
+    const tally = byRule.get(finding.rule) || {
+      count: 0,
+      severity: finding.severity,
+      fixable: 0,
+      ...(finding.message ? { message: finding.message } : {}),
+    };
     tally.count += 1;
     tally.fixable += Number(finding.fix);
     if (severityRank[finding.severity] > severityRank[tally.severity]) tally.severity = finding.severity;
@@ -123,10 +156,13 @@ function shapeWorkingTree(workingTree, cap) {
   // note), and no git to ask (`skipped`, silent).
   if (workingTree.skipped) return { skipped: workingTree.skipped };
   if (workingTree.error) return { error: workingTree.error };
-  return {
-    modified: shapeWorktreeGroup(workingTree.modified, cap),
-    clean: shapeWorktreeGroup(workingTree.clean, cap),
-  };
+  // A population with no file is omitted; the other one still says the split ran.
+  const groups = { modified: workingTree.modified, clean: workingTree.clean };
+  return Object.fromEntries(
+    Object.entries(groups)
+      .filter(([, group]) => (group?.files || []).length)
+      .map(([name, group]) => [name, shapeWorktreeGroup(group, cap)])
+  );
 }
 
 function structuralErrors(structural) {
@@ -138,47 +174,79 @@ function structuralErrors(structural) {
   return [...new Map(errors.map((error) => [JSON.stringify(error), error])).values()];
 }
 
+/** Counts without zero leaves or empty groups; undefined when nothing is left. */
+function nonZeroCounts(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value === 0 ? undefined : value;
+  const kept = Object.entries(value)
+    .map(([key, entry]) => [key, nonZeroCounts(entry)])
+    .filter(([, entry]) => entry !== undefined);
+  return kept.length ? Object.fromEntries(kept) : undefined;
+}
+
+/** Summary groups (byRule/byDir) that carry at least one entry. */
+function presentGroups(summary) {
+  return Object.fromEntries(Object.entries(summary).filter(([, group]) => Object.keys(group).length));
+}
+
+// A clean engine is its id, filesChecked and diagnosticsCount 0; list, page and
+// summary fields appear only when the engine reported something.
 function shapeEngineResult(result, summary, diagnosticCap, offset = 0, filePaging = { cap: FILE_LIST_CAP, offset: 0 }) {
+  const diagnosticsCount = (result.diagnostics || []).length;
+  const changedCount = (result.filesChanged || []).length;
   const diagnostics = pageList(result.diagnostics, offset, diagnosticCap);
   const changed = pageList(result.filesChanged, filePaging.offset, filePaging.cap);
+  const counts = nonZeroCounts(result.counts);
   return {
     id: result.id,
-    ...(result.version ? { version: result.version } : {}),
-    source: result.source,
     filesChecked: result.filesChecked || 0,
-    filesChanged: changed.items,
-    ...(changed.more ? { filesChangedMore: changed.more } : {}),
-    filesChangedCount: (result.filesChanged || []).length,
-    diagnostics: diagnostics.items.map(shapeDiagnostic),
-    more: diagnostics.more,
-    diagnosticsCount: (result.diagnostics || []).length,
-    ...summary,
-    offset: diagnostics.offset,
-    ...(diagnostics.more ? { nextOffset: diagnostics.offset + diagnostics.items.length } : {}),
+    ...(changedCount
+      ? {
+          filesChanged: changed.items,
+          ...(changed.more ? { filesChangedMore: changed.more } : {}),
+          filesChangedCount: changedCount,
+        }
+      : {}),
+    diagnosticsCount,
+    ...(diagnosticsCount
+      ? {
+          diagnostics: diagnostics.items.map((row) => compactDiagnostic(row, summary.byRule)),
+          more: diagnostics.more,
+          ...presentGroups(summary),
+          offset: diagnostics.offset,
+          ...(diagnostics.more ? { nextOffset: diagnostics.offset + diagnostics.items.length } : {}),
+        }
+      : {}),
     ...(result.dryRun ? { dryRun: true } : {}),
     ...(result.applied ? { applied: true } : {}),
     ...(result.skipped ? { skipped: result.skipped } : {}),
     ...(result.error ? { error: result.error } : {}),
     ...(result.stderrTail ? { stderrTail: result.stderrTail } : {}),
     ...(result.truncated ? { truncated: true } : {}),
-    ...(result.counts ? { counts: result.counts } : {}),
+    ...(counts ? { counts } : {}),
   };
 }
 
 function shapeStructural(structural, summary, errors, diagnosticCap, offset = 0) {
   if (!structural) return null;
   const matches = pageList(structural.matches, offset, diagnosticCap);
+  const matchesCount = (structural.matches || []).length;
+  const fixable = (structural.matches || []).filter((match) => match?.fix).length;
+  const manual = (structural.matches || []).filter((match) => match?.manual).length;
   return {
     adapter: structural.adapter || 'none',
-    ...(structural.packs ? { packs: structural.packs } : {}),
-    matchesCount: (structural.matches || []).length,
-    ...summary,
-    matches: matches.items.map(shapeDiagnostic),
-    more: matches.more,
-    offset: matches.offset,
-    ...(matches.more ? { nextOffset: matches.offset + matches.items.length } : {}),
-    fixable: (structural.matches || []).filter((match) => match?.fix).length,
-    manual: (structural.matches || []).filter((match) => match?.manual).length,
+    ...(structural.packs ? { packsCount: structural.packs.length } : {}),
+    matchesCount,
+    ...(matchesCount
+      ? {
+          ...presentGroups(summary),
+          matches: matches.items.map((row) => compactDiagnostic(row, summary.byRule)),
+          more: matches.more,
+          offset: matches.offset,
+          ...(matches.more ? { nextOffset: matches.offset + matches.items.length } : {}),
+        }
+      : {}),
+    ...(fixable ? { fixable } : {}),
+    ...(manual ? { manual } : {}),
     applied: structural.applied || [],
     ...(structural.rejected?.length ? { rejected: structural.rejected } : {}),
     ...(errors.length ? { errors } : {}),
@@ -249,7 +317,7 @@ export function buildTidyReport({
     rolled: rollupEngineCounts(results),
     structural,
     structuralSummary: summarizeDiagnostics(structural?.matches),
-    shadows: Array.isArray(shadows) ? shadows : [],
+    shadows: !isRunAction(action) && Array.isArray(shadows) ? shadows : [],
     workingTree,
     passErrors,
     rules,
@@ -261,7 +329,7 @@ export function buildTidyReport({
       ...truncationNotes,
       // A shadow and a clean-file population are reports, never failures: they
       // change what the caller must read, not ok/status.
-      ...(Array.isArray(shadows) ? shadows.map(shadowNote) : []),
+      ...(!isRunAction(action) && Array.isArray(shadows) ? shadows.map(shadowNote) : []),
       ...worktreeNotes(workingTree, action),
       ...[...new Set(passErrors.map((error) => error.language || 'unknown language'))].map(
         (language) => `${language} structural pass did not complete; see structural.errors`
@@ -281,15 +349,35 @@ export function buildTidyReport({
   return report;
 }
 
+/** check/fix: the calls whose report is only their results. */
+function isRunAction(action) {
+  return action === 'check' || action === 'fix';
+}
+
 // The environment header describes the run itself, so a `results` page — which
-// only re-pages cached rows — leaves it out.
-function environmentHeader(parts) {
+// only re-pages cached rows — leaves it out. scan/install/rules keep languages,
+// policy and every missing engine; check/fix name the engines that ran and
+// install hints only for an in-scope language no running engine covers.
+function environmentHeader(parts, action) {
+  if (!isRunAction(action)) {
+    const shape = action === 'scan' ? (engine) => engine : briefEngine;
+    return {
+      languages: parts.languages,
+      ...(parts.languageSource ? { languageSource: parts.languageSource } : {}),
+      engines: parts.resolved.map(shape),
+      ...(parts.missing.length ? { missing: parts.missing.map(shape) } : {}),
+      ...(parts.policy ? { policy: parts.policy } : {}),
+    };
+  }
+  const ran = parts.resolved.filter((engine) => !engine.skipped);
+  const covered = new Set(ran.flatMap((engine) => engine.languages || []));
+  const inScope = new Set((parts.languages || []).map((language) => language.id));
+  const uncovered = parts.missing.filter((engine) =>
+    (engine.languages || []).some((language) => (!inScope.size || inScope.has(language)) && !covered.has(language))
+  );
   return {
-    languages: parts.languages,
-    ...(parts.languageSource ? { languageSource: parts.languageSource } : {}),
-    engines: parts.resolved,
-    ...(parts.missing.length ? { missing: parts.missing } : {}),
-    ...(parts.policy ? { policy: parts.policy } : {}),
+    engines: ran.map(briefEngine),
+    ...(uncovered.length ? { missing: uncovered.map(briefEngine) } : {}),
   };
 }
 
@@ -299,12 +387,25 @@ function composeTidyReport(parts, diagnosticCap) {
   const { action, results, structural, pageOffset } = parts;
   const resultFilePage =
     action === 'results' ? { cap: diagnosticCap, offset: pageOffset } : { cap: FILE_LIST_CAP, offset: 0 };
+  const workingTree = parts.workingTree
+    ? shapeWorkingTree(parts.workingTree, Math.min(FILE_LIST_CAP, diagnosticCap))
+    : null;
+  // Totals repeat the lone engine's own counts, so they appear for 2+ engines.
+  const totals = (results || []).length > 1 ? nonZeroCounts(parts.rolled) : undefined;
+  const paged =
+    pageOffset > 0 ||
+    (results || []).some(
+      (result) =>
+        (result.diagnostics || []).length > diagnosticCap || (result.filesChanged || []).length > resultFilePage.cap
+    ) ||
+    (structural?.matches || []).length > diagnosticCap;
   return {
     ok: parts.ok,
     status: parts.status,
     action,
-    ...(parts.scope ? { scope: parts.scope } : {}),
-    ...(action === 'results' ? {} : environmentHeader(parts)),
+    // Check/fix scope is the caller's own paths; the other actions name it.
+    ...(parts.scope && !isRunAction(action) ? { scope: parts.scope } : {}),
+    ...(action === 'results' ? {} : environmentHeader(parts, action)),
     ...(parts.shadows.length ? { shadows: parts.shadows } : {}),
     ...(results
       ? {
@@ -313,16 +414,14 @@ function composeTidyReport(parts, diagnosticCap) {
           ),
         }
       : {}),
-    ...(parts.rolled ? { counts: parts.rolled } : {}),
+    ...(totals ? { counts: totals } : {}),
     ...(structural
       ? {
           structural: shapeStructural(structural, parts.structuralSummary, parts.passErrors, diagnosticCap, pageOffset),
         }
       : {}),
-    ...(parts.workingTree
-      ? { workingTree: shapeWorkingTree(parts.workingTree, Math.min(FILE_LIST_CAP, diagnosticCap)) }
-      : {}),
-    ...(results || structural ? { paging: { offset: pageOffset, limit: diagnosticCap } } : {}),
+    ...(workingTree && Object.keys(workingTree).length ? { workingTree } : {}),
+    ...(paged ? { paging: { offset: pageOffset, limit: diagnosticCap } } : {}),
     ...(parts.rules ? { rules: parts.rules } : {}),
     ...(parts.installed ? { installed: parts.installed } : {}),
     ...(parts.needsApproval ? { needsApproval: parts.needsApproval } : {}),

@@ -1,13 +1,11 @@
 // Wire projection for one provider request: the stored transcript is projected
 // into the exact message array the provider sees, and that same array is what
 // the prefix guard classifies, so the loop body wires state instead of owning
-// three projection passes plus their telemetry.
+// the projection and its cache-break telemetry. Tool results are delivered
+// verbatim; stored-history compaction and artifact offload happen elsewhere.
 import { projectSyntheticUserEnvelopes } from '../synthetic-user-envelope.mjs';
-import { projectProviderEvidence } from '../evidence-union.mjs';
 import { prepareProviderPrefixGuard } from '../provider-prefix-guard.mjs';
-import { appendAgentTrace } from '../../agent-trace.mjs';
 import { traceCacheBreak } from '../../cache-break-trace.mjs';
-import { envFlag } from '../../../../shared/env.mjs';
 
 // Cache-break rows repeat verbatim across retries of the same request; the
 // key set is owned by the loop so one transition is traced once per turn.
@@ -33,30 +31,6 @@ function cacheBreakTracer({ sessionId, iteration, opts, tracedKeys }) {
   };
 }
 
-function traceEvidenceProjection({ sessionId, iteration, stats, shadow }) {
-  if (!(stats.reusedRows > 0 || stats.exactResultRefs > 0 || stats.pathAliases > 0)) return;
-  const payload = {
-    shadow,
-    before_bytes: stats.beforeBytes,
-    after_bytes: stats.afterBytes,
-    evidence_rows: stats.evidenceRows,
-    reused_rows: stats.reusedRows,
-    reference_groups: stats.referenceGroups,
-    changed_tool_results: stats.changedToolResults,
-    exact_result_refs: stats.exactResultRefs,
-    exact_result_bytes_saved: stats.exactResultBytesSaved,
-    path_facts: stats.pathFacts,
-    path_aliases: stats.pathAliases,
-    reused_path_facts: stats.reusedPathFacts,
-    path_alias_bytes_saved: stats.pathAliasBytesSaved,
-  };
-  try {
-    appendAgentTrace({ sessionId, iteration, kind: 'evidence_union', ...payload, payload });
-  } catch {
-    /* best-effort telemetry */
-  }
-}
-
 export function projectProviderRequest({
   messages,
   sendTools,
@@ -73,23 +47,11 @@ export function projectProviderRequest({
   // injected context) get the declared runtime envelope so the human's own
   // prompt stays the only unwrapped user voice. The stored transcript and
   // recoveryMessages keep the raw rows.
-  const envelopeProjection = projectSyntheticUserEnvelopes(messages);
-  const shadow = envFlag('MIXDOG_EVIDENCE_UNION_SHADOW');
-  const evidenceProjection = projectProviderEvidence(envelopeProjection.messages, {
-    enabled: !envFlag('MIXDOG_DISABLE_EVIDENCE_UNION'),
-    apply: !shadow,
-    // Path aliases are a whole-history projection: a later repeated path
-    // can rewrite already-sent tool results and invalidate every provider's
-    // prefix cache. Row/exact-result references are append-only, so retain
-    // those and disable only the unsafe pass.
-    pathAliases: false,
-  });
-  let mutationSource = null;
-  if (opts.cacheBreakIntent === 'transcript_rebuild') mutationSource = 'transcript_rebuild';
-  else if (evidenceProjection.stats.changedToolResults > 0) mutationSource = 'evidence_union';
+  const providerMessages = projectSyntheticUserEnvelopes(messages).messages;
+  const mutationSource = opts.cacheBreakIntent === 'transcript_rebuild' ? 'transcript_rebuild' : null;
   const prefixGuardCandidate = prepareProviderPrefixGuard(
     prefixGuardState,
-    evidenceProjection.messages,
+    providerMessages,
     {
       tools: sendTools,
       nativeTools: Array.isArray(opts.nativeTools) ? opts.nativeTools : [],
@@ -107,6 +69,5 @@ export function projectProviderRequest({
       }),
     }
   );
-  traceEvidenceProjection({ sessionId, iteration, stats: evidenceProjection.stats, shadow });
-  return { providerMessages: evidenceProjection.messages, prefixGuardCandidate };
+  return { providerMessages, prefixGuardCandidate };
 }

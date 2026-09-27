@@ -18,8 +18,9 @@
 - Briefing an agent: it sees only the brief, never this conversation. The
   brief is written in English whatever language the user writes in, and
   holds exactly the task in the user's terms, the scope it owns (files or
-  modules), the exact changes as paths and lines, and the completion
-  criteria — nothing else: no rationale, measurements, history, or rules the
+  modules), the exact changes located by path plus function or symbol name
+  or a quoted line, not line numbers, and the completion criteria — nothing
+  else: no rationale, measurements, history, or rules the
   agent already has. A fresh or respawned agent gets the whole brief; a
   continuing agent gets only what changed. Never assign the same work twice;
   interrupt only to cancel.

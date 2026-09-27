@@ -54,7 +54,7 @@ test('reduction report separates evidence, artifact, and shell savings without d
     },
     { kind: 'usage_raw', input_tokens: 12_000, cached_tokens: 8_000, output_tokens: 900 },
     { kind: 'batch', payload: { tool_call_count: 2 } },
-    { kind: 'tool', tool_name: 'list', tool_args: { path: 'src' } },
+    { kind: 'tool', tool_name: 'list', tool_args: { path: 'src' }, result_bytes_est: 120 },
   ]);
   assert.deepEqual(summary.evidence, {
     projections: 1,
@@ -76,6 +76,17 @@ test('reduction report separates evidence, artifact, and shell savings without d
     artifactReads: 0,
   });
   assert.deepEqual(summary.tokens, { input: 12_000, cached: 8_000, output: 900 });
+  assert.deepEqual(summary.toolResults, { results: 1, bytes: 120, byTool: { list: { results: 1, bytes: 120 } } });
+});
+
+test('shell growth stays visible in the net figure while savedBytes keeps its clamp', () => {
+  const summary = summarizeReductionTraceRows([
+    { kind: 'shell_output', payload: { command_output_bytes: 100, model_visible_bytes: 116 } },
+    { kind: 'shell_output', payload: { command_output_bytes: 1_000, model_visible_bytes: 400 } },
+  ]);
+  assert.equal(summary.shell.savedBytes, 600);
+  assert.equal(summary.shell.netSavedBytes, 584);
+  assert.equal(summary.shell.grownResults, 1);
 });
 
 test('reduction report exposes artifact reads that may add a model turn', () => {

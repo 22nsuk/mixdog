@@ -6,7 +6,6 @@ import {
   type SetStateAction,
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -16,7 +15,6 @@ import { ErrorNotice, errorMessageText } from './ErrorNotice';
 import { GitDiffBody } from './ReviewPane';
 import { findPatch, PATCH_CACHE_LIMIT } from './TranscriptView';
 import { readDiffStyle, TURN_REVIEW_DIFF_STYLE_KEY, type TranscriptItem, writeDiffStyle } from './desktop-types';
-import { reviewScopePending } from './composer-dock-reservation';
 import { parseUnifiedDiff, turnReviewScope } from './renderer-logic.mjs';
 import { RendererLruCache } from './renderer-lru-cache';
 import { isMobileRemoteSurface } from './mobile-surface';
@@ -28,6 +26,7 @@ import {
   leadReviewSnapshotKindCache,
   leadReviewCheckpointIdCache,
   rememberAgentReviews,
+  reviewTagCache,
   type AgentTurnReview,
   type TurnReviewFile,
 } from './turn-review-cache';
@@ -238,19 +237,6 @@ function statusCode(entry: TurnReviewFileEntry): string {
 
 // Single-quoted so the capability-inventory source scan counts this surface.
 const TURN_REVIEW_CAPABILITY = 'getTurnReviewDiff';
-
-// Tag of the last applied review per session and turn scope. Module-level so
-// a remounted bar keeps it: a tag lost with the component makes every re-read
-// carry the whole patch again. A stale tag only costs one full answer; the
-// daemon compares against the live review.
-const REVIEW_TAGS = new Map<string, string>();
-const MAX_REVIEW_TAGS = 64;
-
-function rememberReviewTag(key: string, etag: string): void {
-  REVIEW_TAGS.delete(key);
-  REVIEW_TAGS.set(key, etag);
-  if (REVIEW_TAGS.size > MAX_REVIEW_TAGS) REVIEW_TAGS.delete(REVIEW_TAGS.keys().next().value as string);
-}
 
 function toolPublishesPatch(item: TranscriptItem): boolean {
   const categories = item.categories;
@@ -629,7 +615,6 @@ export const TurnReviewBar = memo(function TurnReviewBar({
   sessionId,
   active = true,
   busy = false,
-  onPendingChange,
   onOpenFile,
 }: {
   items: TranscriptItem[];
@@ -638,9 +623,6 @@ export const TurnReviewBar = memo(function TurnReviewBar({
   active?: boolean;
   busy?: boolean;
   onOpenFile?: (project: string, rel: string) => void;
-  /** True until the authoritative read for the current boundary settles,
-   *  including a queued completion refresh. Delivered before paint. */
-  onPendingChange?: (pending: boolean) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [openFile, setOpenFile] = useState('');
@@ -738,15 +720,6 @@ export const TurnReviewBar = memo(function TurnReviewBar({
     return '';
   }, [items]);
   const reviewBoundaryKey = JSON.stringify([turnScopeKey, turnBoundaryKey, busy]);
-  const initialBoundary = useRef({ scope: turnScopeKey, key: reviewBoundaryKey });
-  if (initialBoundary.current.scope !== turnScopeKey) {
-    initialBoundary.current = { scope: turnScopeKey, key: reviewBoundaryKey };
-  }
-  const [settledBoundary, setSettledBoundary] = useState('');
-  // The scope whose authoritative read has come back (or could not run). A
-  // scope already answered in the shared cache is settled from its first
-  // render, so revisiting a session never re-reserves the slot.
-  const [settledScope, setSettledScope] = useState('');
   const refreshAgentReviews = useCallback(
     async (refreshWorktree = false) => {
       const api = window.mixdogDesktop as
@@ -759,20 +732,9 @@ export const TurnReviewBar = memo(function TurnReviewBar({
           }
         | undefined;
       const requestedScope = turnScopeKey;
-      const settle = () => {
-        if (activeScope.current === requestedScope) {
-          setSettledScope(requestedScope);
-          setSettledBoundary(reviewBoundaryKey);
-        }
-      };
-      if (!sessionId || !api?.invokeCapability) {
-        settle();
-        return;
-      }
-      if (document.visibilityState === 'hidden') {
-        settle();
-        return;
-      }
+      const requestedCheckpoint = reviewScope.key;
+      if (!sessionId || !api?.invokeCapability) return;
+      if (document.visibilityState === 'hidden') return;
       if (capabilityRequestInFlight.current) {
         // The boundary effect and the busy poll both ask when one commit moves
         // a boundary: the read already sent for it answers both, so a queued
@@ -802,8 +764,9 @@ export const TurnReviewBar = memo(function TurnReviewBar({
         // This bar belongs to the pane's session. During a tab switch the host's
         // focused view can already point elsewhere, so omitting this address
         // mixed another turn's diff into the bar and could hit a stale view.
-        const tagKey = `${sessionId}\0${requestedScope}`;
-        const known = REVIEW_TAGS.get(tagKey) ?? '';
+        // The tag lives with the cached review it names, so `unchanged` is only
+        // ever asked for a review this scope still holds.
+        const known = reviewTagCache.get(requestedScope) ?? '';
         // Over the relay the patch text is most of each re-read; the collapsed
         // bar never draws it. The desktop's local IPC keeps full reads.
         const summary = isMobileRemoteSurface() && !detailShown.current;
@@ -818,10 +781,21 @@ export const TurnReviewBar = memo(function TurnReviewBar({
         if (!decoded) {
           return;
         }
-        if (typeof value?.etag === 'string') rememberReviewTag(tagKey, value.etag);
         const { leadPatch, snapshotKind, checkpointId, files, reviews } = decoded;
+        // Until the runtime opens the new turn (and before its first tool),
+        // it still answers with the previous turn's review. Shown under the
+        // new prompt, that brought the old diff back above the composer.
+        if (checkpointId && requestedCheckpoint !== 'none' && checkpointId !== requestedCheckpoint) return;
         const signature = JSON.stringify([leadPatch, files, snapshotKind, checkpointId, reviews]);
-        rememberAgentReviews(requestedScope, reviews, leadPatch, files, snapshotKind, checkpointId);
+        rememberAgentReviews(
+          requestedScope,
+          reviews,
+          leadPatch,
+          files,
+          snapshotKind,
+          checkpointId,
+          typeof value?.etag === 'string' ? value.etag : ''
+        );
         if (lastAgentReviewSignature.current === signature) return;
         lastAgentReviewSignature.current = signature;
         if (activeScope.current === requestedScope) {
@@ -843,29 +817,12 @@ export const TurnReviewBar = memo(function TurnReviewBar({
         pendingCapabilityRefresh.current = null;
         if (pending && activeScope.current === pending.scopeKey) {
           void refreshAgentReviewsRef.current(pending.refreshWorktree);
-        } else {
-          settle();
         }
       }
     },
-    [sessionId, turnScopeKey, reviewBoundaryKey]
+    [sessionId, turnScopeKey, reviewScope.key, reviewBoundaryKey]
   );
   refreshAgentReviewsRef.current = refreshAgentReviews;
-  const reviewPending = reviewScopePending({
-    active,
-    hasTurnActivity,
-    sessionId: String(sessionId || ''),
-    scopeKey: turnScopeKey,
-    settledScope,
-    cached: leadReviewCheckpointIdCache.has(turnScopeKey),
-    refreshPending: reviewBoundaryKey !== initialBoundary.current.key && settledBoundary !== reviewBoundaryKey,
-  });
-  // Layout effect: the host reads this in the same pre-paint pass, so the
-  // reservation and the resolved bar land in one committed frame.
-  useLayoutEffect(() => {
-    onPendingChange?.(reviewPending);
-  }, [onPendingChange, reviewPending]);
-  useLayoutEffect(() => () => onPendingChange?.(false), [onPendingChange]);
   useEffect(() => {
     // A tool/turn boundary is the authoritative point at which the visible
     // count must catch up. If an older request is still running, the callback

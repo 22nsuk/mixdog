@@ -18,7 +18,7 @@ export const TOOL_SEARCH_TOOL = {
     type: 'object',
     properties: {
       names: {
-        anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }],
+        anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }],
         description: 'Exact name(s)/aliases.',
       },
     },

@@ -88,7 +88,7 @@ function countAnchorHits(lines, anchor, cap = 2) {
 }
 
 // A single anchor of pure digits is a 1-based line-number claim — models copy
-// the number straight from `read`'s `N→…` gutter. Returns the line number
+// the number from grep or code_graph output. Returns the line number
 // when it names a real line of the file, else null.
 export function numericAnchorLineHint(anchors, lineCount) {
   const list = (anchors || []).map((anchor) => String(anchor || '').trim()).filter(Boolean);

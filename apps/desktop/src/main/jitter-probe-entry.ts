@@ -7,6 +7,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { BrowserWindow } from 'electron';
 import { coldHistoryItems } from './jitter-probe-fixtures';
+import { waitForProbeSessionRow } from './jitter-probe-session';
 import { contentMotion, type RowSample } from './jitter-probe-metrics';
 
 interface EntryProbeDeps {
@@ -123,6 +124,13 @@ export async function runEntryProbe({
         })(),
         rows,
       });
+      // The rAF read precedes this frame's ResizeObserver pass, which is where
+      // the transcript pins a composer/band height change. A task posted from
+      // here runs after the frame is presented: that is the painted distance.
+      const painted = w.__entry.samples[w.__entry.samples.length - 1];
+      setTimeout(() => {
+        painted.postDist = Math.round(el.scrollHeight - el.scrollTop - el.clientHeight);
+      }, 0);
     }
     w.__entry.raf = requestAnimationFrame(sample);
   };
@@ -181,8 +189,7 @@ diff --git a/src/probe.ts b/src/probe.ts
   prepareColdResume(coldSnapshot);
   await window.webContents.executeJavaScript(install);
   const coldClick = (await window.webContents.executeJavaScript(`(async () => {
-  const row = document.querySelector('[data-session-id="probe_session_cold"]');
-  if (!(row instanceof HTMLElement)) throw new Error('Missing cold probe session row');
+  const row = ${waitForProbeSessionRow('probe_session_cold', 'Missing cold probe session row')};
   row.click();
   await new Promise((resolve) => setTimeout(resolve, 600));
   return {
@@ -351,8 +358,7 @@ diff --git a/src/probe.ts b/src/probe.ts
 })()`);
   await window.webContents.executeJavaScript(install);
   await window.webContents.executeJavaScript(`(async () => {
-  const row = document.querySelector('[data-session-id="probe_session_cold"]');
-  if (!(row instanceof HTMLElement)) throw new Error('Missing cold probe session row');
+  const row = ${waitForProbeSessionRow('probe_session_cold', 'Missing cold probe session row')};
   row.click();
   await new Promise((resolve) => setTimeout(resolve, 400));
   return true;
@@ -499,8 +505,7 @@ diff --git a/src/probe.ts b/src/probe.ts
 })()`);
   await window.webContents.executeJavaScript(install);
   await window.webContents.executeJavaScript(`(async () => {
-  const row = document.querySelector('[data-session-id="probe_session_cold"]');
-  if (!(row instanceof HTMLElement)) throw new Error('Missing cold probe session row');
+  const row = ${waitForProbeSessionRow('probe_session_cold', 'Missing cold probe session row')};
   row.click();
   await new Promise((resolve) => setTimeout(resolve, 400));
   return true;

@@ -8,6 +8,7 @@ import { isReadOnlyNavigationMiss } from '../../runtime/agent/orchestrator/sessi
 import { formatAggregateDetail, summarizeToolResult, toolLoadingTargets } from '../../runtime/shared/tool-surface.mjs';
 import { normalizeToolName } from '../../runtime/shared/tool-primitives.mjs';
 import { gitResultError, gitResultExitCode } from '../../runtime/shared/tool-card-model/git-result.mjs';
+import { readRowsForDisplay } from '../../runtime/shared/read-row-numbers.mjs';
 
 const CANCELLED_RESULT_STATUS_LINE = '[status: cancelled]';
 
@@ -161,6 +162,33 @@ export function aggregateRawResult(calls) {
     joined = joined + (index > 1 ? `\n\n${index}. ${label}\n` : `${index}. ${label}\n`) + text;
   }
   return joined;
+}
+
+/** Expanded aggregate text with read members' numbered rows rebuilt (the
+ *  model-facing rows carry no numbers and would otherwise lose their gutter).
+ *  Runs at display time so restored, never-expanded aggregates keep their rope. */
+export function aggregateRawResultForDisplay(text) {
+  if (typeof text !== 'string' || !/^\[lines \d+-\d+\]$/m.test(text)) return text;
+  const lines = text.split('\n');
+  const out = [];
+  let member = [];
+  let inRead = false;
+  const flush = () => {
+    if (member.length) out.push(inRead ? readRowsForDisplay(member.join('\n')) : member.join('\n'));
+    member = [];
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const header = (i === 0 || lines[i - 1] === '') && /^\d+\. (.+)$/.exec(lines[i]);
+    if (!header) {
+      member.push(lines[i]);
+      continue;
+    }
+    flush();
+    out.push(lines[i]);
+    inRead = normalizeToolName(header[1]) === 'read';
+  }
+  flush();
+  return out.join('\n');
 }
 
 /** Preserve the atomic calls behind a visual aggregate. Renderers can keep the

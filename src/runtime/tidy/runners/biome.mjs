@@ -320,6 +320,22 @@ export function biomeCounts(diagnostics = [], changedFiles = []) {
   };
 }
 
+// Biome's stderr repeats a fixed banner on every run: the JSON-reporter notice,
+// the `check ━━━` rule and the "Some errors were emitted" summary the counts
+// already carry. Only the rest is worth a stderrTail.
+const BIOME_STDERR_BANNER = [
+  /^The `json` and `json-pretty` reporters are experimental/,
+  /^\w+ ━+$/,
+  /^[×✖]\s+Some errors were emitted while running checks\.?$/,
+];
+
+export function biomeStderrTail(stderr) {
+  const kept = String(stderr || '')
+    .split(/\r?\n/)
+    .filter((line) => line.trim() && !BIOME_STDERR_BANNER.some((re) => re.test(line.trim())));
+  return tail(kept.join('\n'));
+}
+
 function finalizeBiome(parsed, stderrTail) {
   return {
     diagnostics: parsed.diagnostics,
@@ -391,7 +407,7 @@ export const runner = {
       ? await loadBiomeFixKinds({ bin, names, run: spawn, signal, timeoutMs: EXPLAIN_TIMEOUT_MS })
       : new Map();
     applyBiomeFixKinds(parsed.diagnostics, kinds);
-    return finalizeBiome(parsed, tail(result.stderr));
+    return finalizeBiome(parsed, biomeStderrTail(result.stderr));
   },
   async fix({ files, cwd, bin, args = [], timeoutMs, signal, run }) {
     let result = await runChunked({
@@ -415,7 +431,7 @@ export const runner = {
       });
     }
     if (result.error) return spawnFailureResult('biome', result);
-    return emptyResult(tail(result.stderr));
+    return emptyResult(biomeStderrTail(result.stderr));
   },
 };
 

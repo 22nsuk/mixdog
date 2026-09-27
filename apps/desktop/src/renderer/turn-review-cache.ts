@@ -24,6 +24,9 @@ export const leadReviewCache = new Map<string, string | null>();
 export const leadReviewFilesCache = new Map<string, TurnReviewFile[]>();
 export const leadReviewSnapshotKindCache = new Map<string, string>();
 export const leadReviewCheckpointIdCache = new Map<string, string>();
+// Tag of the review held above, dropped with it: a tag that outlived its
+// review got answered `unchanged` and left the bar on an empty review.
+export const reviewTagCache = new Map<string, string>();
 const sizes = new Map<string, number>();
 let retainedChars = 0;
 
@@ -35,6 +38,7 @@ function drop(scope: string): void {
   leadReviewFilesCache.delete(scope);
   leadReviewSnapshotKindCache.delete(scope);
   leadReviewCheckpointIdCache.delete(scope);
+  reviewTagCache.delete(scope);
 }
 
 function trim(target: number): void {
@@ -56,7 +60,8 @@ export function rememberAgentReviews(
   leadPatch: string | null,
   files: TurnReviewFile[],
   snapshotKind: string,
-  checkpointId: string
+  checkpointId: string,
+  etag = ''
 ): void {
   drop(scopeKey);
   const chars = JSON.stringify([scopeKey, reviews, leadPatch, files, snapshotKind, checkpointId]).length;
@@ -66,6 +71,7 @@ export function rememberAgentReviews(
   leadReviewFilesCache.set(scopeKey, files);
   leadReviewSnapshotKindCache.set(scopeKey, snapshotKind);
   leadReviewCheckpointIdCache.set(scopeKey, checkpointId);
+  if (etag) reviewTagCache.set(scopeKey, etag);
   sizes.set(scopeKey, chars);
   retainedChars += chars;
   trim(AGENT_REVIEW_CACHE_MAX_CHARS);

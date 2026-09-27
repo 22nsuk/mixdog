@@ -1,6 +1,6 @@
 // session-create/materialize.mjs — adopting the provider session and
-// publishing it: initial tool surface, hooks, statusline, lead pool, the
-// session:create event, and the optional WS transport prewarm.
+// publishing it: initial tool surface, hooks, statusline, the session:create
+// event, and the optional WS transport prewarm.
 import { deferredSurfaceModeForLead } from '../effort.mjs';
 import { filterMcpToolsForSession } from '../extension-scopes.mjs';
 import { attachSessionHooks } from '../session-hooks.mjs';
@@ -40,20 +40,14 @@ function seedToolSurface(deps, reason) {
   applyPreSessionToolSelection();
 }
 
-/** Adopt the provider session and publish it to hooks, statusline and the
- *  lead pool. */
+/** Adopt the provider session and publish it to hooks and statusline. */
 export function materializeSession(deps, reason, coreMemoryContext) {
-  const { rt, adoptSession, mgr, hooks, hookCommonPayload, statusRoutes, agentTool } = deps;
+  const { rt, adoptSession, mgr, hooks, hookCommonPayload, statusRoutes } = deps;
   adoptSession(mgr.createSession(sessionOptions(deps, coreMemoryContext)));
   rt.reservedSessionId = null;
   attachSessionHooks(rt.session, { hooks, hookCommonPayload, getCwd: () => rt.currentCwd });
   seedToolSurface(deps, reason);
   writeStatuslineRoute(statusRoutes, rt.session, rt.route);
-  try {
-    agentTool?.upsertLeadSession?.(rt.session, { status: 'idle', stage: 'idle' });
-  } catch {
-    /* lead pool must never break session create */
-  }
   hooks.emit('session:create', {
     sessionId: rt.session.id,
     provider: rt.route.provider,

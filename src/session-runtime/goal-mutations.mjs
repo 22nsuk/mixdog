@@ -8,7 +8,7 @@ import { join } from 'node:path';
 
 import { compactSessionTitle } from './session-title.mjs';
 import { GOAL_TASK_SETTLED } from './goal-tool-defs.mjs';
-import { applyGoalTaskChanges, goalTasksStartWork, normalizeGoalTasks } from './goal-tasks.mjs';
+import { applyGoalTaskChanges, normalizeGoalTasks } from './goal-tasks.mjs';
 import {
   GOAL_FILE_VERSION,
   NO_DEADLINE_WARNING_MS,
@@ -19,7 +19,6 @@ import {
   goalTimeMode,
   parseGoalDuration,
   publicGoal,
-  resumeGoalState,
   stopActiveClock,
   validateGoalBlocker,
   validateObjective,
@@ -219,18 +218,7 @@ export function createGoalMutations(ctx) {
     const id = assertSessionId(sessionId);
     const goal = ctx.requireGoal(id);
     assertExpectedGoal(goal, expectedGoalId, 'task update');
-    const at = now();
-    const previousTasks = goal.tasks;
-    applyGoalTaskChanges(goal, args, { partial, at });
-    if (
-      goal.status === 'paused' &&
-      goal.pauseReason === 'waiting' &&
-      goalTasksStartWork(previousTasks, goal.tasks, args, { partial })
-    ) {
-      // Starting approved work and resuming its Goal are one durable write.
-      // Intake, status reads, and bookkeeping alone never grant approval.
-      resumeGoalState(goal, at);
-    }
+    applyGoalTaskChanges(goal, args, { partial, at: now() });
     return ctx.commit(id, goal);
   };
 

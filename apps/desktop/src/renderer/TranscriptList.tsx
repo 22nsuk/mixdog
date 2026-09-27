@@ -600,37 +600,50 @@ export function TranscriptList({
       anchor: captureReadingAnchor(virtualizer, laidOutRows.current, rows, scrollInset.current),
     };
   }
-  // A landing's rows are measured in its own commits, before paint: left to
-  // their ResizeObserver, the older rows painted at the flat estimate over
-  // the viewport for a frame or more, and a first measurement that arrived
-  // during reader motion was deferred with the rows still overlapping.
+  // Rows are measured in their own commits, before paint: left to their
+  // ResizeObserver, a mounted row painted at the flat estimate for a frame or
+  // more — a landing's older rows over the viewport, and every appended row
+  // (a submitted prompt, a reply opening, a tool card) bounced the rows below
+  // it by estimate-vs-real before settling. A landing re-reads every mounted
+  // row (and applies directly: its anchor restore owns the offset); any other
+  // commit reads only the rows without a size yet, through the list's own
+  // resize path so the end pin, deferral, and anchor rules still apply.
   const landingMeasure = useRef(false);
-  const measureLandedRows = useCallback(() => {
-    const root = spacer.current;
-    const apply = baseResizeItem.current;
-    if (!root || !apply) return false;
-    const instance = virtualizerRef.current;
-    const mounted = [...root.children].filter(
-      (row): row is HTMLElement => row instanceof HTMLElement && row.dataset.timelineKey !== undefined
-    );
-    // One batched read: the first lays out what this commit needs anyway,
-    // every later one is free. New rows and rows whose content the page
-    // changed (a group that gained its head, a reply that took its
-    // completion) both land here; the observer's later delivery of the same
-    // box is then a no-op, so each size still lands exactly once.
-    const sizes = mounted.map((row) => Math.round(row.getBoundingClientRect().height));
-    let measured = false;
-    mounted.forEach((row, position) => {
-      const size = sizes[position] ?? 0;
-      const key = row.dataset.timelineKey as string;
-      const at = indexForPendingKey(key, Number(row.dataset.index));
-      if (size <= 0 || at < 0 || instance.itemSizeCache.get(key) === size) return;
-      pendingResizes.current.delete(key);
-      apply(at, size);
-      measured = true;
-    });
-    return measured;
-  }, [indexForPendingKey]);
+  const measureMountedRows = useCallback(
+    (landing: boolean) => {
+      const root = spacer.current;
+      const apply = landing ? baseResizeItem.current : virtualizerRef.current.resizeItem;
+      if (!root || !apply) return false;
+      const instance = virtualizerRef.current;
+      const mounted = [...root.children].filter(
+        (row): row is HTMLElement =>
+          row instanceof HTMLElement &&
+          row.dataset.timelineKey !== undefined &&
+          (landing ||
+            (!instance.itemSizeCache.has(row.dataset.timelineKey) &&
+              !pendingResizes.current.has(row.dataset.timelineKey)))
+      );
+      if (mounted.length === 0) return false;
+      // One batched read: the first lays out what this commit needs anyway,
+      // every later one is free. New rows and rows whose content the page
+      // changed (a group that gained its head, a reply that took its
+      // completion) both land here; the observer's later delivery of the same
+      // box is then a no-op, so each size still lands exactly once.
+      const sizes = mounted.map((row) => Math.round(row.getBoundingClientRect().height));
+      let measured = false;
+      mounted.forEach((row, position) => {
+        const size = sizes[position] ?? 0;
+        const key = row.dataset.timelineKey as string;
+        const at = indexForPendingKey(key, Number(row.dataset.index));
+        if (size <= 0 || at < 0 || instance.itemSizeCache.get(key) === size) return;
+        pendingResizes.current.delete(key);
+        apply(at, size);
+        measured = true;
+      });
+      return measured;
+    },
+    [indexForPendingKey]
+  );
   useLayoutEffect(() => {
     laidOutRows.current = rows;
     const pending = pendingAnchor.current;
@@ -647,12 +660,13 @@ export function TranscriptList({
       window.requestAnimationFrame(() => {
         landingMeasure.current = false;
       });
-      measureLandedRows();
+      measureMountedRows(true);
     }
     restoreReadingAnchor(true);
   }, [rows]);
   useLayoutEffect(() => {
-    if (landingMeasure.current && measureLandedRows()) restoreReadingAnchor();
+    if (!landingMeasure.current) measureMountedRows(false);
+    else if (measureMountedRows(true)) restoreReadingAnchor();
   });
   // React re-renders reuse one virtualizer instance. Patch resizeItem exactly
   // once instead of wrapping the previous wrapper again on every render.

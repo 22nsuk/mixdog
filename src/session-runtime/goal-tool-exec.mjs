@@ -3,7 +3,7 @@
  * bookkeeping (the revision the model last observed) and one handler per
  * tool action, each replying with the compact or full Goal view.
  */
-import { GOAL_TASK_SETTLED, validateGoalToolCall } from './goal-tool-defs.mjs';
+import { validateGoalToolCall } from './goal-tool-defs.mjs';
 import { assertSessionId, parseGoalDuration } from './goal-state.mjs';
 import { goalFinished } from './goal-mutations.mjs';
 
@@ -74,18 +74,12 @@ async function pauseOrResume(ctx, id, args, action) {
     if (goalFinished(current)) {
       throw new Error(`a ${current.status === 'complete' ? 'completed' : 'stopped'} Goal cannot be paused or resumed`);
     }
-    if (action === 'pause') {
-      const remaining = current.tasks.filter((task) => !GOAL_TASK_SETTLED.includes(task.status));
-      if (!remaining.length || remaining.some((task) => task.status !== 'awaiting_approval')) {
-        throw new Error(
-          'cannot pause Goal: continue available work; park every user-dependent remaining task as awaiting_approval first'
-        );
-      }
-    }
+    // The model pauses only at the user's explicit request, so its pause is the
+    // user's pause; waits on the user go through the consecutive-turn block audit.
     const change =
       action === 'resume'
         ? { updates: args.updates, tasks: args.tasks, duration: timeLimitMs, timeMode: args.time_mode }
-        : { pauseReason: 'waiting', blocker: args.blocker };
+        : {};
     return ctx.control(id, { action, expectedGoalId, ...change });
   });
   return toolReply(ctx, id, result.goal, { full: action === 'resume' });

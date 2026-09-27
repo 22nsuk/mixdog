@@ -38,15 +38,29 @@ test('task output reports each error once while preserving metadata and verbatim
     resultText: body,
   };
   const output = renderBackgroundTask(task, { includeResult: true });
-  assert.match(output, /surface: shell\noperation: shell/);
+  assert.match(output, /surface: shell\nstatus: failed/);
   assert.ok(output.endsWith(body));
-  for (const value of [task.taskId, task.startedAt, task.finishedAt, '/work', '/logs/out', '/logs/err'])
+  for (const value of [task.taskId, task.startedAt, task.finishedAt, '/logs/out', '/logs/err'])
     assert.ok(output.includes(value));
+  assert.doesNotMatch(output, /cwd: \/work/);
   const withoutBody = renderBackgroundTask({ ...task, resultText: '' }, { includeResult: true });
   assert.equal(withoutBody.split(task.error).length - 1, 1);
   assert.match(withoutBody, /status: failed/);
   const distinct = renderBackgroundTask({ ...task, operation: 'test' });
   assert.match(distinct, /surface: shell\noperation: test/);
+  assert.match(distinct, /cwd: \/work/);
+});
+
+test('stdout/stderr log paths collapse for both spill suffix forms', () => {
+  const base = { taskId: 'job_logs', surface: 'shell', operation: 'shell', status: 'running', startedAt: 't0' };
+  for (const suffix of ['', '.log']) {
+    const output = renderBackgroundTask({
+      ...base,
+      meta: { stdout: `C:/out/shell_1.stdout${suffix}`, stderr: `C:/out/shell_1.stderr${suffix}` },
+    });
+    assert.match(output, new RegExp(`logs: C:/out/shell_1\\.\\{stdout,stderr\\}${suffix.replace('.', '\\.')}$`, 'm'));
+    assert.doesNotMatch(output, /^std(out|err): /m);
+  }
 });
 
 test('agent notifications bypass the card renderer and retain the entire final message', () => {
@@ -135,5 +149,26 @@ test('terminal task read ACKs queued and racing completion notifications', async
     if (previousDataDir === undefined) delete process.env.MIXDOG_DATA_DIR;
     else process.env.MIXDOG_DATA_DIR = previousDataDir;
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('the owner tool start notice drops surface and cwd while other envelopes keep surface', () => {
+  const task = registerBackgroundTask({
+    surface: 'shell',
+    operation: 'shell',
+    label: 'npm test',
+    meta: { cwd: 'C:/work', stdout: 'C:/logs/s.stdout', stderr: 'C:/logs/s.stderr' },
+  });
+  try {
+    const notice = renderBackgroundTask(task, { ownerTool: true });
+    assert.match(notice, /^background task\ntask_id: /);
+    assert.match(notice, /^label: npm test$/m);
+    assert.match(notice, /^logs: C:\/logs\/s\.\{stdout,stderr\}$/m);
+    assert.doesNotMatch(notice, /^(surface|cwd):/m);
+    const envelope = renderBackgroundTask(task);
+    assert.match(envelope, /^surface: shell$/m);
+    assert.match(envelope, /^cwd: C:\/work$/m);
+  } finally {
+    cleanupBackgroundTasks({ force: true });
   }
 });

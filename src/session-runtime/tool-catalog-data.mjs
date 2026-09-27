@@ -65,8 +65,9 @@ export const DEFERRED_DEFAULT_LEAD_TOOLS = Object.freeze([
   'code_graph',
   'read',
   // cwd / web_fetch demoted to the deferred manifest 2026-08:
-  // 0 / 10 calls in a 3-day 7.6k-call trace window; they auto-load on
-  // first direct call.
+  // 0 / 10 calls in a 3-day 7.6k-call trace window. The model loads them
+  // with load_tool; a direct call anyway is absorbed by the runtime
+  // call-through (deferred-call-through.mjs) as a safety net.
   'edit',
   'apply_patch',
   'git',

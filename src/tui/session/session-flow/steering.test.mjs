@@ -5,6 +5,12 @@ import { STEERING_SUPPRESSED_DISPLAY } from '../queue-helpers.mjs';
 import { createQueueOps, createSubmissionMemory } from './queue.mjs';
 import { createSteeringOps } from './steering.mjs';
 import { createSubmissionIntake } from '../session-api/intake/submission.mjs';
+import {
+  acknowledgeBackgroundTaskCompletion,
+  cleanupBackgroundTasks,
+  completeBackgroundTask,
+  registerBackgroundTask,
+} from '../../../runtime/shared/background-tasks.mjs';
 
 for (const status of ['done', 'failed', 'cancelled']) {
   test(`a steered submitAndWait receives its owning turn's ${status} result exactly once`, async () => {
@@ -46,6 +52,41 @@ for (const status of ['done', 'failed', 'cancelled']) {
     assert.equal(settled, 1);
   });
 }
+
+test('a completion the model already consumed through task read/wait is not steered again', () => {
+  const task = registerBackgroundTask({ surface: 'shell', operation: 'shell', label: 'npm test' });
+  try {
+    completeBackgroundTask(task.taskId, { status: 'completed', resultText: 'ok', notify: false });
+    const pending = [];
+    const state = { queued: [] };
+    const bag = {
+      runtime: { id: 'ack-steering' },
+      pending,
+      pendingNotificationKeys: new Set(),
+      getState: () => state,
+      set: (patch) => Object.assign(state, patch),
+      nextId: () => 'completion-ack',
+    };
+    const queue = createQueueOps(bag, { kickDrain() {} });
+    const steering = createSteeringOps(bag, { queue, submissions: createSubmissionMemory() });
+    const queueCompletion = () =>
+      pending.push(
+        queue.makeQueueEntry(`<task-notification><task-id>${task.taskId}</task-id></task-notification>`, {
+          mode: 'task-notification',
+          execution: { surface: 'shell', id: task.taskId, status: 'completed' },
+          priority: 'next',
+        })
+      );
+    queueCompletion();
+    assert.equal(steering.drainPendingSteering().length, 1, 'unread completions still reach the model');
+    queueCompletion();
+    acknowledgeBackgroundTaskCompletion(task.taskId);
+    assert.deepEqual(steering.drainPendingSteering(), []);
+    assert.deepEqual(pending, [], 'the acknowledged twin leaves the queue');
+  } finally {
+    cleanupBackgroundTasks({ force: true });
+  }
+});
 
 for (const suppressDisplay of [false, true]) {
   for (const structured of [false, true]) {

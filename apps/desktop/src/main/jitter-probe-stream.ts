@@ -7,6 +7,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { BrowserWindow } from 'electron';
 import { assistantMarkdown, paragraph, probeItems } from './jitter-probe-fixtures';
+import { waitForProbeSessionRow } from './jitter-probe-session';
 
 interface StreamProbeDeps {
   window: BrowserWindow;
@@ -129,8 +130,7 @@ export async function runStreamingProbe({
     sessionRemoteAttached: true,
   });
   await window.webContents.executeJavaScript(`(async () => {
-    const row = document.querySelector('[data-session-id="probe_session_b"]');
-    if (!(row instanceof HTMLElement)) throw new Error('Missing remote probe session row');
+    const row = ${waitForProbeSessionRow('probe_session_b', 'Missing remote probe session row')};
     row.click();
     await new Promise((resolve) => setTimeout(resolve, 420));
     return true;

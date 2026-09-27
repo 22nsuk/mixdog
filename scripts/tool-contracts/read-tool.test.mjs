@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { root } from './_env.mjs';
 import { assertOk } from './_helpers.mjs';
 import { executeBuiltinTool } from '../../src/runtime/agent/orchestrator/tools/builtin.mjs';
+import { readRowsForDisplay } from '../../src/runtime/shared/read-row-numbers.mjs';
 import { validateBuiltinArgs } from '../../src/runtime/agent/orchestrator/tools/builtin/arg-guard.mjs';
 import { normaliseReadLineWindowArgs } from '../../src/runtime/agent/orchestrator/tools/builtin/read-args.mjs';
 import {
@@ -204,8 +205,8 @@ test('read region batches preserve every requested span', async () => {
   if (
     !/^read 2\b/m.test(String(readRegionBatchOut)) ||
     (String(readRegionBatchOut).match(/scripts\/smoke\.mjs \[ok\]/g) || []).length < 2 ||
-    !/1→import \{ spawnSync \}/.test(String(readRegionBatchOut)) ||
-    !/3→import \{ fileURLToPath \}/.test(String(readRegionBatchOut))
+    !/1→import \{ spawnSync \}/.test(readRowsForDisplay(String(readRegionBatchOut))) ||
+    !/3→import \{ fileURLToPath \}/.test(readRowsForDisplay(String(readRegionBatchOut)))
   ) {
     throw new Error(`read region batch must preserve both requested spans:\n${readRegionBatchOut}`);
   }

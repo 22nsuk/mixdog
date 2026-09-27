@@ -17,7 +17,6 @@ import {
   parseUserCommand,
   resumeGoalState,
   stopActiveClock,
-  validateGoalBlocker,
   validateObjective,
 } from './goal-state.mjs';
 import { assertExpectedGoal } from './goal-mutations.mjs';
@@ -37,12 +36,12 @@ const GOAL_CONTROL_ACTIONS = {
     const goal = await ctx.abandonGoal(id, { expectedGoalId, archive: true });
     return reply(action, goal, `Goal stopped · ${goal.objective}`);
   },
-  async pause(ctx, { id, goal, args, at, action }) {
+  async pause(ctx, { id, goal, at, action }) {
     if (goal.status === 'complete') throw new Error('a completed Goal cannot be paused; edit it or create a new Goal');
     if (goal.status === 'active') stopActiveClock(goal, at);
     goal.status = 'paused';
-    goal.pauseReason = args.pauseReason === 'waiting' ? 'waiting' : 'user';
-    goal.blocker = args.pauseReason === 'waiting' ? validateGoalBlocker(args.blocker) : '';
+    goal.pauseReason = 'user';
+    goal.blocker = '';
     clearTurnFailures(goal);
     goal.updatedAt = at;
     const paused = await ctx.commit(id, goal);

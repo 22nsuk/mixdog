@@ -37,6 +37,32 @@ test('a multiline LF old_string matches a CRLF file and keeps CRLF', async (t) =
   assert.equal(readFileSync(file, 'utf8'), 'one\r\nTWO\r\nthree\r\n');
 });
 
+test('success lines name the file relative to the working directory', async (t) => {
+  const dir = makeDir();
+  const outside = makeDir();
+  t.after(() => {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+    void closeNativePatchServerForTests?.();
+  });
+  const edit = (args) => tryExecuteExternalToolAdapter('edit', args, dir, {});
+  assert.equal(
+    String(await edit({ file_path: join(dir, 'sub', 'new.txt'), old_string: '', new_string: 'a\n' })),
+    'Created sub/new.txt (2 bytes)'
+  );
+  assert.equal(
+    String(await edit({ file_path: 'sub/new.txt', old_string: 'a', new_string: 'b' })),
+    'Updated sub/new.txt (1 replacement)'
+  );
+  const external = join(outside, 'x.txt');
+  writeFileSync(external, 'x\n');
+  assert.equal(
+    String(await edit({ file_path: external, old_string: 'x', new_string: 'y' })),
+    `Updated ${external} (1 replacement)`,
+    'files outside the working directory keep their absolute path'
+  );
+});
+
 test('a replacement never injects LF endings into a CRLF file', async (t) => {
   const dir = makeDir();
   const file = join(dir, 'crlf-insert.txt');

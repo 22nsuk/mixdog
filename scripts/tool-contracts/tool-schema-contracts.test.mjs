@@ -81,7 +81,7 @@ test('shell, edit, and task keep their execution contracts', () => {
   // contract) while the default stays "no deadline" — the description and
   // rules both steer models to omit it.
   if (
-    shellProps.timeout_ms?.type !== 'number' ||
+    shellProps.timeout_ms?.type !== 'integer' ||
     shellProps.timeout_ms?.minimum !== 0 ||
     !/hard kill deadline/i.test(shellProps.timeout_ms?.description || '') ||
     !/omit or 0 = none/i.test(shellProps.timeout_ms?.description || '')
@@ -564,7 +564,7 @@ test('load_tool and Skill schemas stay pure loaders', () => {
     !/Exact name\(s\)\/aliases/i.test(toolSearchNamesSchema?.description || '') ||
     !toolSearchNamesSchema ||
     toolSearchNamesStringSchema?.minLength !== undefined ||
-    toolSearchNamesArraySchema?.minItems !== undefined ||
+    toolSearchNamesArraySchema?.minItems !== 1 ||
     toolSearchNamesArraySchema?.items?.minLength !== undefined ||
     TOOL_SEARCH_TOOL.inputSchema?.required?.join(',') !== 'names' ||
     TOOL_SEARCH_TOOL.inputSchema?.properties?.select ||

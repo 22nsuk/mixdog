@@ -25,8 +25,8 @@ It does not connect to, restart, or modify the installed application.
   session data. It also tracks existing rows through multiline submissions
   at the tail and during a reader gesture, and preserves reading on append.
   The composer dock is measured too: a turn-review worker result landing
-  after the transcript is shown must fill the reserved slot without moving a
-  row, Goal republications (new object, clock-only fields) must not move the
+  after the transcript is shown takes space exactly once when the bar
+  appears, Goal republications (new object, clock-only fields) must not move the
   viewport, and clearing the Goal must move it exactly once.
 - No argument runs both.
 

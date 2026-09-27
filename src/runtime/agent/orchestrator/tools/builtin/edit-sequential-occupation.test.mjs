@@ -132,6 +132,64 @@ test('an edit on a never-read file still delivers the body on the next read', as
   assert.match(reread, /omega/);
 });
 
+test('consecutive edits after a partial read never hide the unread lines behind the unchanged stub', async (t) => {
+  const lines = Array.from({ length: 40 }, (_, index) => `line ${index + 1}`);
+  const { dir, file } = makeTempFile(`${lines.join('\n')}\n`);
+  const sessionId = `edit-partial-twice-${process.pid}`;
+  t.after(() => {
+    rmSync(dir, { recursive: true, force: true });
+    void closeNativePatchServerForTests?.();
+  });
+
+  assert.match(
+    String(await executeBuiltinTool('read', { path: file, offset: 30, limit: 5 }, dir, { sessionId })),
+    /line 31/
+  );
+  for (const [from, to] of [
+    ['line 31', 'LINE 31'],
+    ['line 32', 'LINE 32'],
+  ]) {
+    const edited = await tryExecuteExternalToolAdapter(
+      'edit',
+      { file_path: file, old_string: from, new_string: to },
+      dir,
+      {
+        sessionId,
+      }
+    );
+    assert.match(String(edited), /^Updated /);
+  }
+
+  const unseen = String(await executeBuiltinTool('read', { path: file, offset: 4, limit: 3 }, dir, { sessionId }));
+  assert.doesNotMatch(unseen, /file unchanged/);
+  assert.match(unseen, /line 5/);
+});
+
+test("another session's cached read never stands in for a body this session only edited", async (t) => {
+  const { dir, file } = makeTempFile('alpha\nkeep\n');
+  const editor = `edit-only-${process.pid}`;
+  const reader = `cache-filler-${process.pid}`;
+  t.after(() => {
+    rmSync(dir, { recursive: true, force: true });
+    void closeNativePatchServerForTests?.();
+  });
+
+  const edited = await tryExecuteExternalToolAdapter(
+    'edit',
+    { file_path: file, old_string: 'alpha', new_string: 'omega' },
+    dir,
+    {
+      sessionId: editor,
+    }
+  );
+  assert.match(String(edited), /^Updated /);
+  assert.match(String(await executeBuiltinTool('read', { path: file }, dir, { sessionId: reader })), /omega/);
+
+  const reread = String(await executeBuiltinTool('read', { path: file }, dir, { sessionId: editor }));
+  assert.doesNotMatch(reread, /file unchanged/);
+  assert.match(reread, /keep/);
+});
+
 test('an apply_patch on a body the session already read makes a follow-up read return unchanged', async (t) => {
   const { dir, file } = makeTempFile('alpha\nkeep\n');
   const sessionId = `patch-known-current-${process.pid}`;

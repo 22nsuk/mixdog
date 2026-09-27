@@ -315,7 +315,7 @@ export function modelVisibleToolCompletionMessage(text, meta = {}) {
       status,
       exitCode: /^-?\d+$/.test(fields.exit || '') ? Number(fields.exit) : null,
       command: fields.command || fields.label,
-      outputFile: fields.stdout,
+      outputFile: fields.stdout || fields.logs?.replace('{stdout,stderr}', 'stdout'),
       result,
       error: fields.error,
     });

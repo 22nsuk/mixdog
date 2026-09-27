@@ -284,7 +284,7 @@ export async function runTranscriptMotionProbe(root: Root) {
 
     // Chrome above the composer (Goal capsule + turn-review bar) commits its
     // geometry ONCE per real change. The bar's authoritative worker read lands
-    // AFTER the transcript is shown and must fill the reserved slot; Goal
+    // AFTER the transcript is shown and takes space only then; Goal
     // republications that carry a new object or only clock fields must not
     // move a row; clearing the Goal moves the rows exactly once.
     const patch = 'diff --git a/demo.txt b/demo.txt\n--- a/demo.txt\n+++ b/demo.txt\n@@ -1 +1 @@\n-before\n+after';
@@ -340,11 +340,8 @@ export async function runTranscriptMotionProbe(root: Root) {
     publish(chrome);
     flushSync(render);
     const chromeFrames = await samples(24);
-    const chromeEntry = inspectDock('async-chrome-entry', chromeFrames, session, 1);
-    if (!resolved)
-      chromeEntry.failures.push(
-        `review worker never resolved (requests=${requests}, reserved=${document.querySelector('.turn-review-slot')?.getAttribute('data-reserved')})`
-      );
+    const chromeEntry = inspectDock('async-chrome-entry', chromeFrames, session, 2);
+    if (!resolved) chromeEntry.failures.push(`review worker never resolved (requests=${requests})`);
     if (!document.querySelector('.turn-review-bar'))
       chromeEntry.failures.push('review bar missing after worker resolution');
     if (!document.querySelector('.session-goal-island')) chromeEntry.failures.push('goal capsule missing on entry');
@@ -437,7 +434,7 @@ export async function runTranscriptMotionProbe(root: Root) {
       },
     });
     finalReviewFrames.push(...(await samples(12)));
-    const finalReviewResult = inspectDock('completion-review-reservation', finalReviewFrames, session, 1);
+    const finalReviewResult = inspectDock('completion-review-appears', finalReviewFrames, session, 2);
     if (!document.querySelector('.turn-review-bar')) finalReviewResult.failures.push('final review never appeared');
     cases.push(finalReviewResult);
 

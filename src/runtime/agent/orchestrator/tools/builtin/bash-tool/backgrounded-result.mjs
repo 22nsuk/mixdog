@@ -71,7 +71,7 @@ export function renderBackgroundedResult({ result, command, cwd, options, starte
   // delete) it when the task settles.
   if (teePlan) cleanupArtifactOnTaskSettled(teePlan.teePath, result.jobId, consumeTeeArtifact);
   let taskBlock = null;
-  if (task) taskBlock = renderBackgroundTask(task);
+  if (task) taskBlock = renderBackgroundTask(task, { ownerTool: true });
   else if (result.jobId) taskBlock = `[task_id: ${result.jobId}]`;
   const partialOutput = task
     ? readShellTaskOutput(task, {

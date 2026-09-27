@@ -19,6 +19,7 @@ import MarkdownBody from './MarkdownBody';
 import MarkdownAstBody from './MarkdownAstBody';
 import { MarkdownSourceFallback } from './MarkdownSourceFallback';
 import StreamingMarkdownBody from './StreamingMarkdownBody';
+import { healStreamingMarkdownTail } from './streaming-markdown';
 
 function flatten(node) {
   if (node.type === 'text') return JSON.stringify(node.value);
@@ -210,6 +211,69 @@ test('streaming markdown never exposes source while its first AST is pending', a
       );
     });
     assert.equal(dom.window.document.getElementById('root').textContent, '');
+  } finally {
+    await act(async () => root.unmount());
+    dom.window.close();
+    for (const [key, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else delete globalThis[key];
+    }
+  }
+});
+
+test('a partially arrived closing fence never parses as a code line', () => {
+  const code = (text) => {
+    const markup = renderToStaticMarkup(
+      React.createElement(MarkdownAstBody, {
+        root: parseMarkdownToHast(healStreamingMarkdownTail(text)),
+        copyControl: CopyControl,
+      })
+    );
+    return new JSDOM(markup).window.document.querySelector('code')?.textContent;
+  };
+  const body = '```ts\nconst streamed = true;\nexport const done = streamed;\n';
+  const settled = code(`${body}\`\`\``);
+  assert.equal(code(`${body}\``), settled);
+  assert.equal(code(`${body}\`\``), settled);
+  assert.equal(code(`${body.replaceAll('```', '~~~')}~`), settled);
+});
+
+test('a block cut from the live tail keeps its last parse until its own parse lands', async () => {
+  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
+    url: 'http://localhost/',
+  });
+  const previous = new Map(
+    ['window', 'document', 'IS_REACT_ACT_ENVIRONMENT'].map((key) => [
+      key,
+      Object.getOwnPropertyDescriptor(globalThis, key),
+    ])
+  );
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: dom.window });
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: dom.window.document });
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const host = dom.window.document.getElementById('root');
+  const root = createRoot(host);
+  const render = (text) =>
+    root.render(React.createElement(StreamingMarkdownBody, { text, copyControl: () => null }));
+  const tail = 'Frozen **block** one\n\nNext block starting';
+  const frozen = 'Frozen **block** one\n\n';
+  try {
+    await act(async () => {
+      render(tail);
+      await parseStreamingMarkdownAst(tail);
+    });
+    await act(async () => {});
+    assert.match(host.textContent, /Next block starting/);
+    // The next block started: this chunk freezes to its own block. Its parse
+    // is still in flight, so the previous parse stays instead of a blank.
+    act(() => render(frozen));
+    assert.match(host.textContent, /Frozen block one/);
+    await act(async () => {
+      await parseStreamingMarkdownAst(frozen);
+    });
+    await act(async () => {});
+    assert.equal(host.textContent.trim(), 'Frozen block one');
+    assert.equal(host.querySelector('strong')?.textContent, 'block');
   } finally {
     await act(async () => root.unmount());
     dom.window.close();

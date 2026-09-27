@@ -476,7 +476,10 @@ function taskSummary(task) {
   };
 }
 
-export function renderBackgroundTask(taskOrId, { includeResult = false } = {}) {
+// `ownerTool`: the block is the result of the very tool that owns the surface
+// (the shell's own start notice), so the tool name already says the surface and
+// the caller already knows the cwd it ran in.
+export function renderBackgroundTask(taskOrId, { includeResult = false, ownerTool = false } = {}) {
   const task = typeof taskOrId === 'string' ? getBackgroundTask(taskOrId) : taskOrId;
   if (!task) return 'Error: background task not found';
   const body = includeResult ? resultTextForTask(task) : '';
@@ -486,9 +489,10 @@ export function renderBackgroundTask(taskOrId, { includeResult = false } = {}) {
   const lines = [
     'background task',
     `task_id: ${task.taskId}`,
-    `surface: ${task.surface}`,
-    `operation: ${task.operation}`,
-    task.label ? `label: ${task.label}` : null,
+    ownerTool ? null : `surface: ${task.surface}`,
+    task.operation && task.operation !== task.surface ? `operation: ${task.operation}` : null,
+    // A result read follows the start notice, which already showed the label.
+    task.label && !(includeResult && task.surface === 'shell') ? `label: ${task.label}` : null,
     `status: ${task.status}`,
     exitCode != null ? `exit_code: ${exitCode}` : null,
     task.result?.timed_out === true ? 'timed_out: true' : null,
@@ -497,23 +501,22 @@ export function renderBackgroundTask(taskOrId, { includeResult = false } = {}) {
     task.finishedAt ? `finished: ${task.finishedAt}` : null,
     task.error || envelope?.error ? `error: ${task.error || envelope.error}` : null,
   ];
-  // stdout/stderr log paths differ only by suffix — collapse to one line.
+  // stdout/stderr log paths differ only by suffix (`.stdout`/`.stderr`,
+  // optionally followed by `.log`) — collapse to one line.
   const stdoutLog = typeof visibleMeta.stdout === 'string' ? visibleMeta.stdout : null;
   const stderrLog = typeof visibleMeta.stderr === 'string' ? visibleMeta.stderr : null;
-  const logsBase =
-    stdoutLog &&
-    stderrLog &&
-    stdoutLog.endsWith('.stdout.log') &&
-    stderrLog.endsWith('.stderr.log') &&
-    stdoutLog.slice(0, -11) === stderrLog.slice(0, -11)
-      ? stdoutLog.slice(0, -11)
+  const stdoutParts = stdoutLog ? /^(.*)\.stdout(\.log)?$/.exec(stdoutLog) : null;
+  const logs =
+    stdoutParts && stderrLog === `${stdoutParts[1]}.stderr${stdoutParts[2] || ''}`
+      ? `${stdoutParts[1]}.{stdout,stderr}${stdoutParts[2] || ''}`
       : null;
   for (const [key, value] of Object.entries(visibleMeta)) {
     if (key === 'task_id' || key === 'surface' || key === 'operation') continue;
-    if (logsBase && (key === 'stdout' || key === 'stderr')) continue;
+    if (logs && (key === 'stdout' || key === 'stderr')) continue;
+    if (key === 'cwd' && (ownerTool || (includeResult && task.surface === 'shell'))) continue;
     lines.push(`${key}: ${value}`);
   }
-  if (logsBase) lines.push(`logs: ${logsBase}.{stdout,stderr}.log`);
+  if (logs) lines.push(`logs: ${logs}`);
   if (includeResult) {
     if (body) {
       lines.push('', envelope ? envelope.result : body);

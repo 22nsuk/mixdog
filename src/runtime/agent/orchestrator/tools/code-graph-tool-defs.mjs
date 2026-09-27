@@ -1,3 +1,17 @@
+// Single source for code_graph modes: the schema enum, arg-guard validation,
+// and the dispatcher's files[] fan-out all derive from these lists.
+export const CODE_GRAPH_FILE_MODES = Object.freeze(['overview', 'imports', 'dependents', 'related', 'impact']);
+export const CODE_GRAPH_MODES = Object.freeze([
+  ...CODE_GRAPH_FILE_MODES,
+  'symbols',
+  'find_symbol',
+  'symbol_search',
+  'search',
+  'references',
+  'callers',
+  'callees',
+]);
+
 export const CODE_GRAPH_TOOL_DEFS = [
   {
     name: 'code_graph',
@@ -18,22 +32,8 @@ export const CODE_GRAPH_TOOL_DEFS = [
       properties: {
         mode: {
           type: 'string',
-          enum: [
-            'overview',
-            'imports',
-            'dependents',
-            'related',
-            'impact',
-            'symbols',
-            'find_symbol',
-            'symbol_search',
-            'search',
-            'references',
-            'callers',
-            'callees',
-          ],
-          description:
-            'File modes (files[]): overview, imports, dependents, related, impact. symbols with files[] gives the file outline; other modes use symbols[].',
+          enum: [...CODE_GRAPH_MODES],
+          description: `File modes (files[]): ${CODE_GRAPH_FILE_MODES.join(', ')}. symbols with files[] gives the file outline; other modes use symbols[].`,
         },
         files: {
           anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }],

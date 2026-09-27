@@ -12,7 +12,7 @@ import {
   type PaintProbeBounds,
   type PaintFrameSample,
 } from './jitter-probe-metrics';
-import { clickProbeSession, COLLECT_SWITCH_FRAMES_SCRIPT } from './jitter-probe-session';
+import { clickProbeSession, COLLECT_SWITCH_FRAMES_SCRIPT, waitForProbeSessionRow } from './jitter-probe-session';
 
 interface SwitchProbeDeps {
   window: BrowserWindow;
@@ -32,10 +32,17 @@ export async function runSwitchProbe({ window, outPath }: SwitchProbeDeps): Prom
     const w = window;
     w.__switchProbe = { frames: [], raf: 0 };
     const sample = () => {
+      // Parked panes keep their transcripts mounted; only the one on screen
+      // is what the reader sees under the active tab — unless the pane's
+      // opaque loading cover sits over it while the incoming lane loads.
+      const visible = [...document.querySelectorAll('.transcript')]
+        .find((node) => node.getBoundingClientRect().height > 0);
       w.__switchProbe.frames.push({
         t: Math.round(performance.now()),
-        title: document.querySelector('.session-header h1')?.textContent?.trim() || '',
-        transcript: document.querySelector('.transcript')?.innerText || '',
+        title: document.querySelector('.workspace-tab.active')?.textContent?.trim() || '',
+        transcript: visible?.innerText || '',
+        covered: Boolean(visible?.closest('.conversation')?.parentElement
+          ?.querySelector(':scope > .pane-surface-cover')),
       });
       w.__switchProbe.raf = requestAnimationFrame(sample);
     };
@@ -43,11 +50,8 @@ export async function runSwitchProbe({ window, outPath }: SwitchProbeDeps): Prom
     return true;
   })()`);
   await window.webContents.executeJavaScript(`(async () => {
-    const b = document.querySelector('[data-session-id="probe_switch_b"]');
-    const c = document.querySelector('[data-session-id="probe_switch_c"]');
-    if (!(b instanceof HTMLElement) || !(c instanceof HTMLElement)) {
-      throw new Error('Missing rapid switch probe rows');
-    }
+    const b = ${waitForProbeSessionRow('probe_switch_b', 'Missing rapid switch probe rows')};
+    const c = ${waitForProbeSessionRow('probe_switch_c', 'Missing rapid switch probe rows')};
     b.click();
     await new Promise((resolve) => setTimeout(resolve, 24));
     c.click();
@@ -58,8 +62,10 @@ export async function runSwitchProbe({ window, outPath }: SwitchProbeDeps): Prom
     t: number;
     title: string;
     transcript: string;
+    covered: boolean;
   }>;
   const wrongSessionFrames = switchFrames.filter((frame) => {
+    if (frame.covered) return false;
     const title = /Switch ([ABC])/.exec(frame.title)?.[1] || '';
     const transcript = /Switch ([ABC]) transcript/.exec(frame.transcript)?.[1] || '';
     return Boolean(title && transcript && title !== transcript);
@@ -153,8 +159,11 @@ export async function runSwitchProbe({ window, outPath }: SwitchProbeDeps): Prom
       const transcript = await activate(id);
       cancelAnimationFrame(raf);
       const finalAnchor = anchorFor(transcript);
-      const expected = baseline[id];
       const targetFrames = frames.filter((frame) => frame.sessionKey === id);
+      // A route change resumes at the latest row (Conversation re-arms follow
+      // on entry; a per-session reading offset is not restored). The first
+      // painted frame must already be that final position: any frame of the
+      // entry that differs from it is the visible re-entry jump.
       switches.push({
         id,
         writes: writes.slice(beforeWrites).filter((entry) => entry.sessionKey === id).length,
@@ -162,16 +171,16 @@ export async function runSwitchProbe({ window, outPath }: SwitchProbeDeps): Prom
         writeTops: writes.slice(beforeWrites).map((entry) =>
           entry.sessionKey + ':' + entry.top),
         finalScrollTop: transcript.scrollTop,
-        scrollDrift: Math.abs(transcript.scrollTop - expected.scrollTop),
         anchorText: finalAnchor?.text || '',
-        anchorTextMatches: finalAnchor?.text === expected.anchor?.text,
-        anchorOffsetDrift: finalAnchor && expected.anchor
-          ? Math.abs(finalAnchor.offset - expected.anchor.offset)
-          : Number.POSITIVE_INFINITY,
+        anchorTextMatches: targetFrames.every((frame) => frame.anchor?.text === finalAnchor?.text),
+        anchorOffsetDrift: targetFrames.reduce((maximum, frame) =>
+          frame.anchor && finalAnchor
+            ? Math.max(maximum, Math.abs(frame.anchor.offset - finalAnchor.offset))
+            : maximum, 0),
         frameScrollDrift: targetFrames.reduce((maximum, frame) =>
           frame.scrollTop === null
             ? maximum
-            : Math.max(maximum, Math.abs(frame.scrollTop - expected.scrollTop)), 0),
+            : Math.max(maximum, Math.abs(frame.scrollTop - transcript.scrollTop)), 0),
         missingAnchorFrames: targetFrames.filter((frame) => !frame.anchor).length,
         frames: targetFrames,
       });
@@ -181,7 +190,6 @@ export async function runSwitchProbe({ window, outPath }: SwitchProbeDeps): Prom
       switches,
       maxWrites: Math.max(...switches.map((entry) => entry.writes)),
       maxTotalWrites: Math.max(...switches.map((entry) => entry.totalWrites)),
-      maxScrollDrift: Math.max(...switches.map((entry) => entry.scrollDrift)),
       maxFrameScrollDrift: Math.max(...switches.map((entry) => entry.frameScrollDrift)),
       maxAnchorOffsetDrift: Math.max(...switches.map((entry) => entry.anchorOffsetDrift)),
       missingAnchorFrames: switches.reduce(
@@ -193,7 +201,6 @@ export async function runSwitchProbe({ window, outPath }: SwitchProbeDeps): Prom
     switches: unknown[];
     maxWrites: number;
     maxTotalWrites: number;
-    maxScrollDrift: number;
     maxFrameScrollDrift: number;
     maxAnchorOffsetDrift: number;
     missingAnchorFrames: number;
@@ -464,13 +471,8 @@ export async function runSwitchProbe({ window, outPath }: SwitchProbeDeps): Prom
     probe.raf = requestAnimationFrame(sample);
     window.__studioReentryProbe = probe;
 
-    const newButton = document.querySelector('.workspace-tab-new');
-    if (!(newButton instanceof HTMLElement)) throw new Error('Missing New tab button');
-    newButton.dispatchEvent(new PointerEvent('pointerdown', {
-      bubbles: true, button: 0, pointerId: 1,
-    }));
-    await new Promise((resolve) => requestAnimationFrame(resolve));
-    const studioItem = [...document.querySelectorAll('[role="menuitem"]')]
+    // New Studio is a fixed launcher above the Sessions list.
+    const studioItem = [...document.querySelectorAll('.session-launcher-row')]
       .find((item) => (item.textContent || '').trim() === 'New Studio');
     if (!(studioItem instanceof HTMLElement)) throw new Error('Missing New Studio action');
     studioItem.click();
@@ -593,10 +595,12 @@ export async function runSwitchProbe({ window, outPath }: SwitchProbeDeps): Prom
   };
   const panels = [];
   for (const selector of [
-    '.session-header-menu',
-    '.session-header-menu',
-    '.toolbar-dock[aria-label$="utility panel"]',
-    '.toolbar-dock[aria-label$="utility panel"]',
+    // Desktop opens Sessions from the Activity Rail and the utility panel
+    // from the pane's dock toggles (the capture UI is English).
+    '.activity-rail button[aria-label="Sessions"]',
+    '.activity-rail button[aria-label="Sessions"]',
+    '.pane-dock-toggles .pane-dock-toggle:not([aria-disabled="true"])',
+    '.pane-dock-toggles .pane-dock-toggle:not([aria-disabled="true"])',
   ]) {
     panels.push(summarizePanel(await probePanelToggle(selector)));
   }
@@ -620,7 +624,6 @@ export async function runSwitchProbe({ window, outPath }: SwitchProbeDeps): Prom
     !finalSwitchFrame?.transcript.includes('Switch C transcript') ||
     foregroundScroll.maxWrites > 1 ||
     foregroundScroll.maxTotalWrites > 1 ||
-    foregroundScroll.maxScrollDrift > 1 ||
     foregroundScroll.maxFrameScrollDrift > 1 ||
     foregroundScroll.maxAnchorOffsetDrift > 1 ||
     foregroundScroll.missingAnchorFrames > 0 ||

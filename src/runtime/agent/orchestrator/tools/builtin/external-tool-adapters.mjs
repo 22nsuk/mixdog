@@ -15,7 +15,7 @@ import { readFileSync, mkdirSync, existsSync, lstatSync, realpathSync, statSync 
 import { dirname } from 'node:path';
 import { atomicWrite, symlinkWriteTarget } from './atomic-write.mjs';
 import { assertPathsReachable } from './fs-reachability.mjs';
-import { normalizeInputPath, resolveAgainstCwd, normalizeOutputPath } from './path-utils.mjs';
+import { normalizeInputPath, resolveAgainstCwd, normalizeOutputPath, toDisplayPath } from './path-utils.mjs';
 import {
   isUncPath,
   isWindowsDevicePath,
@@ -252,13 +252,12 @@ function formatEditFailureExcerpt(content, oldStr, errorText) {
   for (let i = start; i < end; i++) {
     const raw = lines[i];
     const shown = raw.length > 240 ? `${raw.slice(0, 240)}…` : raw;
-    const row = `${String(i + 1).padStart(5, ' ')}| ${shown}`;
-    chars += row.length + 1;
+    chars += shown.length + 1;
     if (chars > 3000) {
-      rows.push('     | …');
+      rows.push('…');
       break;
     }
-    rows.push(row);
+    rows.push(shown);
   }
   return rows.length > 0
     ? `\ncurrent file excerpt lines ${start + 1}-${start + rows.length} (use exact current text for retry):\n${rows.join('\n')}`
@@ -557,7 +556,7 @@ async function createEditTarget(edit, newStr) {
     after: newStr,
     staleMessage: 'was created concurrently; read it before editing',
   });
-  return stale ?? `Created ${fullPath} (${Buffer.byteLength(newStr, 'utf8')} bytes)`;
+  return stale ?? `Created ${editDisplayPath(edit)} (${Buffer.byteLength(newStr, 'utf8')} bytes)`;
 }
 
 /**
@@ -613,7 +612,7 @@ const STALE_DURING_EDIT = 'changed on disk during the edit; read it again';
  * drift falls through (null) to the native engine's strict ambiguity reject.
  */
 async function applyEditOccupation(edit, oldStr, editPlan) {
-  const { content, fileEnc, fullPath } = edit;
+  const { content, fileEnc } = edit;
   const at = editPlan.positions[0];
   const next = `${content.slice(0, at)}${editPlan.replacements[0]}${content.slice(at + oldStr.length)}`;
   const stale = await commitEdit(edit, {
@@ -621,7 +620,7 @@ async function applyEditOccupation(edit, oldStr, editPlan) {
     after: next,
     staleMessage: STALE_DURING_EDIT,
   });
-  return stale ?? updatedMessage(fullPath, 1);
+  return stale ?? updatedMessage(edit, 1);
 }
 
 /**
@@ -632,7 +631,7 @@ async function applyEditOccupation(edit, oldStr, editPlan) {
  * matched span, so no byte outside a replacement can change.
  */
 async function applyEditInProcess(edit, oldStr, editPlan, replaceAll) {
-  const { content, fileEnc, fullPath } = edit;
+  const { content, fileEnc } = edit;
   const occurrences = editPlan.positions.length;
   if (occurrences === 0) {
     const message = 'old_string not found';
@@ -652,11 +651,17 @@ async function applyEditInProcess(edit, oldStr, editPlan, replaceAll) {
     after: next,
     staleMessage: STALE_DURING_EDIT,
   });
-  return stale ?? updatedMessage(fullPath, applied);
+  return stale ?? updatedMessage(edit, applied);
 }
 
-function updatedMessage(fullPath, replacements) {
-  return `Updated ${fullPath} (${replacements} replacement${replacements === 1 ? '' : 's'})`;
+// Success lines name the file relative to the working directory, like the
+// search tools do; error lines keep the absolute path.
+function editDisplayPath({ fullPath, workDir }) {
+  return toDisplayPath(fullPath, workDir) || fullPath;
+}
+
+function updatedMessage(edit, replacements) {
+  return `Updated ${editDisplayPath(edit)} (${replacements} replacement${replacements === 1 ? '' : 's'})`;
 }
 
 /** The verified native engine performs the splice; we prove what it edited. */
@@ -691,7 +696,7 @@ async function applyEditNative(edit, oldStr, newStr, editPlan, replaceAll) {
   recordEditSnapshot(fullPath, options, result.contentHash, editedExactlyWhatWeRead ? statBefore : null);
   const after = readEditTextForDisplay(fullPath, fileEnc);
   if (typeof after === 'string') await recordEditUiDiff(options, workDir, fullPath, content, after, fileEnc);
-  return updatedMessage(fullPath, result.replacements);
+  return updatedMessage(edit, result.replacements);
 }
 
 /**
@@ -735,7 +740,7 @@ async function adaptStrReplace(args, workDir, options) {
       after: newStr,
       staleMessage: STALE_DURING_EDIT,
     });
-    return stale ?? `Updated ${fullPath} (filled empty file)`;
+    return stale ?? `Updated ${editDisplayPath(edit)} (filled empty file)`;
   }
   // Dialect normalization is skipped for same-anchor batch members whose
   // occurrence accounting is bound to the original old_string.

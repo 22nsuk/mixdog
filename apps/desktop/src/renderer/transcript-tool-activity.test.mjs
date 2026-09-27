@@ -231,6 +231,29 @@ test('thinking row keeps its key when the optimistic prompt settles', () => {
   assert.notEqual(next.find((row) => row._tag === 'Thinking')?.key, pendingKey);
 });
 
+test('turn gap keeps its key when the optimistic prompt settles', () => {
+  const previous = [
+    { kind: 'user', id: 'sub-0', text: 'first' },
+    { kind: 'assistant', id: 'reply-0', text: 'done' },
+  ];
+  const previousTurns = ['turn:sub-0', 'turn:sub-0'];
+  const pending = appendLiveTranscriptRows({
+    sessionKey: 'session',
+    settled: project(previous, previousTurns),
+    pendingItems: [{ kind: 'user', id: 'sub-1', text: 'hi', submittedAt: 1_000 }],
+    thinking: true,
+  });
+  const settled = appendLiveTranscriptRows({
+    sessionKey: 'session',
+    settled: project([...previous, { kind: 'user', id: 'sub-1', text: 'hi' }], [...previousTurns, 'turn:sub-1']),
+    thinking: true,
+  });
+  const gapKeys = (rows) => rows.filter((row) => row._tag === 'TurnGap').map((row) => row.key);
+
+  assert.deepEqual(gapKeys(pending), ['session:gap:sub-1']);
+  assert.deepEqual(gapKeys(settled), gapKeys(pending));
+});
+
 test('the thinking clock keeps the submit time when the spinner arrives', async () => {
   const dom = installToolActivityDom('Mozilla/5.0 Electron/41.0.0');
   const secondsOf = (text) => Number((String(text || '').match(/\d+/) || [])[0] || 0);
@@ -654,6 +677,16 @@ test('desktop activity tags structured bodies with a highlighting language', () 
   });
   assert.equal(payload.outputLanguage, 'json');
   assert.equal(payload.outputText, '{\n  "a": 1\n}');
+
+  const readRows = desktopToolActivityItemPresentation({
+    kind: 'tool',
+    id: 'read-rows',
+    name: 'read',
+    args: { file_path: 'src/a.js' },
+    result: '[lines 1-2]\nconst a = 1;\n  b();\n[lines 1-2 of 2]',
+    completedAt: 1,
+  });
+  assert.equal(readRows.outputText, '1→const a = 1;\n2→  b();\n[lines 1-2 of 2]');
 
   const log = desktopToolActivityItemPresentation({
     kind: 'tool',

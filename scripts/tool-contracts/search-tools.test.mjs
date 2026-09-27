@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { root } from './_env.mjs';
 import { assertOk } from './_helpers.mjs';
 import { executeBuiltinTool } from '../../src/runtime/agent/orchestrator/tools/builtin.mjs';
+import { readRowsForDisplay } from '../../src/runtime/shared/read-row-numbers.mjs';
 import { executeFuzzyFindTool } from '../../src/runtime/agent/orchestrator/tools/builtin/list-tool.mjs';
 import {
   applyGrepContextLeadPolicy,
@@ -473,7 +474,10 @@ async function assertReadWindowAndAbsence(fixtureRoot, exactFile) {
     },
     fixtureRoot
   );
-  if (!/^1→export const needleAlpha/m.test(String(readWindow)) || /second line/.test(String(readWindow))) {
+  if (
+    !/^1→export const needleAlpha/m.test(readRowsForDisplay(String(readWindow))) ||
+    /second line/.test(String(readWindow))
+  ) {
     throw new Error(`read line window contract failed:\n${readWindow}`);
   }
   const missingRead = await executeBuiltinTool(

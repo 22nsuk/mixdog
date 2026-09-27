@@ -38,7 +38,6 @@ export function createSessionResume(deps, { ingestSessionIntoMemory, closeSurfac
     getDesktopSession,
     mgr,
     statusRoutes,
-    agentTool,
     refreshRouteEffort,
     invalidateContextStatusCache,
     invalidatePreSessionToolSurface,
@@ -121,11 +120,9 @@ export function createSessionResume(deps, { ingestSessionIntoMemory, closeSurfac
     if (!resumed) return null;
     retirePrevious(previous, resumed);
     setSession(resumed);
-    try {
-      agentTool?.upsertLeadSession?.(resumed, { status: 'idle', stage: 'idle' });
-    } catch {
-      /* lead pool must never break resume */
-    }
+    // Resume is not work: the Lead pool row is written only by turn
+    // start/settle, so opening an old conversation never re-lists it in the
+    // Agent window for another reap window (user report).
     applyResolvedCwd(resolveResumeCwd(resumed, getCurrentCwd()));
     // Commit the applied cwd before returning the resume transcript.
     resumed.cwd = getCurrentCwd();

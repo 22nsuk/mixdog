@@ -143,7 +143,7 @@ test('time exhaustion stops continuations and cannot silently become an unlimite
   assert.equal(f.runtime.continuation(f.sessionId).run, true);
 });
 
-test('model waiting requires every remaining task to depend on the user and a reason', async (t) => {
+test('a model pause is the user-requested pause and never a waiting state', async (t) => {
   const f = fixture(t);
   const created = (
     await f.call({
@@ -152,11 +152,14 @@ test('model waiting requires every remaining task to depend on the user and a re
       tasks: [{ text: 'Implementation', status: 'pending' }],
     })
   ).goal;
-  await assert.rejects(f.call({ action: 'pause', blocker: 'Choose an option' }), /continue available work/);
-  await f.call({ action: 'update_tasks', updates: [{ id: created.tasks[0].id, status: 'awaiting_approval' }] });
-  await assert.rejects(f.call({ action: 'pause' }), /blocker is required/);
-  await f.call({ action: 'pause', blocker: 'Approve the scope' });
-  assert.equal(f.runtime.snapshot(f.sessionId).pauseReason, 'waiting');
+  await f.call({ action: 'pause' });
+  const paused = f.runtime.snapshot(f.sessionId);
+  assert.equal(paused.status, 'paused');
+  assert.equal(paused.pauseReason, 'user');
+  assert.equal(paused.blocker, '');
+  assert.equal(f.runtime.continuation(f.sessionId).run, false);
+  await f.call({ action: 'update_tasks', updates: [{ id: created.tasks[0].id, status: 'in_progress' }] });
+  assert.equal(f.runtime.snapshot(f.sessionId).status, 'paused', 'task bookkeeping does not resume a pause');
   f.advance(5_000);
   await f.call({ action: 'resume', updates: [{ id: created.tasks[0].id, status: 'in_progress' }] });
   assert.equal(f.runtime.snapshot(f.sessionId).timeUsedMs, 0);

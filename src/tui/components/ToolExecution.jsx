@@ -32,6 +32,7 @@ import {
   toolStatusColor,
 } from './tool-execution/surface-detail.mjs';
 import { ResultBody } from './tool-execution/ResultBody.jsx';
+import { aggregateRawResultForDisplay } from '../session/tool-result-status.mjs';
 
 const TOOL_BLINK_MS = 500;
 const TOOL_PENDING_SHOW_DELAY_MS = 1000;
@@ -258,7 +259,7 @@ export function ToolExecution({
         </Box>
         <ResultBody
           lines={detailLines}
-          rawText={rawRt || ''}
+          rawText={showRawAggregate ? aggregateRawResultForDisplay(rawRt) : ''}
           columns={columns}
           color={aggregateDetailColor}
           raw={showRawAggregate}

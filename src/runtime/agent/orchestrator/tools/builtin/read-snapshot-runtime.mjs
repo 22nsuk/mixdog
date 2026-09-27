@@ -83,10 +83,15 @@ function resolveBodyDelivered({ next, meta, priorSnapshot, identity, incomingIsG
     // behind "[file unchanged]".
     const priorStillCurrent =
       !!priorSnapshot && !!meta.preMutationStat && statMatchesSnapshot(meta.preMutationStat, priorSnapshot);
+    // A prior mutation's full range is synthetic (see recordReadSnapshot), so
+    // only its explicit bodyDelivered counts; otherwise a second edit after a
+    // partial read promoted the never-read lines to delivered.
+    const priorRangesAreReads = !isMutationSource(priorSnapshot?.source);
     return (
       priorStillCurrent &&
       priorSnapshot.grepOnly !== true &&
-      (priorSnapshot.bodyDelivered === true || snapshotCoversFullFile(priorSnapshot) || priorPagedFull)
+      (priorSnapshot.bodyDelivered === true ||
+        (priorRangesAreReads && (snapshotCoversFullFile(priorSnapshot) || priorPagedFull)))
     );
   }
   if (!incomingIsGrep && snapshotCoversFullFile(next)) return true;

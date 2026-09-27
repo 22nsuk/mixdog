@@ -18,8 +18,9 @@ Every layer preserves behavior and public API; this is not a bug hunt.
 The schema owns action fields; this file owns scope, order, and boundaries.
 
 Investigate and clean the selected scope in approved partition-sized rounds,
-then report the outcome. `references/agent-cleanup.md` owns candidate
-tracking, risk classification, completion criteria, and the closing report.
+then report the outcome. `references/agent-cleanup.md` owns the analysis and
+risk classification; `references/cleanup-report.md` owns candidate tracking,
+completion criteria, and the closing report.
 
 ## 1. Which job
 **Hard rule — tidy owns format/lint/structure/cleanup, not feature work.**
@@ -86,7 +87,7 @@ limitation and ask before widening the work.
      scratch.
    - Finish all applicable read-only checks and lens analysis for the current
      round before its edits, not for the whole scope. Accumulate registered
-     candidates across rounds using `references/agent-cleanup.md`.
+     candidates across rounds using `references/cleanup-report.md`.
    - Read per-rule and per-directory counts from check/fix/results first;
      select the rules and directories relevant to this round, then page only
      those with `tidy action:'results'` filters. Read every selected page of the
@@ -141,8 +142,11 @@ limitation and ask before widening the work.
 
 ## 4. Agent-level cleanup
 Read `references/agent-cleanup.md` first: it owns the deletion ladder, the
-lens checklists, the slop categories, the risk tiers, candidate inventory
-definitions, and the final report template. This section owns the order.
+lens checklists, the slop categories, and the risk tiers. Also read
+`references/test-suite-slop.md` when tests are in scope, and
+`references/cleanup-report.md` before registering the first candidate. This
+section owns the order. After context compaction, re-read only the file the
+next step needs.
 
 1. **Lock behavior.** Use the baseline established in section 2. A file with no test covering
    the behavior you will touch gets either the narrowest regression test that
@@ -158,7 +162,7 @@ definitions, and the final report template. This section owns the order.
    quality, efficiency, altitude). Engine diagnostics point at units; they never
    define the round's coverage. A round that reviewed only the units an engine
    flagged is **unfinished**, not complete: say so in its close and name what
-   stayed unreviewed. Every finding carries `file:line` evidence, a cost, an action, a
+   stayed unreviewed. Every finding carries a path-plus-symbol location, a cost, an action, a
    confidence, and a risk tier; findings without evidence are dropped, and
    consult history only when code, contracts, and tests leave intent unclear;
    `git blame` is not a mandatory step for each removal. Unresolved intent
@@ -192,7 +196,7 @@ definitions, and the final report template. This section owns the order.
    both.
 
 The following are investigation signals, not registered candidates or permission
-for an automatic rewrite; `references/agent-cleanup.md` owns registration.
+for an automatic rewrite; `references/cleanup-report.md` owns registration.
 
 | Structural signal | Decision |
 |---|---|
@@ -263,12 +267,12 @@ lane, what landed, the verification result including every check that could not
 run, the round's function counts over 50, 100 and 150 lines, and whether the
 round is complete or unfinished. Report all three counts: decomposition moves
 mass downward, so functions over 100 falling while functions over 50 rise is
-progress, and a single threshold hides it. Keep the inventory in `references/agent-cleanup.md` form as you go;
+progress, and a single threshold hides it. Keep the inventory in `references/cleanup-report.md` form as you go;
 do not spend a full report on every round.
 
 Deliver the full report once, after the last partition, using the
 reconciliation, completion criteria, and report template in
-`references/agent-cleanup.md`. It carries one consolidated list of everything
+`references/cleanup-report.md`. It carries one consolidated list of everything
 that needs the user's decision — RISKY findings, bugs found, unresolved intent,
 unfinished candidates — so those questions arrive together at the end instead
 of interrupting the cycle. Do not create a separate report file unless
@@ -278,8 +282,12 @@ Interrupt the cycle only for a blocker that makes continuing impossible or an
 approval the active workflow requires.
 
 ## 8. References
-- `references/agent-cleanup.md` — before section 4: ladder, lenses, slop
-  categories with keep/fix rules, test-suite slop, risk tiers, final report
+- `references/agent-cleanup.md` — before section 4: behavior boundary, ladder,
+  lenses, slop categories with keep/fix rules, risk tiers.
+- `references/test-suite-slop.md` — during section 4 when tests are in scope:
+  redundant-coverage patterns and the evidence gate before deleting tests.
+- `references/cleanup-report.md` — before registering the first candidate and
+  at section 7: inventory format, statuses, reconciliation, final report
   template.
 - `references/dead-code.md` — before removing any unused symbol, file, or
   dependency, or retiring a legacy path: candidate sources, usage and side-effect

@@ -329,7 +329,8 @@ test('Goal tool schemas expose lifecycle and durable task contracts', () => {
   assert.equal(goalTool.inputSchema.properties.blocker.minLength, 1);
   assert.match(goalTool.description, /idle reminder for unfinished work/i);
   assert.match(goalTool.inputSchema.properties.action.description, /abandon retires superseded work/i);
-  assert.match(goalTool.inputSchema.properties.blocker.description, /external impasse.*stops after 3/i);
+  assert.match(goalTool.inputSchema.properties.blocker.description, /same impasse.*stops after 3/i);
+  assert.match(goalTool.inputSchema.properties.action.description, /pause only at the user's explicit request/i);
   // Retiring scoped-out work must not require falsely marking it completed.
   assert.deepEqual(goalTool.inputSchema.properties.tasks.items.properties.status.enum, [
     'pending',

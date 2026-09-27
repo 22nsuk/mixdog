@@ -41,6 +41,8 @@ import { formatToolSurface } from '../../../../src/runtime/shared/tool-surface.m
 // biome-ignore format: @ts-expect-error must precede the specifier
 // @ts-expect-error The shared runtime module is plain ESM and has no declaration file.
 import { agentActionTitle, agentResponseTitle, deriveToolCardModel } from '../../../../src/runtime/shared/tool-card-model.mjs';
+// @ts-expect-error The shared runtime module is plain ESM and has no declaration file.
+import { readRowsForDisplay } from '../../../../src/runtime/shared/read-row-numbers.mjs';
 
 export * from './transcript-tool-core';
 export * from './transcript-tool-format';
@@ -192,7 +194,13 @@ export function desktopToolActivityItemPresentation(
   let outputText =
     normalizedName === 'git'
       ? String(item.result ?? model.displayedResultBodyText ?? item.rawResult ?? '').trimEnd()
-      : toolActivityCleanOutput(toolActivityOutputText(item.result ?? model.displayedResultBodyText ?? item.rawResult));
+      : toolActivityCleanOutput(
+          toolActivityOutputText(
+            normalizedName === 'read'
+              ? readRowsForDisplay(item.result ?? model.displayedResultBodyText ?? item.rawResult)
+              : (item.result ?? model.displayedResultBodyText ?? item.rawResult)
+          )
+        );
   const backgroundTask = toolActivityBackgroundTask(outputText);
   const metaText = backgroundTask ? backgroundTask.meta : '';
   if (backgroundTask) outputText = backgroundTask.body;

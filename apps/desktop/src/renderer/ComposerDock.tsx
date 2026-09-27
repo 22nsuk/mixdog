@@ -1,28 +1,10 @@
-import {
-  lazy,
-  Suspense,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useState,
-  type MutableRefObject,
-  type ReactNode,
-} from 'react';
+import { lazy, Suspense, useEffect, useState, type MutableRefObject, type ReactNode } from 'react';
 import type { TranscriptItem } from './desktop-types';
-import { reviewSlotReserved, turnTouchesFiles } from './composer-dock-reservation';
 import { SessionGoalHost } from './session-goal-submission';
 
 // The review bar only paints for a file-touching turn, so its diff analysis
 // stays out of the first-screen bundle.
 const TurnReviewBar = lazy(() => import('./TurnReview').then((module) => ({ default: module.TurnReviewBar })));
-
-/** While the review chunk loads, a file-touching turn keeps its slot reserved
- *  exactly as it does for an in-flight read; the bar reports its own pending
- *  state as soon as it mounts. */
-function TurnReviewLoading({ onPendingChange }: { onPendingChange(pending: boolean): void }) {
-  useLayoutEffect(() => onPendingChange(true), [onPendingChange]);
-  return null;
-}
 
 /**
  * The chrome stacked ABOVE the prompt input: Goal capsule, runtime progress,
@@ -30,17 +12,14 @@ function TurnReviewLoading({ onPendingChange }: { onPendingChange(pending: boole
  * the composer itself as the last child.
  *
  * Every slot sits in flow, so its height comes out of the transcript viewport
- * and the follow hook re-pins the tail before paint. The dock therefore lets
- * each slot change geometry exactly once per real change:
- *   - the review slot is RESERVED while a diff can still arrive — a live
- *     file-touching turn, or a boundary whose authoritative worker read is
- *     still in flight — so the result fills existing geometry instead of
- *     resizing the viewport a second time;
+ * and the follow hook re-pins the tail before paint. Each slot takes space
+ * only while it actually renders (user: 실제 UI 뜰 때 바꿔야 한다):
+ *   - the review slot is empty until the review bar paints, so an in-flight
+ *     diff read never leaves a blank plate above the input;
  *   - the draft context bar leaves through a measured collapse instead of an
  *     instant unmount;
  *   - freed space is never held on a timer. A slot that is really gone
  *     releases its height in the same commit that removes it.
- * The reservation rules themselves live in composer-dock-reservation.ts.
  */
 
 type ComposerContextBarPhase = 'open' | 'collapsing' | 'closed';
@@ -82,8 +61,6 @@ export function ComposerDock({
   softCollapseContextBar,
   contextBar,
   reviewItems,
-  reviewStreamingTail,
-  reviewTurnLive,
   reviewActive,
   reviewBusy,
   reviewSessionId,
@@ -102,9 +79,6 @@ export function ComposerDock({
   softCollapseContextBar: MutableRefObject<boolean>;
   contextBar?: ReactNode;
   reviewItems: TranscriptItem[];
-  reviewStreamingTail: TranscriptItem | null | undefined;
-  /** The current turn is still producing output (busy, streaming, optimistic). */
-  reviewTurnLive: boolean;
   reviewActive: boolean;
   reviewBusy: boolean;
   reviewSessionId: string;
@@ -112,17 +86,7 @@ export function ComposerDock({
   onOpenFile?: (project: string, rel: string) => void;
   children: ReactNode;
 }) {
-  const [reviewPending, setReviewPending] = useState(false);
   const contextBarPhase = useComposerContextBarPhase(showProjectSelector, softCollapseContextBar);
-  const touchesFiles = useMemo(
-    () => turnTouchesFiles(reviewItems, reviewStreamingTail),
-    [reviewItems, reviewStreamingTail]
-  );
-  const reserved = reviewSlotReserved({
-    touchesFiles,
-    turnLive: reviewTurnLive,
-    reviewPending,
-  });
   return (
     <div className="composer-region">
       <SessionGoalHost placement="composer" submissionId={goalSubmissionId}>
@@ -138,8 +102,8 @@ export function ComposerDock({
       {/* Review sits attached ABOVE the input (user: 채팅창 위에 붙어야 한다).
           It is not a timeline row: as scroll content it read as a detached
           card floating over the composer. */}
-      <div className="turn-review-slot" data-reserved={reserved ? 'true' : 'false'}>
-        <Suspense fallback={<TurnReviewLoading onPendingChange={setReviewPending} />}>
+      <div className="turn-review-slot">
+        <Suspense fallback={null}>
           <TurnReviewBar
             items={reviewItems}
             active={reviewActive}
@@ -147,7 +111,6 @@ export function ComposerDock({
             sessionId={reviewSessionId}
             cwd={reviewCwd}
             onOpenFile={onOpenFile}
-            onPendingChange={setReviewPending}
           />
         </Suspense>
       </div>
