@@ -18,11 +18,11 @@ import { observationRoute } from './command-observation-routes';
 import { createCommandReplies } from './command-replies';
 import type { ExecutionState } from './execution-state';
 import { createComputerExecutionPolicy, type ComputerExecutionPolicy } from './execution-policy';
-import { createInputDispatch } from './input-dispatch';
+import { createInputDispatch, type SequenceRefScope } from './input-dispatch';
 import type { InputResolution } from './input-resolution';
 import { prepareInputRun, type InputRunContext, type PreparedInputRun } from './input-run-prepare';
 import { settleInputRun } from './input-run-settle';
-import { isSequenceStep, isTrustedSequenceContinuation } from './sequence-runner';
+import { isSequenceStep, isTrustedSequenceContinuation, retainsSequenceRefs } from './sequence-runner';
 import type { SessionLifecycle } from './session-lifecycle';
 import type { WindowReads } from './window-reads';
 
@@ -100,7 +100,8 @@ export function createCommandRouter(host: CommandRouterHost) {
     command: ComputerCommand,
     action: string,
     isMutation: boolean,
-    prepared: PreparedInputRun
+    prepared: PreparedInputRun,
+    sequenceRefs: SequenceRefScope
   ): Promise<PowerShellResponse> {
     const { inputTarget, targetWindowId, logicalTargetWindowId, batchSequenceStep } = prepared;
     const invalidateOtherObservers = () => {
@@ -110,7 +111,7 @@ export function createCommandRouter(host: CommandRouterHost) {
     };
     try {
       if (isMutation) invalidateOtherObservers();
-      return await dispatchInput(command, action, inputTarget, batchSequenceStep);
+      return await dispatchInput(command, action, inputTarget, batchSequenceStep, sequenceRefs);
     } finally {
       if (isMutation) {
         invalidateOtherObservers();
@@ -128,6 +129,11 @@ export function createCommandRouter(host: CommandRouterHost) {
     const actionTimings: Record<string, number> = {};
     const trustedSequenceContinuation = isTrustedSequenceContinuation(initial);
     const sequenceStep = isSequenceStep(initial);
+    // Read from the step the sequence runner vetted, before admission copies it.
+    const sequenceRefs: SequenceRefScope = {
+      retainRefs: retainsSequenceRefs(initial),
+      continuationRef: trustedSequenceContinuation && Boolean(initial.ref),
+    };
     const admission = await admitCommand(host, policy, initial);
     if ('reply' in admission) return admission.reply;
     const { command, action, isMutation, semanticTargetIdentity } = admission.admitted;
@@ -144,7 +150,7 @@ export function createCommandRouter(host: CommandRouterHost) {
     };
     const prepared = await prepareInputRun(host, policy, run);
     const deliveryStartedAt = performance.now();
-    const response = await deliverInput(command, action, isMutation, prepared);
+    const response = await deliverInput(command, action, isMutation, prepared, sequenceRefs);
     actionTimings.delivery_ms = elapsedMs(deliveryStartedAt);
     assertExecutionNotAborted();
     if (!response.ok) throw new Error(response.error || 'computer command failed');

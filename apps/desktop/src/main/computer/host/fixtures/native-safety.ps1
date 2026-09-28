@@ -287,6 +287,21 @@ $coordinateDragOk = $coordinateDrag.action -eq 'drag' -and $coordinateDrag.path 
         name = 'background-coordinate-drag'; ok = $coordinateDragOk
         error = ('action={0}; path={1}; code={2}; text={3}' -f $coordinateDrag.action, $coordinateDrag.path, $coordinateDrag.code, $coordinateDrag.text)
     })
+Invalidate-RefsForRequest ([pscustomobject]@{ action = 'sequence_step'; retain_refs = $true })
+$script:CurrentRequest = [pscustomobject]@{ action = 'set_value'; sequence_continuation = $true }
+$retainedRefOk = $false
+try { $retainedRefOk = $null -ne (Get-El $editRef) } catch { $retainedRefError = "$($_.Exception.Message)" }
+$textBox.Enabled = $false
+[System.Windows.Forms.Application]::DoEvents()
+$disabledRefRejected = $false
+try { [void](Get-El $editRef) } catch { $disabledRefRejected = "$($_.Exception.Message)" -match 'disabled or off screen' }
+$textBox.Enabled = $true
+[System.Windows.Forms.Application]::DoEvents()
+$script:CurrentRequest = $null
+[void]$probeResults.Add(@{
+        name = 'sequence-step-retains-refs-and-reproves-them'; ok = $retainedRefOk -and $disabledRefRejected
+        error = ('retained={0}; disabledRejected={1}; error={2}' -f $retainedRefOk, $disabledRefRejected, $retainedRefError)
+    })
 Invalidate-RefsForRequest ([pscustomobject]@{ action = 'key' })
 $staleRefRejected = $false
 try { [void](Get-El $editRef) } catch { $staleRefRejected = "$($_.Exception.Message)" -match 'stale' }

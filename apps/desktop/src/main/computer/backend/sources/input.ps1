@@ -13,6 +13,10 @@ function Set-ElRef($state, $ref, $el, $windowId, $generation) {
     }
 }
 
+function Get-MsaaIdentity($node) {
+    return '{0}|{1}' -f $node.ControlType, $node.Name
+}
+
 function Set-MsaaRef($state, $ref, $node, $windowId, $generation) {
     $state.Map[$ref] = @{
         Kind       = 'msaa'
@@ -20,6 +24,9 @@ function Set-MsaaRef($state, $ref, $node, $windowId, $generation) {
         WindowId   = [string]$windowId
         Generation = [int]$generation
         RuntimeId  = [string]$node.Key
+        # MSAA has no runtime id; the role and name it was observed with stand in
+        # when a later sequence step reaches this ref after an earlier delivery.
+        Identity   = Get-MsaaIdentity $node
     }
 }
 
@@ -30,6 +37,7 @@ function Get-RefRecord($ref) {
     if ([int]$record.Generation -ne [int](Get-CurrentSession).Generation) {
         throw "ref $ref is stale; take a fresh snapshot/find"
     }
+    $continuation = $script:CurrentRequest.sequence_continuation -eq $true
     if ($record.Kind -eq 'msaa') {
         $top = [MixWin32]::ParseWindowId([string]$record.WindowId)
         if ($null -eq $record.Msaa -or
@@ -37,6 +45,14 @@ function Get-RefRecord($ref) {
             ([string]$record.Msaa.WindowId -ne [string]$record.WindowId) -or
             (-not $record.Msaa.Refresh())) {
             throw "ref $ref is stale or its MSAA target changed; take a fresh snapshot/find"
+        }
+        if ($continuation) {
+            if ((Get-MsaaIdentity $record.Msaa) -ne [string]$record.Identity) {
+                throw "ref $ref no longer identifies the same element after an earlier step; take a fresh snapshot/find"
+            }
+            if (-not $record.Msaa.Enabled -or $record.Msaa.Offscreen) {
+                throw "ref $ref is disabled or off screen after an earlier step; take a fresh snapshot/find"
+            }
         }
         return $record
     }
@@ -53,6 +69,14 @@ function Get-RefRecord($ref) {
     }
     catch {
         throw "ref $ref is stale or its target changed; take a fresh snapshot/find"
+    }
+    # An earlier step of this sequence may have covered, hidden, or disabled it.
+    if ($continuation) {
+        $current = $null
+        try { $current = $el.Current } catch {}
+        if ($null -eq $current -or -not $current.IsEnabled -or $current.IsOffscreen) {
+            throw "ref $ref is disabled or off screen after an earlier step; take a fresh snapshot/find"
+        }
     }
     return $record
 }

@@ -25,6 +25,10 @@ internal static class MixdogNativeTextFixture {
       AcceptsReturn = true,
       Text = "Mixdog Computer Use native scenario."
     };
+    TextBox second = new TextBox {
+      AccessibleName = "Native second field",
+      Dock = DockStyle.Top
+    };
     Label status = new Label {
       AccessibleName = "Menu status",
       Dock = DockStyle.Bottom,
@@ -43,6 +47,7 @@ internal static class MixdogNativeTextFixture {
     menu.Items.Add(fixtureMenu);
     form.MainMenuStrip = menu;
     form.Controls.Add(editor);
+    form.Controls.Add(second);
     form.Controls.Add(status);
     form.Controls.Add(menu);
     System.Windows.Forms.Timer lifetime = new System.Windows.Forms.Timer {

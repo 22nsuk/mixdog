@@ -98,7 +98,6 @@ export const COMPUTER_CORE_ACTION_SCHEMA = {
 
 const ALLOWED_FIELDS = new Set(Object.keys(COMPUTER_CORE_ACTION_SCHEMA.properties));
 const TARGET_FIELDS = ['ref', 'element', 'x', 'y'];
-const CONTINUATION_TARGET_FIELDS = [...TARGET_FIELDS, 'to', 'to_element', 'to_x', 'to_y'];
 const FIELDS_BY_TYPE = {
   click: new Set(['type', ...TARGET_FIELDS, 'button', 'modifiers']),
   double_click: new Set(['type', ...TARGET_FIELDS, 'modifiers']),
@@ -167,6 +166,10 @@ function fieldValueError(field, value, label) {
 
 const POINTER_ACTION_TYPES = ['click', 'double_click', 'triple_click', 'mouse_down', 'mouse_up', 'move'];
 const CONTINUATION_ACTION_TYPES = ['type', 'key', 'key_down', 'key_up', 'wait'];
+// A later action may address another element of the same observation, by ref
+// only: marks and coordinates belong to a frame the first action invalidated.
+const CONTINUATION_REF_ACTION_TYPES = ['click', 'double_click', 'triple_click', 'scroll', 'set_value'];
+const CONTINUATION_FRAME_FIELDS = ['element', 'x', 'y', 'to', 'to_element', 'to_x', 'to_y', 'waypoints'];
 
 // Shape checks every action shares: known type, allowed fields, field values.
 function actionShapeError(action, type, label) {
@@ -203,14 +206,19 @@ function deliveryError(action, type, label, delivery) {
   return null;
 }
 
-// Actions after the first reuse the focus the first one established.
+// Actions after the first reuse the focus the first one established, or name
+// another element of the same observation by its ref.
 function sequenceError(action, type, index) {
   if (index === 0) return type === 'wait' ? 'Computer Use act must start with an input action' : null;
-  if (!CONTINUATION_ACTION_TYPES.includes(type)) {
-    return 'Computer Use act actions after the first must be type, key, key_down, key_up, or wait';
+  if (CONTINUATION_REF_ACTION_TYPES.includes(type)) {
+    if (!hasOwn(action, 'ref')) {
+      return `Computer Use act action ${index + 1} type="${type}" after the first action requires a ref from the same observation`;
+    }
+  } else if (!CONTINUATION_ACTION_TYPES.includes(type)) {
+    return 'Computer Use act actions after the first must be type, key, key_down, key_up, wait, or a ref-addressed click, double_click, triple_click, scroll, or set_value';
   }
-  if (CONTINUATION_TARGET_FIELDS.some((field) => hasOwn(action, field))) {
-    return 'Computer Use act actions after the first reuse focus and cannot carry a target';
+  if (CONTINUATION_FRAME_FIELDS.some((field) => hasOwn(action, field))) {
+    return 'Computer Use act actions after the first address elements by ref only; marks and coordinates belong to the first action';
   }
   return null;
 }

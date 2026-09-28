@@ -835,9 +835,11 @@ function Do-ReleaseCursorTheme {
     return @{ text = 'cursor theme released'; system_theme_restored = [bool]$restored }
 }
 
+# A sequence step followed by a ref step of the same sequence keeps the refs;
+# Get-RefRecord re-proves each one's identity before that later step uses it.
 function Invalidate-RefsForRequest($req) {
     $readActions = @@MIXDOG_RETAIN_REFS_ACTIONS@@
-    if ($null -ne $req -and -not ($readActions -contains [string]$req.action)) {
+    if ($null -ne $req -and $req.retain_refs -ne $true -and -not ($readActions -contains [string]$req.action)) {
         $state = Get-CurrentSession
         $state.Map.Clear()
         $state.Generation = [int]$state.Generation + 1

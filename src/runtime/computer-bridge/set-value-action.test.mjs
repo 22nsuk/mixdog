@@ -29,13 +29,20 @@ test('a value needs a semantic target and a value', () => {
   );
 });
 
-test('set_value is a targeted action, so it can only lead an act', () => {
-  assert.match(
+test('a later set_value fills another field of the same observation, by ref only', () => {
+  assert.equal(
     validateComputerCoreActions([
       { type: 'click', ref: 'uia:1' },
       { type: 'set_value', ref: 'uia:2', value: 'x' },
     ]),
-    /after the first must be/
+    null
+  );
+  assert.match(
+    validateComputerCoreActions([
+      { type: 'click', ref: 'uia:1' },
+      { type: 'set_value', element: 2, value: 'x' },
+    ]),
+    /requires a ref from the same observation/
   );
 });
 

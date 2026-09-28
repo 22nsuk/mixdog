@@ -139,7 +139,10 @@ export function createCommandAttempt(deps: CommandAttemptDeps) {
     const captureAttempts = captureAttemptsFromError(failure);
     const error = state.aborted && state.failureCode ? recoveryFailure(state.failureCode) : failure;
     const code = computerLogError(error);
-    if (TAKEOVER_CODES.includes(code)) {
+    // A read sends no input, so its failure leaves nothing for the user to
+    // recover: an observer replaced during a capture is not evidence that the
+    // user has the desktop, and must not latch every later command.
+    if (TAKEOVER_CODES.includes(code) && !observesOnly(command)) {
       deps.takeOver(code);
     }
     if (pausedForUserInput(coordinator.snapshot()) && !observesOnly(command)) {

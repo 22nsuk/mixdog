@@ -14,6 +14,14 @@ import type { CaptureEngineHost } from './capture';
 const LAUNCH_LAYOUT_POLL_MS = 200;
 const LAUNCH_LAYOUT_BUDGET_MS = 2_000;
 
+/** An input addressed through a semantic ref is answered by the accessibility
+ *  tree it acted through; pixel-targeted or untargeted input and OCR keep the
+ *  frame, which is their only evidence. */
+function defaultCaptureAfterMode(command: ComputerCommand, includeOcr: boolean): 'ax' | 'state' {
+  const first = Array.isArray(command.steps) ? command.steps[0] : command;
+  return first?.ref && !includeOcr ? 'ax' : 'state';
+}
+
 export function createCaptureAfter(
   host: Pick<CaptureEngineHost, 'assertExecutionNotAborted' | 'sessionIdFor'> &
     Partial<Pick<CaptureEngineHost, 'callPowerShell'>>,
@@ -90,25 +98,35 @@ export function createCaptureAfter(
         ocrLanguage: command.capture_after_ocr_language,
         maxOcrWords: command.capture_after_max_ocr_words,
       });
-      const capture = await captureComputer(
-        {
-          ...command,
-          action: 'capture',
-          mode: command.capture_after_mode || 'state',
-          max_elements: command.capture_after_max_elements || DEFAULT_CAPTURE_MAX_ELEMENTS,
-          include_ocr: ocrPreference.includeOcr,
-          ocr_language: ocrPreference.ocrLanguage,
-          max_ocr_words: ocrPreference.maxOcrWords,
-          image_output: command.capture_after_image_output,
-          window: undefined,
-          window_id: windowId,
-          screen: undefined,
-          capture_after: false,
-          observation_after: true,
-        },
-        windowId
-      );
+      const requestedMode = command.capture_after_mode;
+      const mode = requestedMode || defaultCaptureAfterMode(command, ocrPreference.includeOcr === true);
+      const captureIn = (captureMode: NonNullable<ComputerCommand['capture_after_mode']>) =>
+        captureComputer(
+          {
+            ...command,
+            action: 'capture',
+            mode: captureMode,
+            max_elements: command.capture_after_max_elements || DEFAULT_CAPTURE_MAX_ELEMENTS,
+            include_ocr: ocrPreference.includeOcr,
+            ocr_language: ocrPreference.ocrLanguage,
+            max_ocr_words: ocrPreference.maxOcrWords,
+            image_output: command.capture_after_image_output,
+            window: undefined,
+            window_id: windowId,
+            screen: undefined,
+            capture_after: false,
+            observation_after: true,
+          },
+          windowId
+        );
+      let capture = await captureIn(mode);
       host.assertExecutionNotAborted();
+      // A tree that is not usable cannot stand in for pixels the caller never
+      // declined, so the default read takes the full observation instead.
+      if (!requestedMode && mode === 'ax' && capture.payload.accessibility_status !== 'available') {
+        capture = await captureIn('state');
+        host.assertExecutionNotAborted();
+      }
       const repeatedImage = capture.image
         ? imageDedup.isRepeat(`${host.sessionIdFor(command)}\u0000${windowId}`, capture.image.data)
         : false;

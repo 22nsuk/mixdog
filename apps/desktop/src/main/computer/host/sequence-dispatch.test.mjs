@@ -200,6 +200,60 @@ test('foreground sequences keep recovery and ordinary non-sequence inputs are no
   );
 });
 
+test('a later ref step keeps the observation refs alive only up to that step', WINDOWS_ONLY, async () => {
+  const byRef = {
+    action: 'sequence',
+    window_id: 'hwnd:0x1',
+    steps: [
+      { action: 'click', ref: 's1:e1' },
+      { action: 'set_value', ref: 's1:e2', text: 'value' },
+      { action: 'key', keys: '{ENTER}' },
+    ],
+  };
+  const background = fixture();
+  assert.equal(JSON.parse((await background.router.runCommand(byRef)).text).completed, true);
+  // The worker retires refs after the outer request, so the flag rides there;
+  // the step it guards re-proves its ref from the inner request.
+  assert.deepEqual(
+    background.requests.map((request) => [request.retain_refs, request.step.sequence_continuation]),
+    [
+      [true, undefined],
+      [undefined, true],
+      [undefined, undefined],
+    ]
+  );
+  const foreground = fixture();
+  await foreground.router.runCommand({ ...byRef, delivery: 'foreground' });
+  assert.deepEqual(
+    foreground.requests.map((request) => [request.retain_refs, request.sequence_continuation]),
+    [
+      [true, undefined],
+      [undefined, true],
+      [undefined, undefined],
+    ]
+  );
+  const forged = fixture();
+  await forged.router.runCommand({ action: 'click', window_id: 'hwnd:0x1', ref: 's1:e1', retain_refs: true });
+  assert.equal(forged.requests[0].retain_refs, undefined, 'only a vetted sequence step can keep refs');
+});
+
+test('a later step addresses elements by ref only', WINDOWS_ONLY, async () => {
+  const f = fixture();
+  for (const [step, pattern] of [
+    [{ action: 'type', x: 4, y: 4, text: 'x' }, /by ref only/],
+    [{ action: 'type', element: 3, text: 'x' }, /by ref only/],
+    [{ action: 'click', ref: 's1:e2', element: 3 }, /by ref only/],
+    [{ action: 'click', x: 4, y: 4 }, /requires a ref from the same observation/],
+    [{ action: 'drag', ref: 's1:e2', to: 's1:e3' }, /type, key, wait, or a ref-addressed input/],
+  ]) {
+    await assert.rejects(
+      f.router.runCommand({ action: 'sequence', window_id: 'hwnd:0x1', steps: [{ action: 'key', keys: 'a' }, step] }),
+      pattern
+    );
+  }
+  assert.equal(f.requests.length, 0, 'a refused shape sends nothing');
+});
+
 test(
   'a native batch successor is claimed and captured without dispatching the old continuation',
   WINDOWS_ONLY,

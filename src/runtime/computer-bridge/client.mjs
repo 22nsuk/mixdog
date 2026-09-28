@@ -64,9 +64,38 @@ function canonicalizeActResult(value, args) {
     return normalized;
   };
   value.actions = Array.isArray(value.steps) ? value.steps.map(canonicalStep) : value.steps;
+  // A single-window act reports the same transition on the act and its step.
+  const transition = JSON.stringify(value.window_transition);
+  for (const row of Array.isArray(value.actions) ? value.actions : []) {
+    if (transition && JSON.stringify(row?.window_transition) === transition) delete row.window_transition;
+  }
   delete value.completed_steps;
   delete value.total_steps;
   delete value.steps;
+}
+
+// Host diagnostics stay in the host's run record; the model acts on none of them.
+const HOST_DIAGNOSTIC_FIELDS = ['timings_ms', 'capture_attempts'];
+
+function dropHostDiagnostics(value) {
+  if (!value || typeof value !== 'object') return;
+  if (Array.isArray(value)) {
+    for (const item of value) dropHostDiagnostics(item);
+    return;
+  }
+  for (const field of HOST_DIAGNOSTIC_FIELDS) delete value[field];
+  for (const item of Object.values(value)) dropHostDiagnostics(item);
+}
+
+// Elements name their source and enabled state only when they differ from the
+// common case the capture description states: a UIA element that is enabled.
+function omitElementDefaults(frame) {
+  if (!Array.isArray(frame?.elements)) return;
+  for (const element of frame.elements) {
+    if (!element || typeof element !== 'object') continue;
+    if (element.source === 'uia') delete element.source;
+    if (element.enabled === true) delete element.enabled;
+  }
 }
 
 export function canonicalComputerResultText(text, args) {
@@ -90,6 +119,9 @@ export function canonicalComputerResultText(text, args) {
     value.observation = value.capture_after;
     delete value.capture_after;
   }
+  dropHostDiagnostics(value);
+  omitElementDefaults(value);
+  omitElementDefaults(value.observation);
   if (value.ok === false && value.recovery === undefined) {
     const recovery = computerResultRecovery(value, args);
     if (recovery) value.recovery = recovery;

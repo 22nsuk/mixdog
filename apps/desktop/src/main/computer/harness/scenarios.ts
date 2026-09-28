@@ -1469,6 +1469,17 @@ async function run(): Promise<void> {
           // to where the user left it.
           assert.equal(recovery?.cursor_restored, true, JSON.stringify(action));
           assert.notEqual(recovery?.expected_focus_window_id, fixtureWindowId);
+          // guard.focus() focuses the guard inside this process; while another app holds the OS foreground (someone
+          // at the machine), Windows' foreground lock keeps it there, the host rightly records that app as where the
+          // user left focus, and release returns focus to it — never to the guard this scenario waits for.
+          const guardHandle = guard.getNativeWindowHandle();
+          const guardHwnd = guardHandle.length >= 8 ? guardHandle.readBigUInt64LE(0) : BigInt(guardHandle.readUInt32LE(0));
+          const restoreHwnd = BigInt(String(recovery?.expected_focus_window_id || '0').replace(/^hwnd:/i, '') || '0');
+          if (restoreHwnd !== guardHwnd) {
+            throw new ScenarioSkip(
+              `another app held the OS foreground (${recovery?.expected_focus_window_id}); the guard never had the focus to return`
+            );
+          }
           await eventually(
             async () => BrowserWindow.getFocusedWindow()?.id || 0,
             (id) => id === fixture.id
@@ -1799,6 +1810,8 @@ async function run(): Promise<void> {
               ref: editor.ref,
               text: 'SETVALUE42',
               delivery: 'background',
+              // The next step clicks a point in this observation's frame.
+              capture_after_mode: 'state',
             },
             'native-app'
           )
@@ -1833,6 +1846,37 @@ async function run(): Promise<void> {
           (element) => element.role === 'Edit' && element.name === 'Native text editor'
         );
         assert.match(String(typedEditor?.value ?? ''), /L1\s+L2/, JSON.stringify(typed));
+        // One act fills two fields of the same observation: the second step's
+        // ref outlives the first delivery and is re-proved before its own.
+        const typedElements = (typed.capture_after as CapturePayload | undefined)?.elements || [];
+        const secondField = typedElements.find(
+          (element) => element.role === 'Edit' && element.name === 'Native second field'
+        );
+        assert.ok(typedEditor?.ref && secondField?.ref, JSON.stringify(typedElements));
+        const filledResult = await command(
+          {
+            action: 'sequence',
+            window_id: nativeWindowId,
+            delivery: 'background',
+            steps: [
+              { action: 'set_value', ref: typedEditor.ref, text: 'MULTI-A' },
+              { action: 'set_value', ref: secondField.ref, text: 'MULTI-B' },
+            ],
+          },
+          'native-app'
+        );
+        const filled = actionPayload(filledResult);
+        assert.equal(filled.completed, true, JSON.stringify(filled));
+        const filledCapture = filled.capture_after as CapturePayload;
+        assert.equal(filledCapture.mode, 'ax', JSON.stringify(filledCapture));
+        assert.equal(filledResult.image, undefined, 'a ref-led act answers through its tree');
+        const filledValues = Object.fromEntries(
+          (filledCapture.elements || [])
+            .filter((element) => element.role === 'Edit')
+            .map((element) => [element.name, element.value])
+        );
+        assert.equal(filledValues['Native text editor'], 'MULTI-A', JSON.stringify(filledCapture));
+        assert.equal(filledValues['Native second field'], 'MULTI-B', JSON.stringify(filledCapture));
         fixture.show();
         fixture.focus();
         await eventually(
@@ -2367,6 +2411,7 @@ async function run(): Promise<void> {
             action: 'invoke',
             ref: target.ref,
             delivery: 'background',
+            capture_after_mode: 'state',
           },
           'semantic-transition'
         );

@@ -16,6 +16,7 @@ type CaptureEngine = ReturnType<typeof createCaptureEngine>;
 const suppressedSequenceCaptures = new WeakSet<object>();
 const trustedSequenceContinuations = new WeakSet<object>();
 const sequenceStepCommands = new WeakSet<object>();
+const refRetainingSteps = new WeakSet<object>();
 
 export function isSequenceStep(command: ComputerCommand): boolean {
   return sequenceStepCommands.has(command);
@@ -33,6 +34,12 @@ export function captureAfterSuppressed(command: ComputerCommand): boolean {
 /** A continuation step reuses the focus its first step established. */
 export function isTrustedSequenceContinuation(command: ComputerCommand): boolean {
   return trustedSequenceContinuations.has(command);
+}
+
+/** A later step of the same sequence addresses a ref from the observation the
+ *  sequence started from, so this step's delivery must not retire the refs. */
+export function retainsSequenceRefs(command: ComputerCommand): boolean {
+  return refRetainingSteps.has(command);
 }
 
 const FIRST_STEP_ACTIONS = [
@@ -54,8 +61,21 @@ const FIRST_STEP_ACTIONS = [
   'key_up',
 ];
 const CONTINUATION_STEP_ACTIONS = ['type', 'key', 'key_down', 'key_up', 'wait'];
+// A later step may address another element of the sequence's observation by its
+// ref; the backend re-proves that element's identity before delivering to it.
+const CONTINUATION_REF_STEP_ACTIONS = [
+  'invoke',
+  'set_value',
+  'click',
+  'right_click',
+  'middle_click',
+  'double_click',
+  'triple_click',
+  'scroll',
+];
 const ROOT_ONLY_FIELDS = ['window_id', 'window', 'app', 'screen', 'session_id', 'delivery'];
-const TARGET_FIELDS = ['ref', 'element', 'frame_id', 'x', 'y'];
+// Marks and coordinates belong to a frame the first step already invalidated.
+const CONTINUATION_FRAME_FIELDS = ['element', 'frame_id', 'x', 'y', 'to', 'to_element', 'to_x', 'to_y', 'waypoints'];
 const ALLOWED_STEP_FIELDS: Record<string, Set<string>> = {
   invoke: new Set(['action', 'ref', 'modifiers']),
   // A value is written through the element, so it carries a semantic target and
@@ -104,8 +124,12 @@ function assertSequenceStep(step: SequenceStep, index: number): string {
     if (!FIRST_STEP_ACTIONS.includes(stepAction)) {
       throw new Error('sequence first step must be a supported input action');
     }
+  } else if (CONTINUATION_REF_STEP_ACTIONS.includes(stepAction)) {
+    if (typeof step.ref !== 'string' || !step.ref) {
+      throw new Error(`sequence step ${index + 1} ${stepAction} requires a ref from the same observation`);
+    }
   } else if (!CONTINUATION_STEP_ACTIONS.includes(stepAction)) {
-    throw new Error('sequence continuation steps must be type, key, or wait');
+    throw new Error('sequence continuation steps must be type, key, wait, or a ref-addressed input');
   }
   const targetOverrides = ROOT_ONLY_FIELDS.filter((field) => Object.hasOwn(step, field));
   if (targetOverrides.length) {
@@ -115,8 +139,8 @@ function assertSequenceStep(step: SequenceStep, index: number): string {
   if (extraFields.length) {
     throw new Error(`sequence step ${index + 1} does not accept field(s): ${extraFields.join(', ')}`);
   }
-  if (index > 0 && TARGET_FIELDS.some((field) => Object.hasOwn(step, field))) {
-    throw new Error(`sequence step ${index + 1} reuses focus and cannot carry a target`);
+  if (index > 0 && CONTINUATION_FRAME_FIELDS.some((field) => Object.hasOwn(step, field))) {
+    throw new Error(`sequence step ${index + 1} addresses elements by ref only`);
   }
   if ((stepAction === 'type' || stepAction === 'set_value') && typeof step.text !== 'string') {
     throw new Error(`sequence step ${index + 1} requires string text`);
@@ -204,6 +228,9 @@ export function createSequenceRunner(host: SequenceRunnerHost) {
         ...(delivery === 'foreground' && index < steps.length - 1 ? { input_continues: true } : {}),
       };
       assertSafeComputerInput(stepCommand);
+      if (steps.slice(index + 1).some((later) => typeof later?.ref === 'string')) {
+        refRetainingSteps.add(stepCommand);
+      }
       return stepCommand;
     });
     const totalWaitSeconds = stepCommands.reduce(

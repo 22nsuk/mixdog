@@ -435,6 +435,30 @@ test('recovery failure survives worker cancellation and remains blocked rather t
   assert.deepEqual(f.calls, []);
 });
 
+test('a read whose observer changed fails alone; only input takes the desktop back', {
+  timeout: 3000,
+}, async (t) => {
+  for (const [action, takesOver] of [
+    ['capture', false],
+    ['click', true],
+  ]) {
+    const f = fixture(t, {
+      runCommand: async () => {
+        throw new Error('input_observation_unavailable: observation worker changed during capture');
+      },
+      recaptureRequiredReply: async () => null,
+    });
+    await assert.rejects(
+      f.host.executeSerialized({ action, session_id: 'a', window_id: 'hwnd:0x1' }),
+      /input_observation_unavailable/
+    );
+    await f.host.waitForCleanup();
+    assert.equal(f.coordinator.snapshot().userControlActive, takesOver, action);
+    if (!takesOver) f.coordinator.assertAutomationAllowed();
+    f.coordinator.reset();
+  }
+});
+
 test('native interruption inside a sequence reaches the pending queue instead of a failed tool reply', {
   timeout: 3000,
 }, async (t) => {

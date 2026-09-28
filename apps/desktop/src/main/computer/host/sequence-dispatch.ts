@@ -20,6 +20,8 @@ export function sequenceStepRequest(step: Record<string, unknown>): Record<strin
     delivery: 'background',
     session_id: step.session_id,
     read_only: step.read_only,
+    // The worker retires refs after the outer request, so the outer carries it.
+    ...(step.retain_refs === true ? { retain_refs: true } : {}),
     step,
   };
 }

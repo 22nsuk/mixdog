@@ -111,8 +111,8 @@ test('setup names distinguish built-in toggles from Memory installation and togg
 
 test('computer action ordering is visible before composing a multi-action call', () => {
   const act = COMPUTER_INPUT_SCHEMA.oneOf.find((branch) => branch.properties.action.enum.includes('act'));
-  assert.match(act.properties.input.properties.actions.description, /only type\/key\/wait/);
-  assert.match(act.properties.input.properties.actions.description, /without targets/);
+  assert.match(act.properties.input.properties.actions.description, /type\/key\/wait reusing focus/);
+  assert.match(act.properties.input.properties.actions.description, /on a ref from the same observation/);
   assert.match(act.properties.input.properties.actions.description, /total ≤10s/);
   const args = {
     action: 'act',
@@ -128,7 +128,9 @@ test('computer action ordering is visible before composing a multi-action call',
   accepts(COMPUTER_INPUT_SCHEMA, args);
   assert.equal(validateComputerToolArgs(args), null);
   args.input.actions[1] = { type: 'click', ref: 'ref:2' };
-  assert.match(validateComputerToolArgs(args), /after the first must be type, key, key_down, key_up, or wait/);
+  assert.equal(validateComputerToolArgs(args), null);
+  args.input.actions[1] = { type: 'move', ref: 'ref:2' };
+  assert.match(validateComputerToolArgs(args), /after the first must be type, key, key_down, key_up, wait, or a ref-addressed/);
 });
 
 test('screenshot and select-sequence descriptions give the accepted first-call combinations', () => {

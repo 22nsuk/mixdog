@@ -67,6 +67,13 @@ function annotatePrivilegedResponse(
   };
 }
 
+/** How a vetted sequence step treats the refs of the observation it started from:
+ *  keep them for a later ref step, and re-prove a ref this later step addresses. */
+export interface SequenceRefScope {
+  retainRefs?: boolean;
+  continuationRef?: boolean;
+}
+
 export function createInputDispatch(host: DispatchHost, policy: ComputerExecutionPolicy) {
   const {
     callPowerShell,
@@ -96,7 +103,8 @@ export function createInputDispatch(host: DispatchHost, policy: ComputerExecutio
     command: ComputerCommand,
     action: string,
     target: ResolvedInputTarget,
-    batchSequenceStep = false
+    batchSequenceStep = false,
+    sequenceRefs: SequenceRefScope = {}
   ): Promise<PowerShellResponse> {
     const { targetWindowId } = target;
     const inputObservation = foregroundInputObservation(command, target, sessionIdFor(command));
@@ -116,7 +124,11 @@ export function createInputDispatch(host: DispatchHost, policy: ComputerExecutio
     if (electronTextTarget && !electronTextTarget.webContents.isDestroyed()) {
       return dispatchElectronText({ host, command, target, renderer: electronTextTarget, authorizeDispatch });
     }
-    const powerShellRequest = powerShellInputRequest(command, action, target, sessionIdFor(command), inputObservation);
+    const powerShellRequest = {
+      ...powerShellInputRequest(command, action, target, sessionIdFor(command), inputObservation),
+      ...(sequenceRefs.retainRefs ? { retain_refs: true } : {}),
+      ...(sequenceRefs.continuationRef ? { sequence_continuation: true } : {}),
+    };
     const integrity = await readForegroundIntegrity(command, targetWindowId);
     const usePrivilegedWorker = integrity.known && integrity.higher;
     assertExecutionNotAborted();

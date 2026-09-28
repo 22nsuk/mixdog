@@ -100,7 +100,7 @@ const captureProperties = {
     type: 'string',
     enum: ['state', 'som', 'vision', 'ax', 'zoom'],
     description:
-      'state (default) is structured UI plus image; som adds marks; vision is image only; ax is accessibility only. zoom uses frame_id and region only; omit window_id, app and screen.',
+      'state (default) is structured UI plus image; som adds marks; vision is image only; ax is accessibility only. zoom uses frame_id and region only; omit window_id, app and screen. Elements omit source when uia and enabled when true.',
   },
   frame_id: {
     type: 'string',
@@ -237,13 +237,13 @@ export const COMPUTER_INPUT_SCHEMA = {
             minItems: 1,
             maxItems: 6,
             description:
-              'First: an input action. Then only type/key/wait, reusing focus without targets. Waits total ≤10s; transition/failure stops the rest.',
+              'First: an input action. Then type/key/wait reusing focus, or click/double_click/triple_click/scroll/set_value/type/key on a ref from the same observation (no marks or coordinates). Waits total ≤10s; transition/failure or a changed, disabled, or off-screen ref stops the rest.',
           },
           observe: {
             type: 'string',
             enum: ['state', 'ax'],
             description:
-              'Returned observation: state (default) includes the frame; ax returns accessibility only, skipping the screenshot when refs are enough.',
+              'Returned observation. Default: ax when the first action targets a ref (full state if the tree is unusable), otherwise state. state includes the frame for coordinates or visual checks; ax skips the screenshot.',
           },
           ...delivery,
         },

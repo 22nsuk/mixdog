@@ -1330,18 +1330,45 @@ test('computer tool contract exposes stable targets, frames, and explicit delive
     }),
     null
   );
-  assert.match(
+  assert.equal(
     validateComputerToolArgs({
       action: 'act',
       input: {
         window_id: 'hwnd:0x123',
         actions: [
           { type: 'click', ref: 'ref:1' },
-          { type: 'click', ref: 'ref:2' },
+          { type: 'set_value', ref: 'ref:2', value: 'hello' },
+          { type: 'type', ref: 'ref:3', text: 'world' },
+          { type: 'click', ref: 'ref:4' },
         ],
       },
     }),
-    /actions after the first must be type, key, key_down, key_up, or wait/i
+    null,
+    'later actions may address other refs of the same observation'
+  );
+  assert.match(
+    validateComputerToolArgs({
+      action: 'act',
+      input: {
+        window_id: 'hwnd:0x123',
+        actions: [{ type: 'click', ref: 'ref:1' }, { type: 'click' }],
+      },
+    }),
+    /requires a ref from the same observation/i
+  );
+  assert.match(
+    validateComputerToolArgs({
+      action: 'act',
+      input: {
+        window_id: 'hwnd:0x123',
+        frame_id: 'frame:1',
+        actions: [
+          { type: 'click', ref: 'ref:1' },
+          { type: 'click', x: 1, y: 2 },
+        ],
+      },
+    }),
+    /requires a ref from the same observation/i
   );
   assert.match(
     validateComputerToolArgs({
@@ -1350,11 +1377,24 @@ test('computer tool contract exposes stable targets, frames, and explicit delive
         window_id: 'hwnd:0x123',
         actions: [
           { type: 'click', ref: 'ref:1' },
-          { type: 'type', ref: 'ref:2', text: 'hello' },
+          { type: 'type', element: 2, text: 'hello' },
         ],
       },
     }),
-    /reuse focus and cannot carry a target/i
+    /by ref only/i
+  );
+  assert.match(
+    validateComputerToolArgs({
+      action: 'act',
+      input: {
+        window_id: 'hwnd:0x123',
+        actions: [
+          { type: 'click', ref: 'ref:1' },
+          { type: 'drag', ref: 'ref:2', to: 'ref:3' },
+        ],
+      },
+    }),
+    /after the first must be type, key, key_down, key_up, wait, or a ref-addressed/i
   );
   assert.match(
     validateComputerToolArgs({
@@ -1690,6 +1730,49 @@ test('computer act result is normalized to actions plus one observation', () => 
     observation: { ok: true, action: 'capture', frame_id: 'frame:2' },
     verdict: { decision: 'verify_fresh_state' },
   });
+});
+
+test('computer results reach the model without host diagnostics or default element fields', () => {
+  const transition = { observed: true, opened_windows: [], closed_windows: [] };
+  const value = JSON.parse(
+    canonicalComputerResultText(
+      JSON.stringify({
+        ok: true,
+        action: 'sequence',
+        completed_steps: 1,
+        total_steps: 1,
+        window_transition: transition,
+        timings_ms: { total_ms: 9 },
+        steps: [{ index: 1, action: 'click', ok: true, window_transition: transition, timings_ms: { delivery_ms: 2 } }],
+        capture_after: {
+          ok: true,
+          action: 'capture',
+          capture_attempts: [{ backend: 'app_owned', status: 'captured' }],
+          timings_ms: { total_ms: 4 },
+          elements: [
+            { mark: 1, ref: 's1:e0', source: 'uia', role: 'Button', name: 'OK', enabled: true },
+            { mark: 2, ref: 's1:e1', source: 'msaa', role: 'Edit', name: 'Name', enabled: false },
+          ],
+        },
+      }),
+      { action: 'act', input: { window_id: 'hwnd:0x1', actions: [{ type: 'click', ref: 's1:e0' }] } }
+    )
+  );
+  assert.equal(JSON.stringify(value).includes('timings_ms'), false);
+  assert.equal(value.observation.capture_attempts, undefined);
+  assert.deepEqual(value.window_transition, transition);
+  assert.equal(value.actions[0].window_transition, undefined, 'a transition repeated on its step is dropped');
+  assert.deepEqual(value.observation.elements, [
+    { mark: 1, ref: 's1:e0', role: 'Button', name: 'OK' },
+    { mark: 2, ref: 's1:e1', source: 'msaa', role: 'Edit', name: 'Name', enabled: false },
+  ]);
+  const capture = JSON.parse(
+    canonicalComputerResultText(
+      JSON.stringify({ ok: true, action: 'capture', elements: [{ ref: 's2:e0', source: 'ocr', enabled: true }] }),
+      { action: 'capture', input: { window_id: 'hwnd:0x1' } }
+    )
+  );
+  assert.deepEqual(capture.elements, [{ ref: 's2:e0', source: 'ocr' }]);
 });
 
 test('computer errors return one deterministic recovery instead of permission guesses', () => {
