@@ -27,9 +27,14 @@ const FILE_LANES = ['fast', 'slow', 'live', 'electron'];
 const LANES = [...FILE_LANES, 'all'];
 
 export const USAGE = `Usage: node scripts/test.mjs [--lane ${LANES.join('|')}] [--exclude-lane <lane>]...
-                             [--rerun-failed <n>] [--list] [--coverage]
+                             [--rerun-failed <n>] [--list] [--coverage] [--changed]
                              [--import <spec>]... [--test-*]... [filter...]
   filter          substring of a file path; only matching files run.
+  --changed       only the selected files whose relative references (import,
+                  import(), require(), new URL(…, import.meta.url)) reach a file
+                  that differs from HEAD (edits and untracked files). A changed
+                  file no test references (a path joined at run time) is listed,
+                  so a path filter can add its tests.
   --lane          fast (default) also covers the electron lane, so a plain run
                   keeps testing it; --lane electron runs those files alone.
   --exclude-lane  drop one lane from the selection, repeatable. Electron and
@@ -84,6 +89,7 @@ export function parseArgs(argv) {
     // were, so nothing downstream can branch on coverage, lane exclusion or
     // re-runs by accident.
     else if (arg === '--coverage') options.coverage = true;
+    else if (arg === '--changed') options.changed = true;
     else if (arg === '--help' || arg === '-h') options.help = true;
     else if (arg === '--exclude-lane') options.excludeLanes = [...(options.excludeLanes ?? []), argv[++index]];
     else if (arg.startsWith('--exclude-lane='))
@@ -144,7 +150,31 @@ async function main() {
     console.log(USAGE);
     return;
   }
-  const files = selectTestFiles(await discoverTestFiles(), options);
+  const discovered = await discoverTestFiles();
+  let files = selectTestFiles(discovered, options);
+  if (options.changed) {
+    // Loaded only for --changed, so a plain run imports nothing it does not use.
+    const { changedFiles, selectChangedTests } = await import('./lib/changed-tests.mjs');
+    // The graph spans every discovered test, so "no test imports it" means none
+    // in this package; the lane and filters then narrow what actually runs.
+    const { selected, unreached: everywhere } = selectChangedTests(discovered, changedFiles());
+    const reaching = new Set(selected);
+    files = files.filter((file) => reaching.has(file));
+    // Another workspace package's files belong to that package's own run.
+    const unreached = everywhere.filter(
+      (file) =>
+        ROOTS.some((root) => (root === '.' ? !file.includes('/') : file.startsWith(`${root}/`))) &&
+        (options.filters.length === 0 || options.filters.some((filter) => file.includes(filter)))
+    );
+    if (unreached.length) {
+      console.error(`--changed: no test imports ${unreached.length} changed file(s); add a path filter for them:`);
+      for (const file of unreached) console.error(`  ${file}`);
+    }
+    if (!files.length) {
+      console.error(`--changed: no ${options.lane} test file matching the filters reaches a changed file`);
+      return;
+    }
+  }
   if (options.list) {
     for (const file of files) console.log(`${laneOf(file).padEnd(5)} ${file}`);
     return;

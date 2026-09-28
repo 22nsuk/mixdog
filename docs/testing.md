@@ -27,6 +27,15 @@ Successful test names are omitted from the console summary; failures, warnings,
 skip/todo reasons, totals and slow-file timings remain. `Full test log:` points
 to an unfiltered report in a unique temporary directory.
 
+During a change, `npm test -- --changed [filter...]` runs only the discovered
+files whose relative references (`import … from`, `export … from`, `import()`,
+`require()`, `new URL(…, import.meta.url)`) reach a file that differs from HEAD,
+untracked files included. A changed file nothing references that way — a skill's
+markdown, a source a module finds by joining a path at run time — is listed so a
+path filter can add its tests; the full lanes still gate the push. The office suite, for one, runs in about 9s this way instead of 20s:
+its files take 2-5s each alone, and the longer times in a full run are
+LibreOffice processes contending, not slow files to move to the slow lane.
+
 For exact file paths/globs and Node options without discovery or lane filtering,
 use `node scripts/test-direct.mjs [Node test options] <files...>` instead of
 `node --test`. For example:

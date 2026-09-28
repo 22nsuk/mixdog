@@ -9,6 +9,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createFailureRecorder, failureRecord } from './lib/test-failure-records.mjs';
 import { classifyRerunOutcomes, formatFailureSummary, policyLine, SUMMARY_TAG } from './lib/test-failure-summary.mjs';
 import { discoverTestFiles, laneOf, laneSelected, parseArgs, selectTestFiles, USAGE } from './test.mjs';
+import { changedFiles, selectChangedTests } from './lib/changed-tests.mjs';
 
 const runnerUrl = new URL('./test.mjs', import.meta.url);
 const runnerPath = fileURLToPath(runnerUrl);
@@ -33,6 +34,52 @@ function runNode(cwd, args) {
   assert.equal(result.signal, null);
   return result;
 }
+
+test('--changed selects the tests whose static imports reach a changed file', async (t) => {
+  const cwd = await fixture(t, {
+    'src/a.mjs': 'export const a = 1;\n',
+    'src/b.mjs': "import { a } from './a.mjs';\nexport const b = a;\n",
+    'src/c.ts': 'export const c = 1;\n',
+    'src/d.mjs': "export * from './c';\n",
+    'src/cycle-x.mjs': "import './cycle-y.mjs';\nimport {\n  a,\n} from './a.mjs';\n",
+    'src/cycle-y.mjs': "import './cycle-x.mjs';\n",
+    'src/one.test.mjs': "import { b } from './b.mjs';\n",
+    'src/two.test.mjs': "const d = await import('./d.mjs');\n",
+    'src/three.test.mjs': "import './cycle-y.mjs';\n",
+    'src/four.test.mjs': "import assert from 'node:assert';\n",
+    'src/notes.md': 'read at run time\n',
+    'src/fixtures/probe.ps1': 'Write-Output 1\n',
+    'src/worker.cjs': 'module.exports = 1;\n',
+    'src/five.test.mjs':
+      "const probe = new URL('./fixtures/probe.ps1', import.meta.url);\nconst worker = require('./worker.cjs');\n",
+  });
+  const tests = ['src/five.test.mjs', 'src/four.test.mjs', 'src/one.test.mjs', 'src/three.test.mjs', 'src/two.test.mjs'];
+  // Through a plain import, and through a cycle that reaches the same module.
+  assert.deepEqual(selectChangedTests(tests, ['src/a.mjs', 'src/notes.md'], cwd), {
+    selected: ['src/one.test.mjs', 'src/three.test.mjs'],
+    unreached: ['src/notes.md'],
+  });
+  // An extensionless re-export behind a dynamic import, and a changed test file itself.
+  assert.deepEqual(selectChangedTests(tests, ['src/c.ts'], cwd).selected, ['src/two.test.mjs']);
+  assert.deepEqual(selectChangedTests(tests, ['src/four.test.mjs'], cwd).selected, ['src/four.test.mjs']);
+  // A fixture resolved against import.meta.url and a required module are edges too.
+  assert.deepEqual(selectChangedTests(tests, ['src/fixtures/probe.ps1', 'src/worker.cjs'], cwd), {
+    selected: ['src/five.test.mjs'],
+    unreached: [],
+  });
+  assert.equal(parseArgs(['--changed', 'src']).changed, true);
+  assert.match(USAGE, /--changed/);
+
+  // The changed set is what differs from HEAD, untracked files included.
+  const git = (...args) =>
+    spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd, encoding: 'utf8' });
+  git('init', '-q');
+  git('add', '.');
+  git('commit', '-qm', 'base');
+  await writeFile(join(cwd, 'src/a.mjs'), 'export const a = 2;\n');
+  await writeFile(join(cwd, 'src/new.mjs'), 'export const n = 1;\n');
+  assert.deepEqual(changedFiles(cwd), ['src/a.mjs', 'src/new.mjs']);
+});
 
 test('lane names are suffix-based, case-sensitive, and default to fast', () => {
   assert.equal(laneOf('src/a.test.mjs'), 'fast');

@@ -198,11 +198,14 @@ test('shell result envelopes: success, non-zero exit, timeout, and preflight', a
   const shellFailOut = await shellFailOutPromise;
   const normalizedShellFailOut = normalizeToolEnvelope(shellFailOut);
   const shellFailText = String(normalizedShellFailOut.result);
+  // PowerShell's -Command ends a failed native command with status 1, not the command's own code (the warm standby
+  // keeps that contract: shell-warm-standby.slow.test.mjs); bash passes the 7 through.
+  const failedExit = process.platform === 'win32' ? 1 : 7;
   if (
     normalizedShellFailOut.explicitSuccess !== true ||
     /^Error[\s:[]/.test(shellFailText) ||
     /\[shell-run-failed\]/.test(shellFailText) ||
-    !/^\[exit code: 7\]\n\n/.test(shellFailText) ||
+    !new RegExp(`^\\[exit code: ${failedExit}\\]\\n\\n`).test(shellFailText) ||
     /\[completed:/.test(shellFailText) ||
     !/tool-contracts-bash-fail/.test(shellFailText)
   ) {
@@ -355,7 +358,7 @@ test('auto-promotion returns a tracked task with completion guidance', async () 
   }
   if (
     !/auto-backgrounded/i.test(String(shellAutoPromoteOut)) ||
-    !/Completion is automatic/i.test(String(shellAutoPromoteOut))
+    !/Completion arrives automatically/i.test(String(shellAutoPromoteOut))
   ) {
     throw new Error(
       `shell auto-promotion must return a tracked task with automatic-completion guidance:\n${shellAutoPromoteOut}`
