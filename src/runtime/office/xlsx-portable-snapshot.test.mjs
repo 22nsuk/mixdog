@@ -9,6 +9,7 @@ import { parts, value, workspace } from './office-test-support.mjs';
 import { sessions } from './core/office-core.mjs';
 import { recalculateForReview } from './core/office-recalculation.mjs';
 import { cellRecords, sheetFormulaTotals } from './portable/portable-cells.mjs';
+import { chartPartSnapshot } from './portable/portable-snapshot-shared.mjs';
 
 process.env.MIXDOG_OOXML_VALIDATOR_DISABLED = '1';
 
@@ -218,6 +219,311 @@ test('column widths follow the text a number format prints', async (t) => {
     )
   );
   assert.deepEqual(await narrow(created.session), []);
+});
+
+// A composed report set every paragraph's face and left the document's own at Calibri 11 pt: a paragraph added later
+// came out in another face, size, and ink than the body. The document default is now the body's, and a Normal style
+// without run properties leaves the style after it alone.
+test('a composed document makes its body face, size, and ink the document default', async (t) => {
+  const cwd = await workspace(t);
+  const path = join(cwd, 'report.docx');
+  value(
+    await executeOfficeTool(
+      {
+        action: 'create',
+        path,
+        format: 'docx',
+        mode: 'portable',
+        design: { profile: 'data' },
+        operations: [{ op: 'compose_document', title: '야간 이용 분석', sections: [{ heading: '해석', paragraphs: ['본문입니다.'] }] }],
+      },
+      { cwd }
+    )
+  );
+  const styles = await (await parts(path)).text('word/styles.xml');
+  const defaults = /<w:rPrDefault>[\s\S]*?<\/w:rPrDefault>/.exec(styles)[0];
+  assert.match(defaults, /w:ascii="Malgun Gothic"/);
+  assert.match(defaults, /w:eastAsia="Malgun Gothic"/);
+  assert.match(defaults, /<w:sz w:val="20"\/>/);
+  assert.match(defaults, /<w:color w:val="[0-9A-F]{6}"\/>/);
+  const title = /<w:style\b[^>]*w:styleId="Title"[^>]*>[\s\S]*?<\/w:style>/.exec(styles)?.[0] || '';
+  assert.doesNotMatch(title, /w:ascii="Malgun Gothic"/, 'the style after Normal is left alone');
+
+  // Korean Word writes Normal as styleId "a" with its own run properties, which outrank the defaults: it is found as
+  // the default paragraph style and takes the same face and size.
+  const korean = join(cwd, 'korean-word.docx');
+  const zip = await JSZip.loadAsync(await readFile(path));
+  const koreanStyles = (await zip.file('word/styles.xml').async('string')).replace(
+    /<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"\/>/,
+    '<w:style w:type="paragraph" w:default="1" w:styleId="a"><w:name w:val="Normal"/><w:rPr><w:rFonts w:ascii="Calibri" w:eastAsia="Calibri" w:hAnsi="Calibri"/><w:sz w:val="22"/></w:rPr>'
+  );
+  assert.match(koreanStyles, /w:styleId="a"/);
+  zip.file('word/styles.xml', koreanStyles);
+  await writeFile(korean, await zip.generateAsync({ type: 'nodebuffer' }));
+  const opened = value(await executeOfficeTool({ action: 'open', path: korean, mode: 'portable' }, { cwd }));
+  value(
+    await executeOfficeTool(
+      { action: 'batch', session: opened.session, operations: [{ op: 'set_document_font', properties: { name: '맑은 고딕', size: 10.5 } }] },
+      { cwd }
+    )
+  );
+  const saved = await (await parts(opened.output || korean)).text('word/styles.xml');
+  const normal = /<w:style\b[^>]*w:styleId="a"[^>]*>[\s\S]*?<\/w:style>/.exec(saved)[0];
+  assert.match(normal, /w:ascii="맑은 고딕"/);
+  assert.match(normal, /<w:sz w:val="21"\/>/);
+});
+
+// A body that ended in a table lost that table when LibreOffice saved the file as .doc, and two tables appended in a
+// row joined into one. A table now ends on a paragraph, which the next paragraph fills, and tables keep one between.
+test('a document keeps a paragraph after its last table and between two tables', async (t) => {
+  const cwd = await workspace(t);
+  const path = join(cwd, 'tables.docx');
+  const created = value(
+    await executeOfficeTool(
+      {
+        action: 'create',
+        path,
+        format: 'docx',
+        mode: 'portable',
+        operations: [
+          { op: 'append_text', text: '앞 문단' },
+          { op: 'add_table', rows: 1, columns: 1, values: [['첫째']] },
+          { op: 'add_table', rows: 1, columns: 1, values: [['둘째']] },
+        ],
+      },
+      { cwd }
+    )
+  );
+  const blocks = async () =>
+    [...(await (await parts(path)).text('word/document.xml')).replace(/<w:tc>[\s\S]*?<\/w:tc>/g, '').matchAll(/<w:(p|tbl)\b(\/)?/g)]
+      .map((match) => (match[1] === 'tbl' ? 'T' : match[2] ? 'e' : 'p'))
+      .join('');
+  assert.equal(await blocks(), 'pTeTe');
+  value(
+    await executeOfficeTool({ action: 'batch', session: created.session, operations: [{ op: 'append_text', text: '뒤 문단' }] }, { cwd })
+  );
+  assert.equal(await blocks(), 'pTeTp', 'the closing paragraph is filled, not followed by a blank line');
+  // Placed under a paragraph that a table follows, a new table keeps a paragraph between it and that table.
+  value(
+    await executeOfficeTool(
+      { action: 'batch', session: created.session, operations: [{ op: 'add_table', paragraph: 1, rows: 1, columns: 1, values: [['앞']] }] },
+      { cwd }
+    )
+  );
+  assert.equal(await blocks(), 'pTeTeTp');
+  // Removing the only paragraph between two tables keeps it as an empty one, or the two would join.
+  const pair = join(cwd, 'pair.docx');
+  const paired = value(
+    await executeOfficeTool(
+      {
+        action: 'create',
+        path: pair,
+        format: 'docx',
+        mode: 'portable',
+        operations: [
+          { op: 'append_text', text: '첫' },
+          { op: 'add_table', rows: 1, columns: 1, values: [['A']] },
+          { op: 'append_text', text: '사이' },
+          { op: 'add_table', rows: 1, columns: 1, values: [['B']] },
+          { op: 'append_text', text: '끝' },
+        ],
+      },
+      { cwd }
+    )
+  );
+  const between = value(
+    await executeOfficeTool({ action: 'batch', session: paired.session, operations: [{ op: 'remove_paragraph', paragraph: 2 }] }, { cwd })
+  );
+  assert.equal(between.results[0].keptBetweenTables, true);
+  const pairBlocks = [...(await (await parts(pair)).text('word/document.xml')).replace(/<w:tc>[\s\S]*?<\/w:tc>/g, '').matchAll(/<w:(p|tbl)\b(\/)?/g)]
+    .map((match) => (match[1] === 'tbl' ? 'T' : match[2] ? 'e' : 'p'))
+    .join('');
+  assert.equal(pairBlocks, 'pTeTp');
+  // Moving that paragraph away leaves the tables apart too.
+  value(
+    await executeOfficeTool({ action: 'batch', session: paired.session, operations: [{ op: 'remove_paragraph', paragraph: 1 }, { op: 'append_text', text: '사이 2' }, { op: 'move_paragraph', paragraph: 1, index: 3 }] }, { cwd })
+  );
+  const moved = [...(await (await parts(pair)).text('word/document.xml')).replace(/<w:tc>[\s\S]*?<\/w:tc>/g, '').matchAll(/<w:(p|tbl)\b(\/)?/g)]
+    .map((match) => (match[1] === 'tbl' ? 'T' : match[2] ? 'e' : 'p'))
+    .join('');
+  assert.doesNotMatch(moved, /TT/, moved);
+});
+
+// A series named in plain text (<c:tx><c:v>Value</c:v></c:tx>) has no name formula; the reader searched past
+// </c:tx> and reported the category range as the name's, which the total-row audit then read as a series range.
+test('a series named in text reports no name formula, not its category range', () => {
+  const chart = chartPartSnapshot(
+    '<c:chartSpace><c:chart><c:plotArea><c:barChart><c:ser><c:idx val="0"/><c:tx><c:v>Value</c:v></c:tx>' +
+      '<c:cat><c:strRef><c:f>Sheet1!$A$2:$A$3</c:f></c:strRef></c:cat>' +
+      '<c:val><c:numRef><c:f>Sheet1!$B$2:$B$3</c:f><c:numCache><c:ptCount val="2"/></c:numCache></c:numRef></c:val>' +
+      '</c:ser><c:ser><c:idx val="1"/><c:tx><c:strRef><c:f>Sheet1!$C$1</c:f><c:strCache><c:pt idx="0"><c:v>Target</c:v></c:pt></c:strCache></c:strRef></c:tx>' +
+      '<c:cat><c:strRef><c:f>Sheet1!$A$2:$A$3</c:f></c:strRef></c:cat><c:val><c:numRef><c:f>Sheet1!$C$2:$C$3</c:f></c:numRef></c:val>' +
+      '</c:ser></c:barChart></c:plotArea></c:chart></c:chartSpace>'
+  );
+  assert.deepEqual(
+    chart.series.map((series) => [series.name, series.formula, series.categoryFormula, series.valueFormula]),
+    [
+      ['Value', '', 'Sheet1!$A$2:$A$3', 'Sheet1!$B$2:$B$3'],
+      ['Target', 'Sheet1!$C$1', 'Sheet1!$A$2:$A$3', 'Sheet1!$C$2:$C$3'],
+    ]
+  );
+});
+
+// A summary sheet charting the calculation sheet behind it was refused ("Invalid XLSX cell reference: '월별 계산'!A1"):
+// the source could only be the sheet the frame stood on. It now names its sheet, and the chart cites that sheet.
+test('a chart on a summary sheet reads its source from the sheet it names', async (t) => {
+  const cwd = await workspace(t);
+  const path = join(cwd, 'summary.xlsx');
+  value(
+    await executeOfficeTool(
+      {
+        action: 'create',
+        path,
+        format: 'xlsx',
+        mode: 'portable',
+        operations: [
+          { op: 'rename_sheet', sheet: 'Sheet1', name: '요약' },
+          { op: 'add_sheet', name: '월별 계산' },
+          {
+            op: 'set_range',
+            sheet: '월별 계산',
+            range: 'A1:D3',
+            values: [
+              ['월', '방문자', '주문', '매출'],
+              ['1월', 12000, 420, 17640000],
+              ['2월', 12600, 441, 18522000],
+            ],
+          },
+          {
+            op: 'add_chart',
+            sheet: '요약',
+            range: "'월별 계산'!$A$1:$A$3,'월별 계산'!D1:D3",
+            cell: 'B2',
+            chartType: 'column',
+            title: '월별 매출',
+          },
+        ],
+      },
+      { cwd }
+    )
+  );
+  const zip = await parts(path);
+  const chart = await zip.text('xl/charts/chart1.xml');
+  assert.match(chart, /<c:f>&apos;월별 계산&apos;!\$D\$2:\$D\$3<\/c:f>/);
+  assert.match(chart, /<c:f>&apos;월별 계산&apos;!\$A\$2:\$A\$3<\/c:f>/);
+  assert.match(chart, /<c:v>18522000<\/c:v>/);
+  const workbook = await zip.text('xl/workbook.xml');
+  const summaryId = /<sheet\b[^>]*name="요약"[^>]*r:id="([^"]+)"/.exec(workbook)[1];
+  const summaryPath = new RegExp(`Id="${summaryId}"[^>]*Target="([^"]+)"`).exec(await zip.text('xl/_rels/workbook.xml.rels'))[1];
+  assert.match(await zip.text(`xl/${summaryPath.replace(/^\/?xl\//, '')}`), /<drawing r:id=/, 'the frame stands on 요약');
+
+  for (const [range, fault] of [
+    ["'월별 계산'!A1:A3,D1:D3", /some areas and none on others/],
+    ["'월별 계산'!A1:A3,요약!D1:D3", /more than one sheet/],
+    ['없는시트!A1:B3', /does not hold/],
+  ]) {
+    const refused = await executeOfficeTool(
+      { action: 'create', path: join(cwd, 'refused.xlsx'), format: 'xlsx', mode: 'portable', overwrite: true, operations: [{ op: 'add_chart', range }] },
+      { cwd }
+    );
+    assert.equal(refused.isError, true, range);
+    assert.match(refused.content[0].text, fault, range);
+  }
+});
+
+// A pivot over Hangul fields read "Sum of 매출" over "Grand Total"; Korean Excel heads it "합계 : 매출" and "총합계".
+test('a pivot over Korean fields takes Korean captions', async (t) => {
+  const cwd = await workspace(t);
+  const path = join(cwd, 'pivot.xlsx');
+  const created = value(
+    await executeOfficeTool(
+      {
+        action: 'create',
+        path,
+        format: 'xlsx',
+        mode: 'portable',
+        operations: [
+          { op: 'set_range', range: 'A1:C4', values: [['권역', '분기', '매출'], ['서울', '1분기', 820], ['부산', '1분기', 410], ['서울', '2분기', 910]] },
+          { op: 'add_pivot_table', source: 'A1:C4', destination: 'E1', rows: ['권역'], columns: ['분기'], values: ['매출'] },
+        ],
+      },
+      { cwd }
+    )
+  );
+  const sheet = value(await executeOfficeTool({ action: 'snapshot', session: created.session }, { cwd })).document.sheets[0];
+  const values = sheet.cells.map((cell) => cell.value);
+  assert.ok(values.includes('합계 : 매출') && values.includes('총합계'), JSON.stringify(values));
+  assert.ok(!values.includes('Grand Total'));
+  // The read names the pivot as Excel's does, and the row header keeps its field's name through a refresh.
+  assert.deepEqual(sheet.pivots?.map((pivot) => pivot.name), ['MixdogPivot1'], JSON.stringify(sheet.pivots));
+  const definition = await (await parts(path)).text('xl/pivotTables/pivotTable1.xml');
+  assert.match(definition, /grandTotalCaption="총합계"/);
+  assert.match(definition, /rowHeaderCaption="[^"]+"/);
+  assert.match(definition, /<dataField name="합계 : 매출"/);
+});
+
+// A form's instruction line under its title set column A four times the width of the dates under it and split the
+// table over two pages. A line alone in its row prints across the empty cells beside it; a fit over several columns
+// sizes the columns to the table, and a fit of that one column still takes the line.
+test('a multi-column fit is not widened by a line of text alone in its row', async (t) => {
+  const cwd = await workspace(t);
+  const created = value(
+    await executeOfficeTool(
+      {
+        action: 'create',
+        path: join(cwd, 'form.xlsx'),
+        format: 'xlsx',
+        mode: 'portable',
+        operations: [
+          { op: 'set_range', range: 'A1:A2', values: [['경비 신청서'], ['파란 칸에 입력하세요. 둘째 줄은 작성 예시입니다.']] },
+          { op: 'set_range', range: 'A4:C5', values: [['사용일', '구분', '금액'], ['2026-10-02', '교통', 18400]] },
+          { op: 'autofit_range', range: 'A:C' },
+        ],
+      },
+      { cwd }
+    )
+  );
+  const widthOf = async (column) => {
+    const xml = await (await parts(join(cwd, 'form.xlsx'))).text('xl/worksheets/sheet1.xml');
+    return Number(new RegExp(`<col min="${column}" max="${column}" width="([\\d.]+)"`).exec(xml)?.[1]);
+  };
+  assert.ok((await widthOf(1)) < 16, `column A fits its dates, not the instruction line: ${await widthOf(1)}`);
+  value(await executeOfficeTool({ action: 'batch', session: created.session, operations: [{ op: 'autofit_range', range: 'A:A' }] }, { cwd }));
+  assert.ok((await widthOf(1)) > 30, `a fit of column A alone still takes the line: ${await widthOf(1)}`);
+});
+
+// A dashboard card: a 27 pt bold "47.0%" printed ### in a 14-character column while the size-only estimate (12.3)
+// passed it. Bold runs wider; the rendered threshold is about 14.7.
+test('a large bold figure is cut by the width its bold type needs', async (t) => {
+  const cwd = await workspace(t);
+  const created = value(
+    await executeOfficeTool(
+      {
+        action: 'create',
+        path: join(cwd, 'card.xlsx'),
+        format: 'xlsx',
+        mode: 'portable',
+        operations: [
+          { op: 'set_range', range: 'A1:B1', values: [[0.47, 0.47]] },
+          { op: 'set_style', range: 'A1:B1', properties: { fontSize: 27, bold: true, numberFormat: '0.0%' } },
+          { op: 'set_column_width', column: 'A', width: 14 },
+          { op: 'set_column_width', column: 'B', width: 16 },
+          // The same card merged over two 8-character columns prints across both (16) and fits.
+          { op: 'set_cell', cell: 'D1', value: 0.47 },
+          { op: 'set_style', range: 'D1:E1', properties: { fontSize: 27, bold: true, numberFormat: '0.0%' } },
+          { op: 'merge_cells', range: 'D1:E1' },
+          { op: 'set_column_width', column: 'D', width: 8 },
+          { op: 'set_column_width', column: 'E', width: 8 },
+        ],
+      },
+      { cwd }
+    )
+  );
+  const issues = value(await executeOfficeTool({ action: 'issues', session: created.session }, { cwd })).issues || [];
+  assert.deepEqual(
+    issues.filter((entry) => entry.code === 'column_too_narrow').map((entry) => entry.path),
+    ['/sheet[Sheet1]/cell[A1]']
+  );
 });
 
 // General never prints ###: Excel rounds the decimals to the column and turns only a long integer part scientific.

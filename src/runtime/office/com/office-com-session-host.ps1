@@ -1039,6 +1039,15 @@ function Invoke-SessionAction($state, $payload) {
                 $excelCheckpoint = Join-Path ([System.IO.Path]::GetTempPath()) "mixdog-excel-batch-$([guid]::NewGuid().ToString('N'))$extension"
                 Save-DocumentCopy $document $format $excelCheckpoint
             }
+            # PowerPoint's Undo command needs a window, so a background deck took nothing back when an operation
+            # failed: the replace_text before a failed set_chart_data stayed in a batch reported as failed. The batch
+            # starts from a copy the session reloads when any operation fails.
+            $deckCheckpoint = ''
+            if ($format -eq 'pptx' -and $state.Mode -eq 'background' -and $state.Ownership -eq 'owned') {
+                $extension = [System.IO.Path]::GetExtension($state.Path)
+                $deckCheckpoint = Join-Path ([System.IO.Path]::GetTempPath()) "mixdog-pptx-batch-$([guid]::NewGuid().ToString('N'))$extension"
+                Save-DocumentCopy $document $format $deckCheckpoint
+            }
             try {
                 $allowUiActivation = $state.Mode -ne 'background'
                 $applied = Apply-Operations $document $format $payload.operations $true ([bool]$payload.requireChanges) $allowUiActivation
@@ -1062,10 +1071,14 @@ function Invoke-SessionAction($state, $payload) {
                     }
                     catch {}
                 }
+                if ($deckCheckpoint) {
+                    try { $null = Reload-SessionDocument $state $deckCheckpoint } catch {}
+                }
                 throw
             }
             finally {
                 if ($excelCheckpoint) { Remove-Item $excelCheckpoint -Force -ErrorAction SilentlyContinue }
+                if ($deckCheckpoint) { Remove-Item $deckCheckpoint -Force -ErrorAction SilentlyContinue }
             }
         }
         'rollback' {

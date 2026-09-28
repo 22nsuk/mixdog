@@ -24,8 +24,11 @@ const TITLE_MAX_CHARS = 140;
 // A full-bleed rectangle is the page's surface, not one of its objects.
 const BACKGROUND_AREA_SHARE = 0.7;
 const STEP_PRESETS = new Set(['chevron', 'homePlate', 'rightArrow', 'pentagon', 'arrow']);
-// A metric reads as a figure and its unit, never as a sentence.
-const VALUE_TEXT = /^[+\-−]?[₩$€£¥]?\d[\d.,]*\s*[%a-zA-Z가-힣]{0,6}$/;
+// A metric reads as a figure and its unit, never as a sentence. A Korean unit is often spaced from its multiplier
+// ("14만 건", "2.6억 원"): read as a column title, one such figure turned a page of three metrics into a comparison,
+// and a template asked for its metrics page handed back its table page. Only a multiplier takes the space, so a
+// title such as "3분기 지표" stays a title.
+const VALUE_TEXT = /^[+\-−]?[₩$€£¥]?\d[\d.,]*(?:\s*[만억천조])?\s*[%a-zA-Z가-힣]{0,6}$/;
 
 function area(shape) {
   return Math.max(0, Number(shape?.geometry?.width) || 0) * Math.max(0, Number(shape?.geometry?.height) || 0);
@@ -277,4 +280,12 @@ function inducePptxGroupRoles(roles, shapes, title) {
   assignGroup(roles, leading, metric ? 'metric-value' : 'column-title');
   const partner = texts.find((row) => row !== leading && pairsWith(leading, row));
   if (partner) assignGroup(roles, partner, metric ? 'metric-label' : 'column-body');
+  // A second row of peers beside the page's structure (column titles under a band of metrics) is the template's
+  // words as much as the structure is. Left without a slot, a filled page kept "확장 · 배포 · 비용" from the deck it
+  // was taken from; named, a fill that does not write it empties it.
+  let aside = 0;
+  for (const row of texts) {
+    if (row === leading || row === partner) continue;
+    for (const shape of row) if (!roles.has(shape.shape)) roles.set(shape.shape, `aside-${++aside}`);
+  }
 }

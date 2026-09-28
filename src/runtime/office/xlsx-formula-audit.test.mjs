@@ -433,6 +433,24 @@ test('financial-model audit reads notes, the Checks sheet, and merges into a hos
     '/sheet[Big]/cell[B1501]',
     '/sheet[Model]/cell[B2]',
   ]);
+  // A read cut at its window (a used range running to row 1501) saw only its
+  // first cells: the host keeps its verdict for a cell past the cut, and loses
+  // it only for a cell the shared audit read itself.
+  const cut = mergeXlsxFormulaAudit(
+    {
+      ok: true,
+      issues: [
+        { severity: 'warning', code: 'hardcode_missing_source', path: '/sheet[Big]/cell[B1501]', message: 'host' },
+        { severity: 'warning', code: 'hardcode_missing_source', path: '/sheet[Big]/cell[B1]', message: 'host' },
+      ],
+    },
+    { sheets: [{ ...sheet('Big', [['A1', { value: 'x' }], ['B1', { value: 21 }]]), truncated: true }] },
+    { auditProfile: 'financial-model' }
+  );
+  assert.deepEqual(
+    cut.issues.filter((entry) => entry.code === 'hardcode_missing_source').map((entry) => [entry.path, entry.message]),
+    [['/sheet[Big]/cell[B1501]', 'host']]
+  );
 
   // One unsourced input line is one finding: reported per cell, a four-period
   // input row filled the answer and pushed the model's own faults out of it.

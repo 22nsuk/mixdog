@@ -155,6 +155,8 @@ test('PDF backend edits and validates without Microsoft Office', async (t) => {
   const finalized = value(finalizedResult);
   assert.equal(finalized.finalized, true);
   assert.equal(finalized.review._images, undefined);
+  // A render this call made is new evidence and is sent; a reused one is not (office-render-preview.test).
+  assert.equal(finalized.review.preview.reused, false);
   assert.equal(finalizedResult.content.filter((item) => item.type === 'image').length, 1);
 });
 
@@ -442,6 +444,7 @@ test('a quote that reaches the page foot moves whole, attribution included', asy
         action: 'create',
         format: 'pdf',
         path,
+        snapshotAfter: true,
         properties: { pageSize: [300, 300], margin: 54, pageNumbers: false },
         blocks: [...filler, { type: 'quote', text: 'Only content now.', attribution: 'Reviewer' }],
       },
@@ -473,6 +476,7 @@ test('a wrapped list item moves to the next page whole, not line by line', async
         action: 'create',
         format: 'pdf',
         path,
+        snapshotAfter: true,
         properties: { pageSize: [300, 300], margin: 54, pageNumbers: false },
         blocks: [
           ...filler,
@@ -506,6 +510,7 @@ test('a caption crosses the page break with its table, not without it', async (t
         action: 'create',
         format: 'pdf',
         path,
+        snapshotAfter: true,
         properties: { pageSize: [300, 300], margin: 54, pageNumbers: false },
         blocks: [
           ...filler,
@@ -557,6 +562,7 @@ test('a character no installed font carries is named in the refusal, not left to
         action: 'create',
         format: 'pdf',
         path: join(cwd, 'plain.pdf'),
+        snapshotAfter: true,
         blocks: [{ type: 'paragraph', text: '야간 처리량 92.8% — 회의' }],
       },
       { cwd }
@@ -571,7 +577,13 @@ test('a minus sign the face lacks is set as an en dash instead of refusing the d
   for (const [name, text] of [['korean.pdf', '정체 지수 −6p'], ['latin.pdf', 'Churn −1.4 pts']]) {
     const written = value(
       await executeOfficeTool(
-        { action: 'create', format: 'pdf', path: join(cwd, name), blocks: [{ type: 'stats', items: [{ value: '−6p', label: 'change' }] }, { type: 'paragraph', text }] },
+        {
+          action: 'create',
+          format: 'pdf',
+          path: join(cwd, name),
+          snapshotAfter: true,
+          blocks: [{ type: 'stats', items: [{ value: '−6p', label: 'change' }] }, { type: 'paragraph', text }],
+        },
         { cwd }
       )
     );
@@ -579,6 +591,29 @@ test('a minus sign the face lacks is set as an en dash instead of refusing the d
     assert.match(page, /[\u2212\u2013]6p/, `${name}: the figure keeps a sign`);
     assert.doesNotMatch(page, /\uFFFD/, `${name}: no missing glyph`);
   }
+});
+
+// A created PDF echoed every word the caller had just sent, page by page, with a trust scan of that same text;
+// a created Word or Excel file answers with what was made. The PDF now answers with its pages and fields.
+test('a created PDF answers with its page count, not the text it was given', async (t) => {
+  const cwd = await workspace(t);
+  const created = value(
+    await executeOfficeTool(
+      {
+        action: 'create',
+        format: 'pdf',
+        path: join(cwd, 'short.pdf'),
+        blocks: [{ type: 'paragraph', text: '첫 쪽' }, { type: 'pagebreak' }, { type: 'paragraph', text: '둘째 쪽' }],
+      },
+      { cwd }
+    )
+  );
+  assert.deepEqual(created.document, { format: 'pdf', pageCount: 2 });
+  assert.equal(created.trust, undefined);
+  const read = value(await executeOfficeTool({ action: 'snapshot', session: created.session }, { cwd }));
+  assert.match(read.document.pages[1].text, /둘째 쪽/);
+  assert.equal(read.document.pagination, undefined, 'a read holding every page carries no pagination');
+  assert.equal(read.document.attachments, undefined, 'an empty family reads the same absent');
 });
 
 // A scan becomes searchable only if the invisible layer carries the words the
@@ -1375,6 +1410,7 @@ test('PDF create lints forms, reports OCR handoff, and preserves attachments', a
         action: 'create',
         path,
         format: 'pdf',
+        snapshotAfter: true,
         blocks: [
           { type: 'heading', text: 'Frontier PDF' },
           { type: 'paragraph', text: 'Structured document body.' },
@@ -1461,12 +1497,13 @@ test('PDF forms expose options, validate fill values, and report what was filled
   const opened = value(await executeOfficeTool({ action: 'open', path, mode: 'portable' }, { cwd }));
   const fields = Object.fromEntries(opened.document.fields.map((field) => [field.name, field]));
   assert.equal(fields.Name.type, 'text');
-  assert.equal(fields.Name.readOnly, false);
+  // An off flag and an upright page read the same absent.
+  assert.notEqual(fields.Name.readOnly, true);
   assert.equal(fields.Agree.type, 'checkbox');
   assert.deepEqual(fields.Size.options, ['small', 'large']);
   assert.deepEqual(fields.Colour.options, ['red', 'blue']);
   assert.deepEqual(
-    [opened.document.pages[0].width, opened.document.pages[0].height, opened.document.pages[0].rotation],
+    [opened.document.pages[0].width, opened.document.pages[0].height, opened.document.pages[0].rotation ?? 0],
     [400, 400, 0]
   );
 
@@ -1527,7 +1564,7 @@ test('PDF forms expose options, validate fill values, and report what was filled
   assert.equal(flattened.results[0].fontEmbedded, true);
   assert.equal(flattened.results[0].flattened, true);
   const baked = value(await executeOfficeTool({ action: 'snapshot', session: opened.session }, { cwd }));
-  assert.equal(baked.document.fieldCount, 0);
+  assert.equal(baked.document.fieldCount ?? 0, 0, 'a flattened form has no fields left');
   assert.ok(baked.document.pages[0].text.includes(unicodeName), baked.document.pages[0].text);
 });
 
@@ -1599,6 +1636,43 @@ test("a form field takes a reader's rectangle and draws the caption it declares"
   );
   assert.equal(boxless.isError, true);
   assert.match(boxless.content[0].text, /Form field hub has no usable box: give x, y, width and height/);
+});
+
+// A leave form's 60 pt "reason" box was made single-line, and pdf-lib's auto size set a one-sentence answer at 35 pt
+// and cut it at the right edge. A box two lines tall holds a paragraph unless it says otherwise.
+test('a text field tall enough for two lines takes a paragraph', async (t) => {
+  const cwd = await workspace(t);
+  const created = value(
+    await executeOfficeTool(
+      {
+        action: 'create',
+        path: join(cwd, 'leave.pdf'),
+        format: 'pdf',
+        mode: 'portable',
+        blocks: [
+          { type: 'heading', text: '휴가 신청서' },
+          { type: 'field', name: 'name', label: '이름', fieldType: 'text' },
+          { type: 'field', name: 'reason', label: '사유', fieldType: 'text', height: 60 },
+        ],
+        fields: [{ name: 'code', type: 'text', page: 1, x: 60, y: 120, width: 200, height: 60, multiline: false }],
+      },
+      { cwd }
+    )
+  );
+  const filled = value(
+    await executeOfficeTool(
+      {
+        action: 'batch',
+        session: created.session,
+        operations: [{ op: 'fill_form', values: { name: '김도서', reason: '가족 행사로 10월 20일부터 22일까지 연차를 사용합니다.' } }],
+      },
+      { cwd }
+    )
+  );
+  assert.equal(filled.results[0].clipped, undefined, JSON.stringify(filled.results[0].clipped));
+  const fields = value(await executeOfficeTool({ action: 'snapshot', session: created.session }, { cwd })).document.fields;
+  const multiline = Object.fromEntries(fields.map((field) => [field.name, field.multiline === true]));
+  assert.deepEqual(multiline, { name: false, reason: true, code: false });
 });
 
 test('a filled value that will not fit its field box is reported with the fill', async (t) => {
@@ -1712,6 +1786,7 @@ test('PDF create resolves a Unicode font, wraps unspaced text, grows table rows,
           },
           { name: 'Note', type: 'text', page: 1, x: 400, y: 740, width: 120, height: 24, value: choices[0] },
         ],
+        snapshotAfter: true,
       },
       { cwd }
     )

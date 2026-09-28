@@ -137,14 +137,20 @@ function Word-AcceptedText($doc, $range) {
         }
     }
     catch {}
-    if ($deleted.Count -eq 0) { return [ordered]@{ text = [string]$range.Text; deleted = ''; tracked = $tracked } }
+    # An inline picture reads as "/" in the text, where the portable reader and the page have no letter.
+    $pictures = @()
+    try {
+        foreach ($shape in @($range.InlineShapes)) { $pictures += [pscustomobject]@{ Start = [int]$shape.Range.Start; End = [int]$shape.Range.End; Picture = $true } }
+    }
+    catch {}
+    if ($deleted.Count -eq 0 -and $pictures.Count -eq 0) { return [ordered]@{ text = [string]$range.Text; deleted = ''; tracked = $tracked } }
     $kept = ''
     $gone = ''
     $cursor = [int]$range.Start
-    foreach ($span in @($deleted | Sort-Object Start)) {
+    foreach ($span in @(@($deleted) + @($pictures) | Sort-Object Start)) {
         if ($span.Start -gt $cursor) { $kept += [string]$doc.Range($cursor, $span.Start).Text }
         if ($span.End -gt $cursor) {
-            $gone += [string]$doc.Range([Math]::Max($cursor, $span.Start), $span.End).Text
+            if (-not $span.Picture) { $gone += [string]$doc.Range([Math]::Max($cursor, $span.Start), $span.End).Text }
             $cursor = $span.End
         }
     }
@@ -165,8 +171,11 @@ function Snapshot-Word($doc, $payload) {
     for ($index = $paragraphOffset + 1; $index -le $paragraphEnd; $index++) {
         $p = $doc.Paragraphs.Item($index)
         $accepted = Word-AcceptedText $doc $p.Range
-        $text = ([string]$accepted.text).TrimEnd("`r", "`a")
-        $deletedText = ([string]$accepted.deleted).TrimEnd("`r", "`a")
+        # Word holds a picture, a note reference, and a comment mark in the text as \x01, \x02, and \x05, and a page or
+        # section break and a column break as \x0c and \x0e: the sentence read "12% 늘었습니다\x02." where the portable
+        # reader, and the page, show "12% 늘었습니다.".
+        $text = (([string]$accepted.text).TrimEnd("`r", "`a")) -replace '[\x01\x02\x05\x0c\x0e]', ''
+        $deletedText = (([string]$accepted.deleted).TrimEnd("`r", "`a")) -replace '[\x01\x02\x05\x0c\x0e]', ''
         # An empty body paragraph is listed too, as the portable reader lists it: left out, a paragraph cleared for
         # later text had no number to fill it by. Empty table marks (a row's end) stay out, as they do there.
         $emptyBody = $text.Length -eq 0 -and $deletedText.Length -eq 0 -and -not $(try { [bool]$p.Range.Information(12) } catch { $false })
@@ -180,6 +189,10 @@ function Snapshot-Word($doc, $payload) {
             try {
                 for ($tabIndex = 1; $tabIndex -le $p.Format.TabStops.Count; $tabIndex++) {
                     $tab = $p.Format.TabStops.Item($tabIndex)
+                    # Word lists its default stops (every DefaultTabStop points)
+                    # beside the paragraph's own; the snapshot reports the ones
+                    # the paragraph sets, as the portable reader does.
+                    if (-not [bool]$tab.CustomTab) { continue }
                     $tabStops += [ordered]@{
                         position  = [double]$tab.Position
                         alignment = [int]$tab.Alignment
@@ -454,7 +467,6 @@ function Snapshot-Word($doc, $payload) {
             path     = "/body/revision[$revisionIndex]"
             index    = $revisionIndex
             type     = $(if ($revisionTypes.ContainsKey($typeCode)) { [string]$revisionTypes[$typeCode] } else { 'unknown' })
-            typeCode = $typeCode
             author   = $author
             date     = $(try { ([datetime]$revision.Date).ToUniversalTime().ToString('o') } catch { '' })
             text     = $(try { ([string]$revision.Range.Text).TrimEnd("`r", "`a") } catch { '' })
@@ -467,6 +479,13 @@ function Snapshot-Word($doc, $payload) {
             $head = [Math]::Min($documentEnd, [Math]::Max(0, [int]$revision.Range.Start) + 1)
             $paragraph = [Math]::Max(1, [int]$doc.Range(0, $head).Paragraphs.Count)
             $entry.at = "/body/p[$paragraph]"
+            # A revision inside a table names its cell, as the portable reader does: Word counts a cell's paragraphs
+            # among the body's, so /body/p[11] pointed at no paragraph the other backend could address.
+            if ([bool]$revision.Range.Information(12)) {
+                $cell = $revision.Range.Cells.Item(1)
+                $table = [int]$doc.Range(0, $head).Tables.Count
+                $entry.at = "/body/tbl[$table]/row[$([int]$cell.RowIndex)]/cell[$([int]$cell.ColumnIndex)]"
+            }
             if (-not $revisionsByParagraph.ContainsKey($paragraph)) { $revisionsByParagraph[$paragraph] = @() }
             $revisionsByParagraph[$paragraph] += $revisionIndex
         }
@@ -878,6 +897,9 @@ function Snapshot-Excel($book, $payload) {
     for ($nameIndex = 1; $nameIndex -le $book.Names.Count; $nameIndex++) {
         try {
             $name = $book.Names.Item($nameIndex)
+            # Excel keeps hidden _xlfn./_xlpm. names of its own for the functions a file uses; the workbook never
+            # defined them, and the portable reader does not list them.
+            if (-not [bool]$name.Visible -and ([string]$name.Name) -match '^_xl(fn|pm|ws)\.') { continue }
             $definedNames += [ordered]@{
                 path          = "/defined-name[$nameIndex]"
                 index         = $nameIndex
@@ -899,6 +921,7 @@ function Snapshot-Excel($book, $payload) {
         format           = 'xlsx'
         path             = [string]$book.FullName
         activeSheet      = [string]$book.ActiveSheet.Name
+        defaultStyle     = Excel-DefaultStyle $book
         definedNameCount = $definedNames.Count
         definedNames     = $definedNames
         sheets           = $sheets
@@ -939,6 +962,15 @@ function Matrix-Item($matrix, [int]$row, [int]$column) {
     }
     if ($row -eq 1 -and $column -eq 1) { return $matrix }
     return $null
+}
+
+# The workbook's Normal style: what every unstyled cell renders with, as the portable reader reports it (cellXfs 0).
+function Excel-DefaultStyle($book) {
+    try {
+        $font = $book.Styles.Item('Normal').Font
+        return [ordered]@{ fontName = [string]$font.Name; fontSize = [double]$font.Size }
+    }
+    catch { return $null }
 }
 
 function Snapshot-ExcelPage($book, $payload) {
@@ -1079,6 +1111,9 @@ function Snapshot-ExcelPage($book, $payload) {
         path        = [string]$book.FullName
         activeSheet = [string]$book.ActiveSheet.Name
         sheetCount  = [int]$book.Worksheets.Count
+        # A page reads one sheet; the names say which others the workbook holds, as the portable page does.
+        sheetNames  = @(foreach ($worksheet in @($book.Worksheets)) { [string]$worksheet.Name })
+        defaultStyle = Excel-DefaultStyle $book
         sheets      = @([ordered]@{
                 path           = "/sheet[$([string]$sheet.Name)]"
                 name           = [string]$sheet.Name
@@ -1251,6 +1286,7 @@ function Snapshot-PowerPoint($presentation, $payload) {
                 fillVisible      = $(try { [int]$fillRef.Visible -ne 0 } catch { $null })
                 fillTransparency = $(try { [double]$fillRef.Transparency } catch { $null })
                 lineColor        = $(try { [double]$lineRef.ForeColor.RGB } catch { $null })
+                lineVisible      = $(try { [int]$lineRef.Visible -ne 0 } catch { $null })
                 lineTransparency = $(try { [double]$lineRef.Transparency } catch { $null })
                 shadow           = $(try {
                         [ordered]@{
@@ -1631,7 +1667,12 @@ function Snapshot-Document($document, [string]$format, $payload) {
                 if ($payload.sheet) { $sheet = $document.Worksheets.Item([string]$payload.sheet) }
                 $range = $sheet.UsedRange
                 if ($payload.range) { $range = $sheet.Range([string]$payload.range) }
-                if ($payload.range -or [int64]$range.Rows.Count * [int64]$range.Columns.Count -gt 500 -or [int64]$payload.offset -gt 0) {
+                # A whole-workbook read that did not fit the caller's size comes back asking for pages (pageCells):
+                # it takes the sheet a page at a time as the portable reader does, instead of the same whole read
+                # again under a smaller limit it never honoured, which ended as a truncated text preview.
+                $cellTotal = [int64]$range.Rows.Count * [int64]$range.Columns.Count
+                $paged = [bool]$payload.pageCells -and $cellTotal -gt [Math]::Max(1, [int]$payload.limit)
+                if ($payload.range -or $cellTotal -gt 500 -or [int64]$payload.offset -gt 0 -or $paged) {
                     Snapshot-ExcelPage $document $payload
                     break
                 }
@@ -1762,6 +1803,21 @@ function Apply-WordNumber($doc, $paragraph, $index) {
         $paragraph.Range.ListFormat.ListLevelNumber = 1
     }
     catch { $paragraph.Range.ListFormat.ApplyNumberDefault() }
+}
+
+# The paragraph at the document's end that the next block goes into, as the portable writer appends. The last
+# paragraph is taken when it is waiting for content — the one empty paragraph of a new document, the empty one
+# closing a table, or the empty one Word opens after a break — and a new paragraph is opened after it otherwise.
+# A table never takes the paragraph closing another table: with nothing between them the two read as one.
+function Word-EndParagraph($doc, [bool]$forTable = $false) {
+    $last = $doc.Paragraphs.Last
+    $empty = [string]$last.Range.Text -eq "`r"
+    $previous = $(try { $last.Previous() } catch { $null })
+    $afterTable = $null -ne $previous -and $(try { [bool]$previous.Range.Information(12) } catch { $false })
+    $afterBreak = $null -ne $previous -and -not $afterTable -and ([string]$previous.Range.Text) -match "[\x0c\x0e]`r$"
+    $waiting = $empty -and ($null -eq $previous -or $afterBreak -or ($afterTable -and -not $forTable))
+    if (-not $waiting -and -not ($forTable -and $empty -and -not $afterTable)) { $doc.Content.InsertParagraphAfter() }
+    return [int]$doc.Paragraphs.Count
 }
 
 function Apply-WordBullet($doc, $paragraph) {
@@ -2258,19 +2314,12 @@ function Invoke-WordOperation($doc, $op) {
         }
         'append_text' {
             $text = [string]$op.text
-            $existing = ([string]$doc.Content.Text).TrimEnd("`r", "`a")
-            $reusedInitialParagraph = [string]::IsNullOrWhiteSpace($existing)
-            if ($reusedInitialParagraph) {
-                $paragraph = $doc.Paragraphs.Item(1)
-                $paragraph.Range.Text = "$text`r"
-            }
-            else {
-                $range = $doc.Content.Duplicate
-                $range.Collapse(0)
-                $paragraph = $doc.Paragraphs.Add($range)
-                $paragraph.Range.Text = "$text`r"
-            }
-            $paragraphIndex = if ($reusedInitialParagraph) { 1 } else { [Math]::Max(1, [int]$doc.Paragraphs.Count - 1) }
+            # Writing "text`r" over the last paragraph left an empty paragraph after every document.
+            $paragraphIndex = Word-EndParagraph $doc
+            $paragraph = $doc.Paragraphs.Item($paragraphIndex)
+            $textRange = $paragraph.Range.Duplicate
+            $null = $textRange.MoveEnd(1, -1)
+            $textRange.Text = $text
             $paragraph = $doc.Paragraphs.Item($paragraphIndex)
             $props = $op.properties
             # The style comes first: applying a paragraph style resets its list format, so a bullet set before
@@ -2340,8 +2389,9 @@ function Invoke-WordOperation($doc, $op) {
                 $range.Collapse(0)
             }
             else {
-                $range = $doc.Content.Duplicate
-                $range.Collapse(0)
+                # A second table added in a row went right after the first and read back as one (tableCount 1).
+                $range = $doc.Paragraphs.Item((Word-EndParagraph $doc $true)).Range.Duplicate
+                $range.Collapse(1)
             }
             $table = $doc.Tables.Add($range, $rows, $columns)
             for ($row = 1; $row -le $rows; $row++) {
@@ -2527,7 +2577,18 @@ function Invoke-WordOperation($doc, $op) {
         # differently, so the same index rewrote different text. The operation is
         # portable-only; the registry rejects it before dispatch in Office mode.
         'remove_paragraph' {
-            (Word-EditableParagraph $doc ([int]$op.paragraph) 'remove_paragraph').Range.Delete()
+            $paragraph = Word-EditableParagraph $doc ([int]$op.paragraph) 'remove_paragraph'
+            # The only paragraph between two tables keeps them two; deleting its mark joins them, as the portable
+            # writer avoids: the words go and the empty paragraph stays.
+            $previousInTable = $(try { [bool]$paragraph.Previous().Range.Information(12) } catch { $false })
+            $nextInTable = $(try { [bool]$paragraph.Next().Range.Information(12) } catch { $false })
+            if ($previousInTable -and $nextInTable) {
+                $words = $paragraph.Range.Duplicate
+                if ($words.End -gt $words.Start) { $words.MoveEnd(1, -1) | Out-Null }
+                if ($words.End -gt $words.Start) { $words.Delete() | Out-Null }
+                return [ordered]@{ op = 'remove_paragraph'; changed = $true; keptBetweenTables = $true }
+            }
+            $paragraph.Range.Delete()
             return [ordered]@{ op = 'remove_paragraph'; changed = $true }
         }
         'move_paragraph' {
@@ -2569,9 +2630,16 @@ function Invoke-WordOperation($doc, $op) {
             # The picture takes a paragraph of its own where the batch has reached — after
             # the named paragraph, or at the end of the document — the way the portable
             # writer places it; Word's default is the insertion point, i.e. the document start.
-            $anchorRange = if ($op.paragraph) { $doc.Paragraphs.Item([int]$op.paragraph).Range.Duplicate } else { $doc.Content.Duplicate }
-            $anchorRange.Collapse(0)
-            $pictureParagraph = $doc.Paragraphs.Add($anchorRange)
+            # At the end the picture takes the paragraph the next block would (Word-EndParagraph): a paragraph added at
+            # the document's end put the picture at the start of the last paragraph's text.
+            $pictureParagraph = if ($op.paragraph) {
+                $anchorRange = $doc.Paragraphs.Item([int]$op.paragraph).Range.Duplicate
+                $anchorRange.Collapse(0)
+                $doc.Paragraphs.Add($anchorRange)
+            }
+            else {
+                $doc.Paragraphs.Item((Word-EndParagraph $doc))
+            }
             $pictureRange = $pictureParagraph.Range.Duplicate
             $pictureRange.Collapse(1)
             $shape = $doc.InlineShapes.AddPicture([string]$op.path, $false, $true, $pictureRange)
@@ -2596,7 +2664,8 @@ function Invoke-WordOperation($doc, $op) {
             $found = $range.Find.Execute([string]$op.find)
             if (-not $found) { throw "Comment target not found: $($op.find)" }
             $null = $doc.Comments.Add($range, [string]$op.text)
-            return [ordered]@{ op = 'add_comment'; changed = $true }
+            # Word's find crosses runs, tabs, and fields, so the comment always spans the phrase itself.
+            return [ordered]@{ op = 'add_comment'; changed = $true; anchor = 'phrase' }
         }
         'add_comment_reply' {
             $index = [int]$op.comment
@@ -2643,6 +2712,18 @@ function Invoke-WordOperation($doc, $op) {
                 throw 'This Word version does not expose resolved comment state through COM'
             }
             return [ordered]@{ op = 'set_comment_resolved'; changed = $true; comment = $index; resolved = [bool]$op.resolved }
+        }
+        'set_document_font' {
+            # The document's own face and size, as the portable writer sets its default run properties: Normal
+            # (wdStyleNormal, -1) is what every paragraph without its own reads and what a new one starts from.
+            $props = $op.properties
+            if (-not $props.name -and -not $props.nameEastAsia -and -not $props.size -and -not $props.color) { throw 'set_document_font needs properties.name, nameEastAsia, size, or color' }
+            $normal = $doc.Styles.Item(-1)
+            if ($props.name) { $normal.Font.Name = [string]$props.name }
+            if ($props.nameEastAsia) { $normal.Font.NameFarEast = [string]$props.nameEastAsia }
+            if ($props.size) { $normal.Font.Size = [single]$props.size }
+            if ($props.color) { $normal.Font.Color = Color-Value ([string]$props.color) }
+            return [ordered]@{ op = 'set_document_font'; changed = $true; name = [string]$normal.Font.Name; nameEastAsia = [string]$normal.Font.NameFarEast; size = [double]$normal.Font.Size }
         }
         'set_font' {
             $range = $doc.Content.Duplicate
@@ -2964,6 +3045,14 @@ function Invoke-WordOperation($doc, $op) {
                 $found = $range.Find.Execute([string]$op.find, $false, $false, $false, $false, $false, $true)
                 if (-not $found) { throw "Note anchor text not found: $($op.find)" }
                 $anchor = 'phrase'
+                # The mark goes at the end of the word the phrase ends in, as the portable writer sets it: a phrase
+                # ending inside a word set the mark mid-word ("성장¹했습니다").
+                # Only a phrase cut inside a word runs on; one ending on a sign ("92.8%") keeps its mark there.
+                $contentEnd = [int]$doc.Content.End
+                $cutInWord = ([string]$op.find) -match '[\p{L}\p{N}]$'
+                while ($cutInWord -and [int]$range.End -lt $contentEnd -and ([string]$doc.Range([int]$range.End, [int]$range.End + 1).Text) -match '^[\p{L}\p{N}]$') {
+                    $range.End = [int]$range.End + 1
+                }
             }
             # The note reads in the face of the text it cites, as the portable writer sets it: Word's Footnote Text
             # style otherwise printed the source line of a serif memo in the document's default sans.
@@ -3132,6 +3221,24 @@ function Excel-Sheet($book, $op) {
         }
     }
     return $book.ActiveSheet
+}
+
+# A chart source read as the portable writer reads it: comma-joined areas, each optionally naming the sheet it stands
+# on ('월별 계산'!A1:A7,'월별 계산'!D1:D7) — one sheet for all, which the contract has already checked. Worksheet.Range
+# refuses another sheet's address, so the areas are read from the sheet they name.
+function Excel-ChartSourceRange($book, $sheet, [string]$range) {
+    $source = $sheet
+    $areas = @()
+    foreach ($match in [regex]::Matches($range, "\s*(?:(?:'((?:[^']|'')+)'|([^',!]+))!([^,]+)|([^,]+))")) {
+        if ($match.Groups[3].Success) {
+            $name = if ($match.Groups[1].Success) { $match.Groups[1].Value.Replace("''", "'") } else { $match.Groups[2].Value.Trim() }
+            $source = Excel-Sheet $book ([pscustomobject]@{ sheet = $name })
+            $areas += $match.Groups[3].Value.Trim()
+        }
+        else { $areas += $match.Groups[4].Value.Trim() }
+    }
+    # The unary comma keeps the Range whole: returned bare, the pipeline unrolls it into its cells.
+    return , $source.Range(($areas -join ','))
 }
 
 # A chart or picture already on the sheet, addressed by the name the snapshot
@@ -3602,8 +3709,9 @@ function Apply-ExcelOperation($book, $op) {
                 # plotBy:'rows' (xlRows = 1) as the portable writer reads it: the first row the categories, each row
                 # under it a series. Always passing xlColumns drew a row of periods as one bar per year.
                 $plotBy = if (([string]$op.plotBy).ToLowerInvariant() -eq 'rows') { 1 } else { 2 }
+                $sourceBlock = Excel-ChartSourceRange $book $sheet ([string]$op.range)
                 $null = Invoke-ExcelComRetry {
-                    $chart.SetSourceData($sheet.Range([string]$op.range), $plotBy)
+                    $chart.SetSourceData($sourceBlock, $plotBy)
                     return $true
                 } 'Excel chart source'
                 if ($plotBy -eq 1) {
@@ -3611,7 +3719,7 @@ function Apply-ExcelOperation($book, $op) {
                     # named explicitly instead: the first row (after its first cell) the categories, each row under
                     # it one series named by its first cell.
                     $null = Invoke-ExcelComRetry {
-                        $block = $sheet.Range([string]$op.range)
+                        $block = $sourceBlock
                         $rows = [int]$block.Rows.Count
                         $columns = [int]$block.Columns.Count
                         while ($chart.SeriesCollection().Count -gt 0) { $chart.SeriesCollection(1).Delete() }
@@ -3936,11 +4044,21 @@ function Apply-ExcelOperation($book, $op) {
             foreach ($field in @($op.columns)) {
                 if (-not [string]::IsNullOrWhiteSpace([string]$field)) { (Excel-PivotField $pivot ([string]$field)).Orientation = 2 }
             }
+            # Captions in the language of the fields, as the portable writer sets them: Korean Excel heads a sum
+            # "합계 : 매출" and its totals "총합계", where a fixed English caption read "Sum of 매출". The Hangul range
+            # is written as escapes: a non-ASCII literal in this file is read back as mojibake by Windows PowerShell.
+            $fieldNames = @(foreach ($pivotField in $pivot.PivotFields()) { [string]$pivotField.Name }) -join ' '
+            $korean = $fieldNames -match '[\uAC00-\uD7AF]'
+            $sumCaption = if ($korean) { ([string][char]0xD569) + ([string][char]0xACC4) + ' : ' } else { 'Sum of ' }
             foreach ($field in @($op.values)) {
                 if ([string]::IsNullOrWhiteSpace([string]$field)) { continue }
-                $dataField = $pivot.AddDataField((Excel-PivotField $pivot ([string]$field)), "Sum of $field", -4157)
+                $dataField = $pivot.AddDataField((Excel-PivotField $pivot ([string]$field)), "$sumCaption$field", -4157)
                 $null = $dataField
             }
+            if ($korean) { try { $pivot.GrandTotalName = ([string][char]0xCD1D) + ([string][char]0xD569) + ([string][char]0xACC4) } catch {} }
+            # The row header names its field, as the portable writer heads it, not Excel's "Row Labels" (행 레이블).
+            $firstRow = @($op.rows | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -First 1)
+            if ($firstRow.Count) { try { $pivot.CompactLayoutRowHeader = [string]$firstRow[0] } catch {} }
             return [ordered]@{ op = 'add_pivot_table'; changed = $true; name = [string]$pivot.Name }
         }
         'insert_rows' {
@@ -4047,8 +4165,39 @@ function Apply-ExcelOperation($book, $op) {
                 $wrapped = @()
                 if ($wrapAll -is [bool] -and $wrapAll) { $wrapped = @($measured) }
                 elseif ($wrapAll -isnot [bool]) { $wrapped = @(foreach ($cell in $measured.Cells) { if ($cell.WrapText -eq $true) { $cell } }) }
+                # A line of text alone in its row (a title, the instruction under it) prints across the empty cells
+                # beside it, so a fit over several columns does not size its column to it, as the portable writer
+                # measures. Excel's own fit skips a wrapped cell: those lines are wrapped for the fit and restored.
+                # The used range is read once as values, so a long sheet costs no call per row.
+                $spilling = @()
+                if ([int]$target.Columns.Count -gt 1 -and $null -ne $measured) {
+                    $used = $sheet.UsedRange
+                    $grid = $used.Value2
+                    # The formula text says a cell is filled even where its result is empty ("" from an IF): a label
+                    # beside such a row is a row label, as the portable writer reads it.
+                    $source = $used.Formula
+                    if ($grid -is [array] -and $source -is [array]) {
+                        $gridRows = $grid.GetLength(0)
+                        $gridColumns = $grid.GetLength(1)
+                        for ($r = 1; $r -le $gridRows; $r++) {
+                            $hits = 0
+                            $at = 0
+                            for ($c = 1; $c -le $gridColumns; $c++) {
+                                $entry = $source[$r, $c]
+                                if ($null -ne $entry -and "$entry".Trim() -ne '') { $hits++; $at = $c; if ($hits -gt 1) { break } }
+                            }
+                            if ($hits -ne 1 -or $grid[$r, $at] -isnot [string] -or "$($source[$r, $at])".StartsWith('=')) { continue }
+                            $cell = $used.Cells.Item($r, $at)
+                            if ($cell.WrapText -eq $true) { continue }
+                            if ($null -eq $book.Application.Intersect($cell, $target)) { continue }
+                            $spilling += $cell
+                        }
+                    }
+                }
                 foreach ($cell in $wrapped) { $cell.WrapText = $false }
+                foreach ($cell in $spilling) { $cell.WrapText = $true }
                 $null = $target.Columns.AutoFit()
+                foreach ($cell in $spilling) { $cell.WrapText = $false }
                 foreach ($cell in $wrapped) { $cell.WrapText = $true }
                 $floored = $null -ne $op.minWidth -and [double]$op.minWidth -gt 0
                 $floor = if ($floored) { [math]::Min(80, [double]$op.minWidth) } else { 8 }
@@ -4697,6 +4846,56 @@ function Set-ChartTitleFace($chart, [single]$size) {
     catch {}
 }
 
+# The per-series accent that marks the latest period: exactly one point whose fill differs from its series', and that
+# point the last. Read before a data refresh so the accent can follow the last point when the number of points changes.
+function Get-PowerPointLastPointAccents($chart) {
+    $accents = @()
+    $count = $(try { [int]$chart.SeriesCollection().Count } catch { 0 })
+    for ($seriesIndex = 1; $seriesIndex -le $count; $seriesIndex++) {
+        try {
+            $series = $chart.SeriesCollection().Item($seriesIndex)
+            $base = [int]$series.Format.Fill.ForeColor.RGB
+            $points = [int]$series.Points().Count
+            $lit = @()
+            for ($pointIndex = 1; $pointIndex -le $points; $pointIndex++) {
+                $fill = [int]$series.Points($pointIndex).Format.Fill.ForeColor.RGB
+                if ($fill -ne $base) { $lit += [pscustomobject]@{ Index = $pointIndex; Color = $fill } }
+            }
+            if ($lit.Count -eq 1 -and $lit[0].Index -eq $points) {
+                $accents += [pscustomobject]@{ Series = $seriesIndex; Color = $lit[0].Color; Base = $base; Count = $points }
+            }
+        }
+        catch {}
+    }
+    return $accents
+}
+
+# A monthly refresh that adds a period left the accent on the old last point, under a title about the new one; a lone
+# last-point accent moves to the new last point and the point it left takes its series colour. A series the caller
+# gave its own pointColors is the caller's.
+function Move-PowerPointLastPointAccents($chart, $accents, $seriesSpecs) {
+    $specs = @($seriesSpecs)
+    foreach ($accent in @($accents)) {
+        $spec = if ($accent.Series -le $specs.Count) { $specs[$accent.Series - 1] } else { $null }
+        # @($null) is one element in PowerShell: an absent pointColors must read as none, not as the caller's own.
+        if ($null -ne $spec -and $null -ne $spec.pointColors -and @($spec.pointColors).Count -gt 0) { continue }
+        try {
+            $series = $chart.SeriesCollection().Item($accent.Series)
+            $points = [int]$series.Points().Count
+            if ($points -lt 1 -or $points -eq $accent.Count) { continue }
+            if ($accent.Count -le $points) {
+                $left = $series.Points($accent.Count)
+                $left.Format.Fill.Solid()
+                $left.Format.Fill.ForeColor.RGB = $accent.Base
+            }
+            $last = $series.Points($points)
+            $last.Format.Fill.Solid()
+            $last.Format.Fill.ForeColor.RGB = $accent.Color
+        }
+        catch {}
+    }
+}
+
 # One colour per bar or slice (series[].pointColors), once the chart's data sheet is closed: while it is open a chart
 # added after another one could report no points at all, and a doughnut kept the theme's colours.
 function Set-PowerPointPointColors($chart, $seriesSpecs, [bool]$labelInk = $false) {
@@ -4816,8 +5015,13 @@ function Apply-PowerPointOperation(
             if ([string]$op.find -match '\s$') { $pattern = $pattern + $separator }
             $count = 0
             $shapes = 0
-            foreach ($slide in @($presentation.Slides)) {
-                foreach ($shape in @($slide.Shapes)) {
+            # slide keeps the replacement on that one page, as the portable writer reads it.
+            $pages = if ($null -ne $op.slide) { @(Ppt-Slide $presentation $op) } else { @($presentation.Slides) }
+            foreach ($slide in $pages) {
+                # The speaker notes' body too, as the portable writer rewrites the notes part with the slide.
+                $notesBody = @()
+                try { if ([bool]$slide.HasNotesPage) { $notesBody = @($slide.NotesPage.Shapes.Placeholders.Item(2)) } } catch {}
+                foreach ($shape in (@($slide.Shapes) + $notesBody)) {
                     try {
                         if ($shape.HasTextFrame -and $shape.TextFrame.HasText) {
                             $range = $shape.TextFrame.TextRange
@@ -5509,10 +5713,12 @@ function Apply-PowerPointOperation(
             $shape = $slide.Shapes.Item([int]$op.shape)
             if (-not $shape.HasChart) { throw "Shape $($op.shape) is not a chart" }
             $chart = $shape.Chart
+            $accents = Get-PowerPointLastPointAccents $chart
             $excelBefore = @(Excel-ProcessIds)
             $chartResult = Set-PowerPointChartData $chart $op.categories $op.series
             if ($op.title) { $chart.HasTitle = $true; $chart.ChartTitle.Text = [string]$op.title }
             Close-PowerPointChartData $chart $false $excelBefore
+            Move-PowerPointLastPointAccents $chart $accents $op.series
             Set-PowerPointPointColors $chart $op.series
             return [ordered]@{ op = 'set_chart_data'; changed = $true; shape = [int]$op.shape; categories = [int]$chartResult.categories; series = [int]$chartResult.series }
         }
@@ -5680,6 +5886,10 @@ function Apply-Operations(
             if ($structured.Count -ne 1) { throw "$($op.op) returned no structured operation result" }
             $entry = $structured[0]
             if ($requireChanges -and -not [bool]$op.allowNoChange -and $entry.Contains('changed') -and -not [bool]$entry.changed) {
+                # A phrase that matched nothing is the reason, as the portable path says it.
+                if ([string]$op.op -eq 'replace_text') {
+                    throw "replace_text produced no change (`"$([string]$op.find)`" appears nowhere; read the wording as written with action:query and a word from it)"
+                }
                 throw "$($op.op) produced no change"
             }
             $results += $entry

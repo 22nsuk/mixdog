@@ -1,6 +1,38 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { gradientFillXml, mergeAccentSeries, nativeGradients, normalizeChartFonts } from './pptx-script-normalize.mjs';
+import {
+  gradientFillXml,
+  mergeAccentSeries,
+  nativeGradients,
+  normalizeChartFonts,
+  orderPresentationLists,
+  pruneUndeclaredAxisIds,
+} from './pptx-script-normalize.mjs';
+
+test('a 2D chart group keeps only the axis ids its plot area declares', () => {
+  const xml =
+    '<c:plotArea><c:barChart><c:barDir val="col"/><c:gapWidth val="80"/>' +
+    '<c:axId val="11"/><c:axId val="22"/><c:axId val="33"/></c:barChart>' +
+    '<c:catAx><c:axId val="11"/><c:crossAx val="22"/></c:catAx><c:valAx><c:axId val="22"/><c:crossAx val="11"/></c:valAx></c:plotArea>';
+  const pruned = pruneUndeclaredAxisIds(xml);
+  assert.equal(pruned.changed, true);
+  assert.equal((pruned.xml.match(/<c:axId val="33"\/>/g) || []).length, 0);
+  assert.equal((pruned.xml.match(/<c:axId val="\d+"\/>/g) || []).length, 4, 'two in the group, one per axis');
+  assert.equal(pruneUndeclaredAxisIds(pruned.xml).changed, false);
+  // A pie has no axes at all and is left as written.
+  assert.equal(pruneUndeclaredAxisIds('<c:plotArea><c:pieChart/></c:plotArea>').changed, false);
+});
+
+test('the notes master list moves ahead of the slide list, and only when it follows it', () => {
+  const written =
+    '<p:presentation><p:sldMasterIdLst><p:sldMasterId id="1"/></p:sldMasterIdLst><p:sldIdLst><p:sldId id="256"/></p:sldIdLst>' +
+    '<p:notesMasterIdLst><p:notesMasterId r:id="rId3"/></p:notesMasterIdLst><p:sldSz cx="1" cy="1"/></p:presentation>';
+  const ordered = orderPresentationLists(written);
+  assert.equal(ordered.changed, true);
+  assert.ok(ordered.xml.indexOf('<p:notesMasterIdLst>') < ordered.xml.indexOf('<p:sldIdLst>'));
+  assert.ok(ordered.xml.indexOf('</p:sldMasterIdLst>') < ordered.xml.indexOf('<p:notesMasterIdLst>'));
+  assert.equal(orderPresentationLists(ordered.xml).changed, false);
+});
 
 const run = (face) =>
   `<a:defRPr sz="1100"><a:solidFill><a:srgbClr val="5A6B7B"/></a:solidFill><a:latin typeface="${face}" pitchFamily="34" charset="0"/></a:defRPr>`;

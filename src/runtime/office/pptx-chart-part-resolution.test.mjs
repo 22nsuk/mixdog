@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import JSZip from 'jszip';
 import { executeOfficeTool } from './index.mjs';
 import { chartXml } from './portable/portable-chart.mjs';
 import { parts, value, workspace } from './office-test-support.mjs';
@@ -79,6 +81,65 @@ test('set_chart_data edits a pptxgenjs chart through its absolute relationship t
   assert.match(copy, /<c:v>7<\/c:v>/);
   assert.match(copy, /<c:v>9<\/c:v>/);
   assert.doesNotMatch(copy, /<c:v>38<\/c:v>/);
+});
+
+// A chart PowerPoint saved cites its workbook as rId3 beside its style and colour parts, and may name its series in
+// plain text. The refresh rewrote the chart's relationships as a lone rId1: the chart still cited rId3, so Edit Data
+// opened nothing (chart_data_unlinked), the style parts were orphaned, and the text name kept the old series name.
+test('a data refresh keeps the chart’s own relationships and renames a series written as text', async (t) => {
+  const cwd = await workspace(t);
+  const deck = join(cwd, 'saved.pptx');
+  const authored = value(
+    await executeOfficeTool({ action: 'author', path: deck, script: DECK, mode: 'portable', render: false }, { cwd })
+  );
+  value(await executeOfficeTool({ action: 'close', session: authored.session }, { cwd }));
+  const zip = await JSZip.loadAsync(await readFile(deck));
+  // pptxgenjs numbers charts across the process, so the part is found rather than assumed.
+  const chartPart = Object.keys(zip.files).find((name) => /^ppt\/charts\/chart\d+\.xml$/.test(name));
+  const relsPath = chartPart.replace('ppt/charts/', 'ppt/charts/_rels/') + '.rels';
+  const rels = await zip.file(relsPath).async('string');
+  const packageId = /Id="([^"]+)"[^>]*\/package"|\/package"[^>]*Id="([^"]+)"/.exec(rels);
+  const id = packageId[1] || packageId[2];
+  zip.file(
+    relsPath,
+    rels
+      .replaceAll(`Id="${id}"`, 'Id="rId3"')
+      .replace(
+        '</Relationships>',
+        '<Relationship Id="rId1" Type="http://schemas.microsoft.com/office/2011/relationships/chartStyle" Target="style1.xml"/></Relationships>'
+      )
+  );
+  zip.file('ppt/charts/style1.xml', '<cs:chartStyle xmlns:cs="http://schemas.microsoft.com/office/drawing/2012/chartStyle" id="201"/>');
+  const chart = (await zip.file(chartPart).async('string'))
+    .replace(/(<c:externalData\b[^>]*\br:id=")[^"]*(")/, '$1rId3$2')
+    .replace(/<c:tx>\s*<c:strRef>[\s\S]*?<\/c:strRef>\s*<\/c:tx>/, '<c:tx><c:v>Value</c:v></c:tx>');
+  assert.match(chart, /<c:tx><c:v>Value<\/c:v><\/c:tx>/);
+  zip.file(chartPart, chart);
+  await writeFile(deck, await zip.generateAsync({ type: 'nodebuffer' }));
+
+  const opened = value(await executeOfficeTool({ action: 'open', path: deck, mode: 'portable' }, { cwd }));
+  const refreshed = value(
+    await executeOfficeTool(
+      {
+        action: 'batch',
+        session: opened.session,
+        operations: [
+          { op: 'set_chart_data', slide: 1, shape: 1, categories: ['Self-serve', 'Guided'], series: [{ name: '유지율', values: [41, 55] }] },
+        ],
+      },
+      { cwd }
+    )
+  );
+  assert.equal(refreshed.audit.top.some((issue) => issue.code === 'chart_data_unlinked'), false, JSON.stringify(refreshed.audit));
+  value(await executeOfficeTool({ action: 'close', session: opened.session }, { cwd }));
+  const saved = await parts(opened.output || deck);
+  const savedRels = await saved.text(relsPath);
+  assert.match(savedRels, /Id="rId3"[^>]*\/package"/);
+  assert.match(savedRels, /Id="rId1"[^>]*chartStyle"[^>]*Target="style1\.xml"/, 'the style part stays related');
+  const savedChart = await saved.text(chartPart);
+  assert.match(savedChart, /<c:externalData r:id="rId3">/);
+  assert.match(savedChart, /<c:tx><c:v>유지율<\/c:v><\/c:tx>/);
+  assert.match(savedChart, /<c:v>55<\/c:v>/);
 });
 
 test('a column starts its axis at zero unless the caller zooms in, a line keeps its range', () => {

@@ -118,9 +118,12 @@ export async function snapshotPdf(path, options = {}) {
   const likelyScannedPages = passwordRequired
     ? []
     : pages.filter((page) => page.text.includes(NO_TEXT_MARKER)).map((page) => page.index);
+  // The joined extraction is already split into pages[].text above; returning
+  // it too sent every page twice, plus the unrequested pages between a range's ends.
+  const { text: _joinedText, ...inspected } = result;
   return {
     format: 'pdf',
-    ...result,
+    ...inspected,
     pageCount,
     pages,
     fields,

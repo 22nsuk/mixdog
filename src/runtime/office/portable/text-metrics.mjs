@@ -647,6 +647,24 @@ function hollowBand(content = []) {
   return { depth, top };
 }
 
+// A page the statement exemption covers that is no statement: a title in the top quarter, nothing at poster size,
+// and a line of 14 pt or more (the takeaway) with a hollow band between them. A statement is one claim set large in
+// its air; a title over an empty middle and a sentence at the foot is a content page whose content never came.
+// The author may mean it, so it is information, not a target.
+function titleLineHollow(slideBoxes, content, slideHeight) {
+  const texts = slideBoxes
+    .map((box) => ({ box, size: largestFontSize(Array.isArray(box.paragraphs) ? box.paragraphs : []) }))
+    .filter(({ box }) => (box.paragraphs || []).some((paragraph) => String(paragraph.text || '').trim()));
+  if (texts.length < 2) return null;
+  const title = texts.reduce((largest, entry) => (entry.size > largest.size ? entry : largest));
+  if (title.size < 24 || title.size >= 34 || !(Number(title.box.top) < slideHeight * 0.25)) return null;
+  const hollow = hollowBand(content);
+  if (hollow.depth <= HOLLOW_BAND || hollow.top < Number(title.box.top) + Number(title.box.height) - 1) return null;
+  const below = hollow.top + hollow.depth - 1;
+  if (!texts.some((entry) => entry !== title && entry.size >= 14 && Number(entry.box.top) >= below)) return null;
+  return hollow;
+}
+
 export function reviewVerticalBalance(bounds = [], { slideWidth = 0, slideHeight = 0, boxes = [] } = {}) {
   if (!(slideHeight > 0) || !(slideWidth > 0)) return [];
   const issues = [];
@@ -656,7 +674,24 @@ export function reviewVerticalBalance(bounds = [], { slideWidth = 0, slideHeight
       (shape) => Math.max(0, shape.width) * Math.max(0, shape.height) < slideWidth * slideHeight * 0.8
     );
     if (!content.length) continue;
-    if (statements.has(slide) && !carriesObject(content)) continue;
+    if (statements.has(slide) && !carriesObject(content)) {
+      const hollow = titleLineHollow(
+        boxes.filter((box) => box.slide === slide),
+        content,
+        slideHeight
+      );
+      if (hollow) {
+        issues.push({
+          severity: 'info',
+          code: 'title_line_hollow',
+          path: `/slide[${slide}]`,
+          message: `Only a title and a line under it, with an empty band ${Math.round(hollow.depth)}pt deep between them. A statement page sets its claim large in the air; a content page brings its evidence into the band, or moves the line up under the title.`,
+          hollowBand: Math.round(hollow.depth),
+          hollowTop: Math.round(hollow.top),
+        });
+      }
+      continue;
+    }
     const top = Math.min(...content.map((shape) => shape.top));
     const bottom = Math.max(...content.map((shape) => shape.top + shape.height));
     const topEmpty = Math.max(0, top);

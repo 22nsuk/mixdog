@@ -6,6 +6,11 @@ file is a Word document.
 
 ## Control map
 
+- Document face: `set_document_font properties:{ name, nameEastAsia, size, color }`
+  sets the body's face, size and ink as the document's own, so a paragraph
+  added later — by `append_text` or by hand in Word — matches the body; a
+  Korean document names a Korean face (Malgun Gothic) so its digits and Hangul
+  share one.
 - Page: `set_page properties:{ pageSize, orientation, topMargin, bottomMargin,
   leftMargin, rightMargin, columns, columnSpacing }`. A new document is A4;
   a US reader gets `pageSize:'letter'` (also `'legal'`, `'a3'`, `'a5'`,
@@ -129,8 +134,9 @@ for an existing paragraph). Use a carrier when the content has that job, never a
 actually suits the task. It picks type sizes, summary emphasis and spacing;
 do not select it for a design-led task and then fight those choices.
 
-It takes `title`, optional `subtitle`, `summary`, `metrics`, `sections`,
-`footer` and `pageNumbers`. Sections may contain headings, paragraphs, bullets,
+It takes `title`, optional `subtitle`, `summary`, `metrics` (`{ value, label,
+detail? }`; the accent goes to the figure marked `emphasis: true`, else to the
+first), `sections`, `footer` and `pageNumbers`. Sections may contain headings, paragraphs, bullets,
 tables, quotes, callouts and roadmaps. A section table is `table:[[…],[…]]`
 (first row as the header) or `table:{ headers:[…], rows:[[…]] }`; any other
 shape is refused rather than dropped. `purpose` and `variant` select its family.

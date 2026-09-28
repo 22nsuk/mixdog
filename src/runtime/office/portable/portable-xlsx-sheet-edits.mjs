@@ -248,13 +248,26 @@ export function mergeWorksheetCells(zip, sheet, xml, op) {
 
 export function freezeWorksheetPanes(zip, sheet, xml, op) {
   const pane = freezePaneXml(op.row, op.column);
+  const before = /<pane\b[^>]*?(?:\/>|>[\s\S]*?<\/pane>)/.exec(xml)?.[0] || '';
   const next = updateSheetView(xml, (view) => {
     const { attrs, body } = sheetViewParts(view);
     const stripped = body.replace(/<pane\b[^>]*?(?:\/>|>[\s\S]*?<\/pane>)/, '');
     return composeSheetView(attrs, `${pane}${stripped}`);
   });
   zip.file(sheet.path, next);
-  return { op: op.op, changed: true, sheet: sheet.name, frozen: Boolean(pane) };
+  const frozenRows = Math.max(0, (Number(op.row) || 0) - 1);
+  const frozenColumns = Math.max(0, (Number(op.column) || 0) - 1);
+  return {
+    op: op.op,
+    changed: before !== pane,
+    sheet: sheet.name,
+    frozen: Boolean(pane),
+    frozenRows,
+    frozenColumns,
+    // row and column name the first cell that scrolls, as Excel freezes at the
+    // selected cell; a caller who meant "freeze row 1" with row:1 froze nothing.
+    ...(pane ? {} : { note: 'Nothing is frozen: row and column name the first row and column that scroll, so row:2 keeps row 1 in view.' }),
+  };
 }
 
 export function setWorksheetView(zip, sheet, xml, op) {

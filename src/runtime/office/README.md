@@ -32,6 +32,25 @@ below `core` imports `core` or the root. `shared` imports nothing from Office.
 Large modules are split by concern and keep a facade with the original name
 (`core/office-actions.mjs`, `quality/assurance.mjs`) so consumers do not change.
 
+## Model-facing results
+
+Every tool result passes through `finalizeOfficeResult` (`core/office-core.mjs`)
+before a model reads it. It drops only what the same result already carries or
+what reads the same absent: a pre-fix issue list nothing fixed, a visual review
+repeated at the top, empty lists and nulls, a trust report that found nothing,
+a Word or workbook value equal to the document default, COM sentinels, raw page
+measurements the issues were derived from, a passed package check's detail
+(validator version, reopen fingerprint, default security, the parts Office adds
+whenever it saves), each reader's own bookkeeping (character offsets, enumeration
+numbers, a PDF viewport matrix and engine face ids), scores a measured qa could
+not earn without a render, a delimited file's design, a profile palette an opened
+document never applied, and guidance, a design, or receipt
+structure a session already delivered (`modelReviewOnce`, `designOnce`,
+`receiptForDelivery`). The stored
+transaction review, snapshots, and every internal caller keep the full objects;
+the digests copy and never mutate them. A field a caller needs back belongs in
+the result, not in a digest exception.
+
 ## Packaging
 
 `com/*.ps1` and `design/library/templates/*` are opened by external processes,

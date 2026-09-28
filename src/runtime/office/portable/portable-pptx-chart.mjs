@@ -84,6 +84,11 @@ export function readChartPresentation(xml) {
     seriesColors: seriesBlocks.map(
       (series) => /<c:spPr>[\s\S]*?<a:srgbClr val="([0-9A-Fa-f]{6})"/.exec(series)?.[1] || ''
     ),
+    // A template's chart names its series colours from the theme (accent1, accent2); the caller resolves them
+    // through the deck's theme, or a rebuilt chart fell back to the default palette.
+    seriesSchemeColors: seriesBlocks.map(
+      (series) => /<c:spPr>[\s\S]*?<a:schemeClr val="([A-Za-z0-9]+)"/.exec(series)?.[1] || ''
+    ),
   };
 }
 
@@ -163,15 +168,35 @@ export function chartTitleText(xml) {
   return [...block.matchAll(/<a:t>([\s\S]*?)<\/a:t>/g)].map((match) => xmlDecode(match[1])).join('');
 }
 
+// The chart names its workbook through one relationship of its own part. A refresh rewrote that part with a single
+// rId1 while the chart kept citing the id it was saved with (rId3 in a PowerPoint deck), so the chart lost its data
+// link and the style and colour parts beside it: the relationships the part already holds are kept, the package one
+// is pointed at the new workbook, and the chart cites whatever id it carries.
 export async function writePresentationChart(zip, { chartPart, embeddingPart, chart, rows }) {
   zip.file(embeddingPart, await createPortableChartWorkbook(rows));
   await ensureDefaultContentType(zip, 'xlsx', WORKBOOK_CONTENT_TYPE);
-  zip.file(
-    partRelationshipPath(chartPart),
-    `${XML_HEADER}<Relationships xmlns="${PACKAGE_RELATIONSHIP_NS}">` +
-      `<Relationship Id="rId1" Type="${OFFICE_RELATIONSHIP_BASE}/package"` +
-      ` Target="${xmlEncode(posix.relative(posix.dirname(chartPart), embeddingPart))}"/></Relationships>`
-  );
-  zip.file(chartPart, chart);
+  const relationshipsPath = partRelationshipPath(chartPart);
+  const existing = (await zipText(zip, relationshipsPath)) || '';
+  const target = xmlEncode(posix.relative(posix.dirname(chartPart), embeddingPart));
+  const previous = /<Relationship\b[^>]*\bType="[^"]*\/package"[^>]*\/>/.exec(existing)?.[0] || '';
+  const taken = [...existing.matchAll(/\bId="rId(\d+)"/g)].map((match) => Number(match[1]));
+  const id = /\bId="([^"]+)"/.exec(previous)?.[1] || `rId${Math.max(0, ...taken) + 1}`;
+  const relationship = `<Relationship Id="${id}" Type="${OFFICE_RELATIONSHIP_BASE}/package" Target="${target}"/>`;
+  let relationships = `${XML_HEADER}<Relationships xmlns="${PACKAGE_RELATIONSHIP_NS}">${relationship}</Relationships>`;
+  if (previous) relationships = existing.replace(previous, relationship);
+  else if (existing.includes('</Relationships>')) relationships = existing.replace('</Relationships>', `${relationship}</Relationships>`);
+  zip.file(relationshipsPath, relationships);
+  zip.file(chartPart, citeChartWorkbook(chart, id));
   await ensureContentTypeOverride(zip, `/${chartPart}`, CHART_CONTENT_TYPE);
+}
+
+// <c:externalData> sits after the chart's text properties and before its print settings, user shapes, and extensions.
+function citeChartWorkbook(chart, id) {
+  const text = String(chart);
+  if (/<c:externalData\b[^>]*\br:id="/.test(text)) {
+    return text.replace(/(<c:externalData\b[^>]*\br:id=")[^"]*(")/, `$1${id}$2`);
+  }
+  const cited = `<c:externalData r:id="${id}"><c:autoUpdate val="0"/></c:externalData>`;
+  const before = /<c:(?:printSettings|userShapes|extLst)\b|<\/c:chartSpace>/.exec(text);
+  return before ? `${text.slice(0, before.index)}${cited}${text.slice(before.index)}` : text;
 }

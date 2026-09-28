@@ -243,7 +243,8 @@ export function auditDocxRedlining(currentXml, originalXml, { author = '' } = {}
   const reasons = [];
   if (untrackedEdits) {
     reasons.push(
-      `${untrackedEdits.removedLines + untrackedEdits.addedLines} paragraph(s) differ from the source after undoing the new tracked changes: they were edited untracked, without <w:ins>/<w:del> (first at paragraph ${untrackedEdits.paragraph}).`
+      // A paragraph rewritten in place is one line out and one in: the larger side counts the paragraphs, not the sum.
+      `${Math.max(untrackedEdits.removedLines, untrackedEdits.addedLines)} paragraph(s) differ from the source after undoing the new tracked changes: they were edited untracked, without <w:ins>/<w:del> (first at paragraph ${untrackedEdits.paragraph}).`
     );
   }
   if (foreignAuthors.length) {

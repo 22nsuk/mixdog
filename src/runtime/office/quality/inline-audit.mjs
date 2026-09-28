@@ -105,6 +105,9 @@ export function summarizeOfficeAudit(issueList, { touched = [] } = {}) {
 
 function nextActionFor(audit, format) {
   if (audit.status === 'pass') {
+    if (audit.outsideEdit) {
+      return `The edited slides pass. ${audit.outsideEdit} measured finding${audit.outsideEdit === 1 ? '' : 's'} sit on slides this batch did not touch and belong to the deck as opened; leave them unless the user asked for those pages. Continue to the render and the visual read.`;
+    }
     return 'Audit passed: no measured defect remains. Continue to the render and the visual read; finalize needs both.';
   }
   const count = audit.counts.error + audit.counts.warning;
@@ -147,8 +150,38 @@ export async function inlineOfficeAudit(session, { operations = [] } = {}) {
   // recalculate first: the audit reads it as pending, not as a defect to fix — every new portable model otherwise
   // failed its first audit with nothing the author could change. qa and issues still report it as found.
   const pending = (issue) => (issue?.code === 'formula_cache_missing' ? { ...issue, severity: 'info' } : issue);
-  const audit = summarizeOfficeAudit((measured.issues || []).map(pending), {
-    touched: touchedLocations(session.format, operations),
-  });
+  const touched = touchedLocations(session.format, operations);
+  let list = (measured.issues || []).map(pending);
+  // A deck opened for editing — a template, a colleague's deck — is judged on the slides this batch edited: its
+  // other pages are kept as they are, and a defect they already carried is not this edit's to fix. A structural
+  // change renumbers the pages, so it reads the whole deck; so does an authored deck, every page of which is the
+  // author's own. Findings on the package itself always count.
+  let outsideEdit = 0;
+  const scoped =
+    session.format === 'pptx' &&
+    session.authored !== true &&
+    touched.length > 0 &&
+    !operations.some((operation) => STRUCTURAL_SLIDE_OPERATIONS.has(operation?.op));
+  if (scoped) {
+    const keys = new Set(touched);
+    const inScope = (issue) => {
+      const key = locationOf(issue.path).key;
+      return key === '/' || keys.has(key);
+    };
+    outsideEdit = list.filter((issue) => issue.severity !== 'info' && !inScope(issue)).length;
+    list = list.filter(inScope);
+  }
+  const audit = summarizeOfficeAudit(list, { touched });
+  if (outsideEdit) audit.outsideEdit = outsideEdit;
   return recordInlineAuditRound(session, audit);
 }
+
+const STRUCTURAL_SLIDE_OPERATIONS = new Set([
+  'add_slide',
+  'duplicate_slide',
+  'delete_slide',
+  'move_slide',
+  'keep_slides',
+  'import_slides',
+  'use_template_page',
+]);

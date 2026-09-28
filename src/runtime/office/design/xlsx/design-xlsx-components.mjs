@@ -1,17 +1,18 @@
 import { presetLabels, strings } from '../design-tokens.mjs';
 import { columnLabel } from '../../portable/portable-cells.mjs';
 
-function mergedBlock(output, { sheet, startColumn, endColumn, row, value, properties }) {
+function mergedBlock(output, { sheet, startColumn, endColumn, row, rows = 1, value, properties }) {
   const start = columnLabel(startColumn);
   const end = columnLabel(endColumn);
+  const last = row + Math.max(1, rows) - 1;
   output.push({ op: 'set_cell', sheet, cell: `${start}${row}`, value: String(value || '') });
-  if (endColumn > startColumn) {
-    output.push({ op: 'merge_cells', sheet, range: `${start}${row}:${end}${row}` });
+  if (endColumn > startColumn || last > row) {
+    output.push({ op: 'merge_cells', sheet, range: `${start}${row}:${end}${last}` });
   }
   output.push({
     op: 'set_style',
     sheet,
-    range: `${start}${row}:${end}${row}`,
+    range: `${start}${row}:${end}${last}`,
     properties,
   });
 }
@@ -70,11 +71,16 @@ export function addXlsxDecisionPanel(
     },
   });
   cursor += 1;
+  // Beside a table the panel shares the table's rows: a taller decision row made the table's first record taller
+  // than the rest. There the decision spans as many 15 pt rows as its lines need instead of growing one.
+  const besideTable = firstColumn > 1;
+  const decisionRows = besideTable && widthPoints > 0 ? Math.max(1, Math.ceil(bandHeight(decision, 15, widthPoints) / 15)) : 1;
   mergedBlock(output, {
     sheet,
     startColumn: firstColumn,
     endColumn: finalColumn,
     row: cursor,
+    rows: decisionRows,
     value: decision,
     properties: {
       fontName: type.display,
@@ -86,10 +92,10 @@ export function addXlsxDecisionPanel(
       wrapText: true,
     },
   });
-  if (widthPoints > 0) {
+  if (widthPoints > 0 && !besideTable) {
     output.push({ op: 'set_row_height', sheet, row: cursor, height: bandHeight(decision, 15, widthPoints) });
   }
-  cursor += 2;
+  cursor += decisionRows + 1;
   const gateRows = normalizedGates(gates);
   if (gateRows.length) {
     const relativeSpans = [

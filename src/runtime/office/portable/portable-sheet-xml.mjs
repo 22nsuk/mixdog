@@ -569,6 +569,29 @@ export function quoteSheetName(name) {
   return /^[A-Za-z_][A-Za-z0-9_.]*$/.test(name) ? name : `'${String(name).replace(/'/g, "''")}'`;
 }
 
+// The comma-joined areas of a chart source, each with the sheet it names ('월별 계산'!A1:A7 → 월별 계산, A1:A7) or ''
+// for the sheet the chart stands on. Commas inside a quoted sheet name stay in the name, and $ anchors are dropped:
+// a source reads the same cells either way.
+export function sheetQualifiedAreas(range) {
+  const parts = [];
+  let current = '';
+  let quoted = false;
+  for (const character of String(range ?? '')) {
+    if (character === "'") quoted = !quoted;
+    if (character === ',' && !quoted) {
+      parts.push(current);
+      current = '';
+    } else current += character;
+  }
+  parts.push(current);
+  return parts.map((part) => {
+    const text = part.trim();
+    const match = /^(?:'((?:[^']|'')+)'|([^'!]+))!(.+)$/.exec(text);
+    const sheet = match ? (match[1] ?? match[2]).replace(/''/g, "'").trim() : '';
+    return { sheet, area: (match ? match[3] : text).replace(/\$/g, '').trim() };
+  });
+}
+
 export function absoluteRange(range) {
   return String(range)
     .split(':')

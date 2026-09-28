@@ -612,19 +612,9 @@ export function compositionReceipt(document, brief = null) {
     slides,
     deck,
     absent,
+    // The field glossary lives in the pptx skill (§2 step 6), read once, instead of riding every receipt.
     note:
-      'Observations, not design targets. absent lists unused families, not required objects. Inspect any inferred missing carrier against the intended message; a faithful alternative may already carry it.' +
-      ' air = canvas share without shape footprints; quadrantAir = [top-left, top-right, bottom-left, bottom-right]; contentAir = those quadrants using content only; fieldFill = content coverage inside fields occupying at least 6% of the canvas, lowest first.' +
-      " largestShare = largest object share; visualShare = non-text footprint; presence = the largest carrier's share (chart, table, picture, group, or contour; 0 = type alone); fills = surface colors by area; textColumns = alignment groups and unmatched edges (labels = small text bound to a contour or connector, read as part of its device and left out of the columns and the gaps)." +
-      ' largestTextTop and bodyTop are positions in inches, not mandatory shared baselines; bodyFill = the vertical span of content below the largest type relative to the lower safe margin.' +
-      ' centroid = area-weighted [x, y] in canvas fractions; centroidOffset normalizes distance from center by 0.05 horizontally and 0.15 vertically.' +
-      ' renderAir = pixels without local variation; renderBalance reports centered, leftRight, topBottom and their mean score (higher means more centered or even, not necessarily better design).' +
-      ' gaps = vertical gaps in 0.05-inch steps; typeSet and textColors = observed sizes and colors; deck.rhythm sequences these observations.' +
-      ' chars = characters of authored text per slide (the reference decks carry 330-900 on a body page; a page under 120 with no carrier is a claim or a hollow); grammar = beat | evidence | text per slide and deck.shape their shares.' +
-      ' renderLargest = the share of the page the biggest connected object covers after a render (the reference decks: 0.21-0.71, median 0.4).' +
-      " After a render, deck.rhythm.colour is each page's colourfulness and deck.pacing reads the sequence: colourSpread (the frontier decks run 16-36, one template 5-8), longestQuiet (consecutive pages under the deck median with no beat), quietAnchors (plan lines that promised an anchor on a page that rendered quiet)." +
-      " specs = the kit's spec carriers (badge, callout, chevrons, stat, table) read from their signatures: count, slides, variants, and the distinct anatomies (type sizes|face) they show — one anatomy per carrier is the spec kept, two is a per-call override to explain." +
-      ' Relevance, legibility, grouping, and visual emphasis must be judged from the rendered pages, not from balanced ratios or short token sets.',
+      'Observations, not design targets; the pptx skill (§2 step 6, "Receipt fields") defines each one. absent lists unused families, not required objects. Judge relevance, legibility, grouping, and emphasis from the rendered pages, not from these ratios.',
   };
 }
 
@@ -652,6 +642,75 @@ function colourPacing(receipt, colours) {
     .filter((_slide, index) => /^anchor/i.test(String(planned[index] || '')) && quiet[index])
     .map((slide) => slide.slide);
   return { colourSpread: Number(spread.toFixed(1)), median: Number(median.toFixed(1)), longestQuiet, quietAnchors };
+}
+
+// A receipt is resent on every author and render of a session, and between two of them most slides keep
+// their shapes. The session remembers the structure it last sent per slide and for the deck; a part that
+// still matches goes out as `unchanged: true` with only what a render reads from the pixels, so the
+// caller keeps the structure it already holds instead of reading it again. Mutates nothing it is given.
+const RENDER_OBSERVE = ['renderAir', 'renderBalance', 'renderColour', 'renderLargest'];
+const RENDER_RHYTHM = ['renderAir', 'topBottom', 'renderLargest', 'colour'];
+
+function withoutKeys(value, keys) {
+  return Object.fromEntries(Object.entries(value || {}).filter(([key]) => !keys.includes(key)));
+}
+
+function pickKeys(value, keys) {
+  return Object.fromEntries(Object.entries(value || {}).filter(([key]) => keys.includes(key)));
+}
+
+// What a slide reading says once: empty lists read as absent, and contentAir
+// is sent only where fields make it differ from quadrantAir.
+function slideDigest(slide) {
+  const observe = { ...(slide.observe || {}) };
+  if (JSON.stringify(observe.contentAir) === JSON.stringify(observe.quadrantAir)) delete observe.contentAir;
+  for (const [key, value] of Object.entries(observe)) if (Array.isArray(value) && !value.length) delete observe[key];
+  const digest = { ...slide, observe };
+  for (const [key, value] of Object.entries(digest)) if (Array.isArray(value) && !value.length) delete digest[key];
+  // A slide's own zero counts and blank background say what it does not carry; the deck line keeps the totals a
+  // deck-wide zero is read from.
+  for (const key of SLIDE_COUNTS) if (digest[key] === 0) delete digest[key];
+  if (digest.background === '') delete digest.background;
+  return digest;
+}
+
+const SLIDE_COUNTS = ['charts', 'tables', 'pictures', 'groups', 'textBoxes', 'drawn', 'fields', 'lines'];
+
+export function receiptForDelivery(receipt, session) {
+  if (!receipt?.slides || !session) return receipt;
+  const previous = session.deliveredReceipt || { slides: new Map(), deck: '' };
+  const next = { slides: new Map(), deck: '' };
+  const slides = receipt.slides.map((raw) => {
+    const slide = slideDigest(raw);
+    const structure = JSON.stringify({ ...slide, observe: withoutKeys(slide.observe, RENDER_OBSERVE) });
+    next.slides.set(slide.slide, structure);
+    if (previous.slides.get(slide.slide) !== structure) return slide;
+    const rendered = pickKeys(slide.observe, RENDER_OBSERVE);
+    return { slide: slide.slide, unchanged: true, ...(Object.keys(rendered).length ? { observe: rendered } : {}) };
+  });
+  let deck = receipt.deck;
+  if (deck) {
+    const { pacing, rhythm, ...rest } = deck;
+    next.deck = JSON.stringify({ ...rest, rhythm: withoutKeys(rhythm, RENDER_RHYTHM) });
+    if (previous.deck === next.deck) {
+      const renderedRhythm = pickKeys(rhythm, RENDER_RHYTHM);
+      deck = {
+        unchanged: true,
+        ...(Object.keys(renderedRhythm).length ? { rhythm: renderedRhythm } : {}),
+        ...(pacing ? { pacing } : {}),
+      };
+    }
+  }
+  session.deliveredReceipt = next;
+  const collapsed = slides.some((slide) => slide.unchanged) || deck?.unchanged;
+  return {
+    ...receipt,
+    slides,
+    deck,
+    ...(collapsed
+      ? { unchangedMeans: 'unchanged: this part matches the receipt this session sent last; only render readings are new.' }
+      : {}),
+  };
 }
 
 // The rendered page, read after the fact: renderAir per slide joins the shape-based observation so

@@ -1,5 +1,5 @@
 // Word document snapshot: body model, styles, comments, pictures.
-import { zipText } from './portable-opc.mjs';
+import { relationshipMap, zipText } from './portable-opc.mjs';
 import {
   TRAILING_SECTION_PATTERN,
   blockText,
@@ -179,9 +179,42 @@ export function appendDocxBlock(documentXml, block) {
     const inner = `${block}${body.inner.slice(content.length)}`;
     return `${documentXml.slice(0, body.start)}${inner}${documentXml.slice(body.end)}`;
   }
+  // The empty paragraph that closes a table at the end of the body (closeTrailingTable) is where the next paragraph
+  // goes, as typing after a table in Word fills it: appended after it, a blank line opened under every table. A table
+  // keeps it as the paragraph between the two, or they would join into one.
+  const closed = /<\/w:tbl>\s*<w:p\/>\s*$/.exec(content);
+  if (closed && /^<w:p[\s>]/.test(block)) {
+    const kept = content.slice(0, content.lastIndexOf('<w:p/>'));
+    return `${documentXml.slice(0, body.start)}${kept}${block}${body.inner.slice(content.length)}${documentXml.slice(body.end)}`;
+  }
   // Only the document's own trailing sectPr, never the one a section break
   // paragraph carries: content appends before the former and after the latter.
   const inner = `${content}${block}${body.inner.slice(content.length)}`;
+  return `${documentXml.slice(0, body.start)}${inner}${documentXml.slice(body.end)}`;
+}
+
+// Two tables with nothing between them are one table to Word and LibreOffice: the second one's rows join the first.
+// However the edit made them meet — appended in a row, placed before another, the paragraph between them moved or
+// removed — an empty paragraph keeps them apart.
+const ADJACENT_TABLES = /<\/w:tbl>(\s*)(?=<w:tbl[\s>])/g;
+
+export function hasAdjacentTables(documentXml) {
+  return new RegExp(ADJACENT_TABLES.source).test(String(documentXml || ''));
+}
+
+export function separateAdjacentTables(documentXml) {
+  return String(documentXml).replace(ADJACENT_TABLES, '</w:tbl>$1<w:p/>');
+}
+
+// A body that ends in a table carries a paragraph after it, as Word writes every document: without one, LibreOffice
+// saving the file as .doc dropped the whole table and kept its cells' words as one line ("항목값매출12").
+export function closeTrailingTable(documentXml) {
+  const body = containerInner(documentXml, 'w:body');
+  if (!body) return documentXml;
+  const trailing = TRAILING_SECTION_PATTERN.exec(body.inner);
+  const content = trailing ? body.inner.slice(0, trailing.index) : body.inner;
+  if (!/<\/w:tbl>\s*$/.test(content)) return documentXml;
+  const inner = `${content}<w:p/>${body.inner.slice(content.length)}`;
   return `${documentXml.slice(0, body.start)}${inner}${documentXml.slice(body.end)}`;
 }
 
@@ -480,7 +513,9 @@ async function docxNotes(zip) {
         path: `/body/${kind}[${ordinal}]`,
         kind,
         id,
-        text: blockText(match[2], 'w:t'),
+        // The space the writer puts after the note's own reference mark separates the mark from the words; the
+        // note reads as its words, as Word reports it.
+        text: blockText(match[2], 'w:t').replace(/^\s+/, ''),
         part,
       });
     }
@@ -611,8 +646,79 @@ async function docxAnnotations(zip, model, storyXml) {
   };
 }
 
+const SECTION_STORY_KINDS = { default: 'primary', first: 'first', even: 'even' };
+const TWIPS_PER_POINT = 20;
+
+// The sections in the shape Word reports them: orientation, margins in points, and each header and footer with its
+// text. A section without a reference of its own shows its predecessor's, as Word links it (linkToPrevious); the
+// primary header and footer are listed even when empty, since Word keeps both on every section.
+function docxSections(documentXml, relationshipsXml, partText, referenced) {
+  const targets = relationshipMap(relationshipsXml || '');
+  const storyPart = (id) => {
+    const target = targets.get(id);
+    if (!target) return '';
+    return target.startsWith('/') ? target.slice(1) : `word/${target}`;
+  };
+  const inherited = new Map();
+  return [...String(documentXml || '').matchAll(/<w:sectPr\b[\s\S]*?<\/w:sectPr>/g)].map(([sectionXml], offset) => {
+    const index = offset + 1;
+    const margin = (side) => {
+      const twips = Number(new RegExp(`<w:pgMar\\b[^>]*\\bw:${side}="(-?\\d+)"`).exec(sectionXml)?.[1]);
+      return Number.isFinite(twips) ? Math.round((twips / TWIPS_PER_POINT) * 100) / 100 : undefined;
+    };
+    const own = new Map();
+    for (const [, location, attributes] of sectionXml.matchAll(/<w:(header|footer)Reference\b([^>]*)\/>/g)) {
+      const kind = SECTION_STORY_KINDS[/\bw:type="([^"]+)"/.exec(attributes)?.[1] || 'default'];
+      const id = /\br:id="([^"]+)"/.exec(attributes)?.[1];
+      if (kind && id) {
+        own.set(`${location}:${kind}`, storyPart(id));
+        referenced.add(storyPart(id));
+      }
+    }
+    const stories = [];
+    for (const kind of Object.values(SECTION_STORY_KINDS)) {
+      for (const location of ['header', 'footer']) {
+        const key = `${location}:${kind}`;
+        const part = own.get(key) ?? inherited.get(key);
+        if (part === undefined && kind !== 'primary') continue;
+        // A reference to the very part the section before shows is that section's header carried on.
+        const linked = index > 1 && (!own.has(key) || own.get(key) === inherited.get(key));
+        if (own.has(key)) inherited.set(key, own.get(key));
+        stories.push({
+          path: `/section[${index}]/${location}[${kind}]`,
+          kind,
+          location,
+          text: part ? partText.get(part) ?? '' : '',
+          ...(linked ? { linkToPrevious: true } : {}),
+        });
+      }
+    }
+    return {
+      path: `/section[${index}]`,
+      index,
+      orientation: /<w:pgSz\b[^>]*\bw:orient="landscape"/.test(sectionXml) ? 'landscape' : 'portrait',
+      topMargin: margin('top'),
+      bottomMargin: margin('bottom'),
+      leftMargin: margin('left'),
+      rightMargin: margin('right'),
+      stories,
+    };
+  });
+}
+
 export async function snapshotDocx(zip, options = {}) {
-  const { partXml, content, storyXml } = await docxStoryParts(zip);
+  const storyParts = await docxStoryParts(zip);
+  const { partXml, storyXml } = storyParts;
+  // Headers and footers read under the section that shows them, as Word reports them; the rest — a header part no
+  // section references among them — stay listed by part.
+  const referenced = new Set();
+  const sections = docxSections(
+    partXml.get('word/document.xml'),
+    await zipText(zip, 'word/_rels/document.xml.rels'),
+    new Map(storyParts.content.map((entry) => [entry.part, entry.text])),
+    referenced
+  );
+  const content = storyParts.content.filter((entry) => !referenced.has(entry.part));
   const model = docxBodyModel(partXml.get('word/document.xml') ?? '');
   const stylesXml = await zipText(zip, 'word/styles.xml');
   applyDocxStyleFonts(model, resolveDocxStyleFonts(stylesXml));
@@ -635,6 +741,7 @@ export async function snapshotDocx(zip, options = {}) {
     tables: body.tables,
     blockOrder: blockOrderEntries(page.blocks),
     parts: body.parts,
+    sections,
     ...annotations,
     ...docxPagination(page, model),
   };

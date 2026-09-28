@@ -67,6 +67,24 @@ export function isMotifShape(shape) {
 export function isPictureShape(shape) {
   return Number(shape?.type) === 13 || shape?.type === 'p:pic';
 }
+
+// The kit signs its carriers (`mixdog-spec:<carrier>[:<variant>]`, pptx-receipt.mjs); a signed structure
+// names the slide's visual type exactly (a timeline is not "a diagram"), and a signed stat, chevron
+// run, or table names its family before any geometry guess. Read by the deck review and by the template
+// reader, which names a page by the job it does.
+const SPEC_PREFIX = 'mixdog-spec:';
+export function signedVisualType(slide) {
+  const signatures = (slide?.shapes || [])
+    .map((shape) => String(shape?.name || ''))
+    .filter((name) => name.startsWith(SPEC_PREFIX))
+    .map((name) => name.slice(SPEC_PREFIX.length).split(':'));
+  const structure = signatures.find(([spec, variant]) => spec === 'structure' && variant);
+  if (structure) return `structure:${structure[1]}`;
+  if (signatures.some(([spec]) => spec === 'chevrons')) return 'process';
+  if (signatures.some(([spec]) => spec === 'table')) return 'table';
+  if (signatures.some(([spec]) => spec === 'stat')) return 'metric';
+  return '';
+}
 export const MAX_FONT_FAMILIES_PER_SLIDE = 3;
 export const MAX_ACCENT_HUE_FAMILIES = 2;
 export const STATE_ROLES = Object.freeze(['positive', 'warning', 'critical', 'informative']);

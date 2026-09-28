@@ -979,12 +979,15 @@ async function workbookContentIssues(zip, options) {
     uncachedFormulas === 0 &&
     workbookCalculation(await zipText(zip, 'xl/workbook.xml')).fullCalcOnLoad === true
   ) {
+    // A state, not a defect: render, qa, and finalize recalculate before they
+    // read, so an ordinary edit's audit must not fail on it. A decision model
+    // read through `issues` alone still refuses to present stale numbers.
     issues.push({
-      severity: options.auditProfile === 'financial-model' ? 'error' : 'warning',
+      severity: options.auditProfile === 'financial-model' ? 'error' : 'info',
       code: 'stale_calculation',
       path: '/',
       message:
-        'Formulas were edited and have not been recalculated since, so the cached values predate the edit. Recalculate (render, or qa with LibreOffice available) before reading the numbers.',
+        'The workbook was edited after its last calculation, so cached formula values may predate the edit. render, qa, and finalize recalculate first; recalculate before reading numbers from a snapshot.',
     });
   }
   if (options.auditProfile === 'financial-model' && !sheetNames.some(isChecksSheetName)) {

@@ -216,19 +216,20 @@ test('finalize uses a complete custom preview and still validates the saved deck
     note,
     fixes: [],
   }));
-  const finalized = value(
-    await executeOfficeTool(
-      {
-        action: 'finalize',
-        session: session.id,
-        render: false,
-        design: { reviewed: true, reviewToken: preview.reviewToken, critique },
-      },
-      { cwd }
-    )
+  const finalizedResult = await executeOfficeTool(
+    {
+      action: 'finalize',
+      session: session.id,
+      render: false,
+      design: { reviewed: true, reviewToken: preview.reviewToken, critique },
+    },
+    { cwd }
   );
+  const finalized = value(finalizedResult);
   assert.equal(finalized.finalized, true, JSON.stringify(finalized));
   assert.equal(finalized.review.preview.reused, true);
+  // The reused preview is the render the caller already reviewed; its pixels are not sent again.
+  assert.equal(finalizedResult.content.filter((item) => item.type === 'image').length, 0);
   assert.equal(finalized.review.preview.output, preview.output);
   assert.equal(finalized.review.review.quality.visualReview.status, 'accepted');
   assert.equal(finalized.review.review.quality.scoreMeaning, 'automated-diagnostics-not-design-quality');

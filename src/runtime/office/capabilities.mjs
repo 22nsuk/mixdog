@@ -210,6 +210,42 @@ function resolveContractOperation(batch, operation, index) {
   return { name };
 }
 
+// freeze_panes counts rows and columns, while every other worksheet operation
+// names a cell or a column letter. Excel freezes at the selected cell, so
+// cell:'B2' is row:2, column:2, and a column letter is its 1-based number.
+const columnNumber = (letters) =>
+  [...String(letters).toUpperCase()].reduce((total, letter) => total * 26 + (letter.charCodeAt(0) - 64), 0);
+
+function hoistFreezePaneCell(format, name, operation) {
+  if (format !== 'xlsx' || name !== 'freeze_panes') return;
+  const cell = typeof operation.cell === 'string' ? /^\$?([A-Za-z]{1,3})\$?(\d{1,7})$/.exec(operation.cell.trim()) : null;
+  if (cell && operation.row === undefined && operation.column === undefined) {
+    operation.column = columnNumber(cell[1]);
+    operation.row = Number(cell[2]);
+    delete operation.cell;
+  }
+  if (typeof operation.column === 'string' && /^[A-Za-z]{1,3}$/.test(operation.column.trim())) {
+    operation.column = columnNumber(operation.column.trim());
+  }
+}
+
+// A comment written for a named author carries that author's initials, the mark Word and PowerPoint draw beside it: a
+// reviewer "검토자" came back as "MD" (the runtime's own default) on the portable writer and on PowerPoint, and as the
+// machine user's initials on Word. A Hangul name takes its first syllable, as Korean Office does; a Latin one the
+// first letter of up to three words.
+function authorInitials(format, name, operation) {
+  if (!['add_comment', 'add_comment_reply'].includes(name) || operation.initials !== undefined) return;
+  const author = String(operation.author || '').trim();
+  if (!author) return;
+  const words = author.split(/\s+/);
+  operation.initials = /^[\uac00-\ud7af]/.test(author)
+    ? [...words[0]][0]
+    : words
+        .slice(0, 3)
+        .map((word) => [...word][0].toUpperCase())
+        .join('');
+}
+
 function applyFieldAliases(format, name, operation) {
   for (const [alias, field] of Object.entries(FIELD_ALIASES[format]?.[name] || {})) {
     if (operation[alias] !== undefined && operation[field] === undefined) {
@@ -296,7 +332,7 @@ function fieldCorrections(fields, allowed) {
 // up is unambiguous, so it is applied where it belongs. Only a key the
 // operation contradicts — the same name present in properties with another
 // value — or a field nothing declares is worth an answer.
-function unknownFieldsFault(batch, name, operation, index, { allowed, propertyKeys }) {
+function unknownFieldsFault(batch, name, operation, index, { allowed, propertyKeys, missing = [] }) {
   const { format, backend } = batch;
   const unknown = Object.keys(operation).filter((field) => !allowed.has(field));
   if (!unknown.length) return null;
@@ -317,10 +353,13 @@ function unknownFieldsFault(batch, name, operation, index, { allowed, propertyKe
   const remaining = unknown.filter((field) => !hoisted.includes(field));
   if (!remaining.length) return null;
   const misplaced = remaining.filter((field) => propertyKeys.has(field));
-  const corrections = fieldCorrections(
-    remaining.filter((field) => !misplaced.includes(field)),
-    allowed
-  );
+  const unexplained = remaining.filter((field) => !misplaced.includes(field));
+  // One field the operation does not take beside one it requires and did not get is that field under another name
+  // (set_chart_data's chart for shape); the nearest spelling (chart→chartType) sent the retry the wrong way.
+  const corrections =
+    unexplained.length === 1 && missing.length === 1
+      ? [`${unexplained[0]}→${missing[0]}`]
+      : fieldCorrections(unexplained, allowed);
   const accepted = [...allowed].filter((field) => field !== 'allowNoChange').join(', ');
   const keyWord = misplaced.length === 1 ? 'is a properties key' : 'are properties keys';
   const misplacedNote = misplaced.length
@@ -422,6 +461,8 @@ function operationContractFaults(batch, operation, index) {
   const { name } = resolved;
   const { format, backend, catalog } = batch;
   applyFieldAliases(format, name, operation);
+  hoistFreezePaneCell(format, name, operation);
+  authorInitials(format, name, operation);
   const signatureValue = operationSignature(format, name);
   const stableTargets = format === 'pptx' && backend === 'mixdog-ooxml';
   const allowed = allowedOperationFields(signatureValue, stableTargets);
@@ -430,8 +471,13 @@ function operationContractFaults(batch, operation, index) {
   hoistComposeSheetTable(format, name, operation);
   hoistGeometryProperties(signatureValue, operation, allowed);
   const propertyKeys = propertyKeySet(catalog, signatureValue);
+  const missing = signatureValue.required.filter(
+    (field) =>
+      operation[field] === undefined &&
+      !(stableTargets && ['slide', 'shape'].includes(field) && operation[`${field}Id`] !== undefined)
+  );
   return [
-    unknownFieldsFault(batch, name, operation, index, { allowed, propertyKeys }),
+    unknownFieldsFault(batch, name, operation, index, { allowed, propertyKeys, missing }),
     unknownPropertiesFault(batch, name, operation, index, propertyKeys),
     ...docxTableAlignmentFaults(format, name, operation, index),
     requiredInputFault(batch, name, operation, index, signatureValue, stableTargets),
@@ -454,10 +500,18 @@ export function assertOfficeOperationContracts({ format = '', backend = '', oper
   const faults = operations.flatMap((operation, index) => operationContractFaults(batch, operation, index));
   if (faults.length === 1) throw new Error(faults[0]);
   if (faults.length) {
-    throw new Error(`This batch breaks ${faults.length} input contracts; fix them together. ${faults.join(' ')}`);
+    // Each fault names the describe call for its operation; a batch that gets
+    // one operation wrong in six places needs that call once, not six times.
+    const hints = [...new Set(faults.flatMap((fault) => fault.match(DESCRIBE_HINT) || []).map((hint) => hint.trim()))];
+    const bare = faults.map((fault) => fault.replace(DESCRIBE_HINT, ''));
+    throw new Error(
+      `This batch breaks ${faults.length} input contracts; fix them together. ${bare.join(' ')}${hints.length ? ` ${hints.join(' ')}` : ''}`
+    );
   }
   return operations;
 }
+
+const DESCRIBE_HINT = /\s*Call office with \{"action":"describe"[^}]*\}\./g;
 
 export function describeOfficeCapabilities({ format = '', backend = '', target = '', operation = '' } = {}) {
   if (backend && !BACKENDS.has(backend)) throw new Error(`Unsupported Office backend: ${backend}`);
@@ -482,15 +536,15 @@ export function describeOfficeCapabilities({ format = '', backend = '', target =
   const catalog = CATALOG[format];
   if (!catalog) throw new Error(`Unsupported Office Use format: ${format}`);
   const normalizedOperation = String(operation || '').trim();
+  // One operation's contract is what a caller asks for when a field is unknown;
+  // the action list, batch notes, and design catalogue it already has ride the
+  // format-level describe instead of every lookup.
   if (normalizedOperation) {
     return {
-      ...COMMON,
       format,
       backend,
-      target: target || '/',
       paths: catalog.paths,
       operation: operationDescription(format, backend, catalog, normalizedOperation),
-      designs: officeDesignCatalog(format),
     };
   }
   const operations = operationsForBackend(format, backend);

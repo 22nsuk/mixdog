@@ -1,5 +1,12 @@
+import { posix } from 'node:path';
 import JSZip from 'jszip';
-import { loadPackage, savePackage, zipText } from '../portable/portable-opc.mjs';
+import {
+  ensureContentTypeOverride,
+  loadPackage,
+  partRelationshipPath,
+  savePackage,
+  zipText,
+} from '../portable/portable-opc.mjs';
 
 // pptxgenjs 4.x writes an <a:pPr> for every run of a paragraph, not only the
 // first; DrawingML allows one pPr and it must be the first child, so any
@@ -55,6 +62,82 @@ function normalizeChartSeries(xml) {
     })
   );
   return { xml: output, removed };
+}
+
+// pptxgenjs writes a third <c:axId> into every 2D chart group — the series axis
+// only a 3D chart declares — and the schema takes exactly the ids of the axes the
+// plot area defines. An id no axis element carries is dropped from the group.
+const CHART_GROUP = /<c:(barChart|lineChart|areaChart|radarChart|scatterChart|bubbleChart)>[\s\S]*?<\/c:\1>/g;
+const AXIS_ID = /<c:(?:catAx|valAx|dateAx|serAx)>\s*<c:axId val="([^"]+)"/g;
+
+export function pruneUndeclaredAxisIds(xml) {
+  const declared = new Set([...String(xml || '').matchAll(AXIS_ID)].map((match) => match[1]));
+  if (!declared.size) return { xml, changed: false };
+  let changed = false;
+  const output = String(xml).replace(CHART_GROUP, (group) =>
+    group.replace(/<c:axId val="([^"]+)"\s*\/>/g, (tag, id) => {
+      if (declared.has(id)) return tag;
+      changed = true;
+      return '';
+    })
+  );
+  return { xml: output, changed };
+}
+
+// pptxgenjs writes the notes master list after the slide list; the schema
+// orders a presentation's lists sldMasterIdLst, notesMasterIdLst,
+// handoutMasterIdLst, sldIdLst.
+const NOTES_MASTER_LIST = /<p:notesMasterIdLst>[\s\S]*?<\/p:notesMasterIdLst>/;
+
+export function orderPresentationLists(xml) {
+  const notes = NOTES_MASTER_LIST.exec(String(xml || ''))?.[0];
+  if (!notes) return { xml, changed: false };
+  const without = xml.replace(notes, '');
+  const anchor = ['<p:handoutMasterIdLst', '<p:sldIdLst'].map((tag) => without.indexOf(tag)).find((at) => at >= 0);
+  if (anchor === undefined || xml.indexOf(notes) <= anchor) return { xml, changed: false };
+  return { xml: `${without.slice(0, anchor)}${notes}${without.slice(anchor)}`, changed: true };
+}
+
+// The notes master pptxgenjs writes points at the slide master's theme, and
+// PowerPoint opens a deck whose masters share a theme only while the notes list
+// sits after the slide list — against the schema. The notes master takes its
+// own copy of the theme, so the lists can take their schema order. Answers
+// whether the notes master now owns its theme.
+const THEME_TYPE = 'application/vnd.openxmlformats-officedocument.theme+xml';
+
+function themeTarget(relationshipsXml, part) {
+  for (const [tag] of String(relationshipsXml || '').matchAll(/<Relationship\b[^>]*\/>/g)) {
+    if (!/\bType="[^"]*\/theme"/.test(tag)) continue;
+    const target = /\bTarget="([^"]+)"/.exec(tag)?.[1];
+    if (target) return { tag, part: posix.normalize(posix.join(posix.dirname(part), target)) };
+  }
+  return null;
+}
+
+async function giveNotesMasterOwnTheme(zip) {
+  const names = Object.keys(zip.files);
+  const notes = names.find((name) => /^ppt\/notesMasters\/[^/]+\.xml$/.test(name));
+  if (!notes) return false;
+  const relsPath = partRelationshipPath(notes);
+  const rels = await zipText(zip, relsPath);
+  const theme = themeTarget(rels, notes);
+  if (!theme || !zip.file(theme.part)) return false;
+  let shared = false;
+  for (const master of names.filter((name) => /^ppt\/slideMasters\/[^/]+\.xml$/.test(name))) {
+    if (themeTarget(await zipText(zip, partRelationshipPath(master)), master)?.part === theme.part) shared = true;
+  }
+  if (!shared) return true;
+  const numbers = names.map((name) => Number(/^ppt\/theme\/theme(\d+)\.xml$/.exec(name)?.[1] || 0));
+  const own = `ppt/theme/theme${Math.max(0, ...numbers) + 1}.xml`;
+  zip.file(own, await zipText(zip, theme.part));
+  const themeRels = await zipText(zip, partRelationshipPath(theme.part));
+  if (themeRels) zip.file(partRelationshipPath(own), themeRels);
+  await ensureContentTypeOverride(zip, `/${own}`, THEME_TYPE);
+  zip.file(
+    relsPath,
+    rels.replace(theme.tag, theme.tag.replace(/\bTarget="[^"]+"/, `Target="../theme/${posix.basename(own)}"`))
+  );
+  return true;
 }
 
 // pptxgenjs has no per-point fill for a bar series, so the kit's chart() draws
@@ -342,6 +425,8 @@ export async function normalizeAuthoredPptx(path) {
       }
       const fonts = normalizeChartFonts(result.xml);
       if (fonts.changed) result = { ...result, xml: fonts.xml, changed: true };
+      const axes = pruneUndeclaredAxisIds(result.xml);
+      if (axes.changed) result = { ...result, xml: axes.xml, changed: true };
     } else {
       const native = nativeGradients(result.xml);
       if (native.changed) {
@@ -357,6 +442,14 @@ export async function normalizeAuthoredPptx(path) {
     if (!result.removed && !result.changed) continue;
     zip.file(part, result.xml);
     removed += result.removed;
+    changedParts += 1;
+  }
+  const presentation = await zipText(zip, 'ppt/presentation.xml');
+  const ordered = presentation ? orderPresentationLists(presentation) : { changed: false };
+  // The lists move only once the notes master no longer shares the slide
+  // master's theme: the shared theme is what the out-of-order list tolerates.
+  if (ordered.changed && (await giveNotesMasterOwnTheme(zip))) {
+    zip.file('ppt/presentation.xml', ordered.xml);
     changedParts += 1;
   }
   if (changedParts) await savePackage(zip, path);

@@ -405,6 +405,34 @@ function mergeWordPropertyElements(existing, overrides, order) {
     .join('');
 }
 
+// Run properties merged in Word's order, the overrides replacing the elements they name. The faces merge attribute by
+// attribute: a document default naming its Korean face keeps it when only the Latin face is set.
+export function mergeWordRunFonts(existing, { name = '', nameEastAsia = '', size = 0, color = '' } = {}) {
+  const attributes = new Map(
+    [...(/<w:rFonts\b([^>]*)\/>/.exec(existing)?.[1] || '').matchAll(/(w:[A-Za-z]+)="([^"]*)"/g)].map((match) => [
+      match[1],
+      match[2],
+    ])
+  );
+  // A theme face (asciiTheme…) outranks the named one in Word, so a face set here drops it.
+  if (name) {
+    for (const key of ['w:asciiTheme', 'w:hAnsiTheme']) attributes.delete(key);
+    attributes.set('w:ascii', xmlEncode(name));
+    attributes.set('w:hAnsi', xmlEncode(name));
+  }
+  if (nameEastAsia) {
+    attributes.delete('w:eastAsiaTheme');
+    attributes.set('w:eastAsia', xmlEncode(nameEastAsia));
+  }
+  const half = Number(size) > 0 ? Math.max(2, Math.round(Number(size) * 2)) : 0;
+  const ink = String(color || '').replace(/^#/, '');
+  const overrides =
+    (attributes.size ? `<w:rFonts ${[...attributes].map(([key, value]) => `${key}="${value}"`).join(' ')}/>` : '') +
+    (/^[0-9A-Fa-f]{6}$/.test(ink) ? `<w:color w:val="${ink.toUpperCase()}"/>` : '') +
+    (half ? `<w:sz w:val="${half}"/><w:szCs w:val="${half}"/>` : '');
+  return mergeWordPropertyElements(existing, overrides, RUN_PROPERTY_ORDER);
+}
+
 export function applyWordRunFormat(xml, runFormat) {
   if (!runFormat) return xml;
   return String(xml).replace(new RegExp(WORD_RUN_SOURCE, 'g'), (run) => {

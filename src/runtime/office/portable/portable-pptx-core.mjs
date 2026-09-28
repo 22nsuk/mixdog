@@ -97,8 +97,8 @@ export async function pptxRelatedPart(zip, part, suffix) {
   return '';
 }
 
-// bg1/tx1 and friends are names the master maps onto the theme's colours.
-async function themeBackgroundColor(zip, masterPart, token) {
+// bg1/tx1 and friends are names the master maps onto the theme's colours; accent1..6 name them directly.
+export async function themeColor(zip, masterPart, token) {
   if (!masterPart) return '';
   const master = await zipText(zip, masterPart);
   const map = /<p:clrMap\b([^>]*?)\/?>/.exec(master || '')?.[1] || '';
@@ -131,7 +131,7 @@ export async function resolveSlideBackground(zip, slidePath, slideXml) {
     const direct = /<a:srgbClr\b[^>]*\bval="([0-9A-Fa-f]{6})"/.exec(block)?.[1] || '';
     if (direct) return direct;
     const token = /<a:schemeClr\b[^>]*\bval="([A-Za-z0-9]+)"/.exec(block)?.[1] || '';
-    const resolved = token ? await themeBackgroundColor(zip, masterPart, token) : '';
+    const resolved = token ? await themeColor(zip, masterPart, token) : '';
     if (resolved) return resolved;
   }
   return '';

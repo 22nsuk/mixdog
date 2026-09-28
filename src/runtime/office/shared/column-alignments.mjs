@@ -2,8 +2,9 @@
 // edge and the header sits over them; every column of figures used to start
 // at the left edge, which is where a reader looks for words. A currency sign
 // may lead the figure (₩2,400,000, $120): an invoice's amounts are figures too,
-// and so is a Korean amount whose unit is spaced from its multiplier (2.6억 원).
-const NUMERIC_CELL = /^[(\-+−]?[₩$€£¥]?\s?[\d,.\s]+(?:%|(?:\s?[A-Za-z가-힣원$€£¥]{1,3}){0,2})\)?$/;
+// and so is a Korean amount whose unit is spaced from its multiplier (2.6억 원), and a change in percentage points
+// (+13%p, 22%p), which set left of the percentages beside it.
+const NUMERIC_CELL = /^[(\-+−]?[₩$€£¥]?\s?[\d,.\s]+(?:%p?|(?:\s?[A-Za-z가-힣원$€£¥]{1,3}){0,2})\)?$/;
 // A first column of 1호, 2호 is a row label with a digit in it, not a
 // figure to compare down the column: it stays left unless every entry
 // is a bare number.

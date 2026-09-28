@@ -409,7 +409,8 @@ async function prepareBatchOperations(session, args) {
   // A template page is chosen and filled before any backend sees the batch: it
   // arrives as the import of that one page and the writes into its own slots,
   // which both backends already perform.
-  operations = await expandTemplatePageOperations(session.format, operations);
+  prepared.templateData = [];
+  operations = await expandTemplatePageOperations(session.format, operations, prepared.templateData);
   if (session.format === 'xlsx' || TABULAR_FORMATS.has(session.format)) validateXlsxOperations(operations);
   // Excel rejects `My Sheet!A1` outright; the portable writer quotes it from
   // the sheet list, and an Excel session gets the same courtesy here.
@@ -547,9 +548,19 @@ function normalizeBatchResults(results) {
 // the portable path does the same when results map onto operations.
 function unchangedResults(operations, results) {
   const aligned = results.length === operations.length;
-  return results.filter(
-    (entry, index) => entry.changed === false && !(aligned && operations[index]?.allowNoChange === true)
-  );
+  return results
+    .map((entry, index) => {
+      // A phrase that matched nothing is the whole reason, and the caller cannot see it from "no change" alone:
+      // the wording on the page differs (a particle, a space, a line break) from the one sent.
+      const operation = aligned ? operations[index] : null;
+      if (entry.changed !== false || entry.unchangedReason || operation?.op !== 'replace_text') return entry;
+      const find = String(operation.find ?? '');
+      return {
+        ...entry,
+        unchangedReason: `"${find.length > 40 ? `${find.slice(0, 40)}…` : find}" appears nowhere${operation.slide ? ` on slide ${operation.slide}` : ''}; read the wording as written with action:query and a word from it`,
+      };
+    })
+    .filter((entry, index) => entry.changed === false && !(aligned && operations[index]?.allowNoChange === true));
 }
 
 function assertBatchChanged(session, args, noChange) {
@@ -597,6 +608,8 @@ async function commitBatch(session, args, { trust, prepared, operations, transac
     ...(audit ? { audit } : {}),
     design: session.design,
     semanticOperations: prepared.semantic,
+    // A template page's chart, table, or picture still shows the template's data until it is replaced.
+    ...(prepared.templateData?.length ? { templateData: prepared.templateData } : {}),
     ...(outcome.backgroundIsolation ? { backgroundIsolation: outcome.backgroundIsolation } : {}),
     trust,
     ...(transactionResult ? { transaction: transactionResult } : {}),

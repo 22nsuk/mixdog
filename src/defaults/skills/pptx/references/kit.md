@@ -907,9 +907,14 @@ function numeralBeat(slide, value, claim, { x = M, y = 1.4, w = W - 2 * M, size 
   slide.addText(String(value), { ...box(x, y, nw, nh), fontFace: T.data, fontSize: size, bold: true, color, margin: 0, valign: 'top', lineSpacingMultiple: 1.1 });
   const cx = x + nw + GAP.between, cw = w - nw - GAP.between;
   // The claim's size steps down the scale until the column beside the numeral is eight ems wide (presentation mode's
-  // 44 pt section size beside a 220 pt numeral leaves a measure of one or two words a line).
-  const claimSize = [TYPE.section, ...scaleSteps().filter((v) => v < TYPE.section && v >= TYPE.lead)].find((at) => cw * 72 / at >= 8) ?? TYPE.lead;
-  const b = text(slide, claim, cx, y + nh * 0.22, cw, claimSize, { color: claimColor, font: T.display, bold: true, lh: 1.15 });
+  // 44 pt section size beside a 220 pt numeral leaves a measure of one or two words a line) and the claim, with room
+  // for its line, ends above the lower margin as poster() does: a four-line claim at 54 pt pushed its line onto the
+  // page number (shape_overlap).
+  const top = y + nh * 0.22;
+  const room = H - M - top - (line ? lineH(TYPE.lead, T.light, 1.3) * 2 + GAP.within : 0);
+  const claimSize = [TYPE.section, ...scaleSteps().filter((v) => v < TYPE.section && v >= TYPE.lead)]
+    .find((at) => cw * 72 / at >= 8 && fitH(claim, cw, at, T.display, { bold: true, lh: 1.15 }) <= room) ?? TYPE.lead;
+  const b = text(slide, claim, cx, top, cw, claimSize, { color: claimColor, font: T.display, bold: true, lh: 1.15 });
   return line ? text(slide, line, cx, b + GAP.within, cw, TYPE.lead, { color: lineColor, font: T.light, lh: 1.3 }) : Math.max(b, y + nh);
 }
 ```
@@ -1204,9 +1209,16 @@ function badge(slide, x, y, w, h, str, { tone: toneName = 'neutral', fill, color
   slide.addText(str, { ...box(x, y, w, h), fontFace: font, fontSize: size, bold: true, color, align: 'center', valign: 'middle', margin: 0, objectName: specName('badge', toneName) });
 }
 // Horizontal rule: T.line at a section boundary (default), T.lineSubtle between repeated items, T.lineStrong as a frame edge.
+// Each rule is remembered per slide, so a block that opens on a rule can see one already standing just above it.
+const HAIRLINES = new WeakMap();
 function hairline(slide, x, y, w, color = T.line) {
   slide.addShape(S.line, { ...box(x, y, w, 0), line: { color, width: LINE } });
+  if (slide && typeof slide === 'object') HAIRLINES.set(slide, [...(HAIRLINES.get(slide) || []), { x, y, w }]);
 }
+// A rule within one gap above y that spans the same run: statBand() closes on a rule, and columns() under it opened on
+// its own, two parallel hairlines a gap apart that read as a drawing mistake.
+const ruledAbove = (slide, x, y, w) =>
+  (HAIRLINES.get(slide) || []).some((r) => y - r.y >= -0.01 && y - r.y <= GAP.between + 0.01 && r.x <= x + 0.05 && r.x + r.w >= x + w - 0.05);
 function rule(slide, x, y, h, color = T.line, width = LINE) {   // vertical rule the content hangs from
   slide.addShape(S.line, { ...box(x, y, 0, h), line: { color, width } });
 }
@@ -1686,7 +1698,7 @@ function columns(slide, x, y, w, cols, { gap = GUTTER, size = TYPE.body, lh = 1.
   // decorative_stripe (a thin rule within 40 pt under ≥ 24 pt text sharing its columns). The row keeps its inset so
   // columnsH() and the drawn height agree. Text mode's 23 pt title is under the review's size, so its rule stays.
   const underTitle = TYPE.title >= 24 && y - Z.head.bottom < 0.6;
-  if (ruled && !underTitle) hairline(slide, x, y, w, T.line);
+  if (ruled && !underTitle && !ruledAbove(slide, x, y, w)) hairline(slide, x, y, w, T.line);
   let bottom = y;
   cols.forEach((c, i) => {
     const col = track[i];

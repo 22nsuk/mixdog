@@ -1,5 +1,5 @@
 import { columnNumber } from './portable-cells.mjs';
-import { quoteSheetName } from './portable-sheet-xml.mjs';
+import { quoteSheetName, sheetQualifiedAreas } from './portable-sheet-xml.mjs';
 import { escapeRegExp } from './xlsx-audit-support.mjs';
 
 const XLSX_MAX_ROWS = 1_048_576;
@@ -293,6 +293,12 @@ function validateFreezePanes(operation) {
   if (!Number.isInteger(column) || column < 0 || column > XLSX_MAX_COLUMNS) {
     throw new Error(`XLSX freeze_panes column must be between 0 and ${XLSX_MAX_COLUMNS}`);
   }
+  // row:1 read as "freeze one row" came back as a batch that changed nothing; it names the first row that scrolls.
+  if (row <= 1 && column <= 1) {
+    throw new Error(
+      'XLSX freeze_panes row and column name the first row and column that scroll, so this freezes nothing: row:2 keeps the header row (row 1) in view, column:2 keeps column A.'
+    );
+  }
 }
 
 function validateSortRange(operation) {
@@ -322,18 +328,26 @@ function validateConditionalFormat(operation) {
 }
 
 // A chart's source may be several areas joined by commas, the way Excel's
-// Range("A7:A12,D7:D12") reads them; each one is a bounded range.
+// Range("A7:A12,D7:D12") reads them; each one is a bounded range. The source
+// may stand on another sheet ('월별 계산'!A1:A7,'월별 계산'!D1:D7), the way a
+// summary sheet charts the calculation behind it — one sheet for every area.
 function validateRangeOperation(operation, op) {
-  const parts =
-    op === 'add_chart'
-      ? String(operation.range)
-          .split(',')
-          .map((part) => part.trim())
-      : [operation.range];
+  const parts = op === 'add_chart' ? chartSourceAreas(operation.range) : [operation.range];
   const area = parseXlsxRange(parts[0]);
   const areas = [area, ...parts.slice(1).map((part) => parseXlsxRange(part))];
   if (op === 'set_range') validateRangeMatrix(operation, area);
   if (op === 'add_chart') assertChartReadsItsData(operation, areas);
+}
+
+function chartSourceAreas(range) {
+  const areas = sheetQualifiedAreas(range);
+  const named = new Set(areas.map((entry) => entry.sheet.toLowerCase()));
+  if (named.size > 1) {
+    throw new Error(
+      `XLSX add_chart ${range} names ${named.has('') ? 'a sheet on some areas and none on others' : 'more than one sheet'}; a chart reads one sheet, so name it on every area or on none`
+    );
+  }
+  return areas.map((entry) => entry.area);
 }
 
 // A chart read by columns takes its categories down the first column and a series from every other column. Given

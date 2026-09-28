@@ -1,4 +1,6 @@
 import { documentTracksChanges } from './portable-docx-parts.mjs';
+import { closeTrailingTable, hasAdjacentTables, separateAdjacentTables } from './portable-snapshot-docx.mjs';
+import { zipText } from './portable-opc.mjs';
 import {
   addDocxBookmark,
   addDocxComment,
@@ -30,6 +32,7 @@ import {
   fillDocxContentControl,
   fitDocxTable,
   resolveDocxRevisions,
+  setDocxDocumentFont,
   setDocxPage,
   styleOrMergeDocxTableCell,
 } from './portable-docx-operations.mjs';
@@ -56,6 +59,7 @@ const DOCUMENT_EDITS = {
   set_paragraph_format: setDocxParagraphFormat,
   add_image: addDocxImage,
   set_page: setDocxPage,
+  set_document_font: setDocxDocumentFont,
   insert_table_row: editDocxTableRowsOrColumns,
   delete_table_row: editDocxTableRowsOrColumns,
   insert_table_column: editDocxTableRowsOrColumns,
@@ -87,6 +91,12 @@ export async function applyDocx(zip, operations) {
   );
   const results = [];
   let tracking = await documentTracksChanges(zip);
+  // Only a table this batch left at the end gets its closing paragraph: a document that already ended in one is the
+  // file as it was, and under tracking an untracked paragraph would read as an edit the redline never marked.
+  const before = (await zipText(zip, 'word/document.xml')) || '';
+  const endedInTable = closeTrailingTable(before) !== before;
+  // Tables the file already set side by side read as one table there too; only a meeting this batch made is parted.
+  const tablesAlreadyMet = hasAdjacentTables(before);
   for (const op of operations) {
     if (op.op === 'track_changes') {
       const changed = await setDocxTrackChanges(zip, op);
@@ -97,6 +107,12 @@ export async function applyDocx(zip, operations) {
     const edit = Object.hasOwn(DOCUMENT_EDITS, op.op) ? DOCUMENT_EDITS[op.op] : null;
     if (!edit) throw new Error(`Portable DOCX backend does not support operation: ${op.op}`);
     results.push(await edit(zip, op, { parts, tracking }));
+  }
+  const document = tracking ? '' : (await zipText(zip, 'word/document.xml')) || '';
+  if (document) {
+    let next = tablesAlreadyMet ? document : separateAdjacentTables(document);
+    if (!endedInTable) next = closeTrailingTable(next);
+    if (next !== document) zip.file('word/document.xml', next);
   }
   return results;
 }

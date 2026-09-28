@@ -976,6 +976,8 @@ test('portable DOCX preserves the package while replacing split runs and appendi
     )
   );
   assert.equal(firstParagraph.element.text, '안녕하세요');
+  // One paragraph is read whole: the body's "more blocks follow" and its cursor are not this answer's.
+  assert.equal(firstParagraph.pagination, undefined);
 
   value(
     await executeOfficeTool(
@@ -2462,13 +2464,15 @@ test('portable DOCX notes cite the phrase they follow and are the only notes cou
           { op: 'append_text', text: '정시 출고율은 92.8%로 내려갔습니다.' },
           { op: 'add_note', find: '92.8%', text: '물류운영팀 집계.' },
           { op: 'add_note', kind: 'endnote', paragraph: 1, text: '집계 기준은 부록 참조.' },
+          { op: 'append_text', text: '부산 권역이 가장 크게 성장했습니다.' },
+          { op: 'add_note', find: '가장 크게 성장', text: '영업 시스템 추출 기준.' },
         ],
       },
       { cwd }
     )
   );
   assert.deepEqual(
-    created.batch.results.slice(1).map((entry) => [entry.op, entry.kind, entry.note, entry.anchor]),
+    created.batch.results.slice(1, 3).map((entry) => [entry.op, entry.kind, entry.note, entry.anchor]),
     [
       ['add_note', 'footnote', 1, 'phrase'],
       ['add_note', 'endnote', 1, 'paragraph'],
@@ -2476,6 +2480,8 @@ test('portable DOCX notes cite the phrase they follow and are the only notes cou
   );
   const zip = await JSZip.loadAsync(await readFile(path));
   const document = await zip.file('word/document.xml').async('string');
+  // A phrase cut inside a word ("성장" of "성장했습니다") takes its mark at the word's end, not mid-word.
+  assert.match(document, /성장했습니다<\/w:t><\/w:r><w:r><w:rPr><w:rStyle w:val="FootnoteReference"\/>/);
   // The mark follows the cited number, so the run is cut around it.
   assert.match(
     document,
@@ -2497,7 +2503,7 @@ test('portable DOCX notes cite the phrase they follow and are the only notes cou
     /Type="http:\/\/schemas\.openxmlformats\.org\/officeDocument\/2006\/relationships\/footnotes" Target="footnotes\.xml"/
   );
   const snapshot = value(await executeOfficeTool({ action: 'snapshot', session: created.session }, { cwd }));
-  assert.equal(snapshot.document.footnoteCount, 1);
+  assert.equal(snapshot.document.footnoteCount, 2);
   assert.equal(snapshot.document.endnoteCount, 1);
   assert.match(snapshot.document.footnotes[0].text, /물류운영팀 집계\./);
   assert.match(snapshot.document.endnotes[0].text, /부록 참조\./);
@@ -2905,7 +2911,7 @@ test('a chart on an unfitted sheet takes one page wide, and the review has nothi
   const snapshot = value(await executeOfficeTool({ action: 'snapshot', session: created.session }, { cwd }));
   const setup = snapshot.document.sheets[0].pageSetup;
   assert.equal(setup.fitToPagesWide, 1, JSON.stringify(setup));
-  assert.equal(setup.fitToPagesTall, 0);
+  assert.equal(setup.fitToPagesTall ?? 0, 0, 'an unset height reads the same absent');
   const reviewed = value(await executeOfficeTool({ action: 'issues', session: created.session }, { cwd }));
   assert.deepEqual(
     (reviewed.issues || []).filter((entry) => entry.code === 'drawing_outside_print_area'),
@@ -2942,6 +2948,45 @@ test('a chart on an unfitted sheet takes one page wide, and the review has nothi
   );
   assert.equal(declaredSnapshot.document.sheets[0].pageSetup.fitToPagesWide, 2);
   assert.equal(declaredSnapshot.document.sheets[0].pageSetup.fitToPagesTall, 3);
+});
+
+// A recalculation saves the workbook through LibreOffice, which writes the fit
+// flag as fitToPage="true" beside a scale="100". The fit the chart applied is
+// still the fit: the reader took only "1" as true, and finalize reported the
+// chart past a fit the sheet declared.
+test('a fit flag written as true after a LibreOffice save is still the one-page-wide fit', async (t) => {
+  const cwd = await workspace(t);
+  const book = join(cwd, 'resaved.xlsx');
+  const created = value(
+    await executeOfficeTool(
+      {
+        action: 'create',
+        path: book,
+        format: 'xlsx',
+        mode: 'portable',
+        operations: [
+          { op: 'set_range', range: 'A1:B3', values: [['월', '처리량'], ['9월', 4390], ['10월', 4720]] },
+          { op: 'add_chart', sheet: 'Sheet1', chartType: 'column', range: 'A1:B3', cell: 'G2' },
+        ],
+      },
+      { cwd }
+    )
+  );
+  value(await executeOfficeTool({ action: 'close', session: created.session }, { cwd }));
+  const zip = await JSZip.loadAsync(await readFile(book));
+  const sheetXml = await zip.file('xl/worksheets/sheet1.xml').async('string');
+  zip.file(
+    'xl/worksheets/sheet1.xml',
+    sheetXml
+      .replace('fitToPage="1"', 'fitToPage="true"')
+      .replace('<pageSetup fitToWidth="1" fitToHeight="0"/>', '<pageSetup scale="100" fitToWidth="1" fitToHeight="0"/>')
+  );
+  await writeFile(book, await zip.generateAsync({ type: 'nodebuffer' }));
+  const opened = value(await executeOfficeTool({ action: 'open', path: book, mode: 'portable' }, { cwd }));
+  const snapshot = value(await executeOfficeTool({ action: 'snapshot', session: opened.session }, { cwd }));
+  assert.equal(snapshot.document.sheets[0].pageSetup.fitToPagesWide, 1, JSON.stringify(snapshot.document.sheets[0].pageSetup));
+  const reviewed = value(await executeOfficeTool({ action: 'issues', session: opened.session }, { cwd }));
+  assert.deepEqual((reviewed.issues || []).filter((entry) => entry.code === 'drawing_outside_print_area'), []);
 });
 
 // A stat strip is a 22 pt value row over a 9 pt label row. Restyling the label

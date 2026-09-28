@@ -80,9 +80,17 @@ export const FORMAT_SIGNATURES = {
       propertySets: ['paragraphFormat'],
       notes: 'Patches supplied properties only; lineSpacing is a minimum in points on both backends.',
     }),
-    remove_paragraph: signature(['paragraph'], ['author']),
+    remove_paragraph: signature(['paragraph'], ['author'], {
+      notes:
+        'The only paragraph between two tables keeps them two tables: its words go and it stays empty (keptBetweenTables), since Word joins tables with nothing between them.',
+    }),
     move_paragraph: signature(['paragraph', 'index']),
     set_paragraph_style: signature(['paragraph', 'style']),
+    set_document_font: signature(['properties'], [], {
+      propertySets: ['font'],
+      notes:
+        "The document's own face, size, and ink — what every paragraph without its own reads, and what a paragraph added later in Word or by append_text starts from. properties: name, nameEastAsia, size, color.",
+    }),
     set_font: signature(['find', 'properties'], [], {
       propertySets: ['font'],
       notes:
@@ -137,7 +145,10 @@ export const FORMAT_SIGNATURES = {
           "Writes into the footer unless kind:'header' asks otherwise; variant picks default, first, or even, as for set_header_footer. The number alone, centred, on both backends; prefix ('Page') and includeTotal:true with separator ('/' by default) add to it.",
       }
     ),
-    insert_break: signature([], ['paragraph', 'kind']),
+    insert_break: signature([], ['paragraph', 'kind'], {
+      notes:
+        'kind: page (default) | column | section_next (a new section on the next page, which set_page can then turn landscape or lay in columns) | section_continuous (a new section on the same page).',
+    }),
     set_list: signature(['paragraph', 'kind'], ['level']),
     add_hyperlink: signature([], ['find', 'paragraph', 'address', 'subAddress', 'display'], {
       oneOf: [['find'], ['paragraph']],
@@ -242,7 +253,7 @@ export const FORMAT_SIGNATURES = {
       {
         propertySets: ['chart'],
         notes:
-          "plotBy:'rows' reads one bounded range the other way — the first row supplies the categories and every other row is a series named by its first cell — for a sheet that grows a column per period. The first source column supplies categories; remaining columns become series. A series that is not beside its categories joins by comma the way Excel reads it (range:'A7:A12,D7:D12', same rows in every area). cell (H2) places the frame's top-left corner on the grid; left/top are points and win when both are given; width/height are points (420 × 260 at F5 reaches about N22), and the print area has to reach past the frame. toColumn (F) with cell ends the frame at that column's right edge in place of width, so a chart spans a table exactly: a column's points depend on the workbook's font (a Korean Excel's is wider), which a width cannot know.",
+          "plotBy:'rows' reads one bounded range the other way — the first row supplies the categories and every other row is a series named by its first cell — for a sheet that grows a column per period. The first source column supplies categories; remaining columns become series. A series that is not beside its categories joins by comma the way Excel reads it (range:'A7:A12,D7:D12', same rows in every area). A source on another sheet names it on every area (range:\"'Calc'!A1:A7,'Calc'!D1:D7\"); sheet is where the frame stands. cell (H2) places the frame's top-left corner on the grid; left/top are points and win when both are given; width/height are points (420 × 260 at F5 reaches about N22), and the print area has to reach past the frame. toColumn (F) with cell ends the frame at that column's right edge in place of width, so a chart spans a table exactly: a column's points depend on the workbook's font (a Korean Excel's is wider), which a width cannot know.",
       }
     ),
     add_conditional_format: signature(
@@ -264,7 +275,7 @@ export const FORMAT_SIGNATURES = {
     ),
     freeze_panes: signature([], ['sheet', 'row', 'column'], {
       notes:
-        'row and column are the first row and column that scroll, as Excel freezes at the selected cell: row:2 keeps row 1 in view, column:2 keeps column A; neither unfreezes.',
+        'row and column are the first row and column that scroll, as Excel freezes at the selected cell: row:2 keeps row 1 in view, column:2 keeps column A; neither unfreezes. cell:"B2" names the same cell, and column also takes a letter.',
     }),
     add_pivot_table: signature(
       ['source', 'destination'],
@@ -348,6 +359,11 @@ export const FORMAT_SIGNATURES = {
     add_provenance: signature(['cell', 'source'], ['sheet'], { propertySets: ['provenance'] }),
   },
   pptx: {
+    // A template repeats its phrases from page to page; slide keeps a replacement on the page it was meant for.
+    replace_text: signature(['find', 'replace'], ['slide'], {
+      notes:
+        'Replaces every match on every slide and in the speaker notes; slide limits it to that one page (and its notes). A space in find matches a space or a soft line break, never a paragraph end, and only the matched characters change, so the runs around them keep their formatting.',
+    }),
     set_text: signature(['slide', 'shape', 'text'], [], {
       notes:
         "Replaces the shape's whole text with one paragraph in the formatting of the paragraph that held its first text, as PowerPoint does; the other paragraphs go. To change one bullet of several, use replace_text; to rebuild a list, add_textbox paragraphs.",

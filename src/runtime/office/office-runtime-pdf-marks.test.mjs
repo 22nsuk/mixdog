@@ -185,6 +185,9 @@ test('PDF search, highlight, links, and page-number placeholders work on an exis
     layout.pages.map((page) => page.items.some((item) => item.text === `${page.page} / 3`)),
     [true, true, true]
   );
+  // The viewport matrix, the engine's face ids, and the default direction are the reader's, not the caller's.
+  assert.equal(layout.pages[0].transform, undefined);
+  assert.equal(layout.pages[0].items.some((item) => 'font' in item || item.direction === 'ltr'), false);
   const mark = layout.pages[1].boxes.find(
     (box) => box.filled && Math.abs(box.x - (hit.x - 1)) < 0.5 && Math.abs(box.top - (hit.top - 1)) < 0.5
   );

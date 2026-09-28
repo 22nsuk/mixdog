@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { attachRenderedAir, compositionReceipt, slideReceipt } from './pptx-receipt.mjs';
+import { attachRenderedAir, compositionReceipt, receiptForDelivery, slideReceipt } from './pptx-receipt.mjs';
 import { parseAuthoringBrief } from './pptx-brief.mjs';
 
 const DOCUMENT = {
@@ -465,6 +465,48 @@ test('a raster the kit drew as a device keeps its page a beat, while a placed pi
   const photo = compositionReceipt(cover('Picture 3'));
   assert.equal(photo.slides[0].grammar, 'evidence', "a placed picture is read as the page's evidence");
   assert.equal(photo.slides[0].pictures, 1);
+});
+
+test('a session sends each slide structure once and afterwards only what a render read', () => {
+  const receipt = (secondChars) => ({
+    slides: [
+      { slide: 1, charts: 0, chars: 40, grammar: 'beat', observe: { air: 0.6 } },
+      { slide: 2, charts: 1, chars: secondChars, grammar: 'evidence', observe: { air: 0.3 } },
+    ],
+    deck: { slides: 2, charts: 1, rhythm: { air: [0.6, 0.3] } },
+    absent: ['tables'],
+    note: 'n',
+  });
+  const session = {};
+  const first = receiptForDelivery(receipt(60), session);
+  assert.equal(first.slides[0].unchanged, undefined, 'the first delivery is whole');
+  assert.equal(first.slides[0].charts, undefined, "a slide's zero count reads the same absent; the deck keeps totals");
+  assert.equal(first.unchangedMeans, undefined);
+
+  const rendered = attachRenderedAir(
+    receipt(60),
+    new Map([
+      [1, { air: 0.58, colour: 14 }],
+      [2, { air: 0.4, colour: 50 }],
+    ])
+  );
+  const again = receiptForDelivery(rendered, session);
+  assert.deepEqual(again.slides[0], { slide: 1, unchanged: true, observe: { renderAir: 0.58, renderColour: 14 } });
+  assert.equal(again.deck.unchanged, true);
+  assert.deepEqual(again.deck.rhythm.renderAir, [0.58, 0.4]);
+  assert.equal(again.deck.slides, undefined, 'the deck structure the caller holds is not resent');
+  assert.match(again.unchangedMeans, /matches the receipt this session sent last/);
+  assert.equal(rendered.slides[0].charts, 0, 'the receipt handed in is not mutated');
+
+  const plain = receiptForDelivery(
+    { slides: [{ slide: 9, presets: [], observe: { quadrantAir: [0.5, 0.5, 0.5, 0.5], contentAir: [0.5, 0.5, 0.5, 0.5], fills: [], fieldFill: [0.3] } }] },
+    {}
+  );
+  assert.deepEqual(plain.slides[0], { slide: 9, observe: { quadrantAir: [0.5, 0.5, 0.5, 0.5], fieldFill: [0.3] } });
+  const edited = receiptForDelivery(receipt(75), session);
+  assert.equal(edited.slides[0].unchanged, true);
+  assert.equal(edited.slides[1].chars, 75, 'a slide whose structure changed is sent whole');
+  assert.equal(receiptForDelivery(receipt(75), {}).slides[1].unchanged, undefined, 'another session starts whole');
 });
 
 test('a receipt without a brief still reports the deck and never throws on an empty document', () => {

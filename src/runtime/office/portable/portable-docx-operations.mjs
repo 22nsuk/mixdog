@@ -19,6 +19,7 @@ import {
   docxTable,
   justifyWordParagraphs,
   mergeWordCellProperties,
+  mergeWordRunFonts,
   replaceDocxTable,
   replaceWordProperties,
   rowCellMatches,
@@ -261,6 +262,18 @@ async function pruneOrphanComments(zip, parts) {
   return removedIds.length;
 }
 
+// The mark goes at the end of the word the cited phrase ends in: a phrase ending inside a word ("가장 크게 성장" in
+// "성장했습니다") set the mark mid-word, "성장¹했습니다". A phrase cut inside a word — its last character and the next
+// one both letters or digits — runs on to the word's end, stopping at a space or a punctuation mark; one that ends
+// on a sign ("92.8%" before "로") is a whole figure and keeps its mark there.
+function wholeWordPhrase(text, find) {
+  const at = text.indexOf(find);
+  if (at < 0 || !/[\p{L}\p{N}]$/u.test(find)) return find;
+  let end = at + find.length;
+  while (end < text.length && /[\p{L}\p{N}]/u.test(text[end])) end += 1;
+  return text.slice(at, end);
+}
+
 /** Writes a footnote or endnote and anchors its mark on the phrase it cites. */
 export async function addDocxNote(zip, op) {
   const text = String(op.text || '');
@@ -298,7 +311,8 @@ export async function addDocxNote(zip, op) {
   const mark =
     `<w:r><w:rPr><w:rStyle w:val="${definition.style}"/><w:vertAlign w:val="superscript"/></w:rPr>` +
     `<${definition.reference} w:id="${id}"/></w:r>`;
-  const phrase = find ? anchorPhraseInParagraph(paragraph.xml, find, id, { start: '', end: mark }) : null;
+  const cited = find ? wholeWordPhrase(paragraphTexts(paragraph.xml, 'w:t').join(''), find) : '';
+  const phrase = cited ? anchorPhraseInParagraph(paragraph.xml, cited, id, { start: '', end: mark }) : null;
   const anchored = phrase || paragraph.xml.replace(/<\/w:p>$/, `${mark}</w:p>`);
   const nextInner = `${model.body.inner.slice(0, paragraph.start)}${anchored}${model.body.inner.slice(paragraph.end)}`;
   current = `${current.slice(0, model.body.start)}${nextInner}${current.slice(model.body.end)}`;
@@ -310,6 +324,39 @@ export async function addDocxNote(zip, op) {
     note: id,
     anchor: phrase ? 'phrase' : 'paragraph',
   };
+}
+
+/** The document's own face and size: the default run properties, and the Normal style's where it names its own. A
+ *  composed report set every paragraph's face and left these at Calibri 11 pt, so a paragraph added later — by
+ *  append_text or by hand in Word — came out in another face and size than the body around it. */
+export async function setDocxDocumentFont(zip, op) {
+  const properties = op.properties || {};
+  const font = {
+    name: String(properties.name || '').trim(),
+    nameEastAsia: String(properties.nameEastAsia || '').trim(),
+    size: Number(properties.size) || 0,
+    color: String(properties.color || '').replace(/^#/, '').trim(),
+  };
+  if (!font.name && !font.nameEastAsia && !(font.size > 0) && !font.color) {
+    throw new Error('set_document_font needs properties.name, nameEastAsia, size, or color');
+  }
+  let styles = await zipText(zip, 'word/styles.xml');
+  if (!styles) throw new Error('DOCX package has no styles part (word/styles.xml)');
+  const defaults = /<w:rPrDefault>\s*<w:rPr>([\s\S]*?)<\/w:rPr>\s*<\/w:rPrDefault>/.exec(styles);
+  const defaultRun = `<w:rPrDefault><w:rPr>${mergeWordRunFonts(defaults?.[1] || '', font)}</w:rPr></w:rPrDefault>`;
+  if (defaults) styles = styles.replace(defaults[0], () => defaultRun);
+  else if (/<w:docDefaults>/.test(styles)) styles = styles.replace('<w:docDefaults>', () => `<w:docDefaults>${defaultRun}`);
+  else styles = styles.replace(/<w:styles\b[^>]*>/, (open) => `${open}<w:docDefaults>${defaultRun}</w:docDefaults>`);
+  // A Normal style that names its own face or size outranks the defaults; it takes the same values. Normal is the
+  // default paragraph style — Korean Word writes it as styleId "a", so it is found by w:default, not by its id — and
+  // it is cut out first, so a Normal without run properties never reaches into the style after it.
+  styles = styles.replace(/<w:style\b(?=[^>]*\bw:type="paragraph")(?=[^>]*\bw:default="1")[^>]*>[\s\S]*?<\/w:style>/, (normal) =>
+    normal.replace(/<w:rPr>([\s\S]*?)<\/w:rPr>/, (whole, inner) =>
+      /<w:(rFonts|sz)\b/.test(inner) ? `<w:rPr>${mergeWordRunFonts(inner, font)}</w:rPr>` : whole
+    )
+  );
+  zip.file('word/styles.xml', styles);
+  return { op: op.op, changed: true, ...font };
 }
 
 /** Page size, orientation, margins and text columns of one section, keeping what was not asked for. */
@@ -584,6 +631,7 @@ export async function editDocxParagraph(zip, op, tracking) {
   const paragraph = model.blocks.filter((block) => block.name === 'w:p')[Number(op.paragraph) - 1];
   if (!paragraph) throw new Error(`DOCX paragraph ${op.paragraph} not found`);
   let nextInner = model.body.inner;
+  let between = false;
   const splice = (replacement) =>
     `${nextInner.slice(0, paragraph.start)}${replacement}${nextInner.slice(paragraph.end)}`;
   if (op.op === 'remove_paragraph' && tracking) {
@@ -592,7 +640,11 @@ export async function editDocxParagraph(zip, op, tracking) {
     const mark = `<w:del ${revisionAttributes(id + PARAGRAPH_MARK_ID_OFFSET, op.author)}/>`;
     nextInner = splice(withParagraphMarkRevision(marked, mark));
   } else if (op.op === 'remove_paragraph') {
-    nextInner = splice('');
+    // The only paragraph between two tables is what keeps them two: removed, Word and LibreOffice read one table
+    // with the second one's rows under the first. Its words go and an empty paragraph stays.
+    between =
+      /<\/w:tbl>\s*$/.test(nextInner.slice(0, paragraph.start)) && /^\s*<w:tbl[\s>]/.test(nextInner.slice(paragraph.end));
+    nextInner = splice(between ? '<w:p/>' : '');
   } else if (op.op === 'move_paragraph') {
     nextInner = movedParagraphInner(nextInner, model, paragraph, Math.max(1, Number(op.index)));
   } else if (tracking && op.op === 'set_paragraph_text') {
@@ -608,6 +660,7 @@ export async function editDocxParagraph(zip, op, tracking) {
     op: op.op,
     changed: true,
     ...(tracking && ['set_paragraph_text', 'remove_paragraph'].includes(op.op) ? { tracked: true } : {}),
+    ...(between ? { keptBetweenTables: true } : {}),
   };
 }
 

@@ -30,9 +30,16 @@ const PLOT = { x: 0.03, y: 0.14, w: 0.94, h: 0.72 };   // plot area as fractions
 // gridlines in a pale grey, no label on every mark, the category baseline drawn): more categories or several series,
 // where a label on every bar is noise. Default by the data: labels for one series of ≤ 6 categories (a line of ≤ 8
 // points), grid otherwise; stacked forms keep their inside labels.
-function chart(slide, x, y, w, h, { type = 'col', labels, series, accent, overlap = false, max, min = 0, format = '#,##0', size = TYPE.caption + 1, note = null,
+// The label format defaults to the data's own precision (up to two places): '#,##0' printed a 0.4-1.8% failure rate
+// as 0, 1, 2, 0 — a line whose every label contradicted its title.
+function valueFormat(values) {
+  const places = Math.min(2, Math.max(0, ...values.filter(Number.isFinite).map((v) => (String(v).split('.')[1] || '').length)));
+  return places ? `#,##0.${'0'.repeat(places)}` : '#,##0';
+}
+function chart(slide, x, y, w, h, { type = 'col', labels, series, accent, overlap = false, max, min = 0, format, size = TYPE.caption + 1, note = null,
   colors, legend, legendPos = 'b', plot, categoryLabels = true, showValues = true, grouping = 'clustered',
   valueColor = T.body, categoryColor = T.muted, field = null, axis = null } = {}) {
+  format ??= valueFormat(series.flatMap((s) => s.values));
   const bar = type === 'col' || type === 'bar';
   const count = labels?.length ?? 0, stackedForm = grouping === 'stacked' || grouping === 'percentStacked';
   const grid = axis === 'grid' || (axis == null && !stackedForm && !overlap && ['col', 'bar', 'line', 'area'].includes(type)
@@ -265,7 +272,8 @@ function dumbbell(slide, x, y, w, rows, { min, max, labelW, rowH = 0.6, format =
 // shape across groups, so the categories are usually one row-wide `labels` — a panel may still carry its own.
 // A panel names itself with `label` (or `title`); without categories the row is refused here, with the fix named,
 // instead of failing inside the chart call on a missing array.
-function smallMultiples(slide, x, y, w, h, panels, { type = 'col', max, gap = GUTTER, format = '#,##0', labels = null } = {}) {
+function smallMultiples(slide, x, y, w, h, panels, { type = 'col', max, gap = GUTTER, format, labels = null } = {}) {
+  format ??= valueFormat(panels.flatMap((p) => p.series.flatMap((s) => s.values)));
   const pw = (w - gap * (panels.length - 1)) / panels.length, th = lineH(DIAG.label, T.sans, 1.2), cy = y + th + GAP.within;
   const top = max ?? Math.max(...panels.flatMap((p) => p.series.flatMap((s) => s.values))) * 1.15;
   panels.forEach((p, i) => {

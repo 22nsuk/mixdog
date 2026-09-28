@@ -75,6 +75,7 @@ const ADVISORY_CODES = new Set([
   'semantic_visual_plan_missing',
   'slide_visual_density_low',
   'theme_body_backgrounds',
+  'title_line_hollow',
   'under_composed_slide',
   'under_composed_structure',
   // `vertical_imbalance` is deliberately absent: the skill lists it as a soft

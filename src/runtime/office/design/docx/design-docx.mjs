@@ -3,6 +3,7 @@
 import { createDocxWriter } from './design-docx/writer.mjs';
 import { writeDocxFrontMatter } from './design-docx/front-matter.mjs';
 import { writeDocxSection } from './design-docx/section.mjs';
+import { koreanDesign } from './document-typography.mjs';
 
 function writeDocxFooter(output, operation) {
   if (operation.pageNumbers === true) {
@@ -18,7 +19,10 @@ function writeDocxFooter(output, operation) {
   }
 }
 
-export function expandDocxDocument(operation, design, state, _backend, composition) {
+export function expandDocxDocument(operation, sourceDesign, state, _backend, composition) {
+  // Tables and metric strips read the design's faces directly; a Korean document sets its sans roles in the Korean
+  // face so their digits match the Hangul beside them, and keeps each serif role paired run by run.
+  const design = koreanDesign(sourceDesign, JSON.stringify(operation), { pairsEastAsia: true });
   const writer = createDocxWriter({ operation, design, state, composition });
   writeDocxFrontMatter(writer, operation);
   const sections = Array.isArray(operation.sections) ? operation.sections : [];

@@ -15,6 +15,7 @@ import {
 import { runPptxAuthoringScript } from './pptx-script-runner.mjs';
 import { factsGate, parseAuthoringBrief, planGate } from './pptx-brief.mjs';
 import { readCompositionReceipt } from './pptx-review-artifacts.mjs';
+import { receiptForDelivery } from './pptx-receipt.mjs';
 import { snapshotPortableOoxml } from '../portable/portable-ooxml.mjs';
 
 /** The design guide lives in the built-in `pptx` skill; the tool never
@@ -123,7 +124,7 @@ async function finishAuthoredDeck(session, { args, cwd, target, run, signal, rep
   const result = authoredResult(session, target, run, { replacedSession, reusedSession, audit });
   if (args.render === false) {
     const receipt = await readCompositionReceipt(session);
-    if (receipt) result.receipt = receipt;
+    if (receipt) result.receipt = receiptForDelivery(receipt, session);
     result.nextAction = audit?.status === 'fail' ? audit.nextAction : UNRENDERED_NEXT_ACTION;
     return result;
   }
@@ -201,7 +202,7 @@ const UNRENDERED_NEXT_ACTION =
   'Written and measured clean, not visually reviewed: call action:render on this session for the page images, contact sheet, receipt, and reviewToken, then inspect every slide before finalizing. action:qa render:false adds the design read (theme, plan promises, facts) without pixels. Re-author only if the script changes.';
 
 const RENDERED_NEXT_ACTION =
-  'Inspect every rendered slide for message visibility, relevant evidence, legibility, and grouping; then read the contact sheet for coherent sequence. Use the receipt to investigate possible defects, not to require an inventory of charts, pictures, or shapes. Change the script only for an observed problem, or finalize with design: { reviewed: true, reviewToken, critique: [one entry per slide] }.';
+  'Inspect every rendered slide for message visibility, relevant evidence, legibility, and grouping; then read the sequence for coherence (the contact sheet image, attached past four slides). Use the receipt to investigate possible defects, not to require an inventory of charts, pictures, or shapes. Change the script only for an observed problem, or finalize with design: { reviewed: true, reviewToken, critique: [one entry per slide] }.';
 
 function authoredResult(session, target, run, { replacedSession, reusedSession, audit }) {
   return {

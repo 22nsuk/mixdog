@@ -153,6 +153,9 @@ export function lintPdfFormFields(fields = [], pages = []) {
   };
 }
 
+// Two lines of 11 pt body text with the box's insets: the height from which a text box holds a paragraph.
+const MULTILINE_MIN_HEIGHT = 40;
+
 /**
  * Add one field. `font` is the face its appearance is drawn with: pdf-lib
  * paints a widget the moment it is added, so a dropdown or list whose
@@ -210,12 +213,16 @@ export async function addFormField(document, field, font = null) {
   } else {
     control = form.createTextField(name);
     control.addToPage(page, options);
-    if (field.multiline) control.enableMultiline();
+    // A box tall enough for two lines of body text is a box for a paragraph (a reason, a comment). Left single-line,
+    // pdf-lib's auto size set the answer at the box's height — 35 pt in a 60 pt box — and cut it at the right edge.
+    // An explicit multiline: false keeps one line.
+    const multiline = field.multiline ?? options.height >= MULTILINE_MIN_HEIGHT;
+    if (multiline) control.enableMultiline();
     if (Number(field.maxLength) > 0) control.setMaxLength(Math.floor(Number(field.maxLength)));
     // pdf-lib's auto size fits a multiline value to the box height and drops
     // the lines that do not fit; a fixed body size keeps every line.
     if (Number(field.fontSize) > 0) control.setFontSize(Number(field.fontSize));
-    else if (field.multiline) control.setFontSize(11);
+    else if (multiline) control.setFontSize(11);
     if (field.value != null) control.setText(String(field.value));
   }
   if (field.required) control.enableRequired();

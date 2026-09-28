@@ -2170,6 +2170,55 @@ test('kit numeral beat takes its colours from the field the page stands on', () 
   assert.equal(run({ color: 'FFFFFF' })[0], 'FFFFFF');
 });
 
+// Round-9 deck: statBand() closes on a rule and columns() under it opened on its own — two parallel hairlines a gap
+// apart. The columns keep the band's rule; a column block with nothing ruled above it still opens on its own.
+test('kit columns under a ruled stat band share its rule', () => {
+  const MEASURE = (text, { size = 15, width = 10 } = {}) => {
+    const lines = Math.max(1, Math.ceil((String(text).length * (size / 72) * 0.9) / width));
+    return { lines, height: lines * (size / 72) * 1.3, width: Math.min(width, String(text).length * (size / 72) * 0.9) };
+  };
+  const kit = new Function('require', 'MEASURE', 'ICON', `${kitPrelude().source}\nreturn { deck, statBand, columns, GAP, M, W };`)(
+    createRequire(import.meta.url),
+    MEASURE,
+    { names: [], svg: () => '' }
+  );
+  kit.deck({ style: 'swiss-minimal', hue: 215, mode: 'balanced', script: 'ko' });
+  const rules = (slide) => slide.shapes.filter((shape) => shape.options.h === 0 && shape.options.w > 1).map((shape) => shape.options.y);
+  const page = () => ({ shapes: [], addShape(type, options) { this.shapes.push({ type, options }); }, addText() {}, addImage() {} });
+  const cols = [{ title: '확장', body: '쓰기 대기가 길다.' }, { title: '배포', body: '주 1회로 묶였다.' }];
+  const banded = page();
+  const sb = kit.statBand(banded, kit.M, 2, kit.W - 2 * kit.M, [{ value: '99.95%', label: '가용성' }, { value: '320ms', label: 'p95' }]);
+  kit.columns(banded, kit.M, sb + kit.GAP.between, kit.W - 2 * kit.M, cols);
+  assert.equal(rules(banded).length, 1, `one rule between the band and the columns: ${JSON.stringify(rules(banded))}`);
+  const alone = page();
+  kit.columns(alone, kit.M, 3, kit.W - 2 * kit.M, cols);
+  assert.equal(rules(alone).length, 1, 'a column block alone keeps its own rule');
+});
+
+// A brutalist closing beat: a four-line claim at the section size pushed its line onto the page number (shape_overlap,
+// audit fail). The claim steps down until it and its line end above the lower margin, as poster() does.
+test('kit numeral beat keeps a long claim and its line above the lower margin', () => {
+  // Widths by script, near the rendered faces: a Hangul syllable an em, a figure half of one, a space under a third.
+  const ems = (part) => [...part].reduce((total, char) => total + (/[가-힣]/.test(char) ? 1 : char === ' ' ? 0.3 : 0.55), 0);
+  const MEASURE = (text, { size = 15, width = 10, lineHeight = 1 } = {}) => {
+    const parts = String(text).split('\n');
+    const lines = parts.reduce((total, part) => total + Math.max(1, Math.ceil((ems(part) * size) / 72 / width)), 0);
+    const widest = Math.max(...parts.map((part) => (ems(part) * size) / 72));
+    return { lines, height: lines * (size / 72) * 1.3 * lineHeight, width: Math.min(width, widest) };
+  };
+  const kit = new Function('require', 'MEASURE', 'ICON', `${kitPrelude().source}\nreturn { deck, numeralBeat, H, M };`)(
+    createRequire(import.meta.url),
+    MEASURE,
+    { names: [], svg: () => '' }
+  );
+  kit.deck({ style: 'brutalist', hue: 0, mode: 'presentation', script: 'ko' });
+  const boxes = [];
+  const slide = { addText: (_runs, opts) => boxes.push(opts), addShape() {}, addImage() {} };
+  kit.numeralBeat(slide, '1위', '우승작 “회의록 자동 요약”을 다음 분기에 전사 도입합니다', { line: '파일럿 부서 3곳부터' });
+  const bottom = Math.max(...boxes.map((box) => box.y + box.h));
+  assert.ok(bottom <= kit.H - kit.M + 1e-6, `the beat ends at ${bottom.toFixed(2)} in, the margin at ${(kit.H - kit.M).toFixed(2)} in`);
+});
+
 // The panels of a small-multiples row are the same shape across groups, so their categories are one shared list —
 // and the helper read `p.title` while every reference writes `label`, then handed the chart an undefined `labels`.
 // A row written the documented way crashed inside the chart call with "Cannot read properties of undefined".
@@ -2333,6 +2382,27 @@ test('kit venn keeps the shared label clear of the sets it names', () => {
       );
     }
   }
+});
+
+// Round-1 deck: a 0.4-1.8% failure rate charted under '#,##0' labelled its points 0, 1, 2, 0. The label format now
+// follows the data's own precision unless the author names one.
+test('kit chart labels keep the precision of the data', () => {
+  const MEASURE = (text, { size = 15 } = {}) => ({ lines: 1, height: (size / 72) * 1.35, width: String(text).length * (size / 72) * 0.6 });
+  const kit = new Function('require', 'MEASURE', 'ICON', `${kitPrelude().source}\nreturn { deck, chart, valueFormat };`)(
+    createRequire(import.meta.url),
+    MEASURE,
+    { names: [], svg: () => '' }
+  );
+  kit.deck({ hue: 205, theme: 'light', mode: 'balanced', script: 'ko' });
+  assert.equal(kit.valueFormat([0.4, 0.6, 1.8, 0.3]), '#,##0.0');
+  assert.equal(kit.valueFormat([12, 18, 24]), '#,##0');
+  assert.equal(kit.valueFormat([1.234, 2]), '#,##0.00');
+  const formats = [];
+  const slide = { addChart: (_type, _data, options) => formats.push(options.dataLabelFormatCode), addText() {}, addShape() {}, addImage() {} };
+  kit.chart(slide, 0.6, 1.8, 8, 4, { type: 'line', labels: ['1분기', '2분기', '3분기', '4분기'], series: [{ name: '실패율', values: [0.4, 0.6, 1.8, 0.3] }] });
+  kit.chart(slide, 0.6, 1.8, 8, 4, { type: 'col', labels: ['A', 'B'], series: [{ name: 'n', values: [0.4, 0.6] }], format: '0%' });
+  assert.match(formats[0], /^#,##0\.0;/, formats[0]);
+  assert.match(formats[1], /^0%;/, 'a named format is the author\'s');
 });
 
 // The structure-beside-its-rail recipe as composition.md §4 and §6 write it — head() → avail(top) → stage on the

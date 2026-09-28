@@ -14,7 +14,7 @@ import {
 } from './portable-opc.mjs';
 import { OFFICE_RELATIONSHIP_BASE, xmlDecode } from './portable-xml.mjs';
 import { ensureWorksheetDrawing } from './portable-sheet-parts.mjs';
-import { parseAreaRange, quoteSheetName } from './portable-sheet-xml.mjs';
+import { parseAreaRange, quoteSheetName, sheetQualifiedAreas } from './portable-sheet-xml.mjs';
 import { countDrawingAnchors, frameAnchorXml } from './portable-xlsx-drawings.mjs';
 import { sheetCellReader } from './portable-xlsx-cell-values.mjs';
 
@@ -27,9 +27,8 @@ import { sheetCellReader } from './portable-xlsx-cell-values.mjs';
 // that grows a column per period is already written.
 function chartDataBlock(op) {
   const plotByRows = String(op.plotBy ?? 'columns').toLowerCase() === 'rows';
-  const areas = String(op.range ?? '')
-    .split(',')
-    .map((part) => parseAreaRange(part.trim()));
+  const sourced = sheetQualifiedAreas(op.range);
+  const areas = sourced.map((entry) => parseAreaRange(entry.area));
   const area = areas[0];
   const seriesColumns = areas.flatMap((entry, index) => {
     const from = index === 0 ? entry.startCol + 1 : entry.startCol;
@@ -51,7 +50,19 @@ function chartDataBlock(op) {
         : 'add_chart requires a bounded range whose first column holds categories (comma-joined areas must share the same rows)'
     );
   }
-  return { plotByRows, area, lanes };
+  return { plotByRows, area, lanes, sourceSheet: sourced[0].sheet };
+}
+
+// The sheet the source names, or the one the chart stands on; a summary sheet charts the calculation behind it.
+async function chartSourceSheet(zip, sheet, xml, sheets, name) {
+  if (!name || name.toLowerCase() === sheet.name.toLowerCase()) return { sheet, xml };
+  const source = (sheets || []).find((entry) => entry.name.toLowerCase() === name.toLowerCase());
+  if (!source) {
+    throw new Error(
+      `XLSX add_chart reads sheet "${name}", which the workbook does not hold; it has ${(sheets || []).map((entry) => `"${entry.name}"`).join(', ')}`
+    );
+  }
+  return { sheet: source, xml: await zipText(zip, source.path) };
 }
 
 // The category labels along the header row (plotted by rows) or the first column.
@@ -167,9 +178,10 @@ async function workbookFontName(zip) {
 }
 
 /** A chart part, its drawing anchor, and the series read out of the sheet. */
-export async function addWorksheetChart(zip, sheet, xml, op) {
+export async function addWorksheetChart(zip, sheet, xml, op, sheets) {
   const block = chartDataBlock(op);
-  const { categories, series, references } = await readChartData(zip, xml, sheet, op, block);
+  const source = await chartSourceSheet(zip, sheet, xml, sheets, block.sourceSheet);
+  const { categories, series, references } = await readChartData(zip, source.xml, source.sheet, op, block);
   const chartPart = nextChartPart(zip);
   zip.file(
     chartPart,

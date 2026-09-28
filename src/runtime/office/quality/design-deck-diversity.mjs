@@ -1,5 +1,5 @@
 import { slideReceipt } from '../authoring/pptx-receipt.mjs';
-import { isPictureShape } from '../design/design-discipline.mjs';
+import { isPictureShape, signedVisualType } from '../design/design-discipline.mjs';
 
 function issue(code, message) {
   return {
@@ -141,23 +141,6 @@ function geometryFamily(slide) {
 function isMetricText(shape) {
   const text = String(shape?.text || '').trim();
   return (Number(shape?.font?.size) || 0) >= 36 && /^[+\-−]?\d/.test(text) && text.length <= 12;
-}
-
-// The kit signs its carriers (`mixdog-spec:<carrier>[:<variant>]`, pptx-receipt.mjs); a signed structure
-// names the slide's visual type exactly (a timeline is not "a diagram"), and a signed stat, chevron
-// run, or table names its family before the geometry guess.
-const SPEC_PREFIX = 'mixdog-spec:';
-function signedVisualType(slide) {
-  const signatures = (slide?.shapes || [])
-    .map((shape) => String(shape?.name || ''))
-    .filter((name) => name.startsWith(SPEC_PREFIX))
-    .map((name) => name.slice(SPEC_PREFIX.length).split(':'));
-  const structure = signatures.find(([spec, variant]) => spec === 'structure' && variant);
-  if (structure) return `structure:${structure[1]}`;
-  if (signatures.some(([spec]) => spec === 'chevrons')) return 'process';
-  if (signatures.some(([spec]) => spec === 'table')) return 'table';
-  if (signatures.some(([spec]) => spec === 'stat')) return 'metric';
-  return '';
 }
 
 function inferredVisualType(slide) {

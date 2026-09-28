@@ -66,6 +66,25 @@ async function worksheetTables(zip, sheet) {
   return tables;
 }
 
+// Pivot tables a worksheet holds, in the shape Excel reports them: { path, index, name, range }. The workbook read
+// said nothing of them, so a summary built on one was invisible to a caller on the portable backend.
+async function worksheetPivots(zip, sheet) {
+  const rels = await zipText(zip, partRelationshipPath(sheet.path));
+  const pivots = [];
+  for (const part of relationshipTargetsByType(rels, sheet.path, 'pivotTable').values()) {
+    const xml = (await zipText(zip, part)) || '';
+    const range = (/<location\b[^>]*\bref="([^"]+)"/.exec(xml)?.[1] || '').toUpperCase();
+    if (!range) continue;
+    pivots.push({
+      path: `/sheet[${sheet.name}]/pivot[${pivots.length + 1}]`,
+      index: pivots.length + 1,
+      name: xmlDecode(/<pivotTableDefinition\b[^>]*\bname="([^"]*)"/.exec(xml)?.[1] || ''),
+      range,
+    });
+  }
+  return pivots;
+}
+
 function drawingAnchor(drawing) {
   const round = (value) => Math.round(value * 100) / 100;
   return {
@@ -132,7 +151,8 @@ async function worksheetVisuals(zip, sheet, xml) {
 function worksheetPageSetup(xml, printArea) {
   const setup = /<pageSetup\b([^>]*?)\/?>/.exec(xml)?.[1] || '';
   const options = /<printOptions\b([^>]*?)\/?>/.exec(xml)?.[1] || '';
-  const fitToPage = /<pageSetUpPr\b[^>]*\bfitToPage="1"/.test(xml);
+  // xsd:boolean: Excel writes "1", LibreOffice's recalculation save writes "true".
+  const fitToPage = /<pageSetUpPr\b[^>]*\bfitToPage="(?:1|true)"/.test(xml);
   return {
     orientation: xmlAttribute(setup, 'orientation') || '',
     zoom: Number(xmlAttribute(setup, 'scale')) || 100,
@@ -327,6 +347,7 @@ async function snapshotWorksheet(zip, sheet, { strings, styles, definedNames, sh
   expandSharedFormulas(xml, cells);
   const notes = await worksheetNotes(zip, sheet);
   const tables = await worksheetTables(zip, sheet);
+  const pivots = await worksheetPivots(zip, sheet);
   const visuals = await worksheetVisuals(zip, sheet, xml);
   const pageSetup = worksheetPageSetup(
     xml,
@@ -354,6 +375,7 @@ async function snapshotWorksheet(zip, sheet, { strings, styles, definedNames, sh
     notes,
     tableCount: tables.length,
     tables,
+    pivots,
     mergedRanges: mergedRanges(xml),
     freezePanes: worksheetFreezePanes(xml),
     protection: worksheetProtection(xml),

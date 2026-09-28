@@ -231,3 +231,36 @@ test('batch returns the audit of the edited deck with the touched slide first', 
   );
   assert.equal(silent.audit, undefined);
 });
+
+// A template opened to change one page answered with every defect its other pages already carried and told the
+// author to fix them all in the same turn — pages the edit guide says to keep as they are. An opened deck is judged
+// on the slides the batch edited; an authored deck, and a batch that renumbers slides, still read the whole deck.
+test('a batch on an opened deck is judged on the slides it edited, not the pages it kept', async (t) => {
+  const cwd = await workspace(t);
+  const path = join(cwd, 'kept.pptx');
+  const twoPages = OVERFLOW_DECK.replace(
+    'await pres.writeFile',
+    "pres.addSlide().addText('Clean page', { x: 0.8, y: 2.4, w: 11.5, h: 1.4, fontFace: 'Arial', fontSize: 32, color: '333333' });\nawait pres.writeFile"
+  );
+  const authored = value(
+    await executeOfficeTool({ action: 'author', path, script: twoPages, mode: 'portable', render: false }, { cwd })
+  );
+  const edit = { op: 'set_text', slide: 2, shape: 1, text: 'Clean page, revised' };
+  const own = value(await executeOfficeTool({ action: 'batch', session: authored.session, operations: [edit] }, { cwd }));
+  assert.equal(own.audit.status, 'fail', 'every page of an authored deck is the author’s own');
+  value(await executeOfficeTool({ action: 'close', session: authored.session }, { cwd }));
+
+  const opened = value(await executeOfficeTool({ action: 'open', path, mode: 'portable' }, { cwd }));
+  const kept = value(await executeOfficeTool({ action: 'batch', session: opened.session, operations: [edit] }, { cwd }));
+  assert.equal(kept.audit.status, 'pass', JSON.stringify(kept.audit));
+  assert.ok(kept.audit.outsideEdit > 0);
+  assert.match(kept.nextAction ?? kept.audit.nextAction, /did not touch/);
+  const renumbered = value(
+    await executeOfficeTool(
+      { action: 'batch', session: opened.session, operations: [{ op: 'duplicate_slide', slide: 2 }, edit] },
+      { cwd }
+    )
+  );
+  assert.equal(renumbered.audit.status, 'fail', 'a renumbering batch reads the whole deck');
+  value(await executeOfficeTool({ action: 'close', session: opened.session }, { cwd }));
+});

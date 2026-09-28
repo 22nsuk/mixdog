@@ -114,7 +114,14 @@ function cacheRecordsXml(fields, records) {
 // cells a reader sees before any refresh happens. A destination sheet with the
 // definition alone opens empty in Excel and holds nothing for a snapshot, an
 // autofit, or a fit audit to read, so the computed grid is written as cells.
-const GRAND_TOTAL = 'Grand Total';
+// The captions a pivot prints, in the language of its fields: Korean Excel heads a sum "합계 : 매출" and its totals
+// "총합계"; written in English beside Hangul fields, a pivot read "Sum of 매출" over "Grand Total".
+export function pivotCaptions(fields) {
+  const korean = /[\uac00-\ud7af]/.test(fields.map((field) => field?.name ?? '').join(''));
+  return korean
+    ? { sum: (name) => `합계 : ${name}`, grand: '총합계', total: '합계' }
+    : { sum: (name) => `Sum of ${name}`, grand: 'Grand Total', total: 'Total' };
+}
 
 // The key a record's value is filed under: a numeric item compares as the number it is ("2013" and 2013 alike).
 function itemKey(field, value) {
@@ -129,7 +136,9 @@ function pivotGrid({ fields, records, rowField, columnField, valueFields }) {
   const columnLabels = columnField >= 0 ? itemsOf(columnField) : [];
   const sum = (valueIndex, matches) =>
     records.reduce((total, record) => (matches(record) ? total + (Number(record[valueIndex]) || 0) : total), 0);
-  const heading = (valueIndex) => `Sum of ${fields[valueIndex].name}`;
+  const captions = pivotCaptions(fields);
+  const GRAND_TOTAL = captions.grand;
+  const heading = (valueIndex) => captions.sum(fields[valueIndex].name);
   const rows = [];
   const inRow = (record, label) => itemKey(fields[rowField], record[rowField]) === label;
   if (columnField >= 0) {
@@ -155,7 +164,7 @@ function pivotGrid({ fields, records, rowField, columnField, valueFields }) {
   for (const label of rowLabels) {
     rows.push([shown(rowField, label), ...valueFields.map((valueIndex) => sum(valueIndex, (record) => inRow(record, label)))]);
   }
-  rows.push([rowField >= 0 ? GRAND_TOTAL : 'Total', ...valueFields.map((valueIndex) => sum(valueIndex, () => true))]);
+  rows.push([rowField >= 0 ? GRAND_TOTAL : captions.total, ...valueFields.map((valueIndex) => sum(valueIndex, () => true))]);
   return rows;
 }
 
@@ -213,12 +222,13 @@ function pivotTableXml({ name, cacheId, fields, rowField, columnField, valueFiel
       '</colItems>';
   }
 
+  const captions = pivotCaptions(fields);
   const dataFields =
     `<dataFields count="${valueFields.length}">` +
     valueFields
       .map(
         (index) =>
-          `<dataField name="Sum of ${xmlEncode(fields[index].name)}" fld="${index}" baseField="0" baseItem="0"/>`
+          `<dataField name="${xmlEncode(captions.sum(fields[index].name))}" fld="${index}" baseField="0" baseItem="0"/>`
       )
       .join('') +
     '</dataFields>';
@@ -234,6 +244,11 @@ function pivotTableXml({ name, cacheId, fields, rowField, columnField, valueFiel
   return (
     `${XML_HEADER}<pivotTableDefinition xmlns="${SPREADSHEET_MAIN}"` +
     ` name="${xmlEncode(name)}" cacheId="${cacheId}" dataCaption="Values"` +
+    // Kept through a refresh in Excel, which otherwise prints the total in its own interface language.
+    ` grandTotalCaption="${xmlEncode(captions.grand)}"` +
+    // The row header names its field, as the cells written here do; a refresh otherwise prints "Row Labels"
+    // (행 레이블) over the regions.
+    (rowField >= 0 ? ` rowHeaderCaption="${xmlEncode(fields[rowField].name)}"` : '') +
     ' applyNumberFormats="0" applyBorderFormats="0" applyFontFormats="0" applyPatternFormats="0"' +
     ' applyAlignmentFormats="0" applyWidthHeightFormats="1" updatedVersion="8" minRefreshableVersion="3"' +
     ' useAutoFormatting="1" itemPrintTitles="1" createdVersion="8" indent="0" outline="1" outlineData="1"' +

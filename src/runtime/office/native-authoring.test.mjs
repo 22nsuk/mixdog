@@ -60,6 +60,57 @@ test('PDF blocks keep explicit typography and spacing without implicit preset st
   const preset = applyPdfDesign(blocks, { profile: 'data' });
   assert.equal(preset.design.profile, 'data');
   assert.ok(preset.properties.margin > 0);
+  // The writer embeds one face for the page; a preset that stamped `font` on a
+  // heading, paragraph or table produced blocks the block contract refused.
+  for (const profile of ['executive', 'editorial', 'technical', 'data']) {
+    const styled = applyPdfDesign(blocks, { profile });
+    assert.ok(styled.blocks.every((block) => !('font' in block)), `${profile}: ${JSON.stringify(styled.blocks)}`);
+  }
+  // Peer headings under a cover share one colour; only a title is set apart.
+  const peers = applyPdfDesign(
+    [
+      { type: 'cover', title: 'Review' },
+      { type: 'heading', text: 'Timeline', level: 2 },
+      { type: 'heading', text: 'Prevention', level: 2 },
+    ],
+    { profile: 'technical' }
+  ).blocks;
+  assert.equal(peers[1].color, peers[2].color);
+  // The cover, figures and callout take the preset's accent, the same one its headings wear.
+  const anatomy = applyPdfDesign(
+    [
+      { type: 'cover', title: 'Review' },
+      { type: 'stats', items: [{ value: '41', label: 'min' }] },
+      { type: 'callout', text: 'Ask' },
+      { type: 'heading', text: 'Detail', level: 2 },
+    ],
+    { profile: 'data' }
+  );
+  const accent = anatomy.blocks[3].color;
+  assert.equal(anatomy.blocks[0].accent, accent);
+  assert.equal(anatomy.blocks[1].accent, accent);
+  assert.equal(anatomy.blocks[2].labelColor, accent);
+});
+
+test('a preset PDF with a heading, paragraph and table passes the block contract', async (t) => {
+  const cwd = await workspace(t);
+  const created = value(
+    await executeOfficeTool(
+      {
+        action: 'create',
+        path: 'preset.pdf',
+        format: 'pdf',
+        design: { profile: 'technical' },
+        blocks: [
+          { type: 'heading', text: 'Incident review', level: 2 },
+          { type: 'paragraph', text: 'The pool limit changed without a canary.' },
+          { type: 'table', headers: ['Time', 'Event'], rows: [['14:02', 'Deploy']] },
+        ],
+      },
+      { cwd }
+    )
+  );
+  assert.ok(created.session, JSON.stringify(created).slice(0, 400));
 });
 
 test('composers remain available as explicit presets', () => {

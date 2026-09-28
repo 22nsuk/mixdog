@@ -28,13 +28,16 @@ export async function getOfficeElement(session, args) {
   const element = findByDocumentPath(current.document, target);
   if (!element) throw new Error(`Document element not found: ${target}`);
   const pagination = current.document?.pagination;
+  // A paragraph is read whole like a leaf: the body's own "more blocks follow" and its cursor (four hundred
+  // characters) answered a question about the rest of the document the caller did not ask.
+  const single = leafTarget || /\/p\[[^\]]+\]$/i.test(target);
   return {
     session: session.id,
     target,
     element,
     // A container too large for one read says how to continue rather than
     // leaving truncated:true as the whole answer.
-    ...(pagination?.hasMore ? { pagination } : {}),
+    ...(pagination?.hasMore && !single ? { pagination } : {}),
   };
 }
 
@@ -56,7 +59,23 @@ async function queryPdfLayout(session, args, signal) {
         ...findPdfText(layout, needle, { limit: args.limit || 200 }),
         pages: layout.pages.map(({ page, width, height }) => ({ page, width, height })),
       }
-    : { session: session.id, queryKind: 'pdf-layout', ...layout };
+    : { session: session.id, queryKind: 'pdf-layout', ...layout, pages: layout.pages.map(layoutPageForCaller) };
+}
+
+// The reader's own bookkeeping stays with the marks that use it: the viewport matrix a highlight inverts, the PDF
+// engine's internal face id ("g_d2_f1"), and a left-to-right direction every Latin and Hangul run has. A vertical
+// or reversed run still says so.
+function layoutPageForCaller(page) {
+  if (!page || typeof page !== 'object') return page;
+  const { transform, ...rest } = page;
+  if (Array.isArray(rest.items)) {
+    rest.items = rest.items.map((item) => {
+      if (!item || typeof item !== 'object') return item;
+      const { font, direction, ...kept } = item;
+      return direction && direction !== 'ltr' ? { ...kept, direction } : kept;
+    });
+  }
+  return rest;
 }
 
 async function queryPdfTables(session, args, cwd, signal) {

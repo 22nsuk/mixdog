@@ -198,9 +198,16 @@ export async function handleFillTemplate(context, op) {
 export async function handleReplaceText(context, op) {
   const { zip } = context;
   let count = 0;
-  const paths = Object.keys(zip.files).filter((name) =>
+  let paths = Object.keys(zip.files).filter((name) =>
     /^ppt\/(slides\/slide\d+|notesSlides\/notesSlide\d+)\.xml$/.test(name)
   );
+  // slide keeps the replacement on that page and its speaker notes.
+  if (op.slide !== undefined) {
+    const page = slidePath(context.slides, op.slide);
+    const notes = relationshipTargetByType(await zipText(zip, partRelationshipPath(page)), 'notesSlide');
+    const notesPath = notes.startsWith('/') ? notes.slice(1) : posix.normalize(posix.join(posix.dirname(page), notes));
+    paths = [page, ...(notes ? [notesPath] : [])];
+  }
   for (const path of paths) {
     const current = await zipText(zip, path);
     const replaced = replaceInParagraphs(current, String(op.find || ''), String(op.replace ?? ''));

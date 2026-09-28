@@ -18,6 +18,13 @@ export function writeDocxFrontMatter(w, operation) {
       },
     });
   }
+  // The document's own face and size are the body's: set per paragraph alone, a paragraph added later — by
+  // append_text or by hand in Word — came out in Calibri 11 pt beside a Malgun Gothic 10.5 pt body.
+  const eastAsia = type.eastAsiaFor(type.body);
+  w.output.push({
+    op: 'set_document_font',
+    properties: { name: type.body, ...(eastAsia ? { nameEastAsia: eastAsia } : {}), size: bodySize, color: colors.ink },
+  });
   if (operation.eyebrow) {
     append(operation.eyebrow, 'Normal', {
       name: type.data,

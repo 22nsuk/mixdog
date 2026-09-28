@@ -471,18 +471,24 @@ export function mergeXlsxFormulaAudit(result, document, { auditProfile = '', she
     sheetNames: sheets.map((entry) => entry?.name),
     definedNames: document?.definedNames,
   }).filter((finding) => !scope || finding.path === '/' || String(finding.path).toLowerCase().startsWith(scope));
-  // Only a sheet whose cells came back was read: Excel's full snapshot carries
-  // no cells for a sheet past 500 cells, and the host's own verdicts for such
-  // a sheet stay — the shared audit saw nothing there to replace them with.
-  const readSheets = new Set(
-    sheets
-      .filter((entry) => Array.isArray(entry?.cells) && entry.cells.length > 0)
-      .map((entry) => `/sheet[${String(entry?.name || '').toLowerCase()}]`)
-  );
+  // Only what came back was read: Excel's full snapshot carries no cells for a
+  // sheet past 500 cells and a truncated one for a sheet whose used range runs
+  // past its window, so the host's verdict stays for any cell the shared audit
+  // never saw — a sheet read whole, or the cells a truncated read reached.
+  const readSheets = new Set();
+  const readCells = new Set();
+  for (const entry of sheets) {
+    const cells = Array.isArray(entry?.cells) ? entry.cells : [];
+    if (!cells.length) continue;
+    const owner = `/sheet[${String(entry?.name || '').toLowerCase()}]`;
+    if (!entry.truncated) readSheets.add(owner);
+    else for (const cell of cells) readCells.add(String(cell?.path || `${owner}/cell[${cell?.ref || ''}]`).toLowerCase());
+  }
   const issues = (Array.isArray(result?.issues) ? result.issues : []).filter((entry) => {
     if (!SHARED_MODEL_VERDICTS.has(entry?.code)) return true;
-    const owner = /^\/sheet\[[^\]]*\]/.exec(String(entry?.path || '').toLowerCase())?.[0];
-    return !(owner && readSheets.has(owner));
+    const path = String(entry?.path || '').toLowerCase();
+    const owner = /^\/sheet\[[^\]]*\]/.exec(path)?.[0];
+    return !(owner && (readSheets.has(owner) || readCells.has(path)));
   });
   const seen = new Set(issues.map((entry) => `${entry?.code}|${entry?.path}`));
   const added = findings.filter((finding) => !seen.has(`${finding.code}|${finding.path}`));

@@ -116,18 +116,20 @@ export function applyPdfDesign(blocks = [], designRequest = {}, { library = null
       let headingSize = design.format.heading;
       if (title) headingSize = design.format.title;
       else if (level >= 3) headingSize = Math.round(design.format.heading * 0.85 * 2) / 2;
+      // The PDF writer sets every block in the one face it embeds (`properties.fontName`);
+      // a per-block `font` is not a block field, and the block contract refused it.
       return {
         ...block,
-        font: block.font || type.display,
         size: block.size || headingSize,
-        color: block.color || (headingIndex === 1 ? colors.ink : colors.accent),
-        after: block.after ?? (headingIndex === 1 ? 18 : 10),
+        // Only the document title is set apart; counted by position, the first of
+        // two level-2 headings under a cover came out in ink and the second in accent.
+        color: block.color || (title ? colors.ink : colors.accent),
+        after: block.after ?? (title ? 18 : 10),
       };
     }
     if (typeName === 'paragraph') {
       return {
         ...block,
-        font: block.font || type.body,
         size: block.size || design.format.body,
         color: block.color || colors.ink,
         lineHeight: block.lineHeight || design.format.body * 1.5,
@@ -137,13 +139,18 @@ export function applyPdfDesign(blocks = [], designRequest = {}, { library = null
     if (typeName === 'table') {
       return {
         ...block,
-        font: block.font || type.data,
         color: block.color || colors.ink,
         headerFill: block.headerFill || colors.inverse,
         headerColor: block.headerColor || colors.onInverse,
         zebraFill: block.zebraFill || colors.surface,
         borderColor: block.borderColor || colors.surface2,
       };
+    }
+    // The anatomy blocks carry the preset's accent too: left to the writer's default they drew a teal cover rule
+    // and teal figures under the preset's green headings.
+    if (['cover', 'stats', 'quote'].includes(typeName)) return { ...block, accent: block.accent || colors.accent };
+    if (typeName === 'callout') {
+      return { ...block, labelColor: block.labelColor || colors.accent, fill: block.fill || colors.surface };
     }
     return block;
   });

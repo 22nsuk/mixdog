@@ -122,7 +122,7 @@ try {
       await executeOfficeTool({ action: 'finalize', session: authored.session, design: { reviewed: true } }, { cwd })
     );
     process.stdout.write(
-      `${JSON.stringify({ ok: finalized.ok, reason: finalized.reason, blockingIssues: finalized.blockingIssues, advisoryIssues: finalized.review?.advisoryIssues?.map((issue) => `${issue.severity}:${issue.code}`), validation: finalized.validation?.ok, quality: finalized.review?.quality?.score }, null, 2)}\n`
+      `${JSON.stringify({ ok: finalized.ok, reason: finalized.reason, blockingIssues: finalized.blockingIssues, advisoryIssues: finalized.review?.advisoryCodes ?? finalized.review?.advisoryIssues?.map((issue) => `${issue.severity}:${issue.code}`), validation: finalized.validation?.ok, quality: finalized.review?.quality?.score }, null, 2)}\n`
     );
   }
 } finally {

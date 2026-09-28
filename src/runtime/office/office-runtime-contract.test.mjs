@@ -321,7 +321,7 @@ test('describe returns compact operation contracts and actionable input errors',
   assert.match(invalid.content[0].text, /Did you mean: add_chart/);
 });
 
-test('an operation error suggests a field only when it reads as a typo', async () => {
+test('an operation error suggests a field only when it reads as a typo', async (t) => {
   const reject = async (operation) => {
     try {
       assertOfficeOperationContracts({ format: 'xlsx', backend: 'mixdog-ooxml', operations: [operation] });
@@ -336,6 +336,29 @@ test('an operation error suggests a field only when it reads as a typo', async (
   const unrelated = await reject({ op: 'add_chart', range: 'A1:B5', source: 'A1:B5' });
   assert.doesNotMatch(unrelated, /Did you mean/);
   assert.match(unrelated, /add_chart takes: .*chartType/);
+  // A comment for a named author carries that author's initials, not the runtime's "MD".
+  const comments = [
+    { op: 'add_comment', find: '인력', text: '다시 봅시다.', author: '검토자' },
+    { op: 'add_comment', find: '인력', text: 'Later.', author: 'Jane van Doe' },
+    { op: 'add_comment', find: '인력', text: 'Kept.', author: '검토자', initials: 'QA' },
+    { op: 'add_comment', find: '인력', text: 'No author.' },
+  ];
+  assertOfficeOperationContracts({ format: 'docx', backend: 'mixdog-ooxml', operations: comments });
+  assert.deepEqual(
+    comments.map((entry) => entry.initials),
+    ['검', 'JVD', 'QA', undefined]
+  );
+  // One unknown field beside one missing required field is that field: the nearest spelling (chart→chartType) sent
+  // the retry of a chart refresh the wrong way.
+  assert.throws(
+    () =>
+      assertOfficeOperationContracts({
+        format: 'pptx',
+        backend: 'mixdog-ooxml',
+        operations: [{ op: 'set_chart_data', slide: 2, chart: 1, series: [{ name: 'n', values: [1] }] }],
+      }),
+    (error) => /chart→shape/.test(error.message) && !/chartType/.test(error.message.split('Call office')[0])
+  );
   // An operation missed by its verb still resolves by subject.
   assert.throws(
     () => assertOfficeOperationContracts({ format: 'docx', backend: 'mixdog-ooxml', operations: [{ op: 'add_toc' }] }),
@@ -480,6 +503,54 @@ test('an operation error suggests a field only when it reads as a typo', async (
   );
   assert.equal(spaced[0].direction, 'horizontal');
   assert.equal(spaced[0].distribute, undefined);
+  // A formula is a cell's value too, and freeze_panes is where Excel's selected
+  // cell becomes a row and a column count: the obvious spellings land.
+  const sheetOps = [
+    { op: 'set_formula', cell: 'B5', value: '=SUM(B2:B4)' },
+    { op: 'freeze_panes', cell: 'B2' },
+    { op: 'freeze_panes', row: 2, column: 'C' },
+  ];
+  assert.doesNotThrow(() =>
+    assertOfficeOperationContracts({ format: 'xlsx', backend: 'mixdog-ooxml', operations: sheetOps })
+  );
+  assert.deepEqual(sheetOps[0], { op: 'set_formula', cell: 'B5', formula: '=SUM(B2:B4)' });
+  assert.deepEqual(sheetOps[1], { op: 'freeze_panes', row: 2, column: 2 });
+  assert.deepEqual(sheetOps[2], { op: 'freeze_panes', row: 2, column: 3 });
+  // row:1 read as "one frozen row" freezes nothing; the refusal says which row keeps the header in view.
+  const cwd = await workspace(t);
+  const frozen = await executeOfficeTool(
+    { action: 'create', path: 'freeze.xlsx', format: 'xlsx', mode: 'portable', operations: [{ op: 'freeze_panes', row: 1 }] },
+    { cwd }
+  );
+  assert.equal(frozen.isError, true);
+  assert.match(frozen.content[0].text, /row:2 keeps the header row/);
+  // A phrase that matched nothing came back as "produced no change" alone; the refusal names the phrase and the way
+  // to read the wording as written.
+  const missed = await executeOfficeTool(
+    {
+      action: 'create',
+      path: 'missed.docx',
+      format: 'docx',
+      mode: 'portable',
+      operations: [
+        { op: 'append_text', text: '처리량은 12% 늘었습니다.' },
+        { op: 'replace_text', find: '처리량이 12%', replace: '처리량이 15%' },
+      ],
+    },
+    { cwd }
+  );
+  assert.equal(missed.isError, true);
+  assert.match(missed.content[0].text, /"처리량이 12%" appears nowhere; read the wording as written with action:query/);
+  // A Word table cell is col while insert_table_column beside it takes column; either word names the cell.
+  const cellOps = [
+    { op: 'set_table_cell', table: 1, row: 3, column: 2, text: '58' },
+    { op: 'merge_table_cells', table: 1, row: 1, column: 1, colSpan: 2 },
+  ];
+  assert.doesNotThrow(() =>
+    assertOfficeOperationContracts({ format: 'docx', backend: 'mixdog-ooxml', operations: cellOps })
+  );
+  assert.deepEqual(cellOps[0], { op: 'set_table_cell', table: 1, row: 3, col: 2, text: '58' });
+  assert.equal(cellOps[1].col, 1);
   // An alias is a name for an operation that exists, never a new operation:
   // describe answers with the catalog entry it resolves to.
   assert.equal(
@@ -691,7 +762,7 @@ test('CSV and TSV sessions preserve delimiters, transactions, and formula-like v
       )
     );
     assert.equal(restored.element.value, 'name');
-    value(
+    const edited = value(
       await executeOfficeTool(
         {
           action: 'batch',
@@ -701,6 +772,10 @@ test('CSV and TSV sessions preserve delimiters, transactions, and formula-like v
         { cwd }
       )
     );
+    // A delimited file has no styles or pages: no design rides on its batch, and a cell's reference is its place.
+    assert.equal(edited.design, undefined);
+    const read = value(await executeOfficeTool({ action: 'snapshot', session: created.session }, { cwd }));
+    assert.deepEqual(Object.keys(read.document.sheets[0].cells[0]).sort(), ['path', 'ref', 'value']);
     const finalized = value(
       await executeOfficeTool(
         {
@@ -715,6 +790,7 @@ test('CSV and TSV sessions preserve delimiters, transactions, and formula-like v
     assert.equal(finalized.review.preview.visualCoverage.mode, 'structural');
     assert.equal(finalized.review.preview.visualCoverage.complete, true);
     assert.equal(finalized.review._images, undefined);
+    assert.equal(finalized.review.review, undefined, 'a structural review carries no design, quality, or checklist');
   }
 
   // A delimited file arrives from Excel with a byte-order mark; writing it back
@@ -753,6 +829,22 @@ test('CSV and TSV sessions preserve delimiters, transactions, and formula-like v
     false,
     'a file without the mark does not gain one'
   );
+  // A new file has no mark to keep: one written with Hangul takes it, so Korean Excel does not open it as CP949;
+  // an all-ASCII one stays plain.
+  const fresh = async (name, values) => {
+    const created = value(
+      await executeOfficeTool(
+        { action: 'create', path: join(cwd, name), format: 'csv', operations: [{ op: 'set_range', range: 'A1:B2', values }] },
+        { cwd }
+      )
+    );
+    return { text: await readFile(join(cwd, name), 'utf8'), session: created.session };
+  };
+  const korean = await fresh('new-ko.csv', [['허브', '처리량'], ['대전', 128400]]);
+  assert.ok(korean.text.startsWith('\uFEFF'), 'a new Hangul list carries the mark');
+  assert.equal((await fresh('new-en.csv', [['hub', 'volume'], ['Daejeon', 128400]])).text.startsWith('\uFEFF'), false);
+  const cells = value(await executeOfficeTool({ action: 'snapshot', session: korean.session }, { cwd })).document.sheets[0].cells;
+  assert.equal(cells.some((cell) => 'formula' in cell), false, 'a plain value carries no empty formula field');
 });
 
 test('snapshot pagination uses opaque cursors and rejects stale continuations', async (t) => {

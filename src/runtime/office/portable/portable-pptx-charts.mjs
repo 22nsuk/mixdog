@@ -20,7 +20,7 @@ import {
   writePresentationChart,
 } from './portable-pptx-chart.mjs';
 import { slidePath } from './portable-pptx-package.mjs';
-import { appendSlideShape, nextShapeId } from './portable-pptx-core.mjs';
+import { appendSlideShape, nextShapeId, pptxRelatedPart, themeColor } from './portable-pptx-core.mjs';
 
 export async function handleAddChart(context, op) {
   const { zip } = context;
@@ -96,11 +96,28 @@ function refreshChartDataInPlace(xml, categories, series, op) {
     let block = blocks[index][0];
     const entry = series[index];
     if (!/<c:val>[\s\S]*?<c:numCache>/.test(block)) return null;
+    // An accent on the last point marks the latest period; when the refresh changes the number of points it moves to
+    // the new last one. Kept at its index, a monthly refresh left April lit under a title about May.
+    const previousCount = Number(/<c:val>[\s\S]*?<c:ptCount val="(\d+)"/.exec(block)?.[1]) || 0;
+    const seriesColor = /<a:srgbClr val="([0-9A-Fa-f]{6})"/.exec(block.split('<c:dPt>')[0])?.[1] || '';
+    const pointAt = (point) => Number(/<c:idx val="(\d+)"/.exec(point)?.[1]);
+    const points = [...block.matchAll(/<c:dPt>[\s\S]*?<\/c:dPt>/g)].map((point) => point[0]);
+    const accents = points.filter((point) => /<a:srgbClr val="([0-9A-Fa-f]{6})"/.exec(point)?.[1] !== seriesColor);
+    if (count !== previousCount && accents.length === 1 && pointAt(accents[0]) === previousCount - 1) {
+      // The accent and the point now last trade places; one past the new end is dropped below.
+      const displaced = points.find((point) => pointAt(point) === count - 1);
+      const moved = (point, to) => point.replace(/<c:idx val="\d+"\/>/, `<c:idx val="${to}"/>`);
+      block = block.replace(accents[0], moved(accents[0], count - 1));
+      if (displaced) block = block.replace(displaced, moved(displaced, previousCount - 1));
+    }
     if (entry.name != null) {
-      block = block.replace(
-        /(<c:tx>\s*<c:strRef>[\s\S]*?<c:strCache>)[\s\S]*?(<\/c:strCache>)/,
-        (_, open, close) => `${open}<c:ptCount val="1"/><c:pt idx="0"><c:v>${xmlEncode(String(entry.name))}</c:v></c:pt>${close}`
-      );
+      // A name read from the sheet keeps its reference and takes the new cache; one written as text is rewritten.
+      block = /<c:tx>\s*<c:v>/.test(block)
+        ? block.replace(/<c:tx>\s*<c:v>[\s\S]*?<\/c:v>\s*<\/c:tx>/, `<c:tx><c:v>${xmlEncode(String(entry.name))}</c:v></c:tx>`)
+        : block.replace(
+            /(<c:tx>\s*<c:strRef>[\s\S]*?<c:strCache>)[\s\S]*?(<\/c:strCache>)/,
+            (_, open, close) => `${open}<c:ptCount val="1"/><c:pt idx="0"><c:v>${xmlEncode(String(entry.name))}</c:v></c:pt>${close}`
+          );
     }
     if (/<c:cat>[\s\S]*?<c:multiLvlStrCache>/.test(block)) {
       block = block.replace(
@@ -130,6 +147,23 @@ function refreshChartDataInPlace(xml, categories, series, op) {
   return next;
 }
 
+// A rebuilt chart kept its data, colours and labels but set its title in the runtime's own bold 171717: a template's
+// light grey title turned heavy on the first refresh. The chart's own title block stays — its faces, size and colour —
+// and only its words change: the first run keeps its properties and takes the new text, the other runs go.
+function keepTitleTreatment(existing, rebuilt, text) {
+  const own = /<c:title>[\s\S]*?<\/c:title>/.exec(String(existing))?.[0] || '';
+  const fresh = /<c:title>[\s\S]*?<\/c:title>/.exec(String(rebuilt))?.[0] || '';
+  if (!own || !fresh || !/<a:r>/.test(own)) return rebuilt;
+  let first = true;
+  const retitled = own.replace(/<a:r>([\s\S]*?)<\/a:r>/g, (_, inner) => {
+    if (!first) return '';
+    first = false;
+    const properties = /<a:rPr\b[\s\S]*?(?:\/>|<\/a:rPr>)/.exec(inner)?.[0] || '';
+    return `<a:r>${properties}<a:t>${xmlEncode(text)}</a:t></a:r>`;
+  });
+  return rebuilt.replace(fresh, () => retitled);
+}
+
 export async function handleSetChartData(context, op) {
   const { zip } = context;
   const { part: chartPart, xml: existing } = await resolveSlideChart(zip, context.slides, op);
@@ -145,22 +179,40 @@ export async function handleSetChartData(context, op) {
   // read back first: a monthly refresh keeps the labels, number format, legend,
   // base line, and series colours the deck was approved with.
   const kept = readChartPresentation(existing);
+  // Series coloured from the theme keep their colours: each scheme name is resolved through the slide's master.
+  if (kept.seriesSchemeColors.some(Boolean)) {
+    const slidePart = slidePath(context.slides, op.slide);
+    const layoutPart = await pptxRelatedPart(zip, slidePart, 'slideLayout');
+    const masterPart = layoutPart ? await pptxRelatedPart(zip, layoutPart, 'slideMaster') : '';
+    for (const [index, token] of kept.seriesSchemeColors.entries()) {
+      if (!kept.seriesColors[index] && token) kept.seriesColors[index] = await themeColor(zip, masterPart, token);
+    }
+  }
+  const previousCount = chartCategories(existing).length;
   const coloured = series.map((entry, index) => {
     if (!entry) return entry;
-    const points = kept.pointColors?.[index] || [];
+    let points = kept.pointColors?.[index] || [];
     // Point colors are kept only where the new data still has that point, so a
-    // shorter refresh never leaves the accent on a category that is gone.
+    // shorter refresh never leaves the accent on a category that is gone; a
+    // lone accent on the last point follows the last point.
     const valueCount = Array.isArray(entry.values) ? entry.values.length : 0;
+    const base = kept.seriesColors[index];
+    const lit = points.map((color, point) => (color && color !== base ? point : -1)).filter((point) => point >= 0);
+    if (valueCount !== previousCount && lit.length === 1 && lit[0] === previousCount - 1) {
+      const accent = points[lit[0]];
+      points = [...points];
+      points[lit[0]] = points[valueCount - 1];
+      points[valueCount - 1] = accent;
+    }
     const carried =
       entry.pointColors === undefined && points.some(Boolean) ? { pointColors: points.slice(0, valueCount) } : {};
     const filled = entry.color === undefined && kept.seriesColors[index] ? { color: kept.seriesColors[index] } : {};
     return Object.keys(carried).length || Object.keys(filled).length ? { ...entry, ...filled, ...carried } : entry;
   });
   const refreshed = refreshChartDataInPlace(existing, categories, series, op);
-  await writePresentationChart(zip, {
-    chartPart,
-    embeddingPart,
-    chart: refreshed || chartXml({
+  const rebuilt = refreshed
+    ? null
+    : chartXml({
       chartType: op.chartType || detectChartType(existing),
       title: op.title ?? chartTitleText(existing),
       categories,
@@ -174,7 +226,11 @@ export async function handleSetChartData(context, op) {
       axis: kept.axis,
       externalDataId: 'rId1',
       text: CHART_TEXT.slide,
-    }),
+    });
+  await writePresentationChart(zip, {
+    chartPart,
+    embeddingPart,
+    chart: refreshed || keepTitleTreatment(existing, rebuilt, op.title ?? chartTitleText(existing)),
     rows: chartWorkbookRows(categories, coloured),
   });
   // A zero baseline is already reported on its own; the axis line is what the

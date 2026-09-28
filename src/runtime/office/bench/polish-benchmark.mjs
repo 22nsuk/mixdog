@@ -100,7 +100,9 @@ async function runScenario({
   assert.equal(finalized.ok, true, JSON.stringify(finalized));
   assert.equal(finalized.finalized, true);
   assert.equal(finalized.validation.ok, true);
-  assert.equal(finalized.validation.native.documentSaved, true);
+  // A passed native check reports documentSaved only when the document was not saved.
+  assert.equal(finalized.validation.native.ok, true);
+  assert.notEqual(finalized.validation.native.documentSaved, false);
   assert.equal(finalized.closed, true);
   if (assertFinalized) assertFinalized(finalized);
   return {

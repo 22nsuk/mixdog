@@ -3,6 +3,7 @@ import { dirname, extname, join } from 'node:path';
 import JSZip from 'jszip';
 import { MAX_LOCAL_TEMPLATE_COUNT, MAX_SCAN_DEPTH, TEMPLATE_FORMATS } from './design-library-core.mjs';
 import { xmlDecode } from '../../portable/portable-xml.mjs';
+import { signedVisualType } from '../design-discipline.mjs';
 
 export async function walkTemplateDirectory(root, output, depth = 0) {
   if (depth > MAX_SCAN_DEPTH || output.length >= MAX_LOCAL_TEMPLATE_COUNT) return;
@@ -378,6 +379,10 @@ export function inferPptxSampleKind(sample, total) {
   const structured = [...roles].some((role) => role.startsWith('step-') || role.startsWith('column-body-'));
   if (sample.slide === 1 && !structured) return 'cover';
   if (sample.slide === total && /(thank|next|close|감사|다음)/i.test(title)) return 'closing';
+  // A structure the kit signed says what it is: a timeline sets its labels above and below its spine, and read by
+  // rows alone it was a two-column comparison.
+  const signed = signedVisualType(sample);
+  if (['structure:timeline', 'structure:steps', 'process'].includes(signed)) return 'process';
   if ([...roles].some((role) => role.startsWith('step-'))) return 'process';
   if ([...roles].some((role) => role.startsWith('column-'))) return 'comparison';
   // A table carries quantities the same way a chart does, and the page that

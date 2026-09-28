@@ -182,7 +182,10 @@ export async function renderOfficePreview(
       ? {
           changedPages: missingPages,
           reusedPages: wantedPages.filter((page) => !missingPages.includes(page)),
-          pageIdentities: signatures.map(({ page, slideId }) => ({ page, slideId })),
+          // The slides this render drew; the rest of the deck's identities answer nothing asked here.
+          pageIdentities: signatures
+            .filter(({ page }) => wantedPages.includes(page))
+            .map(({ page, slideId }) => ({ page, slideId })),
         }
       : {}),
   };

@@ -39,12 +39,12 @@ test('initial tabular batches keep session identity and the source document when
     assert.equal(result.source, source);
     assert.equal(result.output, path);
     assert.equal(result.ownership, isCreate ? 'owned' : undefined);
-    assert.equal(result.visible, isCreate ? false : undefined);
-    assert.equal(result.foregroundActivated, false);
-    assert.equal(result.backgroundIsolation, null);
+    // A background, fresh session that brought nothing forward says so by omission.
+    for (const quiet of ['visible', 'foregroundActivated', 'backgroundIsolation', 'reused']) {
+      assert.equal(Object.hasOwn(result, quiet), false, quiet);
+    }
     assert.equal(result.opened, true);
-    assert.equal(result.created, isCreate);
-    assert.equal(result.reused, false);
+    assert.equal(result.created, isCreate ? true : undefined);
     assert.equal(result.batch.saved, true);
     for (const omitted of ['appPid', 'windowHwnd', 'documentId', 'document']) {
       assert.equal(Object.hasOwn(result, omitted), false, omitted);

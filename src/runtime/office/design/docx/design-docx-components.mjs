@@ -154,6 +154,9 @@ export function addDocxMetricStrip(output, state, metrics, design) {
     ...(hasDetails ? [details] : []),
   ];
   const { table, columns } = pushTable(output, state, values, design, 'scorecard');
+  // The accent marks the figure the page is about: the one marked
+  // `emphasis: true`, else the first, which leads the strip.
+  const emphasized = entries.findIndex((entry) => entry?.emphasis === true) + 1 || 1;
   for (let column = 1; column <= columns; column += 1) {
     styleCell(output, table, 1, column, {
       fillColor: colors.inverse,
@@ -165,8 +168,8 @@ export function addDocxMetricStrip(output, state, metrics, design) {
       verticalAlignment: 'center',
     });
     styleCell(output, table, 2, column, {
-      fillColor: column === 1 ? colors.accent : colors.surface,
-      color: column === 1 ? colors.onAccent : colors.ink,
+      fillColor: column === emphasized ? colors.accent : colors.surface,
+      color: column === emphasized ? colors.onAccent : colors.ink,
       fontName: design.tokens.typography.data,
       fontSize: Math.max(15, design.format.body + 4),
       bold: true,

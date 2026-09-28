@@ -139,10 +139,14 @@ function sortedByColumn(byColumn) {
 
 // A column width counts characters of the workbook's default size (the first
 // cell style's face), so a cell set larger needs proportionally more of it —
-// the measure autofit_range sizes columns by.
+// the measure autofit_range sizes columns by. Bold type runs about a fifth
+// wider: a 27 pt bold "47.0%" measured 12.3 characters by size alone, passed in
+// a 14-character column, and printed ### (it fits from 14.7).
+const BOLD_WIDTH = 1.2;
 function sizeScale(styles, styleIndex) {
   const base = Number(styles[0]?.fontSize) || 11;
-  return (Number(styles[styleIndex]?.fontSize) || base) / base;
+  const style = styles[styleIndex];
+  return ((Number(style?.fontSize) || base) / base) * (style?.bold && styleIndex !== 0 ? BOLD_WIDTH : 1);
 }
 
 // Numbers a column is too narrow to show: one narrow column cuts every value
@@ -150,6 +154,9 @@ function sizeScale(styles, styleIndex) {
 // hide the rest.
 function narrowNumberColumns(xml, { widths, withheld, styles }) {
   const narrowColumns = new Map();
+  // A merged cell prints its number across the whole merge: a metric card's 27 pt "92.8%" over A:B was reported cut
+  // by column A alone.
+  const merges = mergedAreas(xml).filter(Boolean);
   for (const cell of iterateSheetCells(xml)) {
     const attributes = cell.attributes;
     if (/\bt="(?:s|inlineStr|str|b)"/.test(attributes)) continue;
@@ -161,7 +168,9 @@ function narrowNumberColumns(xml, { widths, withheld, styles }) {
     const position = parseCellRef(reference);
     const column = columnNumber(position.col);
     if (withheld.columns.has(column) || withheld.rows.has(position.row)) continue;
-    const width = widths.get(column) ?? DEFAULT_COLUMN_WIDTH;
+    const merge = merges.find((area) => area.startCol === column && area.startRow === position.row);
+    let width = widths.get(column) ?? DEFAULT_COLUMN_WIDTH;
+    for (let spanned = column + 1; merge && spanned <= merge.endCol; spanned += 1) width += widths.get(spanned) ?? DEFAULT_COLUMN_WIDTH;
     const style = Number(/\bs="(\d+)"/.exec(attributes)?.[1]);
     const format = Number.isInteger(style) ? styles[style]?.numberFormat || '' : '';
     // General never prints ###: Excel rounds the decimals to the column, so only an integer part wider than the

@@ -297,6 +297,20 @@ test('a page carried by a table is measured for balance, not exempted as a state
   // The same three boxes with no carrier are a statement page: type and air,
   // balanced by the air rather than by filling the canvas.
   assert.deepEqual(reviewVerticalBalance(bounds, measured), []);
+  // A title over an empty middle and a takeaway sentence at the foot takes the same exemption but is no statement:
+  // it is reported as information for the author, never as a target.
+  const takeaway = { slide: 7, shape: 5, left: 43, top: 430, width: 700, height: 24, paragraphs: [{ text: '전사 확대를 승인해 주십시오.', fontSize: 16 }] };
+  const titleBoxes = [boxes[0], boxes[1], takeaway];
+  const titleBounds = titleBoxes.map(({ slide, shape, left, top, width, height }) => ({ slide, shape, kind: 'p:sp', left, top, width, height }));
+  const hollow = reviewVerticalBalance(titleBounds, { ...measured, boxes: titleBoxes });
+  assert.deepEqual(
+    hollow.map((issue) => [issue.code, issue.severity, issue.path]),
+    [['title_line_hollow', 'info', '/slide[7]']]
+  );
+  assert.equal(isAdvisoryOfficeIssue(hollow[0]), true);
+  // Set at poster size the same claim is a statement and stays exempt.
+  const poster = titleBoxes.map((box) => (box.shape === 2 ? { ...box, paragraphs: [{ text: box.paragraphs[0].text, fontSize: 40 }] } : box));
+  assert.deepEqual(reviewVerticalBalance(titleBounds, { ...measured, boxes: poster }), []);
   // A device the kit drew — the deck's motif, the cover's sphere, an icon — is placed as a picture but carries
   // nothing: counting it as the page's object took the exemption from every cover the recipes ask for (a claim at
   // poster scale, its device, and half the canvas deliberately empty). The writer's own names say which is which.

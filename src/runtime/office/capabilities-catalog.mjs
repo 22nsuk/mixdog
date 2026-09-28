@@ -36,7 +36,7 @@ export const COMMON = {
   },
   batch: {
     atomic:
-      'all modes roll back failed batches; live Word/PowerPoint use Office Undo boundaries and live Excel restores an in-memory checkpoint without saving',
+      'all modes roll back failed batches; Word uses an Office Undo record, a background PowerPoint deck reloads the copy the batch started from (a visible one uses Undo), and Excel restores a checkpoint without saving',
     operationShape:
       '{ op, target-specific fields, properties?, allowNoChange? }; silent no-op results roll back unless requireChanges:false',
     initialOperations:
@@ -98,6 +98,7 @@ export const CATALOG = {
         'set_table_cell_style',
         'set_paragraph_format',
         'set_font',
+        'set_document_font',
         'add_image',
         'set_header_footer',
         'set_page',
@@ -197,7 +198,7 @@ export const CATALOG = {
       ],
       comment: ['author', 'initials', 'date', 'text', 'anchoredText', 'resolved', 'replies'],
       contentControl: ['tag', 'title', 'lock', 'text'],
-      revision: ['author', 'date', 'type', 'typeCode', 'text', 'resolution'],
+      revision: ['author', 'date', 'type', 'text', 'resolution'],
       fields: ['toc', 'page', 'numPages', 'pageBreak', 'sectionBreak'],
       links: ['address', 'subAddress', 'display', 'bookmark'],
       provenance: ['source.document', 'source.target', 'source.label'],

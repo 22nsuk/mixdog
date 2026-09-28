@@ -173,13 +173,40 @@ export async function sortWorksheetRange(zip, sheet, xml, op) {
 // The widest printed text of each column in the area, skipping the cells a
 // horizontal merge spans. A width counts characters of the workbook's default
 // size (`baseSize`), so a cell set larger takes proportionally more of it.
+// A line of text alone in its row (a sheet title, an instruction under it) prints across the empty cells beside it,
+// so a fit over several columns does not size its column to it: a form's "파란 칸에 입력하세요…" under its title set
+// column A four times the width of the dates under it and split the table over two pages. A wrapped line keeps its
+// column, as does a fit of that one column.
+function spillingText(records, area) {
+  if (!area.startCol || area.endCol <= area.startCol) return new Set();
+  const filled = new Map();
+  for (const record of records) {
+    // A formula prints its result whether or not the result is cached yet: a label beside a row of formulas not yet
+    // calculated is a row label, not a line alone.
+    const text = String((record.formula ? record.cachedValue : record.value) ?? '');
+    if (!record.formula && !text.trim()) continue;
+    const row = parseCellRef(record.ref).row;
+    filled.set(row, [...(filled.get(row) || []), record]);
+  }
+  const spilling = new Set();
+  for (const cells of filled.values()) {
+    const [only] = cells;
+    if (cells.length !== 1 || only.formula || only.style?.wrapText) continue;
+    const value = String(only.value ?? '');
+    if (only.dataType === 'text' || !Number.isFinite(Number(value))) spilling.add(only.ref);
+  }
+  return spilling;
+}
+
 function measuredColumnWidths(records, area, spans, baseSize) {
   const measured = new Map();
+  const spilling = spillingText(records, area);
   for (const record of records) {
     const parsed = parseCellRef(record.ref);
     const column = columnNumber(parsed.col);
     if (area.startCol && (column < area.startCol || column > area.endCol)) continue;
     if (area.startRow && (parsed.row < area.startRow || parsed.row > area.endRow)) continue;
+    if (spilling.has(record.ref)) continue;
     if (
       spans.some(
         (span) =>

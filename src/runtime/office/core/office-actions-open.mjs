@@ -107,6 +107,14 @@ export async function openCreateOrAttachOffice({ action, args, cwd, dataDir, sig
     } else {
       initial = { ...(await snapshot(session, args)) };
       if (initialEdit) initial.batch = initialEdit;
+      // A PDF written from blocks answers with what the writer made — its page count, its fields, any page that
+      // reads as a picture — not the words the caller just sent, as a created Word or Excel file does;
+      // snapshotAfter asks for the full read. A scan of content the caller wrote has nothing to report either.
+      if (action === 'create' && session.format === 'pdf' && args.snapshotAfter !== true && initial.document) {
+        const { format, pageCount, fieldCount, likelyScannedPages } = initial.document;
+        initial.document = { format, pageCount, fieldCount, likelyScannedPages };
+        if (!(Number(initial.trust?.findingCount) > 0)) delete initial.trust;
+      }
     }
     delete session.activeSignal;
     return toolResult(

@@ -65,7 +65,10 @@ export async function reviewForFinalize(session, args, cwd, { timedStep, failOn,
     args.review === false
       ? null
       : await timedStep('review', async () => await qa(session, args, cwd, { reuseRender: true }));
-  const reviewImages = Array.isArray(reviewed?._images) ? reviewed._images : [];
+  // A reused preview is the render the caller already received with its token;
+  // only pixels this call produced are new evidence worth sending again.
+  const reviewImages =
+    reviewed?.preview?.reused !== true && Array.isArray(reviewed?._images) ? reviewed._images : [];
   const review = reviewed ? { ...reviewed } : null;
   const pptx = session.format === 'pptx' ? applyPptxAcceptance(session, args, review) : null;
   const documentVisualReview = applyDocumentAcceptance(session, args, review);

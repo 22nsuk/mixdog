@@ -14,6 +14,7 @@ import { createPortableOoxmlDocument, portableCreateSupported } from '../portabl
 import { convertLegacyOffice } from '../portable/portable-soffice.mjs';
 import { createPdf, snapshotPdf } from '../pdf/pdf-adapter.mjs';
 import { createTabular, snapshotTabular } from './tabular.mjs';
+import { closeSession } from './office-finalize/session-save.mjs';
 import { createOfficeSnapshotRequest, finalizeOfficeSnapshotPage } from './pagination.mjs';
 import { applyPdfDesign } from '../design/design-system.mjs';
 import { annotatePptxSnapshotRoles } from '../design/library/design-template-induct.mjs';
@@ -35,6 +36,7 @@ import {
   legacyPackageKind,
   microsoftOfficeOpenFields,
   normalizeOfficeFormat,
+  officeDocumentDigest,
   officeSessionForDocument,
   officeSessionId,
   registerOfficeSession,
@@ -81,8 +83,10 @@ function defaultOutput(source) {
   return join(dirname(source), `${basename(source, extension)}.mixdog-edit${extension}`);
 }
 
+// The preview keeps the source's extension: stores.docx, stores.pdf and stores.xlsx side by side rendered to one
+// stores.mixdog-preview*, and each render overwrote the pages the last one had been reviewed from.
 export function defaultRenderOutput(source) {
-  return join(dirname(source), `${basename(source, extname(source))}.mixdog-preview.pdf`);
+  return join(dirname(source), `${basename(source)}.mixdog-preview.pdf`);
 }
 
 export async function exists(path) {
@@ -129,6 +133,27 @@ function pptxReviewDesignState(design, format) {
 
 function portableCreateDesignState() {
   return emptyOfficeDesignState({ includeSlidePlans: false });
+}
+
+// Overwriting a document replaces it. A session this runtime still holds on the
+// old file is closed first, never left registered beside the new one (PDF) or
+// handed back in place of the document the caller asked to write. A session on
+// a document the user has open is theirs, so the overwrite is refused instead.
+async function releaseOverwrittenSession(target, overwrite) {
+  if (overwrite !== true) return;
+  const existing = officeSessionForDocument(target);
+  if (!existing) return;
+  if (existing.ownership !== 'owned') {
+    throw new Error(
+      `Office create cannot overwrite ${target}: session ${existing.id} holds it as ${existing.ownership || 'a shared document'}; close that session first`
+    );
+  }
+  if (existing.transaction) {
+    throw new Error(
+      `Office create cannot overwrite ${target}: session ${existing.id} has an open transaction; commit or roll it back, then create again`
+    );
+  }
+  await closeSession(existing);
 }
 
 function assertCreateTargetAvailable(target, existed, overwrite) {
@@ -481,6 +506,7 @@ export async function createSession(args, cwd, dataDir) {
   const targetExisted = await exists(target);
   const designContext = await resolveOfficeDesignContext({ args, dataDir, target, format, created: true });
   const creation = { target, fileKind, format, dataDir, targetExisted, designContext };
+  await releaseOverwrittenSession(target, args.overwrite);
   if (format === 'pdf') {
     assertCreateTargetAvailable(target, targetExisted, args.overwrite);
     return createPdfSession(creation, args, cwd);
@@ -601,8 +627,119 @@ export async function materializeWorkingCopy(session) {
 // Excel's cells read like the portable snapshot's: RRGGBB colors with
 // defaults omitted, and text cells flagged, so the formula audit and the
 // model see one shape from both readers.
+// Excel names a validation's and a conditional format's kind and operator by enumeration number (3 for a list, 2 for
+// an expression) and reads its formulas with a leading "="; the portable reader names them as the file does. One
+// shape from both: the OOXML word, the ranges as a list, the formulas without "=", a list literal in its quotes.
+const EXCEL_VALIDATION_TYPES = ['none', 'whole', 'decimal', 'list', 'date', 'time', 'textLength', 'custom'];
+const EXCEL_OPERATORS = ['', 'between', 'notBetween', 'equal', 'notEqual', 'greaterThan', 'lessThan', 'greaterThanOrEqual', 'lessThanOrEqual'];
+const EXCEL_CONDITION_TYPES = {
+  1: 'cellIs',
+  2: 'expression',
+  3: 'colorScale',
+  4: 'dataBar',
+  5: 'top10',
+  6: 'iconSet',
+  8: 'uniqueValues',
+  9: 'containsText',
+  10: 'containsBlanks',
+  11: 'timePeriod',
+  12: 'aboveAverage',
+  13: 'notContainsBlanks',
+  16: 'containsErrors',
+  17: 'notContainsErrors',
+};
+const withoutEquals = (formula) => String(formula ?? '').replace(/^=/, '');
+
+function normalizeExcelRules(sheet) {
+  if (Array.isArray(sheet?.validations)) {
+    sheet.validations = sheet.validations.map((entry) => {
+      if (!entry || typeof entry.type !== 'number') return entry;
+      const type = EXCEL_VALIDATION_TYPES[entry.type] ?? String(entry.type);
+      let formula1 = withoutEquals(entry.formula1);
+      if (type === 'list' && formula1 && !String(entry.formula1).startsWith('=')) formula1 = `"${formula1}"`;
+      return {
+        ...entry,
+        type,
+        operator: type === 'list' || type === 'custom' ? '' : EXCEL_OPERATORS[entry.operator] ?? '',
+        formula1,
+        formula2: withoutEquals(entry.formula2),
+      };
+    });
+  }
+  if (Array.isArray(sheet?.conditionalFormats)) {
+    sheet.conditionalFormats = sheet.conditionalFormats.map((entry) => {
+      if (!entry || typeof entry.type !== 'number') return entry;
+      const { range, formula1, formula2, ...rest } = entry;
+      const type = EXCEL_CONDITION_TYPES[entry.type] ?? String(entry.type);
+      return {
+        ...rest,
+        ranges: String(range || '').split(/[ ,]+/).filter(Boolean),
+        type,
+        operator: type === 'cellIs' ? EXCEL_OPERATORS[entry.operator] ?? '' : '',
+        formulas: [formula1, formula2].filter(Boolean).map(withoutEquals),
+      };
+    });
+  }
+}
+
+// Excel reports a chart's series as one =SERIES(name, categories, values, order) formula and its kind by number; the
+// portable reader splits the three references and names the kind as add_chart does, and the chart audits read them
+// split. The arguments are cut at commas outside quotes and parentheses: a quoted sheet name may hold one.
+function seriesArguments(formula) {
+  const inner = /^=?SERIES\(([\s\S]*)\)$/i.exec(String(formula || '').trim())?.[1];
+  if (inner === undefined) return null;
+  const parts = [];
+  let current = '';
+  let depth = 0;
+  let quoted = false;
+  for (const character of inner) {
+    if (character === "'" || character === '"') quoted = !quoted;
+    else if (!quoted && character === '(') depth += 1;
+    else if (!quoted && character === ')') depth -= 1;
+    if (character === ',' && !quoted && depth === 0) {
+      parts.push(current.trim());
+      current = '';
+    } else current += character;
+  }
+  parts.push(current.trim());
+  return parts;
+}
+
+const EXCEL_CHART_KINDS = { 51: 'column', 52: 'stacked_column', 57: 'bar', 58: 'stacked_bar', 4: 'line', 65: 'line', 1: 'area', 5: 'pie', '-4120': 'doughnut', '-4169': 'scatter' };
+
+function normalizeExcelCharts(sheet) {
+  if (!Array.isArray(sheet?.charts)) return;
+  sheet.charts = sheet.charts.map((chart) => {
+    if (!chart || typeof chart !== 'object') return chart;
+    const next = { ...chart };
+    if (typeof next.chartType === 'number' && EXCEL_CHART_KINDS[next.chartType]) next.chartType = EXCEL_CHART_KINDS[next.chartType];
+    if (Array.isArray(next.series)) {
+      next.series = next.series.map((series) => {
+        const parts = seriesArguments(series?.formula);
+        if (!parts) return series;
+        const [name = '', categories = '', values = ''] = parts;
+        const reference = (text) => (/^'?[^'"]*'?!\$?[A-Z]/i.test(text) ? text : '');
+        return {
+          ...series,
+          formula: reference(name),
+          categoryFormula: categories,
+          valueFormula: values,
+        };
+      });
+      next.seriesCount = next.series.length;
+    }
+    // The frame's place is the anchor's; the same four numbers beside it repeat it.
+    if (next.anchor && ['left', 'top', 'width', 'height'].every((key) => next[key] === next.anchor[key])) {
+      for (const key of ['left', 'top', 'width', 'height']) delete next[key];
+    }
+    return next;
+  });
+}
+
 function normalizeExcelSnapshotStyles(document) {
   for (const sheet of document?.sheets || []) {
+    normalizeExcelRules(sheet);
+    normalizeExcelCharts(sheet);
     for (const cell of sheet?.cells || []) {
       if (!cell || typeof cell !== 'object') continue;
       if (cell.style) cell.style = normalizeExcelCellStyle(cell.style);
@@ -706,13 +843,25 @@ export async function snapshot(session, args, { full = false } = {}) {
     if (session.format === 'pptx') annotatePptxSnapshotRoles(value);
     wrapped = await wrappedSnapshot(session, value);
     if (!session.created) session.trustReview = wrapped.trust;
-    const serializedLength = serializedToolValue(wrapped).length;
+    // The size that counts is the one the caller reads: the document after the digest every result passes
+    // through, not the raw record with its defaults and repeated lineage (the value returned stays raw).
+    const serializedLength = modelFacingLength(wrapped);
     if (full || serializedLength <= maxChars || request.limit <= 1) break;
     const measured = Math.max(1, serializedLength);
-    const nextLimit = Math.max(1, Math.min(request.limit - 1, Math.floor((request.limit * maxChars * 0.8) / measured)));
-    request = { ...request, limit: nextLimit };
+    // Scaled from what came back: a limit far above the cells a read returned shrank for eight rounds and never
+    // reached them.
+    const returned = Number(wrapped?.document?.pagination?.returned);
+    const base = returned > 0 ? Math.min(request.limit, returned) : request.limit;
+    const nextLimit = Math.max(1, Math.min(request.limit - 1, Math.floor((base * maxChars * 0.8) / measured)));
+    // An Excel session read the whole workbook whatever the limit; the retry asks it for pages.
+    request = { ...request, limit: nextLimit, ...(session.format === 'xlsx' ? { pageCells: true } : {}) };
   }
-  return full ? wrapped : bounded(wrapped, maxChars);
+  return full ? wrapped : bounded(wrapped, maxChars, modelFacingLength(wrapped));
+}
+
+function modelFacingLength(value) {
+  const document = value?.document && typeof value.document === 'object' ? officeDocumentDigest(value.document) : value?.document;
+  return serializedToolValue({ ...value, ...(document ? { document } : {}) }).length;
 }
 
 export async function trustForMutation(session) {

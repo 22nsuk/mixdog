@@ -177,7 +177,7 @@ function sheetPrWithFitToPage(xml) {
 // (a fit only scales down, so a small sheet prints as before); a declared fit,
 // print scale, or print area is the author's and stays.
 export function fitDrawingSheetOnePageWide(xml) {
-  if (/<pageSetUpPr\b[^>]*\bfitToPage="1"/.test(xml)) return { xml, applied: false };
+  if (/<pageSetUpPr\b[^>]*\bfitToPage="(?:1|true)"/.test(xml)) return { xml, applied: false };
   const setup = worksheetSection(xml, 'pageSetup');
   if (setup && /\bscale="/.test(setup[0])) return { xml, applied: false };
   let next = upsertWorksheetSection(xml, 'sheetPr', sheetPrWithFitToPage(xml));

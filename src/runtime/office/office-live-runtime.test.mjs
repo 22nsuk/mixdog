@@ -120,7 +120,7 @@ test('[excel] persistent Excel sessions own one document and preserve UTF-8 text
   );
   assert.equal(background.mode, 'background');
   assert.equal(background.ownership, 'owned');
-  assert.equal(background.visible, false);
+  assert.notEqual(background.visible, true, 'a background session opens no window');
 
   const backgroundBatch = value(
     await executeOfficeTool(
@@ -202,6 +202,9 @@ test('[excel] persistent Excel sessions own one document and preserve UTF-8 text
   );
   assert.equal(validatedWorkbook.document.sheets[0].validationCount, 1);
   assert.deepEqual(validatedWorkbook.document.sheets[0].validations[0].ranges, ['E1:E3']);
+  // Named as the portable reader names it, not by Excel's enumeration number.
+  assert.equal(validatedWorkbook.document.sheets[0].validations[0].type, 'list');
+  assert.equal(validatedWorkbook.document.sheets[0].validations[0].formula1, '"Yes,No"');
   value(
     await executeOfficeTool(
       {
@@ -285,7 +288,15 @@ test('[excel] persistent Excel sessions own one document and preserve UTF-8 text
     )
   );
   assert.equal(compactSnapshot.document.sheets[0].representation, 'row-blocks');
-  assert.equal(compactSnapshot.document.sheets[0].cells.length, 0);
+  assert.equal((compactSnapshot.document.sheets[0].cells ?? []).length, 0, 'row blocks carry the cells');
+  // Excel read the whole workbook whatever the limit, so a read over maxChars came back as a truncated text
+  // preview; the retry now asks for pages, and the result is a document with a cursor.
+  const narrow = value(
+    await executeOfficeTool({ action: 'snapshot', session: background.session, maxChars: 4000 }, { cwd })
+  );
+  assert.equal(narrow.preview, undefined, JSON.stringify(narrow).slice(0, 400));
+  assert.ok(Array.isArray(narrow.document.sheets), JSON.stringify(narrow.document).slice(0, 400));
+  assert.ok(JSON.stringify(narrow).length <= 4000 + 2000, 'the page fits the size the caller asked for');
   assert.ok(compactSnapshot.document.sheets[0].rowBlocks.length > 0);
   assert.equal(compactSnapshot.document.pagination.scanned, 10_000);
   assert.equal(compactSnapshot.document.sheets[0].rowBlocks[0].values[0][0], '하이하이하이');
@@ -558,7 +569,7 @@ test('[word] persistent Word sessions create, save, and read Unicode content', {
   assert.equal(wordSnapshot.document.tables[0].alignment, 1);
   assert.equal(wordSnapshot.document.tables[0].columnWidths.length, 2);
   assert.equal(wordSnapshot.document.paragraphs[0].format.spacingAfter, 6);
-  value(
+  const commentBatch = value(
     await executeOfficeTool(
       {
         action: 'batch',
@@ -572,6 +583,7 @@ test('[word] persistent Word sessions create, save, and read Unicode content', {
       { cwd }
     )
   );
+  assert.equal(commentBatch.results[0].anchor, 'phrase', 'the result says the comment spans the phrase');
   const commented = value(
     await executeOfficeTool(
       {
@@ -847,6 +859,36 @@ test('[powerpoint] persistent PowerPoint sessions create, save, and read Unicode
   assert.match(JSON.stringify(powerpointSnapshot.document), /한글-日本語-中文/);
   assert.match(JSON.stringify(powerpointSnapshot.document), /실제 템플릿/);
   assert.equal(powerpointSnapshot.document.slides[0].notes, 'Owner Mixdog');
+  // replace_text scoped to a slide reaches its speaker notes, as the portable writer's does.
+  const scoped = value(
+    await executeOfficeTool(
+      {
+        action: 'batch',
+        session: powerpoint.session,
+        operations: [{ op: 'replace_text', slide: 1, find: 'Owner', replace: 'Lead' }],
+      },
+      { cwd }
+    )
+  );
+  assert.equal(scoped.results[0].count, 1);
+  // A batch is atomic: a background deck has no window for PowerPoint's Undo, so the edit before a failed
+  // operation stayed in the deck. It now reloads from the copy the batch started from.
+  const failed = await executeOfficeTool(
+    {
+      action: 'batch',
+      session: powerpoint.session,
+      operations: [
+        { op: 'replace_text', slide: 1, find: '실제 템플릿', replace: '되돌려질 문구' },
+        { op: 'set_text', slide: 1, shape: 99, text: 'missing' },
+      ],
+    },
+    { cwd }
+  );
+  assert.equal(failed.isError, true);
+  const afterFailure = value(await executeOfficeTool({ action: 'snapshot', session: powerpoint.session }, { cwd }));
+  assert.doesNotMatch(JSON.stringify(afterFailure.document), /되돌려질 문구/);
+  assert.match(JSON.stringify(afterFailure.document), /실제 템플릿/);
+  assert.equal(afterFailure.document.slides[0].notes, 'Lead Mixdog');
   assert.ok(powerpointSnapshot.document.layoutCount > 0);
   const textbox = powerpointSnapshot.document.slides[0].shapes.find((shape) => shape.text?.includes('실제 템플릿'));
   assert.equal(textbox.left, 90);
@@ -866,7 +908,8 @@ test('[powerpoint] persistent PowerPoint sessions create, save, and read Unicode
   assert.equal(chart.chart.seriesCount, 2);
   assert.equal(chart.chart.series[0].trendlineCount, 1);
   assert.equal(chart.chart.series[0].hasErrorBars, true);
-  assert.equal(chart.chart.series[1].chartType, 4);
+  // Named as the portable reader and set_chart_series name it, not by Excel's enumeration number.
+  assert.equal(chart.chart.series[1].chartType, 'line');
   assert.equal(chart.chart.series[1].axisGroup, 2);
   const oneSeriesChart = powerpointSnapshot.document.slides[0].shapes.find(
     (shape) => shape.chart?.title === 'One series'
@@ -1121,7 +1164,7 @@ test('[attach] attach selects the exact workbook across multiple Excel instances
       )
     );
     assert.equal(created.mode, 'background');
-    assert.equal(created.visible, false);
+    assert.notEqual(created.visible, true);
     value(await executeOfficeTool({ action: 'close', session: created.session }, { cwd }));
   }
 
@@ -1140,7 +1183,7 @@ test('[attach] attach selects the exact workbook across multiple Excel instances
   );
   assert.equal(automatic.mode, 'background');
   assert.equal(automatic.ownership, 'owned');
-  assert.equal(automatic.visible, false);
+  assert.notEqual(automatic.visible, true);
   assert.equal(automatic.backgroundIsolation?.strict, true, JSON.stringify(automatic));
   assert.equal(automatic.backgroundIsolation?.isolatedProcess, true, JSON.stringify(automatic));
   assert.equal(automatic.backgroundIsolation?.visibleOwnedWindows, 0, JSON.stringify(automatic));
@@ -1209,7 +1252,7 @@ test('[attach] attach selects the exact workbook across multiple Excel instances
       { cwd }
     )
   );
-  assert.equal(firstSnapshot.document.sheets[0].cells.length, 0);
+  assert.equal((firstSnapshot.document.sheets[0].cells ?? []).length, 0);
   value(await executeOfficeTool({ action: 'close', session: attachedFirst.session }, { cwd }));
 
   await stopExternalExcel(firstExternal);
@@ -1334,9 +1377,14 @@ test('[word] a background Word session reports and settles a redline like the po
     ]
   );
   assert.ok(tracked.every((paragraph) => paragraph.revisions.length === 2));
+  // A revision in a table names its cell, as the portable reader does, not the body-wide paragraph count Word keeps.
   assert.deepEqual(
     before.revisions.map((revision) => revision.at),
-    tracked.flatMap((paragraph) => [paragraph.path, paragraph.path])
+    [
+      ...tracked.slice(0, 2).flatMap((paragraph) => [paragraph.path, paragraph.path]),
+      '/body/tbl[1]/row[2]/cell[2]',
+      '/body/tbl[1]/row[2]/cell[2]',
+    ]
   );
   assert.deepEqual(before.revisionAuthors, [
     { author: 'Alice', insertions: 1, deletions: 1 },
@@ -1638,6 +1686,79 @@ test('[word] move_paragraph moves the paragraph instead of deleting it', { skip:
   value(await executeOfficeTool({ action: 'close', session: created.session }, { cwd }));
 });
 
+// A form's instruction line under its title set column A four times the width of the dates under it, as the portable
+// writer no longer does: a line alone in its row prints across the empty cells beside it and sizes no column of a
+// fit over several.
+test('[excel] a multi-column fit is not widened by a line of text alone in its row', {
+  skip: !enabled,
+}, async (t) => {
+  const cwd = await mkdtemp(join(tmpdir(), 'mixdog-office-live-'));
+  const path = join(cwd, 'form.xlsx');
+  t.after(async () => {
+    resetOfficeSessionsForTest();
+    await rm(cwd, { recursive: true, force: true });
+  });
+  const created = value(
+    await executeOfficeTool(
+      {
+        action: 'create',
+        path,
+        format: 'xlsx',
+        mode: 'background',
+        operations: [
+          { op: 'set_range', sheet: 'Sheet1', range: 'A1:A2', values: [['경비 신청서'], ['파란 칸에 입력하세요. 둘째 줄은 작성 예시입니다.']] },
+          { op: 'set_range', sheet: 'Sheet1', range: 'A4:C5', values: [['사용일', '구분', '금액'], ['2026-10-02', '교통', 18400]] },
+          { op: 'autofit_range', sheet: 'Sheet1', range: 'A:C' },
+        ],
+      },
+      { cwd }
+    )
+  );
+  // The line is wrapped only for the fit: it still reads on one line afterwards.
+  const line = value(
+    await executeOfficeTool({ action: 'get', session: created.session, target: '/sheet[Sheet1]/cell[A2]' }, { cwd })
+  );
+  assert.notEqual(line.element.style?.wrapText, true, JSON.stringify(line.element.style));
+  value(await executeOfficeTool({ action: 'close', session: created.session }, { cwd }));
+  const sheet = await (await JSZip.loadAsync(await readFile(path))).file('xl/worksheets/sheet1.xml').async('string');
+  const width = Number(/<col min="1" max="1" width="([\d.]+)"/.exec(sheet)?.[1]);
+  assert.ok(width > 0 && width < 18, `column A fits its dates, not the instruction line: ${width}`);
+});
+
+// A pivot over Hangul fields took the fixed caption "Sum of 매출"; Korean Excel heads it "합계 : 매출" and its totals
+// "총합계", as the portable writer now writes them.
+test('[excel] a pivot over Korean fields takes Korean captions', {
+  skip: !enabled,
+}, async (t) => {
+  const cwd = await mkdtemp(join(tmpdir(), 'mixdog-office-live-'));
+  t.after(async () => {
+    resetOfficeSessionsForTest();
+    await rm(cwd, { recursive: true, force: true });
+  });
+  const created = value(
+    await executeOfficeTool(
+      {
+        action: 'create',
+        path: join(cwd, 'pivot.xlsx'),
+        format: 'xlsx',
+        mode: 'background',
+        operations: [
+          { op: 'set_range', sheet: 'Sheet1', range: 'A1:C4', values: [['권역', '분기', '매출'], ['서울', '1분기', 820], ['부산', '1분기', 410], ['서울', '2분기', 910]] },
+          { op: 'add_pivot_table', sheet: 'Sheet1', source: 'A1:C4', destination: 'E1', rows: ['권역'], columns: ['분기'], values: ['매출'] },
+        ],
+      },
+      { cwd }
+    )
+  );
+  const read = value(await executeOfficeTool({ action: 'snapshot', session: created.session, sheet: 'Sheet1', range: 'E1:I8' }, { cwd }));
+  const values = (read.document.sheets[0].cells || []).map((cell) => cell.value);
+  assert.ok(values.includes('합계 : 매출'), JSON.stringify(values));
+  assert.ok(values.includes('총합계'), JSON.stringify(values));
+  // The row header names its field, as the portable writer heads it, not "행 레이블".
+  assert.ok(!values.includes('행 레이블') && !values.includes('Row Labels'), JSON.stringify(values));
+  value(await executeOfficeTool({ action: 'close', session: created.session }, { cwd }));
+});
+
 test('[excel] freeze_panes freezes above and left of the cell it names, under a tall title band', {
   skip: !enabled,
 }, async (t) => {
@@ -1691,6 +1812,15 @@ test('[excel] a chart ended at toColumn reaches that column in the workbook font
       },
       { cwd }
     )
+  );
+  // Read as the portable reader reads it: the kind by name and the series' three references apart, not Excel's
+  // enumeration number and one =SERIES(...) formula.
+  const charted = value(await executeOfficeTool({ action: 'snapshot', session: created.session }, { cwd }));
+  const [chart] = charted.document.sheets[0].charts;
+  assert.equal(chart.chartType, 'column');
+  assert.deepEqual(
+    [chart.series[0].formula, chart.series[0].categoryFormula, chart.series[0].valueFormula],
+    ['Sheet1!$B$1', 'Sheet1!$A$2:$A$3', 'Sheet1!$B$2:$B$3']
   );
   value(await executeOfficeTool({ action: 'close', session: created.session }, { cwd }));
   const drawing = await (await JSZip.loadAsync(await readFile(path))).file('xl/drawings/drawing1.xml').async('string');
@@ -1785,6 +1915,138 @@ test('[word] a link or note placed by paragraph lands at the end of its text', {
   assert.deepEqual(paragraphs.slice(0, 3).map(text), ['첫 문단', '둘째 문단링크', '셋째 문단']);
   assert.match(paragraphs[0], /<w:footnoteReference /);
   assert.doesNotMatch(paragraphs[1], /<w:footnoteReference /);
+});
+
+// Word put a second table into the paragraph right after the first, and the two read back as one table; the
+// portable writer keeps a paragraph between them, and so does Word now.
+test('[word] two tables added in a row stay two tables', {
+  skip: !enabled,
+}, async (t) => {
+  const cwd = await mkdtemp(join(tmpdir(), 'mixdog-office-live-'));
+  t.after(async () => {
+    resetOfficeSessionsForTest();
+    await rm(cwd, { recursive: true, force: true });
+  });
+  const created = value(
+    await executeOfficeTool(
+      {
+        action: 'create',
+        path: join(cwd, 'tables.docx'),
+        format: 'docx',
+        mode: 'background',
+        operations: [
+          { op: 'append_text', text: '첫' },
+          { op: 'add_table', rows: 1, columns: 1, values: [['A']] },
+          { op: 'add_table', rows: 1, columns: 1, values: [['B']] },
+        ],
+      },
+      { cwd }
+    )
+  );
+  const read = value(await executeOfficeTool({ action: 'snapshot', session: created.session }, { cwd }));
+  assert.equal(read.document.tableCount, 2, JSON.stringify(read.document.blockOrder));
+  value(await executeOfficeTool({ action: 'close', session: created.session }, { cwd }));
+});
+
+// Word ended every document it wrote with an empty paragraph, put a picture added at the end at the start of the
+// last paragraph's text, and opened an empty paragraph after a page break; the paragraphs now read as the portable
+// writer's do.
+test('[word] appended blocks read as the portable writer lays them out', {
+  skip: !enabled,
+}, async (t) => {
+  const cwd = await mkdtemp(join(tmpdir(), 'mixdog-office-live-'));
+  t.after(async () => {
+    resetOfficeSessionsForTest();
+    await rm(cwd, { recursive: true, force: true });
+  });
+  const picture = join(cwd, 'dot.png');
+  await writeFile(
+    picture,
+    Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')
+  );
+  const operations = [
+    { op: 'append_text', text: '제목', style: 'Heading 1' },
+    { op: 'append_text', text: '항목', properties: { listKind: 'bullet' } },
+    { op: 'append_text', text: '목록 뒤' },
+    { op: 'add_image', path: picture, width: 20, height: 20 },
+    { op: 'append_text', text: '그림 설명' },
+    { op: 'insert_break' },
+    { op: 'append_text', text: '둘째 쪽' },
+    { op: 'add_table', rows: 1, columns: 1, values: [['A']] },
+    { op: 'append_text', text: '표 뒤' },
+    { op: 'set_header_footer', kind: 'header', text: '대외비' },
+    { op: 'set_header_footer', kind: 'footer', text: '물류운영팀' },
+    { op: 'add_page_numbers' },
+    { op: 'insert_break', kind: 'section_next' },
+    { op: 'append_text', text: '다음 구역' },
+  ];
+  const read = {};
+  const sections = {};
+  for (const mode of ['portable', 'background']) {
+    const created = value(
+      await executeOfficeTool({ action: 'create', path: join(cwd, `${mode}.docx`), format: 'docx', mode, operations }, { cwd })
+    );
+    const document = value(await executeOfficeTool({ action: 'snapshot', session: created.session }, { cwd })).document;
+    read[mode] = document.paragraphs.filter((paragraph) => !paragraph.inTable).map((paragraph) => paragraph.text);
+    sections[mode] = document.sections;
+    value(await executeOfficeTool({ action: 'close', session: created.session }, { cwd }));
+  }
+  assert.deepEqual(read.background, read.portable);
+  assert.deepEqual(read.background, ['제목', '항목', '목록 뒤', '', '그림 설명', '', '둘째 쪽', '표 뒤', '', '다음 구역']);
+  // Headers and footers read under the section that shows them on both backends.
+  assert.deepEqual(sections.background, sections.portable);
+  assert.deepEqual(
+    sections.portable.map((section) => section.stories.map((story) => [story.location, story.text, story.linkToPrevious === true])),
+    [
+      [['header', '대외비', false], ['footer', '물류운영팀\n1', false]],
+      [['header', '대외비', true], ['footer', '물류운영팀\n1', true]],
+    ]
+  );
+});
+
+// A phrase cut inside a word ("성장" of "성장했습니다") took the note's mark mid-word; a phrase ending on a sign
+// ("92.8%" before "로") keeps it there, as the portable writer sets both.
+test('[word] a note mark goes at the end of the word the cited phrase ends in', {
+  skip: !enabled,
+}, async (t) => {
+  const cwd = await mkdtemp(join(tmpdir(), 'mixdog-office-live-'));
+  const path = join(cwd, 'notes.docx');
+  t.after(async () => {
+    resetOfficeSessionsForTest();
+    await rm(cwd, { recursive: true, force: true });
+  });
+  const created = value(
+    await executeOfficeTool(
+      {
+        action: 'create',
+        path,
+        format: 'docx',
+        mode: 'background',
+        operations: [
+          { op: 'append_text', text: '부산 권역이 가장 크게 성장했습니다.' },
+          { op: 'add_note', find: '가장 크게 성장', text: '영업 시스템 추출 기준.' },
+          { op: 'append_text', text: '정시 출고율은 92.8%로 내려갔습니다.' },
+          { op: 'add_note', find: '92.8%', text: '물류운영팀 집계.' },
+        ],
+      },
+      { cwd }
+    )
+  );
+  // Word holds the note reference in the text as \x02; the paragraph reads as the page shows it.
+  const read = value(await executeOfficeTool({ action: 'snapshot', session: created.session }, { cwd }));
+  assert.deepEqual(
+    read.document.paragraphs.slice(0, 2).map((paragraph) => paragraph.text),
+    ['부산 권역이 가장 크게 성장했습니다.', '정시 출고율은 92.8%로 내려갔습니다.']
+  );
+  assert.equal(read.document.footnotes[0].text, '영업 시스템 추출 기준.');
+  value(await executeOfficeTool({ action: 'close', session: created.session }, { cwd }));
+  const document = await (await JSZip.loadAsync(await readFile(path))).file('word/document.xml').async('string');
+  const before = (reference) => {
+    const at = document.indexOf(reference);
+    return [...document.slice(0, at).matchAll(/<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/g)].map((match) => match[1]).join('');
+  };
+  assert.match(before('<w:footnoteReference w:id="1"/>'), /성장했습니다$/);
+  assert.match(before('<w:footnoteReference w:id="2"/>'), /92\.8%$/);
 });
 
 test('[word][excel] an unlabelled picture is reported on the Office backend as it is portably', {
@@ -2004,6 +2266,70 @@ test('[excel] copy_sheet copies and insert_columns takes a column letter', { ski
   assert.equal(missing.isError, true);
   assert.match(missing.content[0].text, /Worksheet not found: 없는 시트/);
   value(await executeOfficeTool({ action: 'close', session: created.session }, { cwd }));
+});
+
+// A monthly refresh that adds a period: the accent marked the latest point, and PowerPoint kept it on the old last
+// point by index, under a title about the new one. It follows the last point; the point it left takes the series colour.
+test('[powerpoint] a data refresh moves a last-point accent to the new last point', {
+  skip: !enabled,
+}, async (t) => {
+  const cwd = await mkdtemp(join(tmpdir(), 'mixdog-office-live-'));
+  const path = join(cwd, 'accent.pptx');
+  t.after(async () => {
+    resetOfficeSessionsForTest();
+    await rm(cwd, { recursive: true, force: true });
+  });
+  const created = value(
+    await executeOfficeTool(
+      {
+        action: 'create',
+        path,
+        format: 'pptx',
+        mode: 'background',
+        operations: [
+          { op: 'add_slide', layout: 'Title Only' },
+          {
+            op: 'add_chart',
+            slide: 1,
+            chartType: 'column',
+            categories: ['Jan', 'Feb'],
+            series: [{ name: 'Visits', values: [10, 20], color: 'D0CBC8', pointColors: ['D0CBC8', '1C6FE3'] }],
+          },
+        ],
+      },
+      { cwd }
+    )
+  );
+  value(
+    await executeOfficeTool(
+      {
+        action: 'batch',
+        session: created.session,
+        operations: [
+          {
+            op: 'set_chart_data',
+            slide: 1,
+            shape: 2,
+            categories: ['Jan', 'Feb', 'Mar'],
+            series: [{ name: 'Visits', values: [10, 20, 30] }],
+          },
+        ],
+      },
+      { cwd }
+    )
+  );
+  value(await executeOfficeTool({ action: 'close', session: created.session }, { cwd }));
+  const zip = await JSZip.loadAsync(await readFile(path));
+  const chartPart = Object.keys(zip.files).find((name) => /^ppt\/charts\/chart\d+\.xml$/.test(name));
+  const chart = await zip.file(chartPart).async('string');
+  const fills = new Map(
+    [...chart.matchAll(/<c:dPt>[\s\S]*?<c:idx val="(\d+)"\/>[\s\S]*?<a:srgbClr val="([0-9A-Fa-f]{6})"/g)].map((match) => [
+      Number(match[1]),
+      match[2].toUpperCase(),
+    ])
+  );
+  assert.equal(fills.get(2), '1C6FE3', `the new last point carries the accent: ${JSON.stringify([...fills])}`);
+  assert.notEqual(fills.get(1), '1C6FE3', 'the point it left no longer does');
 });
 
 test('[powerpoint] default layout and data label names work in any PowerPoint language', {

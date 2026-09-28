@@ -71,8 +71,17 @@ function serializeDelimited(rows, delimiter) {
 // file, so an edit keeps the mark the file arrived with.
 async function readDelimited(path, format) {
   const text = await readFile(path, 'utf8');
-  return { rows: parseDelimited(text, delimiterFor(format)), byteOrderMark: text.startsWith('\uFEFF') };
+  return {
+    rows: parseDelimited(text, delimiterFor(format)),
+    byteOrderMark: text.startsWith('\uFEFF'),
+    empty: text.length === 0,
+  };
 }
+
+// A new file has no mark to keep, and Korean Excel reads a UTF-8 file without one as CP949: a list written with
+// Hangul in it opened as mojibake on a double-click. A new file whose text leaves ASCII takes the mark; an
+// all-ASCII one stays plain for the tools that trip on it.
+const leavesAscii = (rows) => rows.some((row) => row.some((value) => /[^\x00-\x7F]/.test(String(value ?? ''))));
 
 async function loadRows(path, format) {
   return (await readDelimited(path, format)).rows;
@@ -132,7 +141,8 @@ function snapshotRows(path, format, rows, options = {}) {
           row: row + 1,
           column: column + 1,
           value,
-          formula: String(value).startsWith('=') ? String(value) : '',
+          // A plain value carries no formula field: an empty one on every cell of a sheet was noise in each read.
+          ...(String(value).startsWith('=') ? { formula: String(value) } : {}),
         });
       }
       totalCells += 1;
@@ -180,7 +190,7 @@ export async function snapshotTabular(path, format, options = {}) {
 }
 
 export async function applyTabularBatch(path, format, operations) {
-  const { rows, byteOrderMark } = await readDelimited(path, format);
+  const { rows, byteOrderMark, empty } = await readDelimited(path, format);
   const results = [];
   for (const operation of operations || []) {
     const op = String(operation.op || '');
@@ -254,7 +264,7 @@ export async function applyTabularBatch(path, format, operations) {
     }
     throw new Error(`${format.toUpperCase()} backend does not support operation: ${op}`);
   }
-  await saveRows(path, format, rows, { byteOrderMark });
+  await saveRows(path, format, rows, { byteOrderMark: byteOrderMark || (empty && leavesAscii(rows)) });
   return results;
 }
 

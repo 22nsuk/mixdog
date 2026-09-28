@@ -30,6 +30,8 @@ async function overlayTemplateSidecar(document, path) {
 // which Microsoft Office and the portable writer already do.
 
 const GROUP_ROLE = /^(column|metric|step)-(title|body|value|label|detail)-(\d+)$/;
+// A sign, not a word: no letter or digit, or at most two Latin letters among marks ("VS", "→", "+").
+const SIGN_TEXT = /^[^\p{L}\p{N}]*(?:[A-Za-z]{1,2}[^\p{L}\p{N}]*)?$/u;
 // What the two lines of one item are called in each structure.
 const GROUP_FIELDS = Object.freeze({
   column: { lead: 'title', follow: 'body' },
@@ -187,9 +189,22 @@ export function templatePageFill(page, content) {
   const unclaimed = [...slots.entries()]
     .filter(
       ([role, shape]) =>
-        !claimed.has(shape) && (/^(eyebrow|subtitle|body(-\d+)?|meta|source)$/.test(role) || GROUP_ROLE.test(role))
+        !claimed.has(shape) &&
+        (/^(eyebrow|subtitle|body(-\d+)?|meta|source|aside-\d+)$/.test(role) || GROUP_ROLE.test(role))
     )
     .map(([, shape]) => shape);
+  // Decorative type stays only as a sign ("VS", "→"). A word or a figure set large in a template's accent block
+  // ("MIXDOG", "TIME TO DECISION", "18") is the template's content: kept, it read as the deck's on every page built
+  // from the bundled template, the closing page signed with the template's own name.
+  const wordyVisuals = (page?.shapes || [])
+    .filter(
+      (shape) =>
+        String(shape.slot || '') === 'visual-text' &&
+        !claimed.has(Number(shape.index)) &&
+        !SIGN_TEXT.test(String(shape.text || '').trim())
+    )
+    .map((shape) => Number(shape.index));
+  unclaimed.push(...wordyVisuals);
   return {
     sets: [...sets, ...extra, ...placed.sets],
     // Deleting a shape renumbers the ones after it, so they go highest first.
@@ -198,7 +213,23 @@ export function templatePageFill(page, content) {
   };
 }
 
-export async function expandTemplatePageOperations(format, operations) {
+// A page's chart, table, and picture arrive holding the template's own data: its fill writes words, not numbers or
+// photographs, so a filled page kept "Coverage 62% · Latency 820ms" and the template's logo unless the caller went on
+// to replace them, and nothing said so. Each carrier is named with its shape as it stands after the fill and the
+// operation that replaces its content.
+const CARRIER_FIX = Object.freeze({ chart: 'set_chart_data', table: 'set_table_data', image: 'replace_image' });
+function templateCarriers(page, deletes, slide) {
+  return (page?.shapes || [])
+    .filter((shape) => CARRIER_FIX[String(shape.slot || '')] && !deletes.includes(Number(shape.index)))
+    .map((shape) => {
+      const index = Number(shape.index);
+      const at = index - deletes.filter((deleted) => deleted < index).length;
+      return { slide, shape: at, holds: shape.slot, replaceWith: CARRIER_FIX[shape.slot] };
+    });
+}
+
+// carriers: filled with each page's carriers that still hold the template's data (templateCarriers).
+export async function expandTemplatePageOperations(format, operations, carriers = []) {
   if (format !== 'pptx' || !operations.some((operation) => operation?.op === 'use_template_page')) return operations;
   const expanded = [];
   for (const operation of operations) {
@@ -223,6 +254,7 @@ export async function expandTemplatePageOperations(format, operations) {
     for (const entry of sets) expanded.push({ op: 'set_text', slide, shape: entry.shape, text: entry.text });
     for (const shape of deletes) expanded.push({ op: 'delete_shape', slide, shape });
     if (operation.notes) expanded.push({ op: 'set_notes', slide, text: String(operation.notes) });
+    carriers.push(...templateCarriers(page, deletes, slide));
   }
   return expanded;
 }

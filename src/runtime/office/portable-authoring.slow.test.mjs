@@ -364,6 +364,31 @@ test('portable charts write a chart part with an embedded workbook', async (t) =
   // New numbers are a refresh, not a redesign: the emphasized point survives it.
   assert.match(revised, /<c:dPt><c:idx val="1"\/><c:spPr><a:solidFill><a:srgbClr val="2D66D5"/);
   assert.ok(updated.results[0].preserved.includes('pointColors'), JSON.stringify(updated.results[0]));
+  // The accent sat on the last point, the latest period: a refresh that adds a period moves it to the new last point,
+  // and the point it left takes the series colour.
+  value(
+    await executeOfficeTool(
+      {
+        action: 'batch',
+        session: created.session,
+        operations: [
+          {
+            op: 'set_chart_data',
+            slide: 1,
+            shape: 1,
+            categories: ['Korea', 'Japan', 'Taiwan'],
+            series: [{ name: '2027', values: [180, 140, 90] }],
+          },
+        ],
+      },
+      { cwd }
+    )
+  );
+  const grown = await (await parts(deck)).text('ppt/charts/chart1.xml');
+  const accentAt = [...grown.matchAll(/<c:dPt><c:idx val="(\d+)"\/>[\s\S]*?<a:srgbClr val="([0-9A-F]{6})"/gi)]
+    .filter((match) => match[2].toUpperCase() === '2D66D5')
+    .map((match) => Number(match[1]));
+  assert.deepEqual(accentAt, [2], grown.match(/<c:dPt>[\s\S]*?<\/c:dPt>/g)?.join('\n'));
 
   // A duplicated page owns its chart: an edit on the copy leaves the source page
   // as it was approved, and the copy keeps the axis the chart was drawn with.
@@ -1616,7 +1641,8 @@ test('portable workbook shifts rows and columns and manages sheet metadata', asy
     await executeOfficeTool({ action: 'snapshot', session: created.session, sheet: 'Sheet1' }, { cwd })
   );
   const shownSheet = restored.document.sheets.find((entry) => entry.name === 'Sheet1');
-  assert.deepEqual([shownSheet.hiddenRows, shownSheet.hiddenColumns], [[], []]);
+  // Nothing withheld reads the same absent.
+  assert.deepEqual([shownSheet.hiddenRows ?? [], shownSheet.hiddenColumns ?? []], [[], []]);
 
   // A hidden sheet still answers a read; the snapshot has to say the workbook
   // withholds it, or its numbers are quoted as ordinary content.
@@ -1627,7 +1653,8 @@ test('portable workbook shifts rows and columns and manages sheet metadata', asy
   const shown = value(
     await executeOfficeTool({ action: 'snapshot', session: created.session, sheet: 'Sheet1' }, { cwd })
   );
-  assert.equal(shown.document.sheets.find((sheet) => sheet.name === 'Sheet1')?.visibility, 'visible');
+  // A visible sheet says so by omission; hidden and very_hidden stay named.
+  assert.equal(shown.document.sheets.find((sheet) => sheet.name === 'Sheet1')?.visibility ?? 'visible', 'visible');
 });
 
 // add_sheet writes an empty <sheetData/>, and a row still hides on such a
@@ -2653,8 +2680,9 @@ test('a slide can be hidden and shown again, and the snapshot reports which', as
   assert.match(await packaged.text('ppt/slides/slide2.xml'), /<p:sld\b[^>]*\bshow="0"/);
   assert.doesNotMatch(await packaged.text('ppt/slides/slide1.xml'), /\bshow="0"/);
   const hidden = value(await executeOfficeTool({ action: 'snapshot', session: created.session }, { cwd }));
+  // A shown slide says so by omission; a hidden one keeps the flag.
   assert.deepEqual(
-    hidden.document.slides.map((slide) => slide.hidden),
+    hidden.document.slides.map((slide) => slide.hidden === true),
     [false, true]
   );
 
@@ -2671,7 +2699,7 @@ test('a slide can be hidden and shown again, and the snapshot reports which', as
   assert.doesNotMatch(await (await parts(target)).text('ppt/slides/slide2.xml'), /\bshow="0"/);
   const shown = value(await executeOfficeTool({ action: 'snapshot', session: created.session }, { cwd }));
   assert.deepEqual(
-    shown.document.slides.map((slide) => slide.hidden),
+    shown.document.slides.map((slide) => slide.hidden === true),
     [false, false]
   );
 });

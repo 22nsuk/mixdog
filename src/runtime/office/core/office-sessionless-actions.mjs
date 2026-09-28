@@ -46,8 +46,14 @@ async function detectAction(args, cwd, dataDir) {
       pdfOcr: await pdfOcrReadiness(dataDir),
     },
     pendingTransactions: await pendingOfficeTransactions(dataDir),
-    designLibrary: await inspectOfficeDesignLibrary({ dataDir }),
+    designLibrary: detectedDesignLibrary(await inspectOfficeDesignLibrary({ dataDir })),
   });
+}
+
+// A library that is off says so; its template index hash, check time, and blank warning are the runtime's own.
+function detectedDesignLibrary(library) {
+  if (!library || typeof library !== 'object' || library.enabled !== false) return library;
+  return { enabled: false, ...(library.warning ? { warning: library.warning } : {}) };
 }
 
 async function secureAction(args, cwd, startedAt) {

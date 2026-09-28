@@ -8,8 +8,17 @@ export const FIELD_ALIASES = Object.freeze({
   // A link target is url in this runtime's PDF operations and address in the
   // Office ones, because each surface kept its own vocabulary. Both names
   // reach the same field instead of costing a round trip.
-  docx: { add_comment: { anchoredText: 'find' }, add_hyperlink: { url: 'address' } },
-  xlsx: { set_hyperlink: { url: 'address' } },
+  // A table cell is col here and the column operations beside it take column: either word names the cell.
+  docx: {
+    add_comment: { anchoredText: 'find' },
+    add_hyperlink: { url: 'address' },
+    set_table_cell: { column: 'col' },
+    merge_table_cells: { column: 'col' },
+    set_table_cell_style: { column: 'col' },
+  },
+  // set_cell writes `value`, and a formula is a cell's value too: the word the
+  // neighbouring operation uses reaches set_formula's own field.
+  xlsx: { set_hyperlink: { url: 'address' }, set_formula: { value: 'formula' } },
   // align_shapes takes align and distribute_shapes takes direction: the same
   // gesture, named after two different things. The word the operation is called
   // by reaches its field too.

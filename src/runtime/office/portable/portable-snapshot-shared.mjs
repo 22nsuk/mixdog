@@ -39,11 +39,13 @@ export async function relatedPartById(zip, part, id) {
 export function chartPartSnapshot(xml) {
   const series = [...xml.matchAll(/<c:ser>([\s\S]*?)<\/c:ser>/g)].map((match, index) => {
     const body = match[1];
-    const reference = (tag) =>
-      xmlDecode(new RegExp(`<c:${tag}>[\\s\\S]*?<c:f>([\\s\\S]*?)<\\/c:f>`).exec(body)?.[1] || '');
+    // Each reference is read inside its own element: a name written as text (<c:tx><c:v>Value</c:v></c:tx>) has no
+    // formula, and a search past </c:tx> reported the category range as the series name's.
+    const element = (tag) => new RegExp(`<c:${tag}>([\\s\\S]*?)<\\/c:${tag}>`).exec(body)?.[1] || '';
+    const reference = (tag) => xmlDecode(/<c:f>([\s\S]*?)<\/c:f>/.exec(element(tag))?.[1] || '');
     return {
       index: index + 1,
-      name: xmlDecode(/<c:tx>[\s\S]*?<c:v>([\s\S]*?)<\/c:v>/.exec(body)?.[1] || ''),
+      name: xmlDecode(/<c:v>([\s\S]*?)<\/c:v>/.exec(element('tx'))?.[1] || ''),
       formula: reference('tx'),
       categoryFormula: reference('cat'),
       valueFormula: reference('val'),
