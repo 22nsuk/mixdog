@@ -5,6 +5,40 @@ the Unreleased section is empty, and stamps it with the released version.
 
 ## Unreleased
 
+- Claude agents now keep their conversation cache for 5 minutes instead of an
+  hour. When an agent's next request comes after that cache has expired —
+  after a long build or test, or when a finished agent is picked up again — it
+  compacts its conversation first, so the request rewrites the compacted
+  conversation instead of everything the agent had accumulated. In a replay of
+  recent Claude agent usage this cut agent token cost by about a quarter. Lead
+  sessions are unchanged.
+
+- Many sessions running side by side no longer slow each other down. Pending
+  messages are kept per session, session summaries and gateway usage are
+  appended instead of rewritten, stored transcripts are parsed off the main
+  loop, and a failing memory cycle backs off instead of retrying in a tight
+  loop. When the daemon exits it records why. The separate multi-process
+  session host is gone; sessions run in the daemon itself.
+
+- Subscription usage recorded before an account switch now counts for the
+  account that was in use when recording began. Grok, Claude and Cursor
+  report their current client versions instead of fixed ones.
+
+- The desktop app no longer shows a blank session when the daemon delivers
+  its contents just after replying to the open request. The packaged app's
+  boot script is allowed by the content security policy, and project-root
+  checks, relay dispatch errors and browser session restore are fixed.
+
+- Workbooks and documents edited without Office: clearing an empty cell no
+  longer deletes the cell after it, deleting a comment finds comments with
+  author formatting, parts linked by absolute paths resolve, and text that
+  looks like a replacement pattern is inserted literally.
+
+- Downloaded runtimes (PostgreSQL, pgvector, fonts, FFmpeg) are checked
+  against pinned checksums before use. Native tools fix a window-id parse
+  that could split a multi-byte character, a time calculation that could
+  overflow, and a snapshot replace that could leave a partial file.
+
 ## v0.9.174 - 2026-09-29
 
 - The usage dialog now answers a second question: how a subscription's quota
