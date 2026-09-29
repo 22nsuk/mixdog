@@ -10,6 +10,7 @@ function createHarness({
   state: stateOverrides = {},
   flags: flagsOverrides = {},
   runtime: runtimeOverrides = {},
+  bag: bagOverrides = {},
 } = {}) {
   const calls = [];
   let state = {
@@ -77,6 +78,7 @@ function createHarness({
     discardExecutionPendingResume: (keys) => calls.push(['discardPendingResume', keys]),
     cancelQueuedGoalContinuations: () => calls.push('cancelGoalContinuations'),
     archiveCompletedGoalOnUserInput: () => calls.push('archiveCompletedGoal'),
+    ...bagOverrides,
   };
   const api = createSessionIntakeApi(bag);
   return {
@@ -96,6 +98,19 @@ function createHarness({
 }
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+test('an idle submit still enqueues when auto-clear throws synchronously', async () => {
+  const h = createHarness({
+    bag: {
+      autoClearBeforeSubmit: () => {
+        throw new Error('sync boom');
+      },
+    },
+  });
+  assert.equal(h.api.submit('hello'), true);
+  await tick();
+  assert.ok(h.calls.some((call) => Array.isArray(call) && call[0] === 'enqueue' && call[1] === 'hello'));
+});
 
 test('an idle submit runs auto-clear first and then enqueues with a minted id', async () => {
   const h = createHarness();

@@ -20,7 +20,9 @@ import { sendViaHttpSse, _envFlag } from './openai-oauth-http-sse.mjs';
 import { shouldFallbackTransport } from './retry-classifier.mjs';
 import { resolveOpenAiTransportPolicy } from './openai-transport-policy.mjs';
 import { applyOpenAIDirectCachePolicy, openAiDirectSupportsFast } from './openai-direct-request.mjs';
+import { streamCallbacks } from './lib/send-callbacks.mjs';
 import { getAgentApiKey } from '../../../shared/provider-api-key.mjs';
+import { getLlmDispatcher } from '../../../shared/llm/http-agent.mjs';
 import { resolveProviderCacheKey, resolveProviderPromptCacheLane } from '../agent-runtime/cache-strategy.mjs';
 
 function applyOpenAIDirectFastTier(body, model, opts) {
@@ -105,10 +107,7 @@ export class OpenAIDirectProvider {
   }
   async send(messages, model, tools, sendOpts) {
     const opts = sendOpts || {};
-    const onStageChange = typeof opts.onStageChange === 'function' ? opts.onStageChange : null;
-    const onStreamDelta = typeof opts.onStreamDelta === 'function' ? opts.onStreamDelta : null;
-    const onToolCall = typeof opts.onToolCall === 'function' ? opts.onToolCall : null;
-    const onTextDelta = typeof opts.onTextDelta === 'function' ? opts.onTextDelta : null;
+    const { onStageChange, onStreamDelta, onToolCall, onTextDelta } = streamCallbacks(opts);
     const externalSignal = opts.signal || null;
     const apiKey = this._ensureKey();
     const useModel = model || 'gpt-5.5';
@@ -247,6 +246,7 @@ export class OpenAIDirectProvider {
       const res = await fetch('https://api.openai.com/v1/models', {
         signal: AbortSignal.timeout(10_000),
         headers: { Authorization: `Bearer ${apiKey}` },
+        dispatcher: getLlmDispatcher(),
       });
       if (!res.ok) return [];
       const j = await res.json();

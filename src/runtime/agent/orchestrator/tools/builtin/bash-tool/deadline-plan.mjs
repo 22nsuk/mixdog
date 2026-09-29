@@ -17,13 +17,16 @@ const TIMER_MAX_MS = 2_147_483_647;
 // completion is pushed to the owner. MIXDOG_SHELL_AUTO_BACKGROUND_MS
 // overrides; an explicit 0 disables. Gated on backgroundOnTimeout so
 // disabled background tasks remain foreground.
-function autoBackgroundBudget(backgroundOnTimeout, timeout) {
+// A per-call wait_ms replaces that default for the call, capped by the
+// foreground maximum.
+function autoBackgroundBudget(backgroundOnTimeout, timeout, waitMs, maxForegroundMs) {
   const raw = process.env.MIXDOG_SHELL_AUTO_BACKGROUND_MS;
   const parsed = Number(raw);
-  const defaultMs =
+  let defaultMs =
     raw != null && String(raw).trim() !== '' && Number.isFinite(parsed) && parsed >= 0
       ? Math.floor(parsed)
       : DEFAULT_SHELL_AUTO_BACKGROUND_MS;
+  if (waitMs > 0) defaultMs = Math.min(waitMs, maxForegroundMs);
   if (!backgroundOnTimeout || defaultMs <= 0) return 0;
   return timeout > 0 ? Math.min(defaultMs, timeout) : defaultMs;
 }
@@ -70,6 +73,11 @@ export function planShellDeadlines({ args, wmicRewrite, backgroundOnTimeout }) {
     // Soft/interrupt promotion happens before the foreground cap; an explicit
     // total deadline is preserved separately.
     backgroundDeadlineMs: hasHardDeadline ? totalTimeout : backgroundMaxBudget(),
-    autoBackgroundMs: autoBackgroundBudget(backgroundOnTimeout, timeout),
+    autoBackgroundMs: autoBackgroundBudget(
+      backgroundOnTimeout,
+      timeout,
+      typeof args.wait_ms === 'number' ? args.wait_ms : 0,
+      maxForegroundMs
+    ),
   };
 }

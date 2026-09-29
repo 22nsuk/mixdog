@@ -14,7 +14,7 @@ import { readCachedOpenCodeGoUsageSnapshot } from '../runtime/agent/orchestrator
 import { buildGatewayLimits } from '../runtime/agent/orchestrator/providers/statusline-route-meta.mjs';
 import { formatGatewayLimitSegments, loadGatewayStatus } from '../vendor/statusline/bin/statusline-route.mjs';
 import { createSessionStats } from './session-stats.mjs';
-import { measuredContextUsage } from './context-measurement.mjs';
+import { measuredContextUsage } from '../runtime/shared/context-measurement.mjs';
 import {
   statusSubtle,
   R,
@@ -30,8 +30,8 @@ import {
   epochMsToHHMM,
   num,
   formatElapsed,
-} from './statusline-format.mjs';
-import { shellJobsStatus, memoryCycleStatus } from './statusline-segments.mjs';
+} from '../runtime/shared/statusline/statusline-format.mjs';
+import { shellJobsStatus, memoryCycleStatus } from '../runtime/shared/statusline/statusline-segments.mjs';
 import {
   agentStatuslinePayload,
   classifyAgentWorkers,
@@ -40,9 +40,13 @@ import {
 } from './statusline-agents.mjs';
 export { createSessionStats, applyUsageDelta } from './session-stats.mjs';
 // Facade re-exports: keep these public symbols resolving from statusline.mjs.
-export { contextPctDisplayLabel } from './statusline-format.mjs';
+export { contextPctDisplayLabel } from '../runtime/shared/statusline/statusline-format.mjs';
 
-const GATEWAY_QUOTA_STATUS_CACHE_MS = 500;
+const WORKER_SPINNER_FRAMES = Object.freeze(['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']);
+// L2 segment spinner: reuses the original WORKER_SPINNER_FRAMES dot glyphs (no
+// separate glyph list) but spins them at a faster 120ms step than the worker
+// spinner's 160ms. l2SpinnerFrame() indexes straight into WORKER_SPINNER_FRAMES.
+const L2_SPINNER_FRAME_MS = 120;
 // Render-path sync-fs guard: loadGatewayStatus() / readCached*UsageSnapshot()
 // below still read files synchronously (vendored/provider modules), but that
 // work must never run on the 500ms render tick's own call stack. Both
@@ -51,11 +55,7 @@ const GATEWAY_QUOTA_STATUS_CACHE_MS = 500;
 // actual sync read to a separate macrotask (setImmediate), guarded so only
 // one refresh per cache is ever in flight at a time. Visible cache cadence
 // (500ms) is unchanged.
-const WORKER_SPINNER_FRAMES = Object.freeze(['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']);
-// L2 segment spinner: reuses the original WORKER_SPINNER_FRAMES dot glyphs (no
-// separate glyph list) but spins them at a faster 120ms step than the worker
-// spinner's 160ms. l2SpinnerFrame() indexes straight into WORKER_SPINNER_FRAMES.
-const L2_SPINNER_FRAME_MS = 120;
+const GATEWAY_QUOTA_STATUS_CACHE_MS = 500;
 // Keep the last known usage snapshot visible while idle. The runtime still
 // refreshes OAuth usage in the background, but if that refresh is delayed or
 // fails, the statusline should not blink/drop the usage segment; it should hold
@@ -84,9 +84,7 @@ const LAST_NON_EMPTY_QUOTA_SEGMENTS_CACHE_MAX = 8;
 
 function quotaSegmentsHoldKey({ provider, model, effort, fast, sessionId, clientHostPid } = {}) {
   return [
-    String(provider || '')
-      .trim()
-      .toLowerCase(),
+    normalizeProviderId(provider),
     String(model || '').trim(),
     String(effort || '').trim(),
     fast === true ? 'fast' : '',
@@ -146,6 +144,13 @@ const _oauthArmCheckInFlight = new Set();
 // Guards the background fallbackQuotaStatus() refresh (sync snapshot reads)
 // so at most one refresh is ever in flight across render ticks.
 let _fallbackQuotaRefreshInFlight = false;
+let _gatewayQuotaRefreshInFlight = false;
+
+function normalizeProviderId(provider) {
+  return String(provider || '')
+    .trim()
+    .toLowerCase();
+}
 
 function isConfirmedCurrentProcessSnapshot(snapshot) {
   if (!snapshot || typeof snapshot !== 'object') return false;
@@ -298,9 +303,7 @@ function quotaSegmentsFor({ provider, model, effort, fast, sessionId, clientHost
   // oauthUsageSegmentReady() also returns true for non-OAuth providers (they
   // are never gated), so gate the hold itself on _oauthUsageArmedProviders to
   // keep non-OAuth empty/null behavior byte-for-byte unchanged.
-  const normalizedHoldProvider = String(provider || '')
-    .trim()
-    .toLowerCase();
+  const normalizedHoldProvider = normalizeProviderId(provider);
   if (!usageReady || !_oauthUsageArmedProviders.has(normalizedHoldProvider)) return quotaSegments;
   const holdKey = quotaSegmentsHoldKey({ provider, model, effort, fast, sessionId, clientHostPid });
   const held = _lastNonEmptyQuotaSegmentsByKey.get(holdKey);
@@ -428,8 +431,6 @@ function webSearchActivity(activeTools, { sessionId, clientHostPid }) {
   return { count, elapsed: start > 0 ? formatElapsed(Date.now() - start) : '' };
 }
 
-let _gatewayQuotaRefreshInFlight = false;
-
 function loadGatewayQuotaStatus({
   provider,
   model,
@@ -527,9 +528,7 @@ function gatewayStatusMatchesRoute(status, { provider, model }) {
 // with the data actually becoming renderable — no extra delay, single clean
 // transition.
 function oauthUsageSegmentReady({ provider, model } = {}) {
-  const normalizedProvider = String(provider || '')
-    .trim()
-    .toLowerCase();
+  const normalizedProvider = normalizeProviderId(provider);
   if (!normalizedProvider.includes('oauth')) return true;
   if (_oauthUsageArmedProviders.has(normalizedProvider)) return true;
   // Not yet armed: never do the sync snapshot read on this render call. Kick
@@ -561,9 +560,7 @@ function oauthUsageSegmentReady({ provider, model } = {}) {
 }
 
 function fallbackQuotaStatus({ provider, model } = {}) {
-  const normalizedProvider = String(provider || '')
-    .trim()
-    .toLowerCase();
+  const normalizedProvider = normalizeProviderId(provider);
   if (!normalizedProvider) return null;
   const cacheKey = `${normalizedProvider}\0${String(model || '').trim()}`;
   const cacheNow = Date.now();

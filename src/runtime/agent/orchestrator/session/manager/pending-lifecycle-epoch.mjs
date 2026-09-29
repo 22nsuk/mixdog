@@ -48,8 +48,6 @@ export function lifecycleTokenClosed(token) {
   return source === 'closed' || source === 'unreadable';
 }
 
-// Pure epoch comparison against an already-read lifecycle (no IO), so a caller
-// that judges many entries reads the durable record once.
 // Parses a `source:generation` epoch token.
 function parseLifecycleToken(token) {
   const text = String(token);
@@ -57,6 +55,8 @@ function parseLifecycleToken(token) {
   return { source: text.slice(0, separator), generation: Number(text.slice(separator + 1)) || 0 };
 }
 
+// Pure epoch comparison against an already-read lifecycle (no IO), so a caller
+// that judges many entries reads the durable record once.
 export function lifecycleTokenStale(now, sinceToken) {
   if (sinceToken === null || sinceToken === undefined) return false;
   const { source: sinceSource, generation: sinceGeneration } = parseLifecycleToken(sinceToken);

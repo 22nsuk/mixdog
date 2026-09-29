@@ -2,7 +2,7 @@
 // tool-call relay over its text, the canonical stream-outcome stamp and the
 // final result assembly.
 import { stampStreamOutcome, STREAM_TRANSPORTS } from './lib/stream-outcome.mjs';
-import { createLeakGuard, createToolCallDedupe, dedupeToolCallList } from './anthropic-leaked-toolcall.mjs';
+import { createLeakGuard, createToolCallDedupe, dedupeToolCallList } from './lib/leaked-toolcall.mjs';
 import { createActiveToolItemTracker } from './tool-stream-state.mjs';
 import { emitCompatToolCallOnce, synthLeakedOpenAICall } from './openai-compat-stream-common.mjs';
 
@@ -27,7 +27,7 @@ export function createResponsesStreamState() {
     completed: false,
     completedResponse: null,
     sawOutput: false,
-    // Fix 2: cross-path name+args dedupe shared by synthetic leaked-call
+    // Cross-path name+args dedupe shared by synthetic leaked-call
     // dispatch and every native emit in this Responses stream.
     _toolDedupe: createToolCallDedupe(),
     // Gateway live-text relay invariant: set once a non-empty text chunk

@@ -20,7 +20,7 @@ import { createHash } from 'node:crypto';
 // Serialized (UTF-8 JSON) bytes of the retained PROJECTIONS. A tail-window
 // projection is ~0.1-1 MB; a legacy 512-item page of a worker transcript can
 // reach ~16 MB, so this keeps a couple of those or dozens of tail windows.
-export const STORED_TRANSCRIPT_CACHE_MAX_BYTES = 32 * 1024 * 1024;
+const STORED_TRANSCRIPT_CACHE_MAX_BYTES = 32 * 1024 * 1024;
 // Coarse filesystems stamp mtime at whole seconds (FAT: two). A write landing
 // inside that window after our read could keep the same stat, so only a file
 // untouched for longer than this is trusted by stat alone.
@@ -143,7 +143,10 @@ export function createStoredTranscriptCache({
         touch(key, cached, now);
         return { value: cached.value, hit: true, read: false };
       }
-      const text = loadText();
+      // `loadText` may answer asynchronously (a large record is read without
+      // blocking the loop); a plain string is unchanged.
+      let text = loadText();
+      if (typeof text?.then === 'function') text = await text;
       if (typeof text !== 'string') return { value: null, hit: false, read: true };
       // UTF-16 preserves exact JavaScript code units, including lone surrogates
       // that UTF-8 would collapse into the same replacement character.

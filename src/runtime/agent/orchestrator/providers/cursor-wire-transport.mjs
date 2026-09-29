@@ -3,9 +3,11 @@
 import crypto from 'node:crypto';
 import http2 from 'node:http2';
 import { MAX_CONNECT_FRAME_BYTES, createCursorByteQueue } from './cursor-wire-guards.mjs';
+import { cursorClientVersion, warmCursorClientVersion } from './cursor-client-version.mjs';
+
+export { warmCursorClientVersion };
 
 const API_URL = process.env.CURSOR_API_URL || 'https://api2.cursor.sh';
-const CLIENT_VERSION = process.env.MIXDOG_CURSOR_CLIENT_VERSION || 'cli-2026.08.11-e8db854';
 const RUN_PATH = '/agent.v1.AgentService/Run';
 export const MODELS_PATH = '/agent.v1.AgentService/GetUsableModels';
 export const AVAILABLE_MODELS_PATH = '/aiserver.v1.AiService/AvailableModels';
@@ -13,6 +15,7 @@ export const USAGE_PATH = '/aiserver.v1.DashboardService/GetCurrentPeriodUsage';
 export const PLAN_PATH = '/aiserver.v1.DashboardService/GetPlanInfo';
 export const END_STREAM_FLAG = 2;
 const H2_PING_INTERVAL_MS = 20_000;
+const CONNECT_TIMEOUT_MS = 30_000;
 export const SSE_HEADERS = {
   'Content-Type': 'text/event-stream',
   'Cache-Control': 'no-cache',
@@ -30,7 +33,7 @@ function rpcHeaders(accessToken, path, unary) {
     te: 'trailers',
     authorization: `Bearer ${accessToken}`,
     'x-ghost-mode': 'true',
-    'x-cursor-client-version': CLIENT_VERSION,
+    'x-cursor-client-version': cursorClientVersion(),
     'x-cursor-client-type': 'cli',
     'x-request-id': crypto.randomUUID(),
     ...(unary ? {} : { 'connect-protocol-version': '1' }),
@@ -67,7 +70,7 @@ export function openCursorStream({ accessToken, path = RUN_PATH, url = API_URL }
   let closeError = null;
   let timeout = setTimeout(
     () => close(cursorError('Cursor connection timed out', { code: 'connection_timeout' })),
-    30_000
+    CONNECT_TIMEOUT_MS
   );
   const configuredIdle = Number(process.env.MIXDOG_CURSOR_H2_IDLE_TIMEOUT_MS);
   const idleTimeoutMs = Number.isFinite(configuredIdle) && configuredIdle > 0 ? Math.floor(configuredIdle) : 0;
@@ -158,6 +161,7 @@ export function openCursorStream({ accessToken, path = RUN_PATH, url = API_URL }
 }
 
 export async function callCursorUnary({ accessToken, path, body, url = API_URL, timeoutMs = 5_000 }) {
+  await warmCursorClientVersion();
   return new Promise((resolve, reject) => {
     const session = http2.connect(url);
     const request = session.request(rpcHeaders(accessToken, path, true));

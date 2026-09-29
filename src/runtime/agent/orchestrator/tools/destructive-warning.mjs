@@ -7,7 +7,7 @@
 // hard blocks remain in the shared shell policy scan.
 
 import { SHELL_NAMES as _SHELL_NAMES, WRAPPER_NAMES as _WRAPPER_NAMES } from './shell-policy.mjs';
-import { extractPowerShellCommandInner } from './shell-command.mjs';
+import { extractPowerShellCommandInner } from './shell-powershell.mjs';
 
 export function stripQuotedAndHeredoc(s) {
   return String(s || '')
@@ -21,8 +21,7 @@ export function stripQuotedAndHeredoc(s) {
 export function extractHeredocBodies(s) {
   const out = [];
   const re = /<<-?\s*['"]?(\w+)['"]?([\s\S]*?)\n\1\b/g;
-  let m;
-  while ((m = re.exec(String(s || ''))) !== null) out.push(m[2]);
+  for (const m of String(s || '').matchAll(re)) out.push(m[2]);
   return out;
 }
 
@@ -251,6 +250,13 @@ export function extractShellCInner(s) {
   return out;
 }
 
+function _removalWarning(recursive, force) {
+  if (recursive && force) return 'may recursively force-remove files';
+  if (recursive) return 'may recursively remove files';
+  if (force) return 'may force-remove files';
+  return null;
+}
+
 // rm: detect -r/-R/--recursive AND -f/--force across split or combined
 // short-flag tokens.
 function _classifyRm(args) {
@@ -274,10 +280,7 @@ function _classifyRm(args) {
     if (t.startsWith('-')) continue;
     break;
   }
-  if (r && f) return 'may recursively force-remove files';
-  if (r) return 'may recursively remove files';
-  if (f) return 'may force-remove files';
-  return null;
+  return _removalWarning(r, f);
 }
 
 // PowerShell Remove-Item (and aliases): -Recurse/-Force, including :$true forms.
@@ -303,10 +306,7 @@ function _classifyRemoveItem(args) {
     }
     break;
   }
-  if (r && f) return 'may recursively force-remove files';
-  if (r) return 'may recursively remove files';
-  if (f) return 'may force-remove files';
-  return null;
+  return _removalWarning(r, f);
 }
 
 // git: skip global options (-C path, -c key=val, --git-dir=..., --no-pager

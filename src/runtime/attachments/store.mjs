@@ -477,7 +477,7 @@ function dropCachedAttachment(path) {
 async function persistedAttachmentReferencePaths() {
   const root = resolvePluginData();
   const paths = [];
-  for (const dirname of ['sessions', 'turn-checkpoints']) {
+  for (const dirname of ['sessions', 'turn-checkpoints', 'session-pending']) {
     const dir = join(root, dirname);
     let entries;
     try {
@@ -490,6 +490,7 @@ async function persistedAttachmentReferencePaths() {
       if (entry.isFile() && entry.name.endsWith('.json')) paths.push(join(dir, entry.name));
     }
   }
+  // Pre-sharding global spool, until its one-time migration has renamed it.
   paths.push(join(root, 'session-pending-messages.json'));
   return paths;
 }

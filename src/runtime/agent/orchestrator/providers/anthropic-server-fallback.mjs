@@ -1,3 +1,5 @@
+import { normalizeClaudeModelId } from './anthropic-thinking-contract.mjs';
+
 function normalizedModelId(value) {
   if (typeof value === 'string') return value.trim();
   const raw = value && typeof value === 'object' ? value.model : '';
@@ -5,7 +7,7 @@ function normalizedModelId(value) {
 }
 
 export function supportsAnthropicServerFallback(model) {
-  const id = normalizedModelId(model).toLowerCase().replace(/\./g, '-');
+  const id = normalizeClaudeModelId(normalizedModelId(model));
   return /^claude-(?:opus|fable)-5(?:$|[-@])/.test(id);
 }
 

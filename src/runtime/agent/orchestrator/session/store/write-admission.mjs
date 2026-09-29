@@ -12,6 +12,8 @@ import {
   statSessionStamp as _statSessionStamp,
   sameSessionStamp as _sameSessionStamp,
 } from './canonical-reader.mjs';
+import { isCancelledWrite as _isCancelledWrite } from './write-guards.mjs';
+import { _setSessionWriteAuthorityCheck } from './save-worker.mjs';
 
 const _observeStamp = (target) => {
   try {
@@ -48,8 +50,6 @@ function _writeAuthorityRecord(target, attempt) {
   }
   return record;
 }
-import { isCancelledWrite as _isCancelledWrite } from './write-guards.mjs';
-import { _setSessionWriteAuthorityCheck } from './save-worker.mjs';
 
 /**
  * Write admission for ONE save attempt. Consulted upfront, after the scratch
@@ -66,11 +66,9 @@ import { _setSessionWriteAuthorityCheck } from './save-worker.mjs';
  *                                   record just because it carries no
  *                                   expectedGeneration;
  *   ours                          → apply the generation rules below.
- * NOTHING is exempt. The old `allowClosed` opt-out is gone: it existed for a
- * tombstone plant that has not gone through this path in a long time (the
- * barriers write the canonical file themselves), and any surviving caller of
- * it would have been able to skip the absent-vs-owned-vs-ambiguous check
- * entirely — the exact hole this guard exists to close.
+ * NOTHING is exempt: there is no opt-out that skips the absent-vs-owned-vs-
+ * ambiguous check (the lifecycle barriers write the canonical file themselves,
+ * under their own authority read).
  */
 export function _shouldDrop(id, opts, attempt = null) {
   if (_isCancelledWrite(opts)) return true;
@@ -113,22 +111,11 @@ export function _shouldDrop(id, opts, attempt = null) {
   return generation > expected;
 }
 
-// ── Lifecycle read for the ownership guard ───────────────────────────────────
-// _shouldDrop consults this up to three times per save (upfront, post-temp
-// write, in-commit). mtimeMs + size alone would NOT move for a same-size
-// rewrite inside one clock tick — a generation bump such as 1 → 2 — so no
-// memo keys on them. The only reuse is this realm's OWN last rename, stamped
-// { dev, ino, size, mtimeNs, ctimeNs } right after the commit and verified to
-// be our inode: every writer replaces the file by rename (new inode, new
-// ctime), so any foreign replacement misses the stamp and is re-read and
-// strictly parsed exactly as before.
-//
-// Three distinct outcomes, never collapsed: `null` = no file (write freely),
-// LIFECYCLE_AMBIGUOUS = a file exists but its bytes cannot be trusted (refuse
-// the write), otherwise the strict record itself ({ doc, id, closed,
+// Three distinct read outcomes, never collapsed: `null` = no file (write
+// freely), LIFECYCLE_AMBIGUOUS = a file exists but its bytes cannot be trusted
+// (refuse the write), otherwise the strict record itself ({ doc, id, closed,
 // generation }) — the single disk authority shared by the save guard and the
-// lifecycle barriers.
-// Full lifecycle barriers still parse a private document.
+// lifecycle barriers. Stamp-keyed reuse lives in canonical-reader.mjs.
 
 // Pre-admission authority for the async/worker path (registered here because
 // save-worker.mjs cannot import this module back). A refusal keeps the caller

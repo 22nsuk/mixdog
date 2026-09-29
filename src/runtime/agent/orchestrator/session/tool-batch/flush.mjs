@@ -3,7 +3,7 @@
 // before the next provider send.
 import { skillBodyPresentInSession } from '../../context/collect.mjs';
 import { isInjectedSkillBodyMessage } from '../compact/messages.mjs';
-import { updateSessionStage } from '../manager.mjs';
+import { updateSessionStage } from '../manager/runtime-liveness.mjs';
 
 export async function flushBatch(batch) {
   const { calls, pushToolResultMessage, sessionId } = batch;

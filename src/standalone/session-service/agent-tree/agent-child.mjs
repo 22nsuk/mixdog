@@ -4,7 +4,7 @@
 // into the agent registry. Running a turn on that child is ./agent-turns.mjs.
 
 export function createAgentChildFactory({ registry, rehydrateAgentSessions, createSession }) {
-  return async function createAgentChild({ spec = {}, prompt: _prompt = '', tag = null } = {}) {
+  return async function createAgentChild({ spec = {}, tag = null } = {}) {
     await rehydrateAgentSessions();
     const parentSessionId = String(spec.parentSessionId || '').trim();
     if (!parentSessionId) throw new TypeError('agent child parentSessionId is required');

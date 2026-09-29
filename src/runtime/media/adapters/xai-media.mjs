@@ -6,6 +6,7 @@
  * poll route answers 202 while pending, 200 with a signed URL when done.
  */
 import { resolveXaiAuth } from '../auth.mjs';
+import { boundedSignal, timeoutSignal } from '../bounded-signal.mjs';
 import { decodeBase64Media, downloadPublicMedia } from '../download.mjs';
 import { mediaError } from '../lanes.mjs';
 import { upstreamError } from '../upstream-error.mjs';
@@ -17,11 +18,6 @@ const IMAGE_TIMEOUT_MS = 180_000;
 // Each poll needs its own ceiling: one hung request would otherwise keep the
 // loop from ever reaching its deadline check.
 const POLL_REQUEST_TIMEOUT_MS = 60_000;
-
-function boundedSignal(signal, deadline, capMs) {
-  const remaining = Math.max(1, deadline - Date.now());
-  return AbortSignal.any([signal, AbortSignal.timeout(Math.min(capMs, remaining))].filter(Boolean));
-}
 
 async function readError(res) {
   const text = await res.text().catch(() => '');
@@ -66,7 +62,7 @@ export async function generateImage({ lane, model, prompt, options = {}, referen
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify(body),
-    signal: AbortSignal.any([signal, AbortSignal.timeout(IMAGE_TIMEOUT_MS)].filter(Boolean)),
+    signal: timeoutSignal(signal, IMAGE_TIMEOUT_MS),
   });
   if (!res.ok) throw upstreamError('xAI image', res.status, await readError(res));
   const data = await res.json();
@@ -97,7 +93,7 @@ export async function generateVideo({ lane, model, prompt, options = {}, referen
     method: 'POST',
     headers,
     body: JSON.stringify(body),
-    signal: AbortSignal.any([signal, AbortSignal.timeout(START_TIMEOUT_MS)].filter(Boolean)),
+    signal: timeoutSignal(signal, START_TIMEOUT_MS),
   });
   if (!started.ok) throw upstreamError('xAI video', started.status, await readError(started));
   const startData = await started.json();

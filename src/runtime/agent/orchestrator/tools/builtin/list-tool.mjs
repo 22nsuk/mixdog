@@ -8,12 +8,8 @@ import { NOISE_DIR_NAMES, walkDir } from './glob-walk.mjs';
 import { TOOL_OUTPUT_MAX_BYTES } from './tool-output-limit.mjs';
 import { runRgWindowedLines } from './native-search-runner.mjs';
 import { tryServeListMetadata } from './native-search-client.mjs';
-import { guardedWalkRoot, normalizeListHeadLimit, pageContinuationLine } from './lib/list-helpers.mjs';
+import { countTextFileLines, guardedWalkRoot, normalizeListHeadLimit, pageContinuationLine } from './lib/list-helpers.mjs';
 import { reportToolProgress } from './lib/tool-progress.mjs';
-import {
-  recordRuntimeDirectoryReadSuccess,
-  reportRuntimeDirectoryReadFailure,
-} from '../../../../shared/session-runtime-health.mjs';
 import { displayRelPath, statWalkRoot } from './list-tool-shared.mjs';
 import { executeFindFilesTool } from './find-files-tool.mjs';
 
@@ -68,14 +64,10 @@ function recordDirectoryWalkTelemetry(options, status, walkResult, warningCount 
 // After a walk: an abort propagates, a root that could not be read is the
 // tool's answer (returned as the error line, uncached, and counted against
 // the runtime worker's health), and anything else records a healthy read.
-function walkRootFailureLine(options, fullPath, walkResult, walkWarnings, label) {
+function walkRootFailureLine(options, walkResult, walkWarnings, label) {
   throwIfDirectoryWalkAborted(options.signal, walkResult, label);
   const rootFailure = walkWarnings.find((warning) => warning.root);
-  if (!rootFailure) {
-    recordRuntimeDirectoryReadSuccess();
-    return null;
-  }
-  reportRuntimeDirectoryReadFailure(fullPath, rootFailure.error);
+  if (!rootFailure) return null;
   recordDirectoryWalkTelemetry(options, 'failed', walkResult, walkWarnings.length);
   if (options?.scopedCacheOutcome) markScopedCacheIncomplete(options.scopedCacheOutcome);
   return directoryReadFailureLine(rootFailure);
@@ -220,13 +212,30 @@ function listCacheKey({ fullPath, depth, hidden, sort, typeFilter, headLimit, of
 function listRowLine(row, fullPath, meta) {
   const path = displayRelPath(row.path, fullPath);
   if (!meta) return `${path}\t${row.type}`;
-  return `${path}\t${row.type}\t${row.size}\t${_metaMtimeIso(row.mtimeMs)}\t${_metaModeOctal(row.mode)}`;
+  return `${path}\t${row.type}\t${row.size}\t${_metaMtimeIso(row.mtimeMs)}\t${_metaModeOctal(row.mode)}${lineCountSuffix(row.lineCount)}`;
 }
 
-function listFileLine(fullPath, st, meta) {
+function lineCountSuffix(lineCount) {
+  return lineCount == null ? '' : `\t${lineCount}`;
+}
+
+function listFileLine(fullPath, st, meta, lineCount) {
   const path = normalizeOutputPath(fullPath);
   if (!meta) return `${path}\tfile`;
-  return `${path}\tfile\t${st.size}\t${_metaMtimeIso(st.mtimeMs)}\t${_metaModeOctal(st.mode)}`;
+  return `${path}\tfile\t${st.size}\t${_metaMtimeIso(st.mtimeMs)}\t${_metaModeOctal(st.mode)}${lineCountSuffix(lineCount)}`;
+}
+
+// Text-file line counts for the rendered meta rows (binaries and files over
+// the size cap get none), read in bounded batches.
+async function fillRowLineCounts(rows) {
+  const files = rows.filter((row) => row.type === 'file');
+  for (let i = 0; i < files.length; i += 32) {
+    await Promise.all(
+      files.slice(i, i + 32).map(async (row) => {
+        row.lineCount = await countTextFileLines(row.fullPath, row.size);
+      })
+    );
+  }
 }
 
 function entryType(ent) {
@@ -342,7 +351,7 @@ export async function executeListTool(args, workDir, options = {}) {
   if (args.mode === 'find') return executeFindFilesTool(args, workDir, options);
   args.path = normalizeInputPath(args.path);
   if (!args.name && hasGlobMagic(args.path)) {
-    return executeFindFilesTool({ ...args, mode: 'find' }, workDir);
+    return executeFindFilesTool({ ...args, mode: 'find' }, workDir, options);
   }
   const request = listRequest(args, workDir);
   if (request.error) return request.error;
@@ -364,7 +373,7 @@ export async function executeListTool(args, workDir, options = {}) {
   if (root.error) return root.error;
   if (!root.stat.isDirectory()) {
     if (!root.stat.isFile()) return `Error: not a directory — ${normalizeOutputPath(fullPath)}`;
-    const out = listFileLine(fullPath, root.stat, meta);
+    const out = listFileLine(fullPath, root.stat, meta, meta ? await countTextFileLines(fullPath, root.stat.size) : null);
     cacheSet(cacheKey, out, { scopes: [fullPath] });
     return out;
   }
@@ -373,7 +382,7 @@ export async function executeListTool(args, workDir, options = {}) {
     workDir,
     options
   );
-  const rootFailure = walkRootFailureLine(options, fullPath, walkResult, walkWarnings, 'list walk');
+  const rootFailure = walkRootFailureLine(options, walkResult, walkWarnings, 'list walk');
   if (rootFailure) return rootFailure;
   if (!nativeDeep && needsGlobalStat) await fillRowMetadata(rows, workDir, options);
   sortListRows(rows, sort);
@@ -403,6 +412,7 @@ async function renderListPage({ request, rows, walkWarnings, truncatedByCap, nat
   const windowed = offset > 0 ? rows.slice(offset) : rows;
   const sliced = headLimit > 0 ? windowed.slice(0, headLimit) : windowed;
   if (!nativeDeep && meta && !needsGlobalStat) await fillRowMetadata(sliced, workDir, options);
+  if (meta) await fillRowLineCounts(sliced);
   const lines = sliced.map((row) => listRowLine(row, fullPath, meta));
   const paged = windowed.length > sliced.length;
   if (paged) lines.push(pageContinuationLine(offset, sliced.length, rows.length));
@@ -519,7 +529,7 @@ export async function executeTreeTool(args, workDir, options = {}) {
   if (root.error) return root.error;
   if (!root.stat.isDirectory()) return `Error: not a directory — ${normalizeOutputPath(fullPath)}`;
   const { lines, walkResult, walkWarnings } = await walkTreeLines(fullPath, request, options);
-  const rootFailure = walkRootFailureLine(options, fullPath, walkResult, walkWarnings, 'tree walk');
+  const rootFailure = walkRootFailureLine(options, walkResult, walkWarnings, 'tree walk');
   if (rootFailure) return rootFailure;
   const { out, incomplete } = renderTreeOutput(lines, walkWarnings, request);
   recordDirectoryWalkTelemetry(options, walkOutcome(walkResult, walkWarnings.length), walkResult, walkWarnings.length);

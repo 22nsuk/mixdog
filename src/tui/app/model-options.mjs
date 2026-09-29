@@ -6,7 +6,7 @@
  * displayModelName formatter.
  */
 import { theme } from '../theme.mjs';
-import { displayModelName } from '../../ui/model-display.mjs';
+import { displayModelName } from '../../runtime/shared/model-display.mjs';
 
 export const parsedModelVersion = (id) => {
   const text = String(id || '').toLowerCase();
@@ -97,10 +97,9 @@ export const modelContextWindow = (m) => {
   const raw = Number(m?.contextWindow);
   const n = Number.isFinite(raw) && raw > 0 ? raw : 0;
   if (n > 0) return n;
-  const provider = String(m?.provider || '').toLowerCase();
   const id = String(m?.id || '').toLowerCase();
   const version = parsedModelVersion(id);
-  if (provider.includes('anthropic') && /^claude-[a-z]+-/.test(id)) {
+  if (isClaudeModel(m)) {
     if ((version[0] || 0) >= 5) return 1_000_000;
     if (/^claude-(opus|sonnet)-4-(6|7|8)(?:$|-)/.test(id)) return 1_000_000;
   }

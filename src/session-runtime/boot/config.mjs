@@ -3,8 +3,8 @@
 import { performance } from 'node:perf_hooks';
 import { setConfiguredShell } from '../../runtime/agent/orchestrator/tools/builtin/shell-runtime.mjs';
 import { LOCAL_PROVIDER_ID, configureLocalProviderIdleTtl } from '../../runtime/local-provider/managed-runtime.mjs';
-import { normalizeToolMode } from '../effort.mjs';
-import { normalizeSystemShellConfig } from '../config-helpers.mjs';
+import { normalizeToolMode } from '../../runtime/agent/orchestrator/runtime-core/effort.mjs';
+import { normalizeSystemShellConfig } from '../../runtime/agent/orchestrator/runtime-core/config-helpers.mjs';
 import { flushPendingSessionConfigWrites, resolveInitialConfigState } from '../config-lifecycle.mjs';
 import { bootProfile } from '../boot-profile.mjs';
 import { createHookPayload } from '../hook-payload.mjs';

@@ -61,7 +61,7 @@ function _arrayKeyAndStats(args, cwd) {
   const offsetBase = Array.isArray(args.file_path) && !args.path ? 1 : 0;
   const pages = args?.pages ?? '';
   const full = args?.full ?? '';
-  // Top-level options applied as per-element defaults (C: array-form parity).
+  // Top-level options apply as per-element defaults (array-form parity).
   const topOff = args?.offset ?? '';
   const topLim = args?.limit ?? '';
   const topMode = args?.mode ?? '';

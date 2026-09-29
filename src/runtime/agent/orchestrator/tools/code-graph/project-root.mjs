@@ -3,6 +3,7 @@
 import { resolve as pathResolve, dirname, join } from 'node:path';
 import { existsSync, readdirSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
+import { canonicalGraphPath } from '../code-graph-state.mjs';
 
 // P1: project-root sentinels. A directory containing any of these (or with one
 // at an ancestor) is treated as a real project we may index.
@@ -41,11 +42,6 @@ function _userBoundaryDirs() {
   return dirs.filter(Boolean);
 }
 
-function _dirKey(dir) {
-  const resolved = pathResolve(dir);
-  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
-}
-
 // P1: resolve a file to its nearest project root (sentinel ancestor).
 // Returns null when no root found; caller throws rather than falling back.
 // `opts` forwards to the directory walk, so a file anchor can decline the same
@@ -65,10 +61,10 @@ export function _resolveFileProjectRoot(file, opts = {}) {
 // there. `boundaries` is injectable so the boundary rule stays testable.
 export function _findDirProjectRoot(dir, { stopAtUserBoundary = false, boundaries = null } = {}) {
   if (!dir) return null;
-  const stops = stopAtUserBoundary ? new Set((boundaries || _userBoundaryDirs()).map(_dirKey)) : null;
+  const stops = stopAtUserBoundary ? new Set((boundaries || _userBoundaryDirs()).map(canonicalGraphPath)) : null;
   let d = pathResolve(dir);
   while (d && d !== dirname(d)) {
-    if (stops?.has(_dirKey(d))) return null;
+    if (stops?.has(canonicalGraphPath(d))) return null;
     if (_PROJECT_ROOT_SENTINELS.some((s) => existsSync(join(d, s)))) return d;
     d = dirname(d);
   }

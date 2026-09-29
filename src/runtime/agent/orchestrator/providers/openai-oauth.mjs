@@ -51,11 +51,12 @@ import {
   refreshCodexCatalog,
 } from './openai-oauth-catalog.mjs';
 import { _displayCodexModel } from './openai-codex-model.mjs';
+import { buildRequestBody } from './openai-responses-payload.mjs';
+import { streamCallbacks } from './lib/send-callbacks.mjs';
 export { _displayCodexModel };
 
 // Public test/integration entry retained alongside the transport module export.
 export { sendViaHttpSse };
-import { buildRequestBody } from './openai-responses-payload.mjs';
 export {
   buildCodexStartupPrewarmBody,
   buildRequestBody,
@@ -171,10 +172,7 @@ export class OpenAIOAuthProvider {
     // build so the HTTP/SSE path skips the cold TLS handshake.
     preconnect(CODEX_BACKEND_ORIGIN);
     const opts = sendOpts || {};
-    const onStageChange = typeof opts.onStageChange === 'function' ? opts.onStageChange : null;
-    const onStreamDelta = typeof opts.onStreamDelta === 'function' ? opts.onStreamDelta : null;
-    const onToolCall = typeof opts.onToolCall === 'function' ? opts.onToolCall : null;
-    const onTextDelta = typeof opts.onTextDelta === 'function' ? opts.onTextDelta : null;
+    const { onStageChange, onStreamDelta, onToolCall, onTextDelta } = streamCallbacks(opts);
     const externalSignal = opts.signal || null;
     const _sendSessionId = opts.sessionId || '(none)';
     const _sendAgent = opts.agent || '(none)';

@@ -1,8 +1,12 @@
-import { existsSync, readFileSync } from 'fs';
-import { join } from 'path';
+import {
+  appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync,
+  renameSync, statSync, fstatSync, writeFileSync,
+} from 'fs';
+import { appendFile, mkdir, readFile, rename, writeFile } from 'fs/promises';
+import { dirname, join } from 'path';
 import { resolvePluginData } from '../../../../runtime/shared/plugin-paths.mjs';
 import { readSection } from '../../../../runtime/shared/config.mjs';
-import { updateJsonAtomic, updateJsonAtomicSync } from '../../../../runtime/shared/atomic-file.mjs';
+import { withFileLock, withFileLockSync } from '../../../../runtime/shared/file-lock.mjs';
 import { computeCostUsd, isInclusiveProvider } from '../../../../runtime/shared/llm/cost.mjs';
 import { getModelMetadataSync } from '../../../../runtime/agent/orchestrator/providers/model-catalog.mjs';
 import {
@@ -11,7 +15,12 @@ import {
 } from '../../../../runtime/agent/orchestrator/session/context-utils.mjs';
 import { CLAUDE_CURRENT_MODE } from './claude-current.mjs';
 
-const GATEWAY_USAGE_FILE = 'gateway-usage.local.json';
+// Legacy store: one JSON document rewritten on every flush. Current store: an
+// append-only JSONL (one event per line) compacted off the hot path.
+const LEGACY_USAGE_FILE = 'gateway-usage.local.json';
+const GATEWAY_USAGE_FILE = 'gateway-usage.local.jsonl';
+const LEGACY_BACKUP_SUFFIX = '.migrated.bak';
+const COMPACT_MIN_BYTES = 8 * 1024 * 1024;
 // Background runners push several hundred turns a day through here, so a
 // thousand rows covered barely a day of history. The daily rollup carries the
 // long range, but the events are what a fresh range request re-reads in full
@@ -536,9 +545,123 @@ function usageStorePath() {
   return join(resolvePluginData(), GATEWAY_USAGE_FILE);
 }
 
-const USAGE_FLUSH_OPTS = Object.freeze({ compact: true, fsync: false, fsyncDir: false });
+function usageLockPath(file) {
+  return `${file}.lock`;
+}
 
-// Take the pending batch and build its read-modify-write mutator.
+function parseJsonlEvents(text) {
+  const out = [];
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const e = JSON.parse(line);
+      if (e && typeof e === 'object') out.push(e);
+    } catch {
+      // A torn append (crash mid-write) is skipped, never fatal.
+    }
+  }
+  return out;
+}
+
+// Idempotent, crash-safe legacy JSON -> JSONL migration, once per path per
+// process. Serialized by the store lock; each step is an atomic rename:
+//   1. events -> <store>.migrating.<pid>, renamed onto the JSONL store
+//   2. legacy file renamed to a backup
+// A crash between the steps leaves both files; the next run sees the JSONL
+// store already present and only finishes step 2. Appenders always migrate
+// first, so an existing JSONL store is never older than the legacy file.
+const migratedPaths = new Set();
+function ensureUsageStoreMigrated() {
+  const store = usageStorePath();
+  if (migratedPaths.has(store)) return;
+  const legacy = join(dirname(store), LEGACY_USAGE_FILE);
+  if (existsSync(legacy)) {
+    try {
+      withFileLockSync(usageLockPath(store), () => {
+        if (!existsSync(legacy)) return;
+        if (!existsSync(store)) {
+          const raw = readJsonFile(legacy);
+          const events = (Array.isArray(raw?.events) ? raw.events : []).slice(-MAX_USAGE_EVENTS);
+          const tmp = `${store}.migrating.${process.pid}`;
+          writeFileSync(tmp, events.map(e => JSON.stringify(e) + '\n').join(''));
+          renameSync(tmp, store);
+        }
+        let backup = legacy + LEGACY_BACKUP_SUFFIX;
+        if (existsSync(backup)) backup = `${legacy}.${Date.now()}${LEGACY_BACKUP_SUFFIX}`;
+        renameSync(legacy, backup);
+      });
+    } catch {
+      return; // retry on the next call; readers fall back to whatever exists
+    }
+  }
+  migratedPaths.add(store);
+}
+
+// Incrementally updated in-memory view of the JSONL store. A refresh stats the
+// file and reads only the bytes appended since the last refresh; a replaced
+// (compacted) or truncated file triggers one full reload.
+let usageView = { path: null, ino: null, offset: 0, events: [] };
+
+function refreshUsageView() {
+  const path = usageStorePath();
+  let fd;
+  try {
+    fd = openSync(path, 'r');
+    const st = fstatSync(fd);
+    let view = usageView;
+    if (view.path !== path || view.ino !== st.ino || st.size < view.offset) {
+      view = usageView = { path, ino: st.ino, offset: 0, events: [] };
+    }
+    if (st.size > view.offset) {
+      const buf = Buffer.allocUnsafe(st.size - view.offset);
+      const n = readSync(fd, buf, 0, buf.length, view.offset);
+      const end = buf.subarray(0, n).lastIndexOf(0x0a) + 1; // complete lines only
+      if (end > 0) {
+        view.offset += end;
+        for (const e of parseJsonlEvents(buf.toString('utf8', 0, end))) view.events.push(e);
+        if (view.events.length > MAX_USAGE_EVENTS * 2) view.events = view.events.slice(-MAX_USAGE_EVENTS);
+      }
+    }
+    return usageView.events;
+  } catch {
+    usageView = { path: null, ino: null, offset: 0, events: [] };
+    return usageView.events;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+// Bounded compaction: keep the newest MAX_USAGE_EVENTS lines. Runs in the
+// background under the store lock (appenders take it too, so no append is lost).
+let compactRunning = false;
+async function compactUsageStore(store) {
+  if (compactRunning) return;
+  compactRunning = true;
+  try {
+    await withFileLock(usageLockPath(store), async () => {
+      const lines = (await readFile(store, 'utf8')).split('\n').filter(l => l.trim());
+      if (lines.length <= MAX_USAGE_EVENTS * 1.5) return;
+      const tmp = `${store}.compact.${process.pid}`;
+      await writeFile(tmp, lines.slice(-MAX_USAGE_EVENTS).join('\n') + '\n');
+      await rename(tmp, store);
+    });
+  } catch {
+    // Compaction is best effort; the next flush retries.
+  } finally {
+    compactRunning = false;
+  }
+}
+
+function maybeScheduleCompaction(store) {
+  try {
+    if (statSync(store).size < COMPACT_MIN_BYTES) return;
+  } catch {
+    return;
+  }
+  const t = setTimeout(() => { void compactUsageStore(store); }, 1000);
+  t.unref?.();
+}
+
 function takePendingUsageBatch() {
   if (usageFlushTimer) {
     clearTimeout(usageFlushTimer);
@@ -547,25 +670,22 @@ function takePendingUsageBatch() {
   if (!pendingUsageEvents.length) return null;
   const eventsToWrite = pendingUsageEvents;
   pendingUsageEvents = [];
-  const cutoff = Date.now() - USAGE_EVENT_TTL_MS;
-  return (curRaw) => {
-    const cur = curRaw && typeof curRaw === 'object' ? curRaw : {};
-    const events = Array.isArray(cur.events) ? cur.events : [];
-    const kept = events
-      .filter(e => num(e?.ts, 0) >= cutoff)
-      .slice(-MAX_USAGE_EVENTS + eventsToWrite.length);
-    kept.push(...eventsToWrite);
-    return { version: 1, updatedAt: Date.now(), events: kept.slice(-MAX_USAGE_EVENTS) };
-  };
+  // Leading newline terminates any torn line left by a crashed writer.
+  return '\n' + eventsToWrite.map(e => JSON.stringify(e)).join('\n') + '\n';
 }
 
-// Normal flushes run on the event loop's schedule but never block it: the
-// cross-process lock wait and the file I/O are asynchronous. Batches keep
-// their order because withFileLock queues same-path callers in call order.
+// Normal flushes never block the loop: the lock wait and the append are
+// asynchronous, and only the new events are serialized. Batches keep their
+// order because withFileLock queues same-path callers in call order.
 function flushGatewayUsageEvents() {
-  const mutate = takePendingUsageBatch();
-  if (!mutate) return usageFlushTail;
-  const flush = updateJsonAtomic(usageStorePath(), mutate, USAGE_FLUSH_OPTS).catch(() => {
+  const data = takePendingUsageBatch();
+  if (!data) return usageFlushTail;
+  ensureUsageStoreMigrated();
+  const store = usageStorePath();
+  const flush = withFileLock(usageLockPath(store), async () => {
+    await mkdir(dirname(store), { recursive: true });
+    await appendFile(store, data);
+  }).then(() => maybeScheduleCompaction(store)).catch(() => {
     // Local telemetry must never affect the routed model call.
   });
   usageFlushTail = Promise.all([usageFlushTail, flush]).then(() => {});
@@ -574,10 +694,13 @@ function flushGatewayUsageEvents() {
 
 // Process exit cannot await, so the last batch is written synchronously.
 function flushGatewayUsageEventsSync() {
-  const mutate = takePendingUsageBatch();
-  if (!mutate) return;
+  const data = takePendingUsageBatch();
+  if (!data) return;
   try {
-    updateJsonAtomicSync(usageStorePath(), mutate, USAGE_FLUSH_OPTS);
+    ensureUsageStoreMigrated();
+    const store = usageStorePath();
+    mkdirSync(dirname(store), { recursive: true });
+    withFileLockSync(usageLockPath(store), () => appendFileSync(store, data));
   } catch {
     // Local telemetry must never affect the routed model call.
   }
@@ -692,8 +815,8 @@ export function recordGatewayUsageEvent(summary) {
 }
 
 export function loadUsageEvents() {
-  const raw = readJsonFile(usageStorePath());
-  const events = Array.isArray(raw?.events) ? raw.events : [];
+  ensureUsageStoreMigrated();
+  const events = refreshUsageView().slice(-MAX_USAGE_EVENTS);
   const cutoff = Date.now() - USAGE_EVENT_TTL_MS;
   return events.filter(e => num(e?.ts, 0) >= cutoff);
 }

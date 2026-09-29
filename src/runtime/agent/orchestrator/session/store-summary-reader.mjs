@@ -7,6 +7,7 @@
  * reconnect recovery boundary so restored panes never paint a stale prompt.
  */
 import { readdirSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 // Leaf helpers only (no store.mjs, no workers, no config): the three-way
 // present/absent/unreadable classification and the strict record parser the
@@ -14,7 +15,9 @@ import { join } from 'node:path';
 import { probePath, readTextFile, PROBE_PRESENT, PROBE_ABSENT } from './store/fs-probe.mjs';
 import { readTopLevelLifecycleRecord, isLifecycleUnreadable } from './lifecycle-scan.mjs';
 import { isAgentOnlySession, isRootLeadSession, sessionVisibility } from './store-summary-visibility.mjs';
-import { createStoredTranscriptCache } from './store-transcript-cache.mjs';
+import { applySummaryLogText, readSummaryLogText } from './store-summary-log.mjs';
+import { createStoredTranscriptCache, nextProjectionStamp } from './store-transcript-cache.mjs';
+import { OFFLOAD_MIN_CHARS, projectStoredTranscriptOffThread } from './store-transcript-worker.mjs';
 import { projectStoredTranscript } from './store-transcript-projection.mjs';
 import { dataDir, sessionHeartbeatMtimes } from './store-summary-locations.mjs';
 import { desktopSession, isStoredSessionId, positiveNumber } from './store-summary-fields.mjs';
@@ -341,10 +344,13 @@ export function listStoredSessionSummaries(options = {}) {
   // an individual session file cannot be read.
   const indexRowsById = new Map();
   let indexRows = null;
+  // The delta log (per-session updates since the last compaction) is read
+  // before the base; see store-summary-log.mjs.
+  const logText = readSummaryLogText(indexPath);
   const indexRead = readTextFile(indexPath);
   if (indexRead.state === PROBE_PRESENT) {
     try {
-      const index = JSON.parse(indexRead.text);
+      const index = applySummaryLogText(JSON.parse(indexRead.text), logText);
       if (Number(index?.version) === SESSION_SUMMARY_INDEX_VERSION) {
         const normalizedRows = (Array.isArray(index.rows) ? index.rows : [])
           .map((row) => normalizedRow(row, heartbeatMtimes.get(row?.id) || 0))
@@ -494,6 +500,9 @@ export async function readStoredSessionTranscript(id, options = {}) {
   // The strict record parse (full JSON + duplicate-key scan) is itself a
   // large share of a cold read, so it only runs when the content is new.
   const mode = options.includeMessages === true ? 'messages' : 'items';
+  // Large, checkpoint-free item projections run off the daemon event loop.
+  const offloadable =
+    options.includeMessages !== true && checkpoint.state === PROBE_ABSENT && recordStat.size >= OFFLOAD_MIN_CHARS;
   const { value, hit, read } = await storedTranscriptCache.read({
     key: `${sessionId}|${itemLimit}|${mode}`,
     // Growing history windows of one session replace each other.
@@ -507,9 +516,19 @@ export async function readStoredSessionTranscript(id, options = {}) {
       checkpoint.dev,
     ].join(':'),
     fileStat: recordStat,
-    loadText: () => {
+    loadText: async () => {
       const before = observeStamp(recordPath);
-      const body = readTextFile(recordPath);
+      let body = null;
+      if (offloadable) {
+        // Reading a large record asynchronously keeps its multi-megabyte
+        // UTF-8 decode-and-copy off the loop; failures are classified below.
+        try {
+          body = { state: PROBE_PRESENT, text: (await readFile(recordPath)).toString('utf8') };
+        } catch {
+          body = null;
+        }
+      }
+      body ||= readTextFile(recordPath);
       readState = body.state;
       if (body.state !== PROBE_PRESENT) return null;
       readStamp = before && sameSessionStamp(before, observeStamp(recordPath)) ? before : null;
@@ -517,6 +536,21 @@ export async function readStoredSessionTranscript(id, options = {}) {
     },
     produce: async (text) => {
       const stamp = readStamp;
+      // A large record with no checkpoint sidecar parses and projects on a
+      // worker thread: the same pipeline, off the daemon event loop. It hands
+      // no parse to the load cache (a later resume reads the file itself).
+      if (offloadable && text.length >= OFFLOAD_MIN_CHARS) {
+        try {
+          const answer = await projectStoredTranscriptOffThread({ sessionId, text, itemLimit });
+          if (answer.unreadable) return null;
+          if (stamp) readCanonicalLifecycle.rememberStrictVerdict(recordPath, stamp, answer.lifecycle);
+          // Stamps are process-unique per module realm; re-issue in this one.
+          answer.value.projectionStamp = nextProjectionStamp();
+          return answer.value;
+        } catch {
+          // Worker unavailable: fall through to the in-process pipeline.
+        }
+      }
       const record = readTopLevelLifecycleRecord(text);
       if (isLifecycleUnreadable(record) || record.id !== sessionId) return null;
       // The same strict verdict the lifecycle authority would reach for these

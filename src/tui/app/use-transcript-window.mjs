@@ -34,7 +34,6 @@ export function useTranscriptWindow({
   frameColumns,
   toolOutputExpanded,
   transcriptContentHeight,
-  transcriptBottomSlackRows: _transcriptBottomSlackRows,
   transcriptGuardRows,
   floatingPanelRows,
   overlayHintRequested,

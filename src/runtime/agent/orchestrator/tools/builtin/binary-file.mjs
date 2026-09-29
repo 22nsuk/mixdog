@@ -3,6 +3,7 @@ import { open } from 'node:fs/promises';
 
 const HEAD_CAP = 64 * 1024;
 const TAIL_SIZE = 4 * 1024;
+const BINARY_PREVIEW_BYTES = 256;
 
 function hasUtf16Bom(buf, length = buf?.length || 0) {
   return length >= 2 && ((buf[0] === 0xff && buf[1] === 0xfe) || (buf[0] === 0xfe && buf[1] === 0xff));
@@ -79,7 +80,11 @@ export function isBinaryBuffer(buf, fileSize = buf?.length || 0) {
  * Returns the head bytes even when the null marker is in the tail so callers
  * can render a hex preview without reopening the file.
  */
-export async function inspectBinaryFile(fullPath, fileSize = 0, { previewBytes = 256, handle = null } = {}) {
+export async function inspectBinaryFile(
+  fullPath,
+  fileSize = 0,
+  { previewBytes = BINARY_PREVIEW_BYTES, handle = null } = {}
+) {
   const headBytes = fileSize > 0 ? Math.min(fileSize, HEAD_CAP) : HEAD_CAP;
   let fh;
   try {
@@ -106,8 +111,6 @@ export async function inspectBinaryFile(fullPath, fileSize = 0, { previewBytes =
     }
   }
 }
-
-const BINARY_PREVIEW_BYTES = 256;
 
 export function formatBinaryReadPreviewFromBuffer(
   buffer,

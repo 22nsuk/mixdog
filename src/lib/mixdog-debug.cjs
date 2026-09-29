@@ -164,7 +164,7 @@ function pruneStalePluginDataLogSiblings(
 
 const SESSION_START_CRITICAL_LOG = 'session-start-critical.log';
 const SESSION_START_CRITICAL_MAX_BYTES = 64 * 1024;
-const SESSION_START_CRITICAL_KEEP_BYTES = 64 * 1024;
+const SESSION_START_CRITICAL_KEEP_BYTES = 32 * 1024;
 
 function rotateBoundedLog(filePath, maxBytes, keepBytes) {
   try {

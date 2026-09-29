@@ -276,6 +276,12 @@ async function runUnixPicker(cmd, args) {
   return { available: true, path: String(result.stdout || '').trim() || null };
 }
 
+/** AppleScript for the macOS picker; backslashes and quotes in the title are escaped. */
+export function macosChooseScript(title) {
+  const safeTitle = String(title).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  return `set f to choose folder with prompt "${safeTitle}"\nPOSIX path of f`;
+}
+
 /**
  * Open the native folder picker.
  * @returns {Promise<{ available: boolean, path: string|null, reason?: string }>}
@@ -298,20 +304,18 @@ export async function pickFolder({ title = 'Select a project folder', initialPat
     ]);
     // Could not run PowerShell / Common File Dialog → fall back to manual typing.
     if (spawnFailed(result)) return { available: false, path: null };
-    const path = String(result.stdout || '').trim();
-    if (!result.ok && !path) return { available: false, path: null };
-    return { available: true, path: path || null };
+    const selected = String(result.stdout || '').trim();
+    if (!result.ok && !selected) return { available: false, path: null };
+    return { available: true, path: selected || null };
   }
 
   if (platform === 'darwin') {
-    const safeTitle = String(title).replace(/"/g, '\\"');
-    const script = `set f to choose folder with prompt "${safeTitle}"\nPOSIX path of f`;
-    const result = await runCapture('osascript', ['-e', script]);
+    const result = await runCapture('osascript', ['-e', macosChooseScript(title)]);
     // Could not run osascript (spawn failure / timeout) → manual fallback.
     if (spawnFailed(result)) return { available: false, path: null };
     // osascript exits non-zero (code 1) on user cancel; treat as cancel.
-    const path = String(result.stdout || '').trim();
-    return { available: true, path: path || null };
+    const selected = String(result.stdout || '').trim();
+    return { available: true, path: selected || null };
   }
 
   // Linux / other unix: prefer zenity, then kdialog.

@@ -6,7 +6,7 @@ import test from 'node:test';
 
 import { createLifecycleApi, resolveResumeCwd } from './lifecycle-api.mjs';
 import { BUILTIN_TOOLS } from '../runtime/agent/orchestrator/tools/builtin/builtin-tools.mjs';
-import { applyDeferredToolSurface, renderToolSearch } from './tool-catalog.mjs';
+import { applyDeferredToolSurface, renderToolSearch } from '../runtime/agent/orchestrator/runtime-core/tool-catalog.mjs';
 
 test('project resume prefers canonical session cwd over stale desktop metadata', () => {
   assert.equal(

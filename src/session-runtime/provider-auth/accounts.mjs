@@ -1,6 +1,6 @@
 // provider-auth/accounts.mjs — the per-provider account roster and account
 // switching, with the bounded background usage sweep that refreshes quotas.
-import { listProviderAccounts, updateProviderAccounts } from '../../standalone/provider-admin.mjs';
+import { listProviderAccounts, updateProviderAccounts } from '../services/provider-admin.mjs';
 import { getProvider } from '../../runtime/agent/orchestrator/providers/registry.mjs';
 import { fetchOAuthUsageSnapshot } from '../../runtime/agent/orchestrator/providers/oauth-usage.mjs';
 
@@ -59,7 +59,12 @@ export function createAccountApi(
       const pool = listProviderAccounts(providerId);
       const provider = getProvider(providerId);
       if (provider?.forAccount && !accountUsageSweeps.has(providerId)) {
-        accountUsageSweeps.set(providerId, sweepAccountUsage(providerId, provider, pool.accounts));
+        accountUsageSweeps.set(
+          providerId,
+          sweepAccountUsage(providerId, provider, pool.accounts).catch(() => {
+            /* usage sweep is best-effort */
+          })
+        );
       }
       return pool;
     },

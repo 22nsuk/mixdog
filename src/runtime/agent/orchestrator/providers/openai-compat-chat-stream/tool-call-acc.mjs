@@ -15,8 +15,7 @@ export function mergeToolCallDelta(acc, deltaCalls) {
     } else if (tc.id) {
       key = `id:${tc.id}`;
     } else if (tc.function?.name) {
-      const anonId = ++acc.nextAnonId;
-      key = `anon:${anonId}`;
+      key = `anon:${++acc.nextAnonId}`;
     } else {
       key = acc.lastAnonKey;
       if (!key) continue;

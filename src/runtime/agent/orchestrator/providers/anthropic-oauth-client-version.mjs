@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { updateJsonAtomicSync } from '../../../shared/atomic-file.mjs';
 import { resolvePluginData } from '../../../shared/plugin-paths.mjs';
+import { createNpmVersionSource, maxSemver } from './npm-cli-version.mjs';
 
 // Anthropic validates the Claude Code client identity carried by OAuth
 // requests. This floor ships with Mixdog, while a newer server-advertised
@@ -14,6 +15,9 @@ const CACHE_SCHEMA_VERSION = 1;
 const CACHE_FILE_NAME = 'anthropic-oauth-cli-version.json';
 const VERSION_GATE_PATTERN =
   /Claude Code\s+(\d{1,4}\.\d{1,4}\.\d{1,6})\s+does not support this model;\s*version\s+(\d{1,4}\.\d{1,4}\.\d{1,6})\s+or newer is required\b/i;
+
+// Effective version = max(floor, learned minimum, live @anthropic-ai/claude-code).
+const liveCliVersion = createNpmVersionSource('@anthropic-ai/claude-code');
 
 let learnedCliVersion = null;
 let learnedCliVersionLoaded = false;
@@ -86,7 +90,12 @@ function persistLearnedCliVersion(cliVersion) {
 export function resolveCliVersion() {
   const explicit = String(process.env.MIXDOG_CLI_VERSION || '').trim();
   if (explicit) return explicit;
-  return loadLearnedCliVersion() || DEFAULT_CLI_VERSION;
+  return maxSemver(DEFAULT_CLI_VERSION, loadLearnedCliVersion(), liveCliVersion.sync());
+}
+
+/** Await before the first request so a cold start never sends a stale floor. */
+export async function warmCliVersion() {
+  if (!String(process.env.MIXDOG_CLI_VERSION || '').trim()) await liveCliVersion.warm();
 }
 
 /** The `user-agent` every Claude OAuth request sends for the resolved CLI version. */

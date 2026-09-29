@@ -91,7 +91,7 @@ test('a replaced listener never receives audio and priority failure does not blo
   const wav = path.join(root, 'sample.wav');
   await fs.writeFile(wav, 'first audio');
   const spawn = childProcess.spawn;
-  t.mock.method(childProcess, 'spawn', (command, args, options) => {
+  t.mock.method(childProcess, 'spawn', (_command, args, options) => {
     const child = spawn(process.execPath, [fixture, ...args], options);
     children.push(child);
     return child;

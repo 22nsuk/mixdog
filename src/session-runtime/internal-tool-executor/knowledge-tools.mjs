@@ -1,7 +1,8 @@
 // Tools that read rather than act: web search/fetch, memory, the code graph,
 // the deferred tool catalog, and skill bodies.
-import { refreshDeferredMcpToolCatalog, renderToolSearch } from '../tool-catalog.mjs';
+import { refreshDeferredMcpToolCatalog, renderToolSearch } from '../../runtime/agent/orchestrator/runtime-core/tool-catalog.mjs';
 import { dispatchWebSearchRuntimeTool, memoryToolArgsForCaller } from '../runtime-tool-routing.mjs';
+import { createCallerContextResolvers } from './caller-context.mjs';
 
 export function createKnowledgeToolHandlers({
   rt,
@@ -14,6 +15,7 @@ export function createKnowledgeToolHandlers({
   mcpStatus,
   skillToolContent,
 }) {
+  const { signalFor } = createCallerContextResolvers(rt);
   const webSearch = (args, { name, callerCtx }) =>
     dispatchWebSearchRuntimeTool(name, args, callerCtx, {
       getWebSearchModule,
@@ -26,11 +28,7 @@ export function createKnowledgeToolHandlers({
   const memory = async (args, { name, callerCtx, callerCwd }) => {
     const memoryMod = await getMemoryModule();
     if (!memoryMod?.handleToolCall) throw new Error('memory runtime is not available');
-    return await memoryMod.handleToolCall(
-      name,
-      memoryToolArgsForCaller(args, callerCwd),
-      callerCtx?.signal || rt.session?.controller?.signal || null
-    );
+    return await memoryMod.handleToolCall(name, memoryToolArgsForCaller(args, callerCwd), signalFor(callerCtx));
   };
 
   const toolSearch = (args) => {

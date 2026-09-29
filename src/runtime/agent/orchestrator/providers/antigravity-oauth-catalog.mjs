@@ -11,7 +11,13 @@
  * comes from `retrieveUserQuotaSummary`, not the per-model catalog counters.
  */
 import { makeModelCache } from './model-cache.mjs';
-import { ANTIGRAVITY_MODELS, PROJECT_ENDPOINT, antigravityHeaders, _scrubTokens } from './antigravity-oauth-tokens.mjs';
+import {
+  ANTIGRAVITY_MODELS,
+  PROJECT_ENDPOINT,
+  antigravityHeaders,
+  _scrubTokens,
+  withTimeoutSignal,
+} from './antigravity-oauth-tokens.mjs';
 
 const ANTIGRAVITY_MODEL_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const ANTIGRAVITY_MODEL_CACHE_VERSION = 1;
@@ -35,7 +41,6 @@ export const antigravityModelCache = makeModelCache({
 });
 
 async function postInternalJson(methodName, { accessToken, projectId, fetchFn = fetch, signal = null }) {
-  const timeout = AbortSignal.timeout(FETCH_MODELS_TIMEOUT_MS);
   const res = await fetchFn(`${PROJECT_ENDPOINT}/v1internal:${methodName}`, {
     method: 'POST',
     headers: {
@@ -45,7 +50,7 @@ async function postInternalJson(methodName, { accessToken, projectId, fetchFn = 
     },
     body: JSON.stringify(projectId ? { project: projectId } : {}),
     redirect: 'error',
-    signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+    signal: withTimeoutSignal(signal, FETCH_MODELS_TIMEOUT_MS),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => '');

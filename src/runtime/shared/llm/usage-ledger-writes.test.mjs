@@ -15,7 +15,7 @@ after(() => {
   for (const dir of dirs) rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 });
 
-function tempDir(t, prefix) {
+function tempDir(prefix) {
   const dir = mkdtempSync(join(tmpdir(), prefix));
   dirs.push(dir);
   return dir;
@@ -41,7 +41,7 @@ const send = (responseId, extra = {}) =>
   );
 
 test('live sends commit through the ledger worker, in order, once each, before the send settles', async (t) => {
-  useLedgerPath(t, join(tempDir(t, 'mixdog-usage-writes-'), 'ledger.sqlite'));
+  useLedgerPath(t, join(tempDir('mixdog-usage-writes-'), 'ledger.sqlite'));
   const ledger = getUsageLedger();
   let inThreadRecords = 0;
   const record = ledger.record.bind(ledger);
@@ -61,7 +61,7 @@ test('live sends commit through the ledger worker, in order, once each, before t
 });
 
 test('usage statistics wait for queued sends; a failing row fails alone', async (t) => {
-  const path = join(tempDir(t, 'mixdog-usage-writes-'), 'ledger.sqlite');
+  const path = join(tempDir('mixdog-usage-writes-'), 'ledger.sqlite');
   const ledger = new UsageLedger(path);
   t.after(() => ledger.close());
   ledger.set('importedThrough', Number.MAX_SAFE_INTEGER);
@@ -98,7 +98,7 @@ function unpricedRow(id, ts, model = 'claude-opus-4-8') {
 }
 
 function twinLedgers(t, rows) {
-  const dir = tempDir(t, 'mixdog-usage-refresh-');
+  const dir = tempDir('mixdog-usage-refresh-');
   const first = new UsageLedger(join(dir, 'a.sqlite'));
   first.record(rows);
   first.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');

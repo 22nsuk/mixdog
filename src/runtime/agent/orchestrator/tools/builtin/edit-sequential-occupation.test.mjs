@@ -2,6 +2,7 @@
 // document-order occurrences in call order (tool-batch passes the remaining
 // count via options.editOccurrence). Count drift must fall through to the
 // native engine's strict ambiguity reject.
+import '../../../../../../scripts/test-data-dir.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';

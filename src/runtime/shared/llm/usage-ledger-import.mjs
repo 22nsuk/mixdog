@@ -144,10 +144,21 @@ export async function importUsageHistory(ledger, dataDir, { now = Date.now(), re
   const traceRows = await readTrace(dataDir, until);
   result.traceRows = traceRows.length;
   accept(traceRows);
-  const gateway = await optionalFile(join(dataDir, 'gateway-usage.local.json'));
-  if (gateway)
+  // The JSONL store supersedes the legacy JSON file (it is migrated from it).
+  const gatewayJsonl = await optionalFile(join(dataDir, 'gateway-usage.local.jsonl'));
+  const gateway = gatewayJsonl === null ? await optionalFile(join(dataDir, 'gateway-usage.local.json')) : null;
+  if (gatewayJsonl !== null || gateway)
     accept(
-      (JSON.parse(gateway).events || []).map((event) => ({
+      (gatewayJsonl !== null
+        ? gatewayJsonl.split('\n').flatMap((line) => {
+            try {
+              return line.trim() ? [JSON.parse(line)] : [];
+            } catch {
+              return []; // torn append
+            }
+          })
+        : JSON.parse(gateway).events || []
+      ).map((event) => ({
         ...event,
         kind: 'usage',
         session_id: event.sessionId,

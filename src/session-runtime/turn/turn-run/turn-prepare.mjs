@@ -2,7 +2,7 @@ import {
   reconcileDeferredMcpToolCatalog,
   refreshInitialDeferredMcpSurface,
   scopedMcpToolsFor,
-} from '../../tool-catalog.mjs';
+} from '../../../runtime/agent/orchestrator/runtime-core/tool-catalog.mjs';
 import { throwIfAborted } from '../../../runtime/shared/abort-race.mjs';
 
 // Session preparation before askSession: route readiness, session creation,

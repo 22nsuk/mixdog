@@ -4,7 +4,13 @@ import { lstat, mkdir, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, parse, resolve } from 'node:path';
 import { buildGithubCommand } from './commands.mjs';
-import { githubRepository, githubRequestMutates, isRepoFreeGithubAction, validateGithubRequest } from './contract.mjs';
+import {
+  DEFAULT_GITHUB_HOSTNAME,
+  githubRepository,
+  githubRequestMutates,
+  isRepoFreeGithubAction,
+  validateGithubRequest,
+} from './contract.mjs';
 import { withGitRepoWriteLock } from '../agent/orchestrator/tools/builtin/git-repo-rw-lock.mjs';
 
 const MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
@@ -99,12 +105,13 @@ export async function executeGithubRequest(value, cwd, options = {}) {
   if (['repo.create', 'repo.clone', 'repo.fork'].includes(input.action) && !input.repo) {
     throw new TypeError('This action requires an explicit owner/name in repo.');
   }
+  const hostname = input.hostname || DEFAULT_GITHUB_HOSTNAME;
   if (!isRepoFreeGithubAction(input.action) && !input.repo) {
     // Bind every request to a concrete repository before any write is sent.
     const raw = await run(
       {
         args: ['repo', 'view', '--json', 'nameWithOwner'],
-        hostname: input.hostname || 'github.com',
+        hostname,
         json: true,
         mutation: false,
       },
@@ -130,7 +137,7 @@ export async function executeGithubRequest(value, cwd, options = {}) {
     if (input.action === 'pr.merge' && data?.merged === false) {
       throw new Error(data.message || 'GitHub refused to merge this pull request.');
     }
-    const result = { action: input.action, repo: input.repo || '', hostname: input.hostname || 'github.com', data };
+    const result = { action: input.action, repo: input.repo || '', hostname, data };
     if (command.list) {
       const items = command.collection ? data?.[command.collection] : data;
       if (!Array.isArray(items)) throw new Error('GitHub returned an invalid list.');
@@ -155,7 +162,5 @@ export async function executeGithubRequest(value, cwd, options = {}) {
             { signal: options.signal }
           )
       : invoke;
-  return githubRequestMutates(input)
-    ? serial(`${input.hostname || 'github.com'}/${input.repo || '@account'}`.toLowerCase(), work)
-    : invoke();
+  return githubRequestMutates(input) ? serial(`${hostname}/${input.repo || '@account'}`.toLowerCase(), work) : invoke();
 }

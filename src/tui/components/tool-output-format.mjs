@@ -377,12 +377,10 @@ export function formatExpandedResult(text, { pathArg = '', isShell = false } = {
       out = isShell ? out.slice(-MAX_EXPANDED_LINES) : out.slice(0, MAX_EXPANDED_LINES);
       if (!isShell) truncatedLines = true;
     }
+  } else if (family && family !== 'md' && !diffMode && !carriesAnsi && !isShell) {
+    out = formatSyntaxBlock(lines, { c, family });
   } else {
-    if (family && family !== 'md' && !diffMode && !carriesAnsi && !isShell) {
-      out = formatSyntaxBlock(lines, { c, family });
-    } else {
-      out = lines.map((line) => formatLine(line, { c, family, diffMode, carriesAnsi, isShell }));
-    }
+    out = lines.map((line) => formatLine(line, { c, family, diffMode, carriesAnsi, isShell }));
   }
 
   if (isShell) {

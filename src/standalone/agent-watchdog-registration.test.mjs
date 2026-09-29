@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createProgressWatchdogRegistry, getProgressWatchdogState } from './agent-watchdog-registry.mjs';
-import { buildAgentTaskProgressFields } from './agent-task-status.mjs';
+import { createProgressWatchdogRegistry, getProgressWatchdogState } from '../session-runtime/services/agent-watchdog-registry.mjs';
+import { buildAgentTaskProgressFields } from '../session-runtime/services/agent-task-status.mjs';
 import { createAgentTree } from './session-service/agent-tree.mjs';
 
 const policy = { firstTransportMs: 120000, firstSemanticMs: 600000, idleStaleMs: 315000 };

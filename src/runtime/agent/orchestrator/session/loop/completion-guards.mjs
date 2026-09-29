@@ -3,9 +3,9 @@
 // Pure string/signature helpers; the loop body only wires state + messages.
 // No provider/manager coupling.
 
-// Deterministic, key-sorted stringify for cross-turn call signatures. Mirrors
-// _canonicalArgs but exposed by name for the dedup signature contract.
-export function stableStringify(value) {
+// Deterministic, key-sorted stringify for cross-turn call signatures (recursive,
+// unlike tool-classify's top-level-only _canonicalArgs).
+function stableStringify(value) {
   if (value == null || typeof value !== 'object') {
     try {
       return JSON.stringify(value);

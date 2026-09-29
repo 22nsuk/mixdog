@@ -1,4 +1,4 @@
-import { pricingCatalogRevisionSync } from '../../agent/orchestrator/providers/model-catalog.mjs';
+import { pricingCatalogRevisionSync } from './model-catalog.mjs';
 import { repairUsageLedger, repairUsageLedgerAsync } from './usage-ledger-repair.mjs';
 
 const checked = new WeakMap();

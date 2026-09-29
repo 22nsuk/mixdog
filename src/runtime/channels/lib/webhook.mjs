@@ -1,5 +1,5 @@
 import { logWebhook } from './webhook/log.mjs';
-import { updateDeliveryStatus } from '../../shared/webhooks-db.mjs';
+import { updateDeliveryStatus } from './webhooks-db.mjs';
 import { createWebhookListener } from './webhook/listener-lifecycle.mjs';
 import { createWebhookRequestHandler } from './webhook/request-handler.mjs';
 import { createWebhookVerifier } from './webhook/verification.mjs';

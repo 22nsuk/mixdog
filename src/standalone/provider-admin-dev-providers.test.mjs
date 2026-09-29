@@ -11,7 +11,7 @@ process.env.MIXDOG_CONFIG_READ_TTL_MS = '0';
 process.env.MIXDOG_USER_DATA_BACKUP_ROOT = join(dir, 'backups');
 
 const { updateSection } = await import('../runtime/shared/config.mjs');
-const { providerSetup, providerStatus, isKnownProvider, listProviderAccounts } = await import('./provider-admin.mjs');
+const { providerSetup, providerStatus, isKnownProvider, listProviderAccounts } = await import('../session-runtime/services/provider-admin.mjs');
 
 const DEV = ['cursor-oauth', 'antigravity-oauth'];
 const setDeveloper = (developer) => updateSection('agent', (current) => ({ ...current, developer }));

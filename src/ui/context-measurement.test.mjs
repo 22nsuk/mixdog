@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { sessionContextMeasurement, contextMeasurementStats, measuredContextUsage } from './context-measurement.mjs';
+import { sessionContextMeasurement, contextMeasurementStats, measuredContextUsage } from '../runtime/shared/context-measurement.mjs';
 import { applyAskTerminalUsageTotals } from '../runtime/agent/orchestrator/session/manager/usage-metrics.mjs';
 import { addUsage, normalizeUsage, usageDeltaEvent } from '../runtime/agent/orchestrator/session/loop/usage.mjs';
 import { resolveContextUsedPct } from './statusline.mjs';

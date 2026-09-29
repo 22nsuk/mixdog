@@ -1,10 +1,10 @@
 import { join } from 'node:path';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { clean } from '../session-text.mjs';
+import { clean } from '../../runtime/agent/orchestrator/runtime-core/session-text.mjs';
 import { hasOwn } from '../../runtime/shared/object.mjs';
 import { serializeFrontmatterDoc } from '../../runtime/shared/markdown-frontmatter.mjs';
 import { isHiddenAgent } from '../../runtime/agent/orchestrator/internal-agents.mjs';
-import { AGENT_DELETED_MARKER, FIXED_AGENT_SLOTS, availableAgentId, clearAgentDefinitionCache } from '../workflow.mjs';
+import { AGENT_DELETED_MARKER, FIXED_AGENT_SLOTS, availableAgentId, clearAgentDefinitionCache } from '../../runtime/agent/orchestrator/runtime-core/workflow.mjs';
 import { canonicalizeAgentRouteStorage, isAgentDisabled } from '../../runtime/shared/agent-route-config.mjs';
 import { agentEditorId, effectiveAgentRoute, oneLine, resolveDataDir } from './shared.mjs';
 

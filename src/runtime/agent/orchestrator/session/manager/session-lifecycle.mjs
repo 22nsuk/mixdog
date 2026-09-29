@@ -10,7 +10,7 @@ import { isAgentOwner } from '../../agent-owner.mjs';
 import { getHiddenAgent } from '../../internal-agents.mjs';
 import { loadConfig } from '../../config.mjs';
 import { buildProviderCacheOpts, cacheCapabilityForProvider } from '../../agent-runtime/cache-strategy.mjs';
-import { normalizeAutoClearConfig, resolveAutoClearIdleMs } from '../../../../../session-runtime/config-helpers.mjs';
+import { normalizeAutoClearConfig, resolveAutoClearIdleMs } from '../../runtime-core/config-helpers.mjs';
 import { _buildBaseRules } from './rules-cache.mjs';
 import { composeSessionSystem, seedSessionMessages } from './session-prompt-composition.mjs';
 import { _prepareResumeTools, delegationDisabled, resolveSessionToolSurface } from './session-tool-surface.mjs';

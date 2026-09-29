@@ -67,7 +67,7 @@ export function wrappedDetailRows(text, width) {
 
 // Rows one queued steering band (QueuedCommands expanded mode) occupies when
 // its full text renders with ink's wrap="wrap" at `width` content columns.
-// Same wrap-ansi call ink uses, so the queuedRows reservation in App.jsx stays
+// Same wrap-ansi call ink uses, so the queuedRows reservation in row-budgets stays
 // in lock-step with the rendered height — a mismatch pushes the input box.
 export function queuedBandRows(text, width) {
   const value = String(text ?? '');

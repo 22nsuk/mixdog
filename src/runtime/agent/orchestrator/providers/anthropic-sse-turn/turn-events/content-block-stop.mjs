@@ -4,13 +4,8 @@
  * into a dispatched tool call (parsed args, leak dedupe, ordered replay copy,
  * eager dispatch).
  */
-import { makeInvalidToolArgsMarker } from '../../openai-compat-stream.mjs';
-
-const log = (line) => {
-  try {
-    process.stderr.write(`[anthropic-oauth] ${line}\n`);
-  } catch {}
-};
+import { makeInvalidToolArgsMarker } from '../../lib/openai-tool-args.mjs';
+import { OAUTH_STREAM_LABELS } from '../../lib/anthropic-stream-labels.mjs';
 
 // Bare JSON.parse used to throw straight up into the surrounding broad catch,
 // which swallowed the whole tool_call — the loop never saw it and the
@@ -20,7 +15,7 @@ const log = (line) => {
 // be a plain object: Anthropic's tool_use input is always a JSON object, but
 // a malformed stream could parse to an array/string/number — wrap those as {}
 // to keep the contract (invariant-based, no heuristic coercion).
-function parseClientToolArgs(pending) {
+function parseClientToolArgs(pending, log) {
   let parsedArgs = {};
   if (pending.inputJson) {
     try {
@@ -42,7 +37,7 @@ function parseClientToolArgs(pending) {
   return parsedArgs;
 }
 
-function parseNativeToolInput(nativeBlock, rawInput) {
+function parseNativeToolInput(nativeBlock, rawInput, log) {
   let input = nativeBlock.input && typeof nativeBlock.input === 'object' ? nativeBlock.input : {};
   if (rawInput) {
     try {
@@ -58,20 +53,33 @@ function parseNativeToolInput(nativeBlock, rawInput) {
   return input;
 }
 
-export function createContentBlockStop({ turn, blocks, state, leak, progress, onToolCall }) {
+export function createContentBlockStop({
+  turn,
+  blocks,
+  state,
+  leak,
+  progress,
+  onToolCall,
+  labels = OAUTH_STREAM_LABELS,
+}) {
+  const log = (line) => {
+    try {
+      process.stderr.write(`[${labels.tag}] ${line}\n`);
+    } catch {}
+  };
   return (index) => {
     if (blocks.pendingNativeToolInputs.has(index)) {
       const rawInput = blocks.pendingNativeToolInputs.get(index);
       blocks.pendingNativeToolInputs.delete(index);
       const nativeBlock = blocks.nativeServerTool.get(index);
-      if (nativeBlock) nativeBlock.input = parseNativeToolInput(nativeBlock, rawInput);
+      if (nativeBlock) nativeBlock.input = parseNativeToolInput(nativeBlock, rawInput, log);
     }
     const pending = blocks.pendingToolInputs.get(index);
     if (!pending) return;
     const call = {
       id: pending.id,
       name: pending.name,
-      arguments: parseClientToolArgs(pending),
+      arguments: parseClientToolArgs(pending, log),
     };
     blocks.pendingToolInputs.delete(index);
     // Skip the ENTIRE call (push + dispatch) when a text-leaked synthetic of

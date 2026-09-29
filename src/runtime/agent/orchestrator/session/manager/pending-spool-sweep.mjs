@@ -1,9 +1,13 @@
 // Spool hygiene: eviction of stale/orphaned session queues from the shared
 // pending-message file, plus the boot-time sweep the lead process schedules.
 // Retention policy only — it never delivers, claims or acknowledges anything.
+import { readdir } from 'node:fs/promises';
 import { loadSession } from '../store.mjs';
+import { pendingShardDir } from './pending-spool-path.mjs';
+import { ensurePendingSpoolMigrated } from './pending-spool-shard.mjs';
 import {
   isTuiSteeringPendingKey,
+  isValidPendingSessionId,
   normalizePendingStore,
   pendingWarn,
   setSpoolQueue,
@@ -36,21 +40,37 @@ export async function sweepOrphanedPendingMessages({ ttlMs = PENDING_ORPHAN_TTL_
   const now = Date.now();
   const removed = [];
   try {
-    await updateSpool((raw) => {
-      const next = normalizePendingStore(raw);
-      const ids = Object.keys(next.sessions);
-      if (ids.length === 0) return undefined;
-      for (const sid of ids) {
-        const entryTouchedAt = next.sessionTouchedAt?.[sid];
-        if (shouldEvictPendingSession(sid, ttlMs, entryTouchedAt, now)) {
-          setSpoolQueue(next, sid, []);
-          removed.push(sid);
+    await ensurePendingSpoolMigrated();
+    let names = [];
+    try {
+      names = await readdir(pendingShardDir());
+    } catch (err) {
+      if (err?.code !== 'ENOENT') throw err;
+    }
+    // Shards are independent files: walk them one at a time so the sweep never
+    // holds more than one session's lock.
+    for (const name of names) {
+      if (!name.endsWith('.json')) continue;
+      const key = name.slice(0, -'.json'.length);
+      if (!isValidPendingSessionId(key)) continue;
+      await updateSpool(key, (raw) => {
+        const next = normalizePendingStore(raw);
+        const ids = Object.keys(next.sessions);
+        if (ids.length === 0) return next;
+        let changed = false;
+        for (const sid of ids) {
+          const entryTouchedAt = next.sessionTouchedAt?.[sid];
+          if (shouldEvictPendingSession(sid, ttlMs, entryTouchedAt, now)) {
+            setSpoolQueue(next, sid, []);
+            removed.push(sid);
+            changed = true;
+          }
         }
-      }
-      if (removed.length === 0) return undefined;
-      next.updatedAt = now;
-      return next;
-    });
+        if (!changed) return undefined;
+        next.updatedAt = now;
+        return next;
+      });
+    }
   } catch (err) {
     pendingWarn(`[session] pending-message sweep failed: ${err?.message || err}\n`);
     return 0;

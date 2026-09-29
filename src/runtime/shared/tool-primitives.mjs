@@ -1,4 +1,4 @@
-import { displayModelName as sharedDisplayModelName } from '../../ui/model-display.mjs';
+import { displayModelName as sharedDisplayModelName } from './model-display.mjs';
 
 // Default cap for tool-arg summaries (header parenthetical, channel tool lines).
 // Unified at 80 so every tool surface line — header arg summary and collapsed

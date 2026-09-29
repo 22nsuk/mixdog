@@ -49,8 +49,13 @@ export function createSessionRouteApi(bag) {
     resetStats,
     resetStatsAndSyncContext,
   } = bag;
-  const { withCommandLock } = createApiHelpers({ getState, set, resetStatsAndSyncContext, routeState });
-  const publishRoute = () => set({ ...routeState(), stats: { ...getState().stats } });
+  const { withCommandLock, publishRoute, deferStatsRefresh } = createApiHelpers({
+    getState,
+    set,
+    resetStatsAndSyncContext,
+    routeState,
+    syncContextStats,
+  });
   let routeWrite = null;
   let routeSequence = 0;
 
@@ -182,12 +187,8 @@ export function createSessionRouteApi(bag) {
       const result = await runtime.setOutputStyle?.(styleId);
       resetStats();
       publishRoute();
-      // Defer the context recompute (transcript scan) off this tick so the
-      // style change repaints immediately; stats settle right after.
-      setTimeout(() => {
-        syncContextStats({ allowEstimated: true });
-        set({ stats: { ...getState().stats } });
-      }, 0);
+      // Style change repaints immediately; stats settle right after.
+      deferStatsRefresh();
       return result;
     }),
     setWorkflow: withCommandLock(async (workflowId) => {

@@ -253,7 +253,6 @@ export function cursorInteractionProgress(update) {
 
 export function isRetryableCursorStreamError(error) {
   const status = Number(error?.httpStatus || error?.status || 0);
-  if ([400, 401, 403, 404, 429].includes(status)) return false;
   if (error?.name === 'AbortError') return false;
   return status === 0 || status >= 500;
 }

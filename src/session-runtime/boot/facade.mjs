@@ -1,8 +1,8 @@
 // Boot stage 9: the runtime facade — the object createMixdogSessionRuntime
 // returns and the setup tool/settings UIs drive.
 import { configuredOrchestrationMode, sessionOrchestrationMode } from '../../runtime/shared/orchestration.mjs';
-import { normalizeSystemShellConfig } from '../config-helpers.mjs';
-import { webSearchRouteOrDefault } from '../workflow.mjs';
+import { normalizeSystemShellConfig } from '../../runtime/agent/orchestrator/runtime-core/config-helpers.mjs';
+import { webSearchRouteOrDefault } from '../../runtime/agent/orchestrator/runtime-core/workflow.mjs';
 import { createRuntimeFacade } from '../runtime-facade.mjs';
 import { bootProfile } from '../boot-profile.mjs';
 import { dataDirOf, workflowHelpers } from './shared.mjs';

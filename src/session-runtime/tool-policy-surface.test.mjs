@@ -4,13 +4,13 @@ import { test } from 'node:test';
 import { join } from 'node:path';
 import { createToolSurface } from './tool-surface.mjs';
 import { createToolPolicyRefresh } from './tool-policy-refresh.mjs';
-import { toSessionWorkflowMeta, workflowDisallowsAgentTool } from './workflow.mjs';
+import { toSessionWorkflowMeta, workflowDisallowsAgentTool } from '../runtime/agent/orchestrator/runtime-core/workflow.mjs';
 import { PATCH_TOOL_DEFS } from '../runtime/agent/orchestrator/tools/patch-tool-defs.mjs';
-import { DEFERRED_DEFAULT_LEAD_TOOLS } from './tool-catalog-data.mjs';
-import { LEAD_DISALLOWED_TOOLS } from './tool-defs.mjs';
-import { GOAL_TOOL_DEFS } from './goal-runtime.mjs';
+import { DEFERRED_DEFAULT_LEAD_TOOLS } from '../runtime/agent/orchestrator/runtime-core/tool-catalog-data.mjs';
+import { LEAD_DISALLOWED_TOOLS } from '../runtime/agent/orchestrator/runtime-core/tool-defs.mjs';
+import { GOAL_TOOL_DEFS } from '../runtime/agent/orchestrator/runtime-core/goal-runtime.mjs';
 import { finalizeSessionToolList } from '../runtime/agent/orchestrator/session/manager/tool-resolution.mjs';
-import { modelToolSchemaAllowlist } from './tool-profile.mjs';
+import { modelToolSchemaAllowlist } from '../runtime/agent/orchestrator/runtime-core/tool-profile.mjs';
 
 const require = createRequire(import.meta.url);
 const {

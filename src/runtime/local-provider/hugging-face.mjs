@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { resolvePluginData } from '../shared/plugin-paths.mjs';
-import { huggingFaceFileUrl, registerLocalModel } from './registered-models.mjs';
+import { HUGGING_FACE_REPOSITORY_ID, huggingFaceFileUrl, registerLocalModel } from './registered-models.mjs';
 import { parseGgufHeader, ggufMemoryPlan } from './gguf-header.mjs';
 
 const ORIGIN = 'https://huggingface.co';
@@ -59,7 +59,7 @@ export function createHuggingFaceCatalog({ fetchFn = fetch, dataDir = resolvePlu
   function repositoryId(value) {
     if (
       typeof value !== 'string' ||
-      !/^[\w.-]+\/[\w.-]+$/.test(value) ||
+      !HUGGING_FACE_REPOSITORY_ID.test(value) ||
       value.split('/').some((p) => p === '.' || p === '..')
     )
       throw new TypeError('repository must be an owner/name Hugging Face model id.');
@@ -85,7 +85,7 @@ export function createHuggingFaceCatalog({ fetchFn = fetch, dataDir = resolvePlu
       return {
         models: rows
           .slice(0, 20)
-          .filter((row) => /^[\w.-]+\/[\w.-]+$/.test(row.id || ''))
+          .filter((row) => HUGGING_FACE_REPOSITORY_ID.test(row.id || ''))
           .map((row) => ({
             repository: row.id,
             downloads: Number(row.downloads) || 0,

@@ -2,13 +2,13 @@
 // definitions and lead tool surface, context status, the setup tool and the
 // internal-tool executor, then the MCP connect kick.
 import { performance } from 'node:perf_hooks';
-import { createStandaloneAgent } from '../../standalone/agent-tool.mjs';
-import { createStandaloneChannelWorker } from '../../standalone/channel-worker.mjs';
+import { createStandaloneAgent } from '../services/agent-tool.mjs';
+import { createStandaloneChannelWorker } from '../services/channel-worker.mjs';
 import {
   channelNotificationModelContent,
   channelNotificationSessionId,
 } from '../../runtime/shared/channel-notification-routing.mjs';
-import { CHANNEL_NOTIFICATION_METHOD } from '../../standalone/channel-session-router.mjs';
+import { CHANNEL_NOTIFICATION_METHOD } from '../services/channel-session-router.mjs';
 import { envFlag } from '../../runtime/shared/env.mjs';
 // Desktop-app bridges: tiny fs/fetch clients, so a static import adds no
 // meaningful boot cost. The tools themselves are gated per session by the
@@ -23,10 +23,10 @@ import { SETUP_TOOL_DEFS } from '../setup-tool/tool-defs.mjs';
 import { createSetupToolExecutor } from '../setup-tool/executor.mjs';
 import { bootProfile } from '../boot-profile.mjs';
 import { createRoutedAgentTool } from '../agent-tool-routing.mjs';
-import { createGoalRuntime } from '../goal-runtime.mjs';
-import { collectStandaloneToolDefs } from '../tool-defs.mjs';
+import { createGoalRuntime } from '../../runtime/agent/orchestrator/runtime-core/goal-runtime.mjs';
+import { collectStandaloneToolDefs } from '../../runtime/agent/orchestrator/runtime-core/tool-defs.mjs';
 import { createToolSurface } from '../tool-surface.mjs';
-import { contextStatusForSession, createContextStatus } from '../context-status.mjs';
+import { contextStatusForSession, createContextStatus } from '../../runtime/agent/orchestrator/runtime-core/context-status.mjs';
 import { createInternalToolExecutor } from '../internal-tool-executor.mjs';
 import { STANDALONE_ROOT, STANDALONE_DATA_DIR } from '../runtime-paths.mjs';
 import { dataDirOf, workflowHelpers } from './shared.mjs';

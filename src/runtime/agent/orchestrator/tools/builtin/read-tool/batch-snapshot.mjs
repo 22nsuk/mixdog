@@ -5,6 +5,7 @@
  * the edit tools verify against.
  */
 import { readFile } from 'node:fs/promises';
+import { rangeTextOf } from '../snapshot-helpers.mjs';
 
 // Coalesced batch reads fetch the union window from disk; every caller slot
 // must be sliced back to its original request window (_orig*), not the
@@ -58,11 +59,7 @@ function deliveredRangesByPath(
 async function rawRangeHashes(fullPath, mergedRanges, { _hashText }) {
   try {
     const rawLines = (await readFile(fullPath, 'utf-8')).split('\n');
-    return mergedRanges.map((range) => {
-      const startIdx = Math.max(0, range.startLine - 1);
-      const endIdx = Math.min(rawLines.length, range.endLine);
-      return { ...range, hash: _hashText(rawLines.slice(startIdx, endIdx).join('\n')) };
-    });
+    return mergedRanges.map((range) => ({ ...range, hash: _hashText(rangeTextOf(rawLines, range)) }));
   } catch {
     /* best-effort range hashes */
     return [];

@@ -90,7 +90,7 @@ function renderReadWindow(content, ctx, helpers) {
   // over the line/byte threshold; explicit ranges always see byte-exact output.
   const smart =
     !hasRangeArgs && !wantFull && typeof smartReadTruncate === 'function'
-      ? smartReadTruncate(rendered, lineCount, st.size, filePath)
+      ? smartReadTruncate(rendered, lineCount, st.size)
       : null;
   const smartTruncated = !!smart?.truncated;
   const render = {
@@ -109,7 +109,8 @@ function renderReadWindow(content, ctx, helpers) {
     const slice = byteCapSlice(rendered, readMaxOutputBytes);
     render.renderedLineCount = Math.max(0, slice.split('\n').length - 1);
     render.byteCapTruncated = true;
-    out = `${slice}\n\n... [output truncated at ${Math.round(readMaxOutputBytes / 1024)} KB] ...`;
+    const ofFile = st?.size > 0 ? ` of a ${Math.max(1, Math.round(st.size / 1024))} KB file` : '';
+    out = `${slice}\n\n... [output truncated at ${Math.round(readMaxOutputBytes / 1024)} KB${ofFile}] ...`;
   } else {
     out = rendered;
   }

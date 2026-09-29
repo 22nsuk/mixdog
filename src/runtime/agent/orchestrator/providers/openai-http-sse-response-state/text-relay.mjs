@@ -13,7 +13,7 @@
  * fires for tools the model was actually offered. Additive: the native
  * function_call path is untouched.
  */
-import { createLeakGuard } from '../anthropic-leaked-toolcall.mjs';
+import { createLeakGuard } from '../lib/leaked-toolcall.mjs';
 import { synthLeakedOpenAICall } from '../openai-compat-stream-common.mjs';
 
 function pushOutputTextAnnotations(part, citations, citationKeys) {

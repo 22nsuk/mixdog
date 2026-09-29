@@ -3,7 +3,7 @@
 import { configureEmbedding } from '../../runtime/memory/lib/embedding-provider.mjs';
 import { createSessionLifecycle } from '../session-lifecycle.mjs';
 import { createNewSessionConfig } from '../new-session-config.mjs';
-import { modelToolSchemaAllowlist } from '../tool-profile.mjs';
+import { modelToolSchemaAllowlist } from '../../runtime/agent/orchestrator/runtime-core/tool-profile.mjs';
 import { bootProfile } from '../boot-profile.mjs';
 import { resolveRoute, workflowHelpers } from './shared.mjs';
 

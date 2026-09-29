@@ -8,6 +8,7 @@ import {
   currentContextEstimateTokens,
   compactTargetBudget,
   shouldCompactForRequestMedia,
+  shouldCompactForExpiredAgentCache,
   shouldCompactForSession,
   rememberCompactTelemetry,
   recordContextUsageSnapshot,
@@ -22,14 +23,14 @@ import { reasoningUsage } from '../../../shared/llm/reasoning-usage.mjs';
 import { agentCompactFailedError, agentContextOverflowError } from './loop/context-overflow.mjs';
 import { isContextOverflowError } from '../providers/retry-classifier.mjs';
 import { traceAgentCompact, messagePrefixHash } from '../agent-trace.mjs';
-import { invalidateProviderRequestToolsScope } from '../../../../session-runtime/provider-request-tools.mjs';
-import { bumpUsageMetricsEpoch } from './manager.mjs';
+import { invalidateProviderRequestToolsScope } from '../runtime-core/provider-request-tools.mjs';
+import { bumpUsageMetricsEpoch } from './manager/usage-metrics.mjs';
 import { resetReadStateAfterCompaction } from './read-dedup.mjs';
 import {
   acknowledgePendingGoalReminder,
   markPendingGoalReminder,
   snapshotPendingGoalReminder,
-} from '../../../../session-runtime/goal-reminder.mjs';
+} from '../runtime-core/goal-reminder.mjs';
 
 function writeStderr(line) {
   try {
@@ -71,6 +72,8 @@ function transcriptPrefixHash(messages) {
 // same event. A pending reactive-overflow retry makes THIS compact pass the
 // recovery from a provider overflow refusal, not the proactive pressure
 // trigger — the emitted events are tagged so telemetry can tell them apart.
+// An agent whose 5m message cache expired compacts before the cold send
+// whatever its size (trigger 'cache_expired').
 function preSendCompactDecision(state, compactPolicy) {
   const { messages, sessionRef } = state;
   const messageTokensEst = estimateMessagesTokensSafe(messages);
@@ -80,9 +83,11 @@ function preSendCompactDecision(state, compactPolicy) {
     messages,
     sessionRef,
   });
+  const cacheExpired = shouldCompactForExpiredAgentCache(sessionRef, state.opts);
   const shouldCompact =
     state.skipProactiveCompact !== true &&
-    (shouldCompactForRequestMedia(messages) ||
+    (cacheExpired ||
+      shouldCompactForRequestMedia(messages) ||
       shouldCompactForSession(messageTokensEst, compactPolicy, {
         forceReactive: reactivePending,
         messages,
@@ -93,7 +98,7 @@ function preSendCompactDecision(state, compactPolicy) {
     messageTokensEst,
     pressureTokens,
     shouldCompact,
-    compactTrigger: reactivePending ? 'reactive' : 'auto',
+    compactTrigger: reactivePending ? 'reactive' : cacheExpired ? 'cache_expired' : 'auto',
     compactBudgetTokens: shouldCompact
       ? compactTargetBudget({ ...compactPolicy, pressureTokens }) || compactPolicy.boundaryTokens
       : compactPolicy.boundaryTokens,
@@ -234,7 +239,7 @@ async function compactTranscript(ctx, run) {
     sessionId,
     signal,
     provider,
-    model: resolveHandoffSummaryModel(sessionRef, { budgetTokens: compactBudgetTokens }) || model,
+    model: resolveHandoffSummaryModel(sessionRef) || model,
     sendOpts: opts,
     goalReminderText: run.inlineGoalReminder?.content || '',
     activeTurn: true,

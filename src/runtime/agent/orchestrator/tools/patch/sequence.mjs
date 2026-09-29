@@ -23,7 +23,6 @@ export async function applyPatchSequence(patchStr, requestedFormat, basePath, ct
     rejectPartial,
     readStateScope,
     abortSignal,
-    mutationPlan,
     toolCallId,
     sessionId,
     replayCapture = null,
@@ -78,7 +77,7 @@ export async function applyPatchSequence(patchStr, requestedFormat, basePath, ct
         rejectedHunks: v4aConvertOpts?.rejectedHunks,
         continueAfterFailure,
       });
-      return wrapPatchMutationOutput(report, mutationPlan, { executor: outcome.executor });
+      return wrapPatchMutationOutput(report);
     })
   );
 }

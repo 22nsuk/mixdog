@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { updateJsonAtomicSync } from '../../../shared/atomic-file.mjs';
 import { resolvePluginData } from '../../../shared/plugin-paths.mjs';
 import { getLlmDispatcher } from '../../../shared/llm/http-agent.mjs';
+import { grokClientVersionHeaders, warmGrokCliVersion } from './grok-client-version.mjs';
 import { num, round, cleanString } from './lib/usage-primitives.mjs';
 import { recordQuotaReadings } from './lib/quota-readings.mjs';
 import { currentProviderAccountId } from '../../../shared/provider-auth-binding.mjs';
@@ -281,7 +282,7 @@ function codexHeaders(auth, beta = 'codex-1') {
 
 function normalizedResetCreditRows(value) {
   return (Array.isArray(value) ? value : []).map((credit) => ({
-    status: cleanString(credit?.status).toLowerCase(),
+    status: (cleanString(credit?.status) || '').toLowerCase(),
     expiresAt: resetAtMs(credit?.expires_at ?? credit?.expiresAt),
     grantedAt: resetAtMs(credit?.granted_at ?? credit?.grantedAt),
   }));
@@ -838,10 +839,8 @@ async function fetchGrokUsage(providerObj, routeInfo) {
   const token = auth?.access_token || auth?.accessToken || auth?.key;
   if (!token) return null;
   const userId = auth?.user_id || auth?.userId || auth?.principal_id || auth?.principalId || '';
-  const cliHeaders = grokProxyHeaders(token, userId, {
-    'x-grok-client-version': '0.2.87',
-    'User-Agent': 'xai-grok-build/0.2.87',
-  });
+  await warmGrokCliVersion();
+  const cliHeaders = grokProxyHeaders(token, userId, grokClientVersionHeaders());
   const billing = await probeGrokBilling(cliHeaders, routeInfo);
   if (billing) return billing;
   return probeGrokGenericUsage(grokProxyHeaders(token, userId, { 'User-Agent': 'xai-grok-build/mixdog' }), routeInfo);

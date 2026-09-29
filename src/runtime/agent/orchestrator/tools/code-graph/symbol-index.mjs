@@ -15,6 +15,10 @@ import { _getSourceTextForNode, _graphRel } from './source-access.mjs';
 import { _symbolParentIndex, _symbolLevel } from './text-columns.mjs';
 import { oneLine } from '../../../../shared/clean.mjs';
 
+export function _escapeRegExp(text) {
+  return String(text ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 // Unicode-aware word-boundary wrapper for an already-regex-escaped
 // symbol. JS `\b` only fires at ASCII [A-Za-z0-9_] transitions, so
 // CJK / Cyrillic / Greek identifiers never matched the legacy shape.

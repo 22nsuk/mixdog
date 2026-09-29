@@ -1762,7 +1762,10 @@ test('computer results reach the model without host diagnostics or default eleme
   assert.equal(value.observation.capture_attempts, undefined);
   assert.deepEqual(value.window_transition, transition);
   assert.equal(value.actions[0].window_transition, undefined, 'a transition repeated on its step is dropped');
-  assert.deepEqual(value.observation.elements, ['#1 [s1:e0] Button "OK"', '#2 [s1:e1] Edit "Name" source=msaa disabled']);
+  assert.deepEqual(value.observation.elements, [
+    '#1 [s1:e0] Button "OK"',
+    '#2 [s1:e1] Edit "Name" source=msaa disabled',
+  ]);
   const capture = JSON.parse(
     canonicalComputerResultText(
       JSON.stringify({ ok: true, action: 'capture', elements: [{ ref: 's2:e0', source: 'ocr', enabled: true }] }),
@@ -1827,7 +1830,15 @@ test('computer elements and OCR text reach the model one line each', () => {
             bounds: [115, 22, 35, 11],
             actions: ['click'],
           },
-          { mark: 4, ref: 's2:e2', role: 'CheckBox', name: 'Wrap', state: '사용할 수 없음', enabled: false, bounds: [1, 2, 3, 4] },
+          {
+            mark: 4,
+            ref: 's2:e2',
+            role: 'CheckBox',
+            name: 'Wrap',
+            state: '사용할 수 없음',
+            enabled: false,
+            bounds: [1, 2, 3, 4],
+          },
         ],
         ocr: {
           ok: true,

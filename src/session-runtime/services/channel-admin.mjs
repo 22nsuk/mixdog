@@ -1,0 +1,475 @@
+import { randomBytes } from 'node:crypto';
+import { basename } from 'node:path';
+import {
+  canonicalizeStoredChannelsConfig,
+  readSection,
+  updateSection,
+  updateSectionAsync,
+} from '../../runtime/shared/config.mjs';
+import {
+  listSchedules as dbListSchedules,
+  getSchedule as dbGetSchedule,
+  upsertSchedule,
+  deleteSchedule as dbDeleteSchedule,
+  setEnabled as dbSetEnabled,
+} from '../../runtime/channels/lib/schedules-db.mjs';
+import {
+  listEndpoints as dbListEndpoints,
+  loadEndpointConfig as dbLoadEndpoint,
+  readEndpointSecret as dbReadEndpointSecret,
+  upsertEndpoint as dbUpsertEndpoint,
+  deleteEndpoint as dbDeleteEndpoint,
+  setEndpointEnabled as dbSetEndpointEnabled,
+} from '../../runtime/channels/lib/webhooks-db.mjs';
+import { normalizeAutomationAttachments } from '../../runtime/shared/automation-attachments.mjs';
+import { hasEnabledAutomation } from '../../runtime/shared/automation-presence.mjs';
+import { resolveScheduleTimezone, validateScheduleCron } from '../../runtime/shared/schedule-time.mjs';
+import { readHookPublicBase } from '../../runtime/channels/lib/webhook/relay-tunnel.mjs';
+
+const NAME_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const DEFAULT_CHANNELS = Object.freeze({
+  access: { dmPolicy: 'allowlist', allowFrom: [], channels: {} },
+  webhook: { enabled: true, port: 3333 },
+});
+
+function assertName(name, kind = 'name') {
+  const value = String(name || '').trim();
+  if (!NAME_RE.test(value) || value !== basename(value)) {
+    throw new Error(`${kind} must match ${NAME_RE}`);
+  }
+  return value;
+}
+
+// Schedules are PG-keyed display names, not URL/file identifiers like
+// webhooks: allow Unicode letters/digits (e.g. Korean titles) plus space,
+// dot, underscore, and hyphen. The basename() guard plus the character set
+// keeps names path-safe for the legacy prompts-dir fallback.
+const SCHEDULE_NAME_RE = /^[\p{L}\p{N}][\p{L}\p{N} ._-]{0,63}$/u;
+function assertScheduleName(name) {
+  const value = String(name || '').trim();
+  if (!SCHEDULE_NAME_RE.test(value) || value !== basename(value)) {
+    throw new Error('schedule name must be 1-64 letters, digits, spaces, dots, underscores, or hyphens');
+  }
+  return value;
+}
+
+function normalizeChannelsConfig(raw = {}) {
+  const stored = canonicalizeStoredChannelsConfig(raw);
+  return {
+    ...DEFAULT_CHANNELS,
+    ...stored,
+    access: { ...DEFAULT_CHANNELS.access, ...(stored.access || {}) },
+    webhook: { ...DEFAULT_CHANNELS.webhook, ...(stored.webhook || {}) },
+  };
+}
+
+function updateChannelsSection(build) {
+  let next;
+  updateSection('channels', (current) => {
+    // Writes converge on the single `channel` object.
+    const normalized = normalizeChannelsConfig(current);
+    next = build(normalized);
+    return normalizeChannelsConfig(next);
+  });
+  return next;
+}
+
+// Async twin of updateChannelsSection: identical normalize/strip logic, but the
+// channels-section RMW runs through updateSectionAsync so a debounced settings
+// flush does not block the event loop. Same config lock file → linearizable
+// with the sync writers.
+async function updateChannelsSectionAsync(build) {
+  let next;
+  await updateSectionAsync('channels', (current) => {
+    const normalized = normalizeChannelsConfig(current);
+    next = build(normalized);
+    return normalizeChannelsConfig(next);
+  });
+  return next;
+}
+
+// The sync and async webhook writers must apply the very same patch rules.
+const webhookPatch = (patch) => (cfg) => ({
+  ...cfg,
+  webhook: {
+    ...(cfg.webhook || {}),
+    ...(Object.hasOwn(patch, 'enabled') ? { enabled: patch.enabled === true } : {}),
+    ...(patch.port ? { port: Number(patch.port) || 3333 } : {}),
+    ...(patch.domain ? { domain: String(patch.domain).trim() } : {}),
+  },
+});
+
+export function setWebhookConfig(patch = {}) {
+  return updateChannelsSection(webhookPatch(patch));
+}
+
+export async function setWebhookConfigAsync(patch = {}) {
+  return updateChannelsSectionAsync(webhookPatch(patch));
+}
+
+function normalizeCron(time) {
+  const value = String(time || '').trim();
+  const parts = value.split(/\s+/).filter(Boolean);
+  if (parts.length !== 5 && parts.length !== 6) {
+    throw new Error('time must be a 5- or 6-field cron expression');
+  }
+  return value;
+}
+
+// Day-name / keyword -> cron day-of-week number (Sun=0 .. Sat=6).
+const DAY_TOKEN_TO_DOW = {
+  sun: 0,
+  sunday: 0,
+  mon: 1,
+  monday: 1,
+  tue: 2,
+  tues: 2,
+  tuesday: 2,
+  wed: 3,
+  weds: 3,
+  wednesday: 3,
+  thu: 4,
+  thur: 4,
+  thurs: 4,
+  thursday: 4,
+  fri: 5,
+  friday: 5,
+  sat: 6,
+  saturday: 6,
+};
+
+// Fold a legacy `days` selector into the day-of-week (last) field of a cron
+// expression: daily -> '*', weekday -> '1-5', weekend -> '0,6', explicit day
+// lists ("mon,wed,fri" | "1,3,5") -> comma-joined numbers. Throws on an
+// unmappable token so bad combos surface instead of silently mis-scheduling.
+function foldDaysIntoCron(cron, days) {
+  const parts = String(cron).trim().split(/\s+/);
+  const dowIndex = parts.length - 1;
+  const raw = String(days || '')
+    .trim()
+    .toLowerCase();
+  // days absent -> keep the cron's own day-of-week field ('0 9 * * 1' stays
+  // Monday-only). Only an explicit selector rewrites the dow field.
+  if (!raw) return parts.join(' ');
+  let dow;
+  if (raw === 'daily' || raw === 'everyday' || raw === 'every day') dow = '*';
+  else if (raw === 'weekday' || raw === 'weekdays') dow = '1-5';
+  else if (raw === 'weekend' || raw === 'weekends') dow = '0,6';
+  else {
+    const nums = raw
+      .split(/[\s,]+/)
+      .filter(Boolean)
+      .map((tok) => (/^[0-6]$/.test(tok) ? Number(tok) : DAY_TOKEN_TO_DOW[tok]));
+    if (nums.some((n) => n === undefined)) {
+      throw new Error(`days "${days}" is not a recognizable day selector`);
+    }
+    dow = nums.join(',');
+  }
+  parts[dowIndex] = dow;
+  return parts.join(' ');
+}
+
+function parseAtDatetime(at) {
+  const raw = String(at || '').trim();
+  if (!raw) throw new Error('at must be a datetime');
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) throw new Error(`at "${at}" is not a valid datetime`);
+  return d;
+}
+
+// Map the store's def shape onto the flat display shape every schedule reader
+// (channelSetup, renderChannelStatus, TUI pickers) consumes: `.time` renders
+// the cron or the one-shot datetime, `.route` the channel/session target.
+function scheduleToDisplay(s) {
+  return {
+    name: s.name,
+    description: s.description || '',
+    time: s.whenCron || (s.whenAt ? `at ${new Date(s.whenAt).toISOString()}` : ''),
+    whenAt: s.whenAt || undefined,
+    whenCron: s.whenCron || undefined,
+    timezone: s.timezone || undefined,
+    channel: s.channelId || undefined,
+    model: s.model || undefined,
+    cwd: s.cwd || undefined,
+    workflow: s.workflow || undefined,
+    attachments: s.attachments || undefined,
+    // Delivery mode: legacy channel-target rows (pre-delivery) behaved as
+    // relay+visible, which maps to 'both'.
+    delivery: s.delivery || (s.target === 'channel' ? 'both' : 'app'),
+    enabled: s.enabled !== false,
+    instructions: s.prompt,
+    route: s.target === 'channel' ? `channel:${s.channelId}` : 'session',
+  };
+}
+
+export async function listSchedules() {
+  const rows = await dbListSchedules();
+  return rows.map(scheduleToDisplay);
+}
+
+// Register or update a schedule in the PG store. Recurring input maps `time`
+// (+ optional `days`) to a cron; one-shot input maps an `at` datetime; the two
+// are mutually exclusive (also enforced by the store's when_at/when_cron XOR).
+// `channel` selects a channel target (model required); otherwise session.
+export async function saveSchedule({
+  name,
+  description = '',
+  time,
+  at,
+  timezone,
+  days,
+  channel,
+  model,
+  cwd,
+  workflow,
+  attachments,
+  delivery,
+  enabled,
+  instructions,
+  overwrite = false,
+} = {}) {
+  const id = assertScheduleName(name);
+  const body = String(instructions || '').trim();
+  if (!body) throw new Error('schedule instructions are required');
+  if (channel && !model) throw new Error('model is required when channel is set');
+  // 'app' → session-only; 'channel'/'both' → the run result relays to the
+  // main channel (target 'channel', channelId resolved at fire time).
+  const requestedMode = String(delivery || '').trim();
+  let mode = channel ? 'both' : 'app';
+  if (['app', 'channel', 'both'].includes(requestedMode)) mode = requestedMode;
+  const hasTime = time != null && String(time).trim() !== '';
+  const hasAt = at != null && String(at).trim() !== '';
+  if (hasTime && hasAt) throw new Error('provide either `time` (recurring) or `at` (one-shot), not both');
+  if (!hasTime && !hasAt) throw new Error('either `time` (recurring cron) or `at` (one-shot datetime) is required');
+  if (overwrite !== true && (await dbGetSchedule(id))) {
+    throw new Error(`schedule "${id}" already exists`);
+  }
+  const whenCron = hasTime ? validateScheduleCron(foldDaysIntoCron(normalizeCron(time), days)) : null;
+  const whenAt = hasAt ? parseAtDatetime(at) : null;
+  const scheduleTimezone = hasTime ? resolveScheduleTimezone(timezone) : null;
+  const saved = await upsertSchedule({
+    name: id,
+    description: String(description || '').trim(),
+    whenCron,
+    whenAt,
+    timezone: scheduleTimezone,
+    target: mode === 'app' ? 'session' : 'channel',
+    channelId: channel ? String(channel).trim() : null,
+    model: model ? String(model).trim() : null,
+    cwd: cwd ? String(cwd).trim() : null,
+    workflow: workflow ? String(workflow).trim() : null,
+    attachments: normalizeAutomationAttachments(attachments),
+    delivery: mode,
+    prompt: body,
+    enabled: enabled !== false,
+    nextFireAt: whenAt,
+  });
+  automationProbe.invalidate();
+  return scheduleToDisplay(saved);
+}
+
+export async function deleteSchedule(name) {
+  const id = assertScheduleName(name);
+  await dbDeleteSchedule(id);
+  automationProbe.invalidate();
+  return { name: id, deleted: true };
+}
+
+export async function setScheduleEnabled(name, enabled) {
+  const id = assertScheduleName(name);
+  const updated = await dbSetEnabled(id, enabled !== false);
+  automationProbe.invalidate();
+  if (!updated) throw new Error(`schedule "${id}" does not exist`);
+  return { name: id, enabled: enabled !== false };
+}
+
+// Webhook endpoints are stored in the PG table `webhooks.endpoints`
+// (webhooks-db.mjs) — the single source of truth. Legacy per-endpoint
+// WEBHOOK.md + secret folders are imported once at boot and deleted by the
+// store's migration hook.
+async function listWebhooks() {
+  const endpoints = await dbListEndpoints();
+  return endpoints.map((ep) => ({
+    name: ep.name,
+    description: ep.description || '',
+    parser: ep.parser || 'github',
+    ...(ep.channelId ? { channel: ep.channelId } : {}),
+    ...(ep.model ? { model: ep.model } : {}),
+    ...(ep.cwd ? { cwd: ep.cwd } : {}),
+    ...(ep.workflow ? { workflow: ep.workflow } : {}),
+    ...(ep.attachments ? { attachments: ep.attachments } : {}),
+    delivery: ep.delivery || 'app',
+    enabled: ep.enabled,
+    // The store never projects the plaintext secret through list paths; it
+    // exposes a presence flag (secretSet) instead.
+    secretSet: ep.secretSet === true,
+    secret: undefined,
+    instructions: ep.instructions,
+    route: ep.channelId ? `channel:${ep.channelId}` : 'session',
+  }));
+}
+
+export async function saveWebhook({
+  name,
+  description = '',
+  parser = 'github',
+  secret,
+  channel,
+  model,
+  cwd,
+  workflow,
+  attachments,
+  delivery,
+  enabled,
+  instructions,
+  overwrite = false,
+} = {}) {
+  const id = assertName(name, 'webhook name');
+  const nextParser = String(parser || 'github')
+    .trim()
+    .toLowerCase();
+  if (!['github', 'generic', 'stripe', 'sentry'].includes(nextParser)) {
+    throw new Error('parser must be github, generic, stripe, or sentry');
+  }
+  const body = String(instructions || '').trim();
+  if (!body) throw new Error('webhook instructions are required');
+  if (channel && !model) throw new Error('model is required when channel is set');
+  if (overwrite !== true && (await dbLoadEndpoint(id))) {
+    throw new Error(`webhook "${id}" already exists`);
+  }
+  // Secret semantics: an explicit value always wins; an EMPTY value on an
+  // overwrite PRESERVES the stored secret (editing instructions must not
+  // silently rotate the key the external service was configured with); only
+  // a brand-new endpoint mints a random secret.
+  const secretValue =
+    String(secret || '').trim() ||
+    (overwrite === true ? String((await dbReadEndpointSecret(id)) || '').trim() : '') ||
+    randomBytes(24).toString('hex');
+  const saved = await dbUpsertEndpoint({
+    name: id,
+    description: String(description || '').trim(),
+    parser: nextParser,
+    channelId: channel ? String(channel).trim() : null,
+    model: model ? String(model).trim() : null,
+    cwd: cwd ? String(cwd).trim() : null,
+    workflow: workflow ? String(workflow).trim() : null,
+    attachments: normalizeAutomationAttachments(attachments),
+    delivery: ['app', 'channel', 'both'].includes(String(delivery || '').trim()) ? String(delivery).trim() : 'app',
+    secret: secretValue,
+    instructions: body,
+    enabled: enabled !== false,
+  });
+  automationProbe.invalidate();
+  return {
+    name: id,
+    description: saved.description,
+    parser: saved.parser,
+    ...(saved.channelId ? { channel: saved.channelId } : {}),
+    ...(saved.model ? { model: saved.model } : {}),
+    ...(saved.cwd ? { cwd: saved.cwd } : {}),
+    ...(saved.workflow ? { workflow: saved.workflow } : {}),
+    ...(saved.attachments ? { attachments: saved.attachments } : {}),
+    delivery: saved.delivery || 'app',
+    ...(enabled === false ? { enabled: false } : {}),
+    secret: secretValue,
+    instructions: body,
+  };
+}
+
+export async function deleteWebhook(name) {
+  const id = assertName(name, 'webhook name');
+  await dbDeleteEndpoint(id);
+  automationProbe.invalidate();
+  return { name: id, deleted: true };
+}
+
+export async function setWebhookEnabled(name, enabled) {
+  const id = assertName(name, 'webhook name');
+  const updated = await dbSetEndpointEnabled(id, enabled !== false);
+  automationProbe.invalidate();
+  if (!updated) throw new Error(`webhook "${id}" does not exist`);
+  return { name: id, enabled: enabled !== false };
+}
+
+// Explicit single-purpose secret read for the editor's copy affordance (the
+// list path only ever exposes a presence flag). Local surfaces only — the
+// desktop blocks this capability over the remote bridge.
+export async function getWebhookSecret(name) {
+  const id = assertName(name, 'webhook name');
+  return { name: id, secret: (await dbReadEndpointSecret(id)) || '' };
+}
+
+// Automation presence: any enabled schedule or webhook endpoint. Drives the
+// worker boot decision independently of the messaging channels — schedules
+// and webhooks run sessions, so they must not require Discord/Telegram
+// tokens or an explicit remote toggle.
+async function checkActiveAutomation() {
+  const [schedules, webhooks] = await Promise.all([listSchedules(), listWebhooks()]);
+  return hasEnabledAutomation({ schedules, webhooks });
+}
+
+// Every session runtime in the process asks this at boot. Concurrent callers
+// join one in-flight check and a settled answer is reused for ttlMs, so N
+// runtimes booting together cost one PG query (and at most one PG boot)
+// instead of N. Automation writes through this module invalidate the answer
+// at once; writes from other processes are picked up after ttlMs. A failed
+// check (e.g. PG still booting) answers false to its callers but is never
+// reused, so the next runtime checks again.
+export const AUTOMATION_PROBE_TTL_MS = 60_000;
+
+export function createAutomationProbe(check, { ttlMs = AUTOMATION_PROBE_TTL_MS, now = Date.now } = {}) {
+  let pending = null;
+  let answer = null;
+  let settledAt = 0;
+  let generation = 0;
+  return {
+    probe() {
+      if (pending) return pending;
+      if (answer !== null && now() - settledAt < ttlMs) return Promise.resolve(answer);
+      const startedGeneration = generation;
+      const current = Promise.resolve()
+        .then(check)
+        .then(
+          (active) => ({ active: active === true, settled: true }),
+          () => ({ active: false, settled: false })
+        )
+        .then(({ active, settled }) => {
+          if (startedGeneration === generation) {
+            if (settled) {
+              answer = active;
+              settledAt = now();
+            }
+            pending = null;
+          }
+          return active;
+        });
+      pending = current;
+      return current;
+    },
+    invalidate() {
+      generation += 1;
+      pending = null;
+      answer = null;
+    },
+  };
+}
+
+const automationProbe = createAutomationProbe(checkActiveAutomation);
+
+export function hasActiveAutomation() {
+  return automationProbe.probe();
+}
+
+export async function channelSetup(config = null) {
+  const cfg = normalizeChannelsConfig(config || readSection('channels'));
+  return {
+    webhook: {
+      ...(cfg.webhook || {}),
+      // Relay-tunnel public base (null until the channel worker first
+      // connects and mints its hook identity).
+      publicUrl: readHookPublicBase(),
+    },
+    schedules: await listSchedules(),
+    webhooks: await listWebhooks(),
+  };
+}

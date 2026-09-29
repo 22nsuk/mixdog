@@ -2,8 +2,8 @@
  * src/session-runtime/turn/agent-ops.mjs - surface-driven agent/task control,
  * runtime notifications, and the deferred tool surface (status + selection).
  */
-import { clean } from '../session-text.mjs';
-import { toolRow, toolSearchMatches, sortedNamesByMeasuredUsage, selectDeferredTools } from '../tool-catalog.mjs';
+import { clean } from '../../runtime/agent/orchestrator/runtime-core/session-text.mjs';
+import { toolRow, toolSearchMatches, sortedNamesByMeasuredUsage, selectDeferredTools } from '../../runtime/agent/orchestrator/runtime-core/tool-catalog.mjs';
 
 function splitToolStatusCounts(rows) {
   const list = Array.isArray(rows) ? rows : [];

@@ -55,6 +55,13 @@ export function createAnthropicRecoveryGuards({ label, budgetOwner, opts, onText
     const exposedChars = Number(midState?.emittedTextChars) || 0;
     const exposedReasoning = midState?.emittedThinking === true;
     const outcome = readStreamOutcome(streamingError, midState);
+    const refuseReplay = () => {
+      try {
+        streamingError.liveTextEmitted = true;
+        streamingError.unsafeToRetry = true;
+      } catch {}
+      throw streamingError;
+    };
     if (
       !onTextReset ||
       (exposedChars <= 0 && !exposedReasoning) ||
@@ -63,11 +70,7 @@ export function createAnthropicRecoveryGuards({ label, budgetOwner, opts, onText
       outcome.dispatchAmbiguous ||
       outcome.toolCallsComplete > 0
     ) {
-      try {
-        streamingError.liveTextEmitted = true;
-        streamingError.unsafeToRetry = true;
-      } catch {}
-      throw streamingError;
+      refuseReplay();
     }
     let resetAccepted = false;
     try {
@@ -78,13 +81,7 @@ export function createAnthropicRecoveryGuards({ label, budgetOwner, opts, onText
           reason: 'anthropic-streaming-fallback',
         })) === true;
     } catch {}
-    if (!resetAccepted) {
-      try {
-        streamingError.liveTextEmitted = true;
-        streamingError.unsafeToRetry = true;
-      } catch {}
-      throw streamingError;
-    }
+    if (!resetAccepted) refuseReplay();
     requireTransportRecoveryBudget(streamingError, controller);
     return issueNonStreamingFallback(controller, streamingError);
   };

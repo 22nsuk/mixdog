@@ -2,8 +2,8 @@
 // agent dispatch.
 import { statSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { listProjects } from '../../standalone/projects.mjs';
-import { clean } from '../session-text.mjs';
+import { listProjects } from '../../runtime/shared/projects.mjs';
+import { clean } from '../../runtime/agent/orchestrator/runtime-core/session-text.mjs';
 
 export function createWorkspaceToolHandlers({ rt, goalRuntime, agentTool, notifyFnForSession, applyResolvedCwd }) {
   const cwd = async (args, { callerCtx, callerCwd }) => {

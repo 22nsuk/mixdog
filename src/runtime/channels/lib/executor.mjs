@@ -1,37 +1,15 @@
-import { mkdirSync, appendFileSync, appendFile as _appendFileAsync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { DATA_DIR } from './config.mjs';
+import { appendBuffered } from '../../shared/buffered-appender.mjs';
 import { ensurePrivateRuntimeRoot, resolveRuntimeRoot } from '../../shared/runtime-root.mjs';
 const NOPLUGIN_DIR = join(resolveRuntimeRoot(), 'noplugin');
 const EVENT_LOG = join(DATA_DIR, 'event.log');
-// Buffered async logger — coalesces per-line appends into batched writes.
-let _eventLogBuf = [];
-let _eventLogTimer = null;
-function _drainEventLog() {
-  if (_eventLogBuf.length === 0) return '';
-  const lines = _eventLogBuf.join('');
-  _eventLogBuf = [];
-  return lines;
-}
-function _flushEventLog() {
-  _eventLogTimer = null;
-  const lines = _drainEventLog();
-  if (lines) _appendFileAsync(EVENT_LOG, lines, () => {});
-}
-function _flushEventLogSync() {
-  const lines = _drainEventLog();
-  if (!lines) return;
-  try {
-    appendFileSync(EVENT_LOG, lines);
-  } catch {}
-}
-process.on('exit', _flushEventLogSync);
 function logEvent(msg) {
   try {
     process.stderr.write(`mixdog event: ${msg}\n`);
   } catch {}
-  _eventLogBuf.push(`[${new Date().toISOString()}] ${msg}\n`);
-  if (!_eventLogTimer) _eventLogTimer = setTimeout(_flushEventLog, 2000);
+  appendBuffered(EVENT_LOG, `[${new Date().toISOString()}] ${msg}\n`);
 }
 function parseGithub(body, headers) {
   const event = headers['x-github-event'] || '';

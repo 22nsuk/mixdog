@@ -1,9 +1,9 @@
 // Quick (offline) web-search model rows: the "Default" row that follows the
 // main model, cached or built-in quick models per capable provider, and the
 // configured/current routes, deduplicated per provider:model.
-import { clean } from '../session-text.mjs';
+import { clean } from '../../runtime/agent/orchestrator/runtime-core/session-text.mjs';
 import { QUICK_WEB_SEARCH_MODELS } from '../quick-web-search-models.mjs';
-import { WEB_SEARCH_DEFAULT_PROVIDER, WEB_SEARCH_DEFAULT_MODEL } from '../workflow.mjs';
+import { WEB_SEARCH_DEFAULT_PROVIDER, WEB_SEARCH_DEFAULT_MODEL } from '../../runtime/agent/orchestrator/runtime-core/workflow.mjs';
 import { providerCachedModelsSync } from '../../runtime/agent/orchestrator/providers/provider-catalog-cache.mjs';
 import { hydratedModel } from './model-meta.mjs';
 

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { setImmediate } from 'node:timers/promises';
 import test from 'node:test';
-import { routeFastKey } from './model-capabilities.mjs';
+import { routeFastKey } from '../runtime/agent/orchestrator/runtime-core/model-capabilities.mjs';
 import { createProviderModels } from './provider-models.mjs';
 
 // The catalog paths provider-cache-lifecycle.test.mjs leaves alone: row

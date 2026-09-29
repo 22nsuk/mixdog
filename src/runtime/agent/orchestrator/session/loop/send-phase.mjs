@@ -13,7 +13,7 @@ import { traceProviderSend, traceOutputTruncation } from './diagnostics.mjs';
 import { createEagerDispatcher } from '../eager-dispatch.mjs';
 import { sendWithRecovery } from '../send-with-recovery.mjs';
 import { stripInlineImages } from '../image-strip-recovery.mjs';
-import { runWithProviderRequestToolsScope } from '../../../../../session-runtime/provider-request-tools.mjs';
+import { runWithProviderRequestToolsScope } from '../../runtime-core/provider-request-tools.mjs';
 import { REPEAT_FAIL_LIMIT } from './loop-state.mjs';
 
 /**
@@ -209,8 +209,6 @@ export function applyRetryAction(state, result) {
   }
 }
 
-/** Fold a completed send into the state: prefix guard, image-strip
- *  rebaseline, per-request budgets, provider state, usage and diagnostics. */
 // An image-strip retry succeeded: heal the stripped images out of the live
 // transcript when the recovery asked for it, otherwise drop the prefix guard
 // so the next send rebaselines against the unstripped history.
@@ -236,12 +234,17 @@ function settleImageStrip(state, round, sent) {
   state.imageStrip = null;
 }
 
+/** Fold a completed send into the state: prefix guard, image-strip
+ *  rebaseline, per-request budgets, provider state, usage and diagnostics. */
 export function settleSendResult(state, round, sent) {
   const { opts, sessionRef, sessionId, model, messages } = state;
   const response = sent.result.response;
   state.response = response;
   state.prefixGuardState = sent.prefixGuardCandidate;
   if (sessionRef) sessionRef._providerPrefixGuardState = state.prefixGuardState;
+  // The provider read and refreshed its prompt cache when this request was
+  // sent; agent cache-expiry compaction measures idle time from here.
+  if (sessionRef) sessionRef.lastProviderSendAt = sent.sendStartedAt;
   if (state.imageStrip) settleImageStrip(state, round, sent);
   opts.onToolCall = undefined;
   delete opts.cacheBreakIntent;

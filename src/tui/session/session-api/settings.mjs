@@ -18,17 +18,13 @@ export function createSessionSettingsApi(bag) {
     syncContextStats,
     resetStatsAndSyncContext,
   } = bag;
-  const { withCommandLock } = createApiHelpers({ getState, set, resetStatsAndSyncContext, routeState });
-  const publishRoute = () => set({ ...routeState(), stats: { ...getState().stats } });
-  // Context-stats recompute (transcript scan + per-message JSON stringify) is
-  // the secondary hitch source on a settings toggle; defer it off the
-  // key-handler tick so Ink repaints the setting change first. Stats become
-  // eventually consistent on the next tick/repaint.
-  const deferStatsRefresh = () =>
-    setTimeout(() => {
-      syncContextStats({ allowEstimated: true });
-      set({ stats: { ...getState().stats } });
-    }, 0);
+  const { withCommandLock, publishRoute, deferStatsRefresh } = createApiHelpers({
+    getState,
+    set,
+    resetStatsAndSyncContext,
+    routeState,
+    syncContextStats,
+  });
   const lockedRuntimeCall = (call) => withCommandLock(async (...args) => await call(...args));
 
   return {
@@ -92,8 +88,7 @@ export function createSessionSettingsApi(bag) {
         experienceLevels: [],
       },
     setProfile: (input = {}) => {
-      const next = runtime.setProfile?.(input) || runtime.getProfile?.() || null;
-      return next;
+      return runtime.setProfile?.(input) || runtime.getProfile?.() || null;
     },
     getCompactionSettings: () => {
       return runtime.getCompactionSettings?.() || {};

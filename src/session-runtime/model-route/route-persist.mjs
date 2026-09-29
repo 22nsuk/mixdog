@@ -3,9 +3,9 @@
  * the current session: modelSettings save, lead-preset persistence and the
  * fast/effort tuning of a session that runs on the selected route.
  */
-import { saveModelSettings } from '../model-capabilities.mjs';
+import { saveModelSettings } from '../../runtime/agent/orchestrator/runtime-core/model-capabilities.mjs';
 import { writeStatuslineRoute } from '../statusline-route.mjs';
-import { sessionUsesRoute } from '../session-route-policy.mjs';
+import { sessionUsesRoute } from '../../runtime/agent/orchestrator/runtime-core/session-route-policy.mjs';
 
 export function createRoutePersistence(deps) {
   const {

@@ -22,12 +22,12 @@ export function parseGeminiCandidate(response, textLeakGuard) {
   const candidate = response.candidates?.[0] || null;
   const responseParts = candidate?.content?.parts ?? [];
   const textParts = responseParts.filter((p) => p?.thought !== true && 'text' in p);
-  const rawContent = textParts.map((p) => ('text' in p ? p.text : '')).join('');
+  const rawContent = textParts.map((p) => p.text).join('');
   const providerMetadata = parseGeminiTextPartMetadata(responseParts);
   const content = textLeakGuard?.enabled ? textLeakGuard.scrubAssistantText(rawContent) : rawContent;
   const leakedToolCalls = textLeakGuard?.getLeakedToolCalls() ?? [];
   const providerReplay = createProviderReplay('gemini', leakedToolCalls.length ? [] : responseParts);
-  let nativeToolCalls = parseToolCalls(candidate?.content?.parts ?? []);
+  let nativeToolCalls = parseToolCalls(responseParts);
   if (textLeakGuard?.enabled) {
     nativeToolCalls = textLeakGuard.filterNativeToolCalls(nativeToolCalls);
   }

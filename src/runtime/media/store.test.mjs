@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -155,6 +155,46 @@ test('media assets are organized by kind, provider, model, and local date while 
 
     const persisted = JSON.parse(readFileSync(join(root, 'media', 'index.json'), 'utf8'));
     assert.equal(persisted.version, 2);
+  } finally {
+    if (previousDataDir === undefined) delete process.env.MIXDOG_DATA_DIR;
+    else process.env.MIXDOG_DATA_DIR = previousDataDir;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a failed duration write leaves the cached index row untouched', { skip: process.platform !== 'win32' }, async () => {
+  const root = mkdtempSync(join(tmpdir(), 'mixdog-media-duration-'));
+  const previousDataDir = process.env.MIXDOG_DATA_DIR;
+  process.env.MIXDOG_DATA_DIR = root;
+  const assetsDir = join(root, 'media', 'assets');
+  mkdirSync(assetsDir, { recursive: true });
+  writeFileSync(join(assetsDir, 'clip.mp4'), Buffer.from('video'));
+  writeFileSync(
+    join(root, 'media', 'index.json'),
+    JSON.stringify({
+      version: 2,
+      assets: [
+        { id: 'clip', file: 'clip.mp4', kind: 'video', lane: 'grok', model: 'm', mime: 'video/mp4', bytes: 5, createdAt: 1 },
+      ],
+    })
+  );
+  try {
+    const store = await import(`./store.mjs?test=duration-${Date.now()}`);
+    store.listMediaAssets({ limit: 10 });
+    // A read-only index makes the atomic replace fail on Windows.
+    const indexFile = join(root, 'media', 'index.json');
+    chmodSync(indexFile, 0o444);
+    const cachedRow = store.listMediaAssets({ limit: 10 }).assets[0];
+    assert.throws(() =>
+      store.cacheMediaThumbnail('clip', {
+        mime: 'image/jpeg',
+        base64: Buffer.from('thumb').toString('base64'),
+        durationSeconds: 7,
+      })
+    );
+    assert.equal(cachedRow.durationSeconds, undefined);
+    assert.equal(store.listMediaAssets({ limit: 10 }).assets[0].durationSeconds, undefined);
+    chmodSync(indexFile, 0o644);
   } finally {
     if (previousDataDir === undefined) delete process.env.MIXDOG_DATA_DIR;
     else process.env.MIXDOG_DATA_DIR = previousDataDir;

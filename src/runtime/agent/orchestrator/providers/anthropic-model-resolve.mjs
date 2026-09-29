@@ -91,7 +91,7 @@ export function _normalizeAnthropicModel(raw) {
     family,
     provider: 'anthropic-oauth',
     contextWindow:
-      raw?.context_window || raw?.max_context_window || raw?.max_input_tokens || _defaultContextForModel(id, family),
+      raw?.context_window || raw?.max_context_window || raw?.max_input_tokens || _defaultContextForModel(id),
     outputTokens: raw?.max_tokens || raw?.max_output_tokens || null,
     tier,
     latest: false, // assigned in a second pass once full list is known
@@ -115,7 +115,7 @@ export function _prettyName(id, family) {
   return `${base} ${v[1]}${minor}`;
 }
 
-export function _defaultContextForModel(id, _family) {
+export function _defaultContextForModel(id) {
   const text = String(id || '');
   const version = text.match(/^claude-[a-z]+-(\d+)(?:-(\d+))?/i);
   if (Number(version?.[1] || 0) >= 5) return 1000000;

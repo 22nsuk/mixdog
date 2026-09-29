@@ -33,14 +33,7 @@ import { applyParsedWave, isPatchErrorText } from '../wave.mjs';
 // Convert the body to a unified patch (V4A / bare-@@ / counted-unified
 // fallback), split it into unique-target waves and pre-validate each. Returns
 // { error } for the outcomes the tool reports as text; parse failures throw.
-export async function prepareCodexBatch({
-  patchStr,
-  requestedFormat,
-  basePath,
-  preParsedV4ASections,
-  v4aConvertOpts,
-  mutationPlan,
-}) {
+export async function prepareCodexBatch({ patchStr, requestedFormat, basePath, preParsedV4ASections, v4aConvertOpts }) {
   let inputPatchStr = patchStr;
   let v4aRenamePlan = null;
   if (isV4APatchInput(patchStr, requestedFormat)) {
@@ -49,12 +42,6 @@ export async function prepareCodexBatch({
       const allSections = coalesceCompatibleV4ASections(parsedSections, basePath);
       v4aRenamePlan = await planV4ARenameSections(allSections, basePath);
       inputPatchStr = await convertV4ASectionsToUnifiedPatch(v4aRenamePlan.remainingSections, basePath, v4aConvertOpts);
-      if (v4aRenamePlan.renameSections.length > 0) {
-        mutationPlan =
-          v4aRenamePlan.remainingSections.length > 0
-            ? { sourceTool: 'apply_patch', engine: 'v4a-patch', reason: 'v4a-mixed' }
-            : { sourceTool: 'apply_patch', engine: 'v4a-rename', reason: 'v4a-move' };
-      }
     } catch (err) {
       throw new Error(`apply_patch: V4A parse failed — ${err?.message || String(err)}`);
     }
@@ -72,7 +59,6 @@ export async function prepareCodexBatch({
       waveDispatch: [],
       v4aRenamePlan,
       v4aRenameOnly,
-      mutationPlan,
       lockPaths: renameLockPaths(v4aRenamePlan, basePath),
     };
   }
@@ -90,11 +76,6 @@ export async function prepareCodexBatch({
       const sections = rewriteV4AReadRedirects(parseUnifiedCountedAsV4APatch(patchStr), basePath);
       inputPatchStr = await convertV4ASectionsToUnifiedPatch(sections, basePath, v4aConvertOpts);
       parsed = parsePatch(prepareInput(inputPatchStr));
-      mutationPlan = {
-        sourceTool: 'apply_patch',
-        engine: 'v4a-patch',
-        reason: 'unified-count-fallback',
-      };
     } catch (fallbackErr) {
       throw new Error(
         `apply_patch: parse failed — ${err?.message || String(err)}; V4A fallback failed — ${fallbackErr?.message || String(fallbackErr)}`
@@ -134,7 +115,7 @@ export async function prepareCodexBatch({
     ...new Set(waveDispatch.flatMap((wd) => wd.entries.map((entry) => entry.fullPath))),
     ...renameLockPaths(v4aRenamePlan, basePath),
   ];
-  return { waveDispatch, v4aRenamePlan, v4aRenameOnly, mutationPlan, lockPaths };
+  return { waveDispatch, v4aRenamePlan, v4aRenameOnly, lockPaths };
 }
 
 function renameLockPaths(v4aRenamePlan, basePath) {
@@ -147,7 +128,7 @@ function renameLockPaths(v4aRenamePlan, basePath) {
 // Apply the validated batch in one shot: renames first, then the single wave
 // via applyParsedWave (native + JS split). Returns the model-surface text.
 export async function runCodexBatch({ batch, basePath, v4aConvertOpts, rejectedV4AHunks, waveOpts }) {
-  const { waveDispatch, v4aRenamePlan, v4aRenameOnly, mutationPlan } = batch;
+  const { waveDispatch, v4aRenamePlan, v4aRenameOnly } = batch;
   let v4aRenameResults = [];
   if (v4aRenamePlan?.renameSections?.length) {
     v4aRenameResults = await applyV4ARenameSections(v4aRenamePlan.renameSections, basePath, v4aConvertOpts);
@@ -155,18 +136,17 @@ export async function runCodexBatch({ batch, basePath, v4aConvertOpts, rejectedV
   if (v4aRenameOnly) {
     const lines = formatV4ARenameSuccessLines(v4aRenameResults);
     if (lines.length === 0) return 'Error: patch contained no applicable file sections';
-    return wrapPatchMutationOutput(`${lines.join('\n')}\n`, mutationPlan, { executor: 'v4a-rename' });
+    return wrapPatchMutationOutput(`${lines.join('\n')}\n`);
   }
   const res = await applyParsedWave(waveDispatch[0], basePath, waveOpts);
-  const executor = res.executor;
-  if (res.error) return wrapPatchMutationOutput(res.error, mutationPlan, { executor });
+  if (res.error) return wrapPatchMutationOutput(res.error);
   let combined = res.text;
   if (!isPatchErrorText(combined)) {
     const renameLines = formatV4ARenameSuccessLines(v4aRenameResults);
     if (renameLines.length > 0) combined = `${renameLines.join('\n')}\n${combined}`;
     combined += rejectedHunkTail(rejectedV4AHunks);
   }
-  return wrapPatchMutationOutput(combined, mutationPlan, { executor });
+  return wrapPatchMutationOutput(combined);
 }
 
 // Codex mode applies the validated batch in one shot. A batch that mixes

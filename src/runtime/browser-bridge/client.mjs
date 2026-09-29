@@ -57,11 +57,7 @@ const BRIDGE_UNAVAILABLE_MESSAGE = 'browser use is unavailable; open the Mixdog 
 
 /** Sync gate for the session tool surface (featureDisallowedTools). */
 export function browserBridgeAvailableSync() {
-  return readDiscovery() !== null;
-}
-
-function readDiscovery() {
-  return readBridgeDiscovery(DISCOVERY_FILE);
+  return readBridgeDiscovery(DISCOVERY_FILE) !== null;
 }
 
 function rememberBrowserTurn(sessionId, turnId, discovery) {
@@ -134,6 +130,30 @@ function unavailableMessage() {
 
 class BrowserBridgeResponseError extends Error {}
 
+// Read the body incrementally so a chunked response (no content-length) still
+// honours MAX_RESPONSE_BYTES.
+export async function readCappedJson(response, maximum = MAX_RESPONSE_BYTES) {
+  if (!response.body) throw new Error('empty response');
+  const reader = response.body.getReader();
+  const chunks = [];
+  let bytes = 0;
+  try {
+    for (;;) {
+      const result = await reader.read();
+      if (result.done) break;
+      bytes += result.value.byteLength;
+      if (bytes > maximum) {
+        await reader.cancel().catch(() => {});
+        throw new BrowserBridgeResponseError(`browser bridge response exceeds ${maximum} bytes`);
+      }
+      chunks.push(result.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return JSON.parse(Buffer.concat(chunks, bytes).toString('utf8'));
+}
+
 async function requestBridge(discovery, encodedPayload, signal, timingContext) {
   const started = performance.now();
   let body;
@@ -155,9 +175,10 @@ async function requestBridge(discovery, encodedPayload, signal, timingContext) {
       throw new BrowserBridgeResponseError(`browser bridge response exceeds ${MAX_RESPONSE_BYTES} bytes`);
     }
     try {
-      body = await response.json();
+      body = await readCappedJson(response);
       return { body, status: response.status };
-    } catch {
+    } catch (error) {
+      if (error instanceof BrowserBridgeResponseError) throw error;
       throw new BrowserBridgeResponseError(`browser bridge returned an invalid response (HTTP ${response.status})`);
     }
   } finally {
@@ -188,7 +209,7 @@ export async function executeBrowserTool(args, options = {}) {
   if (Buffer.byteLength(encodedPayload) > MAX_REQUEST_BYTES) {
     return browserToolError(`browser command exceeds ${MAX_REQUEST_BYTES} bytes`);
   }
-  let discovery = readDiscovery();
+  let discovery = readBridgeDiscovery(DISCOVERY_FILE);
   if (!discovery) return browserToolError(unavailableMessage());
   rememberBrowserTurn(sessionId, payload.turn_id, discovery);
   // An observation can be reported as a plain failure; a state-changing action
@@ -212,7 +233,7 @@ export async function executeBrowserTool(args, options = {}) {
         return settleFailure('browser bridge timed out and cancelled the active command');
       }
       if (options.signal?.aborted) return settleFailure('browser command cancelled');
-      const replacement = readDiscovery();
+      const replacement = readBridgeDiscovery(DISCOVERY_FILE);
       if (attempt === 0 && bridgeDiscoveryChanged(discovery, replacement)) {
         if (RETRYABLE_ACTIONS.has(validated.action)) {
           discovery = replacement;

@@ -14,7 +14,7 @@ import { sanitizeForWire } from '../../session-wire-values.mjs';
  *  page reveals, below the item limit but never below this many rows
  *  whatever their size: a window always shows something and paging always
  *  progresses. A viewport the rows do not fill pages further on its own. */
-export const TRANSCRIPT_WINDOW_MIN_ITEMS = 8;
+const TRANSCRIPT_WINDOW_MIN_ITEMS = 8;
 const TRANSCRIPT_WINDOW_MAX_ITEMS = 8_192;
 // Deterministic restore ids: hist_<sessionId>_<messageIndex>_<part>.
 const RESTORED_ITEM_ID = /^hist_.+_(\d+)_\d+$/;
@@ -95,7 +95,7 @@ function budgetedStart(items, end, maxItems, byteBudget, minItems) {
  *  `byteBudget` on the whole tail; a page keeps the `pageBase` newest items
  *  the reader holds and spends it on the rows revealed above them. Neither
  *  goes below TRANSCRIPT_WINDOW_MIN_ITEMS. */
-export function tailWindowStart(items, { limit, byteBudget = null, pageBase = 0 }) {
+function tailWindowStart(items, { limit, byteBudget = null, pageBase = 0 }) {
   const held = Math.min(pageBase || 0, limit, items.length);
   if (held > 0) {
     return budgetedStart(items, items.length - held, limit - held, byteBudget, TRANSCRIPT_WINDOW_MIN_ITEMS);

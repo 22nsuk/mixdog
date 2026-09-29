@@ -9,7 +9,7 @@ import { createApiHelpers } from './shared.mjs';
 
 /** Per-file line counts of a unified diff, shaped like a Git snapshot's
  *  files (the turn review bar renders either the same way). */
-export function filesFromPatch(patch) {
+function filesFromPatch(patch) {
   const files = [];
   let current = null;
   for (const line of String(patch || '').split('\n')) {

@@ -155,6 +155,17 @@ export function generateCursorOAuthParams() {
   return { verifier, challenge, uuid, loginUrl: `${LOGIN_URL}?${params}` };
 }
 
+// A token without a readable `exp` claim is assumed to live for an hour.
+const DEFAULT_TOKEN_LIFETIME_MS = 60 * 60_000;
+
+function tokenRecord(accessToken, refreshToken) {
+  return {
+    access_token: accessToken,
+    refresh_token: refreshToken,
+    expires_at: cursorTokenExpiry(accessToken) || Date.now() + DEFAULT_TOKEN_LIFETIME_MS,
+  };
+}
+
 export async function exchangeCursorToken(token, { fetchFn = fetch, signal } = {}) {
   const response = await fetchFn(REFRESH_URL, {
     method: 'POST',
@@ -174,11 +185,7 @@ export async function exchangeCursorToken(token, { fetchFn = fetch, signal } = {
   }
   const data = await response.json();
   if (!data?.accessToken) throw new Error('Cursor token exchange returned no access token');
-  return {
-    access_token: data.accessToken,
-    refresh_token: data.refreshToken || token,
-    expires_at: cursorTokenExpiry(data.accessToken) || Date.now() + 60 * 60_000,
-  };
+  return tokenRecord(data.accessToken, data.refreshToken || token);
 }
 
 async function pollCursorOAuth(
@@ -209,11 +216,7 @@ async function pollCursorOAuth(
       if (!response.ok) throw new Error(`Cursor OAuth failed (${response.status})`);
       const data = await response.json();
       if (!data?.accessToken) throw new Error('Cursor OAuth returned no access token');
-      return {
-        access_token: data.accessToken,
-        refresh_token: data.refreshToken,
-        expires_at: cursorTokenExpiry(data.accessToken) || Date.now() + 60 * 60_000,
-      };
+      return tokenRecord(data.accessToken, data.refreshToken);
     } catch (error) {
       if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : error;
       consecutiveErrors += 1;

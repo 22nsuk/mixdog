@@ -15,9 +15,9 @@ export function createDesktopRuntime({ getLocalSessionBridge }) {
       if (!bridge) throw new Error('daemon-local session client is unavailable');
       return bridge.attach(options);
     },
-    loadProjects: () => import('./projects.mjs'),
+    loadProjects: () => import('../runtime/shared/projects.mjs'),
     loadSessionStore: () => import('../runtime/agent/orchestrator/session/store-summary-reader.mjs'),
-    loadStatuslineSegments: () => import('../ui/statusline-segments.mjs'),
+    loadStatuslineSegments: () => import('../runtime/shared/statusline/statusline-segments.mjs'),
     loadConfig: () => import('../runtime/shared/config.mjs'),
     loadDocumentPreview: () => import('../runtime/office/pdf/document-preview.mjs'),
     async executeCodeGraphTool(name, args, cwd) {

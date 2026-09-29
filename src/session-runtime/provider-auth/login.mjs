@@ -8,7 +8,7 @@ import {
   saveOpenAIUsageSessionKey,
   saveOpenCodeGoUsageAuth,
   saveProviderApiKey,
-} from '../../standalone/provider-admin.mjs';
+} from '../services/provider-admin.mjs';
 
 export function createLoginApi({ cfgMod, awaitKeychainPrewarm, reloadFullConfig }, refresh) {
   async function completeOAuthLogin(login) {

@@ -2,7 +2,7 @@
 // URL servers, and command/args/cwd/env coercion for stdio servers.
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
-import { clean } from '../session-text.mjs';
+import { clean } from '../../runtime/agent/orchestrator/runtime-core/session-text.mjs';
 
 function coerceStringRecord(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;

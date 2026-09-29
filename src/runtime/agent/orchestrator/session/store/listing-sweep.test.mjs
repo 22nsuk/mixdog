@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { settleSessionSummaryIndex, sweepStaleSessions, sweepStaleSessionsCooperative } from './listing.mjs';
+import { settleSessionSummaryIndex } from './listing.mjs';
+import { sweepStaleSessions, sweepStaleSessionsCooperative } from './sweep/stale-sweep.mjs';
 
 // The stale-session sweep against a real temp store: which records it closes,
 // deletes, prunes or leaves untouched, and what it reports for each.

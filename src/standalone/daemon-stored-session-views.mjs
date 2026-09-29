@@ -6,7 +6,7 @@
 //
 // Inputs: `desktopRuntime` (lazy module loaders) and `dataDir` (goal
 // snapshots). Output: the read-only half of the session-service options.
-import { listStoredActiveGoalSessionIds, readStoredGoalSnapshot } from '../session-runtime/goal-runtime.mjs';
+import { listStoredActiveGoalSessionIds, readStoredGoalSnapshot } from '../runtime/agent/orchestrator/runtime-core/goal-runtime.mjs';
 
 export function createStoredSessionViews({ desktopRuntime, dataDir }) {
   return {

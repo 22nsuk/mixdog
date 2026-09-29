@@ -17,8 +17,8 @@ import { buildRequestBody } from '../runtime/agent/orchestrator/providers/openai
 import { nativeToolSearchCallFromArguments } from '../runtime/agent/orchestrator/providers/custom-tool-wire.mjs';
 import { toAnthropicMessages } from '../runtime/agent/orchestrator/providers/lib/anthropic-request-utils.mjs';
 import { createInternalToolExecutor } from './internal-tool-executor.mjs';
-import { TOOL_SEARCH_TOOL } from './tool-defs.mjs';
-import { providerNativeToolPrefixCount } from './provider-request-tools.mjs';
+import { TOOL_SEARCH_TOOL } from '../runtime/agent/orchestrator/runtime-core/tool-defs.mjs';
+import { providerNativeToolPrefixCount } from '../runtime/agent/orchestrator/runtime-core/provider-request-tools.mjs';
 import {
   applyDeferredToolSurface,
   deferredCatalogUnion,
@@ -26,7 +26,7 @@ import {
   refreshDeferredMcpToolCatalog,
   renderToolSearch,
   snapshotProviderRequestTools,
-} from './tool-catalog.mjs';
+} from '../runtime/agent/orchestrator/runtime-core/tool-catalog.mjs';
 
 function fixture(t, provider = 'openai-oauth', { boot = false, mode = 'full' } = {}) {
   const scopeId = randomUUID();

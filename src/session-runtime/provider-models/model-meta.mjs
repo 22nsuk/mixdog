@@ -1,7 +1,7 @@
 // provider-models/model-meta.mjs
 // Per-route model metadata keyed by (provider, model), and the catalog
 // revision that decides when every provider-derived cache must be dropped.
-import { clean } from '../session-text.mjs';
+import { clean } from '../../runtime/agent/orchestrator/runtime-core/session-text.mjs';
 import { catalogRevision } from '../provider-catalog-cache.mjs';
 
 export function modelMetaKey(providerId, modelId) {

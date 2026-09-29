@@ -5,8 +5,8 @@ import { normalizeUsage, addUsage, usageDeltaEvent } from './loop/usage.mjs';
 import { applyAskTerminalUsageTotals } from './manager/usage-metrics.mjs';
 import { _combineUsageWithWarmup } from '../providers/openai-ws-events.mjs';
 import { _sessionForDisk } from './store/serialize.mjs';
-import { createContextStatus } from '../../../../session-runtime/context-status.mjs';
-import { sessionTokenCounters } from '../../../../session-runtime/context-status-shape.mjs';
+import { createContextStatus } from '../runtime-core/context-status.mjs';
+import { sessionTokenCounters } from '../runtime-core/context-status-shape.mjs';
 
 test('provider-reported reasoning formats normalize without inspecting text or signatures', () => {
   const formats = [

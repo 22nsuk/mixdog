@@ -139,7 +139,7 @@ export function backgroundTaskFailureDetail(meta = {}, parsedArgs = {}) {
   return backgroundTaskFailureStatusLabel(status, error, { surface });
 }
 
-export function backgroundTaskDetail(meta = {}, elapsed = '', _parsedArgs = {}) {
+export function backgroundTaskDetail(meta = {}, elapsed = '') {
   const parts = [];
   const status = displayTerminalStatus(meta.status);
   if (status) parts.push(status);

@@ -9,6 +9,11 @@ import { normalizeContentForGeminiParts, splitToolContentForGemini } from './med
 import { providerReplayItems } from './lib/provider-replay.mjs';
 import { ensureGeminiToolCallSignatures } from './gemini-history-signatures.mjs';
 
+// Bounds on persisted provider metadata replayed back into the prompt.
+const MAX_THOUGHT_SIGNATURE_CHARS = 16_384;
+const MAX_REPLAY_TEXT_CHARS = 1_000_000;
+const MAX_REPLAY_PARTS = 128;
+
 function explicitGeminiMediaPart(part) {
   if (!part || typeof part !== 'object') return null;
   const inline = part.inlineData || part.inline_data;
@@ -120,12 +125,6 @@ function toSchemaType(t) {
   return map[t] ?? SchemaType.STRING;
 }
 
-/**
- * Recursively convert a JSON Schema object to Gemini's FunctionDeclarationSchema.
- * Gemini requires `type` to be a SchemaType enum, not a plain string, and
- * accepts only a documented subset of JSON Schema. Project onto that subset
- * at every level and convert `const` into Gemini's string enum form.
- */
 const GEMINI_SCHEMA_FIELDS = new Set([
   'type',
   'format',
@@ -364,6 +363,12 @@ function flattenAllOf(input) {
   return { schema, hadAllOf };
 }
 
+/**
+ * Recursively convert a JSON Schema object to Gemini's FunctionDeclarationSchema.
+ * Gemini requires `type` to be a SchemaType enum, not a plain string, and
+ * accepts only a documented subset of JSON Schema. Project onto that subset
+ * at every level and convert `const` into Gemini's string enum form.
+ */
 function convertSchema(schema) {
   if (!schema || typeof schema !== 'object') return schema;
   const flattened = flattenAllOf(schema);
@@ -377,13 +382,10 @@ function convertSchema(schema) {
     if (!GEMINI_SCHEMA_FIELDS.has(k)) continue;
     result[k] = v;
   }
-  // Gemini's Schema validator requires every `enum` entry to be a string.
-  // An unrepresentable typed enum must become an explicit conflict schema;
-  // dropping it would broaden the accepted tool arguments.
-  // Gemini's schema dialect represents JSON Schema null unions with
-  // `nullable`, not a type array.
   if (result.type === undefined && (result.properties || result.required)) result.type = 'object';
   if (result.type === undefined && result.items) result.type = 'array';
+  // Gemini's schema dialect represents JSON Schema null unions with
+  // `nullable`, not a type array.
   const normalizedType = typeInfo(result);
   if (normalizedType.conflict) return schemaFallback(normalizedType.conflict);
   const rawType = normalizedType.type || undefined;
@@ -391,6 +393,9 @@ function convertSchema(schema) {
   else delete result.type;
   if (normalizedType.allowsNull && rawType) result.nullable = true;
   else if (result.nullable !== true) delete result.nullable;
+  // Gemini's Schema validator requires every `enum` entry to be a string.
+  // An unrepresentable typed enum must become an explicit conflict schema;
+  // dropping it would broaden the accepted tool arguments.
   const localEnum = enumValues(result);
   if (localEnum.conflict) return schemaFallback(localEnum.conflict);
   if (result.const !== undefined) {
@@ -504,34 +509,21 @@ function projectUnionBranches(result) {
   if (!result.anyOf.length) delete result.anyOf;
 }
 
+const TYPE_SPECIFIC_KEYWORDS = {
+  string: new Set(['minLength', 'maxLength', 'pattern', 'format']),
+  array: new Set(['minItems', 'maxItems', 'items']),
+  object: new Set(['minProperties', 'maxProperties', 'properties', 'required', 'propertyOrdering']),
+  number: new Set(['minimum', 'maximum']),
+  integer: new Set(['minimum', 'maximum']),
+};
+const ALL_TYPE_SPECIFIC_KEYWORDS = new Set(Object.values(TYPE_SPECIFIC_KEYWORDS).flatMap((set) => [...set]));
+
 /** Drop every keyword that does not belong to the resolved type, then sanity
  *  the surviving min/max pairs. Returns a conflict schema for an empty range,
  *  else null (the caller keeps `result`). */
 function pruneTypeSpecificKeywords(result, rawType) {
-  const typeSpecific = {
-    string: new Set(['minLength', 'maxLength', 'pattern', 'format']),
-    array: new Set(['minItems', 'maxItems', 'items']),
-    object: new Set(['minProperties', 'maxProperties', 'properties', 'required', 'propertyOrdering']),
-    number: new Set(['minimum', 'maximum']),
-    integer: new Set(['minimum', 'maximum']),
-  };
-  for (const key of [
-    'minLength',
-    'maxLength',
-    'pattern',
-    'format',
-    'minItems',
-    'maxItems',
-    'items',
-    'minProperties',
-    'maxProperties',
-    'properties',
-    'required',
-    'propertyOrdering',
-    'minimum',
-    'maximum',
-  ]) {
-    if (!typeSpecific[rawType]?.has(key)) delete result[key];
+  for (const key of ALL_TYPE_SPECIFIC_KEYWORDS) {
+    if (!TYPE_SPECIFIC_KEYWORDS[rawType]?.has(key)) delete result[key];
   }
   for (const [minKey, maxKey] of [
     ['minLength', 'maxLength'],
@@ -586,6 +578,7 @@ export function toGeminiTools(tools) {
     })),
   };
 }
+
 export function toGeminiNativeTools(nativeTools) {
   if (!Array.isArray(nativeTools)) return [];
   const out = [];
@@ -667,7 +660,7 @@ function toGeminiToolContent(message, toolNameByCallId, capabilities) {
   };
 }
 
-function toGeminiContent(message, _toolNameByCallId, capabilities) {
+function toGeminiContent(message, capabilities) {
   if (!message || message.role === 'system') return null;
   const orderedReplay =
     message.role === 'assistant' ? providerReplayItems(message, ['gemini', 'antigravity']) : undefined;
@@ -692,7 +685,11 @@ function toGeminiContent(message, _toolNameByCallId, capabilities) {
           ...(capabilities.functionPartIds && typeof tc.id === 'string' && tc.id ? { id: tc.id } : {}),
         },
       };
-      if (typeof tc.thoughtSignature === 'string' && tc.thoughtSignature && tc.thoughtSignature.length <= 16_384) {
+      if (
+        typeof tc.thoughtSignature === 'string' &&
+        tc.thoughtSignature &&
+        tc.thoughtSignature.length <= MAX_THOUGHT_SIGNATURE_CHARS
+      ) {
         part.thoughtSignature = tc.thoughtSignature;
       }
       parts.push(part);
@@ -711,13 +708,18 @@ function toGeminiContent(message, _toolNameByCallId, capabilities) {
 
 function geminiTextPartsFromMetadata(message) {
   const parts = message?.providerMetadata?.gemini?.textParts;
-  if (!Array.isArray(parts) || !parts.length || parts.length > 128) return null;
+  if (!Array.isArray(parts) || !parts.length || parts.length > MAX_REPLAY_PARTS) return null;
   const normalized = [];
   for (const part of parts) {
-    if (!part || typeof part !== 'object' || typeof part.text !== 'string' || part.text.length > 1_000_000) return null;
+    if (!part || typeof part !== 'object' || typeof part.text !== 'string' || part.text.length > MAX_REPLAY_TEXT_CHARS)
+      return null;
     const next = { text: part.text };
     if (part.thoughtSignature !== undefined) {
-      if (typeof part.thoughtSignature !== 'string' || !part.thoughtSignature || part.thoughtSignature.length > 16_384)
+      if (
+        typeof part.thoughtSignature !== 'string' ||
+        !part.thoughtSignature ||
+        part.thoughtSignature.length > MAX_THOUGHT_SIGNATURE_CHARS
+      )
         return null;
       next.thoughtSignature = part.thoughtSignature;
     }
@@ -729,7 +731,7 @@ function geminiTextPartsFromMetadata(message) {
 
 function geminiThoughtPartsFromMetadata(message) {
   const parts = message?.providerMetadata?.gemini?.thoughtParts;
-  if (!Array.isArray(parts) || !parts.length || parts.length > 128) return [];
+  if (!Array.isArray(parts) || !parts.length || parts.length > MAX_REPLAY_PARTS) return [];
   const normalized = [];
   for (const part of parts) {
     // Hidden prompt content is replayable only when every persisted part is
@@ -739,10 +741,10 @@ function geminiThoughtPartsFromMetadata(message) {
       !part ||
       typeof part !== 'object' ||
       typeof part.text !== 'string' ||
-      part.text.length > 1_000_000 ||
+      part.text.length > MAX_REPLAY_TEXT_CHARS ||
       typeof part.thoughtSignature !== 'string' ||
       !part.thoughtSignature ||
-      part.thoughtSignature.length > 16_384
+      part.thoughtSignature.length > MAX_THOUGHT_SIGNATURE_CHARS
     )
       return [];
     normalized.push({
@@ -791,7 +793,7 @@ export function toGeminiContents(messages, model = '', { repairToolSignatures = 
       continue;
     }
     flushToolMedia();
-    const content = toGeminiContent(message, toolNameByCallId, capabilities);
+    const content = toGeminiContent(message, capabilities);
     if (content) contents.push(content);
   }
   flushToolMedia();
@@ -801,7 +803,7 @@ export function toGeminiContents(messages, model = '', { repairToolSignatures = 
 function signedTextPart(part) {
   const out = { text: part.text };
   const signature = part.thoughtSignature || part.thought_signature;
-  if (typeof signature === 'string' && signature && signature.length <= 16_384) {
+  if (typeof signature === 'string' && signature && signature.length <= MAX_THOUGHT_SIGNATURE_CHARS) {
     out.thoughtSignature = signature;
   }
   return out;
@@ -864,7 +866,7 @@ export function parseToolCalls(parts) {
       // replay and anonymous ID inputs independent of that working copy.
       arguments: structuredClone(fc.args ?? {}),
     };
-    if (typeof sig === 'string' && sig && sig.length <= 16_384) {
+    if (typeof sig === 'string' && sig && sig.length <= MAX_THOUGHT_SIGNATURE_CHARS) {
       call.thoughtSignature = sig;
     }
     return call;

@@ -152,6 +152,17 @@ function createVoiceWavCache() {
   };
 }
 
+// Configured whisper thread count, else a quarter of the cores (at least one).
+function whisperThreadCount(config) {
+  let cpuCount;
+  try {
+    cpuCount = os.cpus().length;
+  } catch {
+    cpuCount = 2;
+  }
+  return config.voice?.transcription?.threadCount ?? Math.max(1, Math.ceil(cpuCount / 4));
+}
+
 // The one resolution of the managed runtime and the exact whisper-server
 // contract, shared by transcription and warm-up. Returns { error } (a
 // user-actionable message) when the runtime is not installed.
@@ -169,14 +180,7 @@ function resolveVoiceTranscriptionRuntime(config, dataDir) {
       error: `voice runtime not installed (missing: ${missing}) — open the setup wizard and click "Install voice"`,
     };
   }
-  const cpuCount = (() => {
-    try {
-      return os.cpus().length;
-    } catch {
-      return 2;
-    }
-  })();
-  const threadCount = config.voice?.transcription?.threadCount ?? Math.max(1, Math.ceil(cpuCount / 4));
+  const threadCount = whisperThreadCount(config);
   return {
     runtime,
     threadCount,
@@ -289,4 +293,4 @@ function createVoiceTranscription({ getConfig, dataDir }) {
   return { isVoiceAttachment, transcribeVoice, prepareTranscription };
 }
 
-export { createVoiceTranscription };
+export { createVoiceTranscription, whisperThreadCount };

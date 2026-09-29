@@ -4,7 +4,7 @@
  * flags the tool cards and the final re-render depend on, and the erase used
  * to replace the raw stream with rendered markdown.
  */
-import { colorEnabled } from '../ui/ansi.mjs';
+import { colorEnabled } from '../runtime/shared/statusline/ansi.mjs';
 
 const STREAM_WRITE_BATCH_MS = 8;
 

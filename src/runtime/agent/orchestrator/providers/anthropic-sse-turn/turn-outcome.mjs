@@ -7,9 +7,10 @@
  */
 import { stampStreamOutcome, STREAM_TRANSPORTS } from '../lib/stream-outcome.mjs';
 import { createProviderReplay } from '../lib/provider-replay.mjs';
+import { OAUTH_STREAM_LABELS } from '../lib/anthropic-stream-labels.mjs';
 import { anthropicFallbackProviderMetadata } from '../anthropic-server-fallback.mjs';
 
-export function createTurnOutcome({ turn, blocks, state }) {
+export function createTurnOutcome({ turn, blocks, state, labels = OAUTH_STREAM_LABELS }) {
   const partialFields = () => ({
     partialContent: turn.content,
     partialToolCalls: turn.toolCalls.length ? turn.toolCalls.slice() : undefined,
@@ -85,8 +86,8 @@ export function createTurnOutcome({ turn, blocks, state }) {
     const err = Object.assign(
       new Error(
         (turn.sawTerminalFrameWithPendingInput
-          ? `Anthropic OAuth SSE stream truncated: terminal frame with incomplete tool input`
-          : `Anthropic OAuth SSE stream truncated: message_start without message_stop`) +
+          ? `${labels.display} SSE stream truncated: terminal frame with incomplete tool input`
+          : `${labels.display} SSE stream truncated: message_start without message_stop`) +
           (pendingToolUse ? ` (pending tool_use input)` : '')
       ),
       {

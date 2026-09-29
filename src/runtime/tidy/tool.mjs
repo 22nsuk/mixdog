@@ -18,6 +18,7 @@ import { resolveEngines, runnableEngines } from './resolve.mjs';
 import { DIAGNOSTIC_CAP, RESULTS_PAGE_MAX, buildTidyReport, tidyToolResult } from './report.mjs';
 import { runProcess } from './process.mjs';
 import { detectEngineShadows } from './shadow.mjs';
+import { summarizeFunctionLengths } from './function-length.mjs';
 import { listWorkingTreeChanges, splitFindingsByWorktree } from './worktree.mjs';
 
 const GRAPH_LANGS_TIMEOUT_MS = 8000;
@@ -146,8 +147,8 @@ function normalizeScope(paths, cwd) {
 
 async function pluginDataDir() {
   try {
-    const { getPluginData } = await import('../agent/orchestrator/config.mjs');
-    return getPluginData() || '';
+    const { resolvePluginData } = await import('../shared/plugin-paths.mjs');
+    return resolvePluginData() || '';
   } catch {
     return '';
   }
@@ -401,6 +402,7 @@ async function runAction({ action, args, cwd, scope, languageFilter, engineFilte
     workingTree: await splitRunFindings({ cwd, results, structural, signal }),
     results,
     structural,
+    functionLength: await summarizeFunctionLengths({ cwd, files: detected.files, signal }),
     needsApproval,
     installed: installed ? installed.engines : null,
     ...(scope.length ? { scope } : {}),

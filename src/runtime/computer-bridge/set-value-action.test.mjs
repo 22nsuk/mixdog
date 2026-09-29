@@ -15,6 +15,13 @@ test('set_value writes a control through its element, with no focus and no keyst
   );
 });
 
+test('key, key_down and key_up all require keys', () => {
+  for (const type of ['key', 'key_down', 'key_up']) {
+    assert.match(validateComputerCoreActions([{ type }]), /requires keys/, type);
+    assert.equal(validateComputerCoreActions([{ type, keys: 'a' }]), null, type);
+  }
+});
+
 test('a value needs a semantic target and a value', () => {
   assert.match(validateComputerCoreActions([{ type: 'set_value', value: 'x' }]), /requires ref or element/);
   assert.match(validateComputerCoreActions([{ type: 'set_value', ref: 'uia:1' }]), /requires value/);

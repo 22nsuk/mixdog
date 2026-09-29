@@ -7,7 +7,7 @@
 //   tool-exec/read-only-deadline.mjs — bounded read-only I/O with partial-output grace
 import { isMcpTool } from '../../mcp/client.mjs';
 import { prepareDeferredToolCallThrough } from './deferred-call-through.mjs';
-import { refreshDeferredMcpToolCatalog } from '../../../../../session-runtime/tool-catalog.mjs';
+import { refreshDeferredMcpToolCatalog } from '../../runtime-core/tool-catalog.mjs';
 import { preDispatchDenyForSession, routeWebFetchCall } from './pre-dispatch-deny.mjs';
 import { runWithToolExecutionOwner } from '../../../../shared/tool-execution-owner.mjs';
 import { runWithLocalSearchTelemetry } from '../../tools/builtin/local-search-telemetry.mjs';
@@ -63,7 +63,7 @@ async function executeToolOwned(name, args, cwd, callerSessionId, sessionRef, ex
   if (denial !== null) return denial;
   const call = { name: finalCall.name, args: finalCall.arguments, cwd: prepared.cwd };
   if (isMcpTool(call.name)) refreshDeferredMcpToolCatalog(sessionRef);
-  const deferredPrep = prepareDeferredToolCallThrough(sessionRef, call.name, call.args);
+  const deferredPrep = prepareDeferredToolCallThrough(sessionRef, call.name);
   if (deferredPrep?.deny) return deferredPrep.deny;
   const result = await runReadOnlyIoWithDeadline(call.name, executeOpts.signal || null, async (deadlineSignal) => {
     let callOpts = executeOpts;

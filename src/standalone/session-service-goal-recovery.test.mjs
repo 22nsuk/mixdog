@@ -8,7 +8,7 @@ import {
   DEFAULT_COMPLETED_GOAL_TTL_MS,
   listStoredActiveGoalSessionIds,
   readStoredGoalSnapshot,
-} from '../session-runtime/goal-runtime.mjs';
+} from '../runtime/agent/orchestrator/runtime-core/goal-runtime.mjs';
 import { createSessionService } from './session-service.mjs';
 
 function writeGoal(

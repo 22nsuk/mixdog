@@ -1,20 +1,16 @@
 import { logWebhook } from './log.mjs';
-import { updateDeliveryStatus } from '../../../shared/webhooks-db.mjs';
+import { updateDeliveryStatus } from '../webhooks-db.mjs';
+import { UNTRUSTED_MARKER, scrubFenceMarker } from './untrusted-fence.mjs';
 
 const DISPATCH_TIMEOUT_MS = 10 * 60 * 1000;
 
 function buildFencedPayload(body, headers) {
-  // Trust boundary: webhook body + headers are external, attacker-
-  // controllable input and must be treated as DATA, never instructions.
-  // Fence them with a guarded marker and scrub that marker token from the
-  // content so a payload field cannot close the fence early and smuggle
-  // instructions into the delegate/agent prompt (indirect prompt
-  // injection). The directive line gives the downstream prompt a trust
-  // boundary it can rely on.
-  const _UNTRUSTED = 'WEBHOOK_UNTRUSTED_DATA';
-  const _scrubFence = (s) => String(s).split(_UNTRUSTED).join('WEBHOOK_DATA');
-  const payload = _scrubFence(JSON.stringify(body, null, 2));
-  const headersSummary = _scrubFence(
+  // Trust boundary: webhook body + headers are external input and must be
+  // treated as DATA, never instructions. The directive line gives the
+  // downstream prompt a trust boundary it can rely on.
+  const _UNTRUSTED = UNTRUSTED_MARKER;
+  const payload = scrubFenceMarker(JSON.stringify(body, null, 2));
+  const headersSummary = scrubFenceMarker(
     Object.entries(headers)
       .filter(([k]) => k.startsWith('x-') || k === 'content-type')
       .map(([k, v]) => `${k}: ${v}`)

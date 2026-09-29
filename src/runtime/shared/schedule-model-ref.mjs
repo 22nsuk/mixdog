@@ -1,8 +1,8 @@
 // schedule.model wire format shared by the channels-worker scheduler and the
 // engine-side run-now dispatch: either a config.presets id/name (legacy) or a
 // direct "provider/model[@effort][+fast][?parameter=value]" route string written
-// by the desktop schedule editor. Slash-form values become a direct route
-// route objects, which agent-dispatch consumes without a presets lookup.
+// by the desktop schedule editor. Slash-form values become direct route
+// objects, which agent-dispatch consumes without a presets lookup.
 // The optional route fields an automation run carries, from a preset, a
 // maintenance slot or a parsed route ref. One shape so schedule and webhook
 // runs cannot drift when a field is added. modelParameters is copied so a

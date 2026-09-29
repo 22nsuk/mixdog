@@ -1,7 +1,6 @@
 // apply_patch request intake: argument salvage, body/format validation, the
 // abort signal, base path and the option flags every execution path shares.
 import { getAbortSignalForSession } from '../../../session/abort-lookup.mjs';
-import { planApplyPatchMutationRoute } from '../mutation-output.mjs';
 import { isCompactedPlaceholderPatch, salvageV4AOpening } from '../parsing.mjs';
 import { resolveBasePath } from '../paths.mjs';
 
@@ -65,7 +64,6 @@ export async function resolveApplyPatchRequest(rawArgs, cwd, options = {}) {
   if (requestedFormat && requestedFormat !== 'unified' && requestedFormat !== 'v4a') {
     throw new Error('apply_patch: "format" must be "unified" or "v4a"');
   }
-  const mutationPlan = options?.mutationPlan || planApplyPatchMutationRoute(args, patchStr, requestedFormat);
   const readStateScope = options?.readStateScope ?? options?.sessionId ?? null;
   let abortSignal = options?.signal || options?.abortSignal || null;
   if (!abortSignal && options?.sessionId) {
@@ -84,7 +82,6 @@ export async function resolveApplyPatchRequest(rawArgs, cwd, options = {}) {
     args,
     patchStr,
     requestedFormat,
-    mutationPlan,
     readStateScope,
     abortSignal,
     basePath,

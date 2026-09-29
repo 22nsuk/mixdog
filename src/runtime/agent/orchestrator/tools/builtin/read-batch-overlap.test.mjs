@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { executeBuiltinTool } from '../builtin.mjs';
 import { mergeOverlappingReadEntries } from './read-batch.mjs';
+import { renderBatchResults } from './read-tool/batch-render.mjs';
+import { buildSmartReadTruncationMarker } from './read-formatting.mjs';
 
 const lines = (n) => `${Array.from({ length: n }, (_, i) => `L${i + 1} ${'x'.repeat(24)}`).join('\n')}\n`;
 const count = (text, re) => (text.match(re) || []).length;
@@ -35,6 +37,20 @@ test('overlapping windows of one file render once; adjacent windows stay separat
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test('a batch entry carrying the real smart-read marker shows the truncation suffix in its header', () => {
+  const ctx = { classifyResultKind: () => 'ok', normalizeOutputPath: (p) => p };
+  const out = renderBatchResults(
+    [
+      { path: 'big.txt', mode: 'full', body: `L1 x\n${buildSmartReadTruncationMarker(6000, 300 * 1024)}\nL6000 x` },
+      { path: 'small.txt', mode: 'full', body: 'L1 x' },
+    ],
+    {},
+    ctx
+  );
+  assert.match(out, /big\.txt \[ok\] \(truncated 6000L\/300KB\)\n/);
+  assert.doesNotMatch(out, /small\.txt \[ok\] \(truncated/);
 });
 
 test('gapped windows stay separate and unrequested lines are not delivered', async () => {

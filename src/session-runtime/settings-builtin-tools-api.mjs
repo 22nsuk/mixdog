@@ -8,7 +8,7 @@ import {
   builtinInstalled,
   setBuiltinFirstUseApprovalInConfig,
   setBuiltinInstalledInConfig,
-} from './builtin-features.mjs';
+} from '../runtime/agent/orchestrator/runtime-core/builtin-features.mjs';
 import { LOCAL_PROVIDER_ID } from '../runtime/local-provider/managed-runtime.mjs';
 import { getEmbeddingInfo } from '../runtime/memory/lib/embedding-provider.mjs';
 

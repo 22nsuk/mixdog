@@ -4,7 +4,24 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { resolveVoiceRuntime, selectVoiceModelId, voiceRuntimeInfo } from './voice-runtime-fetcher.mjs';
+import { spawnSync } from 'node:child_process';
+import { extractZip, resolveVoiceRuntime, selectVoiceModelId, voiceRuntimeInfo } from './voice-runtime-fetcher.mjs';
+
+test('zip extraction on Windows does not expand $ in paths', { skip: process.platform !== 'win32' }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mixdog-zip-'));
+  try {
+    await writeFile(join(root, 'a.txt'), 'hello');
+    const zip = join(root, 'a$HOME.zip');
+    const made = spawnSync('tar', ['-a', '-cf', zip, '-C', root, 'a.txt']);
+    assert.equal(made.status, 0);
+    const dest = join(root, 'out$HOME');
+    await mkdir(dest);
+    extractZip(zip, dest);
+    assert.equal(await readFile(join(dest, 'a.txt'), 'utf8'), 'hello');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test('managed voice always uses the standard multilingual model', () => {
   assert.equal(selectVoiceModelId(), 'standard');

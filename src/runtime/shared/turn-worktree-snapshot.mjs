@@ -12,7 +12,10 @@ const MAX_UNTRACKED_FILE_BYTES = 2 * 1024 * 1024;
 // Baselines used to live in the OS temp directory, where a reboot or a disk
 // cleaner could remove the only copy of a turn's revert source. Keep them with
 // the rest of the runtime data.
-const SNAPSHOT_ROOT = join(resolvePluginData(), 'turn-worktree-snapshots-v1');
+// Resolved per call: the pristine-execution boundary retargets MIXDOG_DATA_DIR.
+function snapshotRoot() {
+  return join(resolvePluginData(), 'turn-worktree-snapshots-v1');
+}
 // A baseline tree is unreachable by design (no commit, no ref), so collection
 // is what bounds how long a review stays revertible.
 const SHADOW_GC_PRUNE = '7.days.ago';
@@ -69,11 +72,12 @@ async function repositoryRoot(worktree) {
 function stateForRoot(root) {
   const key = pathKey(root);
   let state = states.get(key);
-  if (state) return state;
   const hash = createHash('sha256').update(key).digest('hex').slice(0, 24);
+  const gitDir = join(snapshotRoot(), hash);
+  if (state && state.gitDir === gitDir) return state;
   state = {
     root,
-    gitDir: join(SNAPSHOT_ROOT, hash),
+    gitDir,
     initialized: false,
     sourceIndexPath: null,
     sourceIndexIdentity: null,
@@ -169,7 +173,7 @@ async function refreshSourceTracked(state, { force = false } = {}) {
 
 async function ensureState(state) {
   if (state.initialized && (await exists(join(state.gitDir, 'config')))) return;
-  await mkdir(SNAPSHOT_ROOT, { recursive: true });
+  await mkdir(dirname(state.gitDir), { recursive: true });
   if (!(await exists(join(state.gitDir, 'config')))) {
     // Migrate the short-lived prototype layout (`git init <dir>` created
     // <dir>/.git) before initializing the real external index repository.

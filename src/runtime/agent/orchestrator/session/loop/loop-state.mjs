@@ -1,10 +1,10 @@
 /**
  * loop-state.mjs — the agent loop's explicit per-ask state record: the
- * request-loop bookkeeping that used to live in agentLoop's closure, plus the
+ * request-loop bookkeeping, plus the
  * helpers every phase shares (abort check, steering drain, no-tool resolver).
  */
 import { isAgentOwner } from '../../agent-owner.mjs';
-import { SessionClosedError } from '../manager.mjs';
+import { SessionClosedError } from '../manager/session-errors.mjs';
 import { resolveLiveToolCwd } from './tool-exec.mjs';
 import { createSteeringDrain } from './steering.mjs';
 import { createNoToolTurnResolver } from './no-tool-turn.mjs';

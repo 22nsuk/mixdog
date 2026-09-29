@@ -8,6 +8,7 @@
 // hooks and their dependencies.
 import { useCallback } from 'react';
 import { slashCommandTokenForPaletteAccept } from './slash-commands.mjs';
+import { withPickerEnterLatch } from './picker-enter-latch.mjs';
 import { applyPromptDraftChange } from './use-prompt-draft-flow/draft-change.mjs';
 import { cancelProviderPromptFlow, cancelSettingsPromptFlow } from './use-prompt-draft-flow/prompt-cancels.mjs';
 
@@ -87,19 +88,9 @@ export function usePromptDraftFlow({
     (draftValue = '') => {
       const command = slashCommands[slashIndex];
       if (!command) return false;
-      pickerOpenedFromEnterRef.current = true;
-      if (pickerOpenedFromEnterTimerRef.current) {
-        clearTimeout(pickerOpenedFromEnterTimerRef.current);
-        pickerOpenedFromEnterTimerRef.current = null;
-      }
-      try {
-        return runSlashCommand(slashCommandTokenForPaletteAccept(command, draftValue), '');
-      } finally {
-        pickerOpenedFromEnterTimerRef.current = setTimeout(() => {
-          pickerOpenedFromEnterRef.current = false;
-          pickerOpenedFromEnterTimerRef.current = null;
-        }, 3000);
-      }
+      return withPickerEnterLatch(pickerOpenedFromEnterRef, pickerOpenedFromEnterTimerRef, () =>
+        runSlashCommand(slashCommandTokenForPaletteAccept(command, draftValue), '')
+      );
     },
     [slashCommands, slashIndex, pickerOpenedFromEnterRef, pickerOpenedFromEnterTimerRef, runSlashCommand]
   );

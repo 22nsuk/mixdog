@@ -19,13 +19,9 @@ import { enrichModels } from './model-catalog.mjs';
 import { sanitizeModelList } from './model-list-sanitize.mjs';
 import { getLlmDispatcher } from '../../../shared/llm/http-agent.mjs';
 
-import {
-  loadAnthropic,
-  MODELS,
-  ANTHROPIC_VERSION,
-  _normalizeAnthropicModel,
-  _setApiKeyCatalogMirror,
-} from './anthropic-messages.mjs';
+import { loadAnthropic, _normalizeAnthropicModel, _setApiKeyCatalogMirror } from './anthropic-messages.mjs';
+import { ANTHROPIC_VERSION, MODELS } from './lib/anthropic-models.mjs';
+import { streamCallbacks } from './lib/send-callbacks.mjs';
 export { _test, _toAnthropicMessagesForTest } from './anthropic-messages.mjs';
 
 export class AnthropicProvider {
@@ -115,11 +111,7 @@ export class AnthropicProvider {
     });
     this.fastModeBetaHeaderLatched = fastModeLatched;
 
-    const onStageChange = typeof opts.onStageChange === 'function' ? opts.onStageChange : null;
-    const onStreamDelta = typeof opts.onStreamDelta === 'function' ? opts.onStreamDelta : null;
-    const onToolCall = typeof opts.onToolCall === 'function' ? opts.onToolCall : null;
-    const onTextDelta = typeof opts.onTextDelta === 'function' ? opts.onTextDelta : null;
-    const onTextReset = typeof opts.onTextReset === 'function' ? opts.onTextReset : null;
+    const { onStageChange, onStreamDelta, onToolCall, onTextDelta, onTextReset } = streamCallbacks(opts);
 
     // No absolute wall-clock cap on streaming generation: a stream still
     // emitting SSE deltas must not be killed by a fixed total-lifetime timer.
@@ -172,6 +164,7 @@ export class AnthropicProvider {
     // anthropic-oauth).
     const midstream = createAnthropicMidstreamRecovery({
       label: this.name,
+      displayName: 'Anthropic',
       outcomeProvider: 'anthropic',
       midstreamOwner: `${this.name}-midstream`,
       unreachableMessage: 'Anthropic mid-stream retry: unreachable',
@@ -231,7 +224,10 @@ export class AnthropicProvider {
             midState,
             onTextDelta,
             knownToolNames,
-            { relayProgressUpdates: params.thinking?.display === 'updates' }
+            {
+              relayProgressUpdates: params.thinking?.display === 'updates',
+              labels: { display: 'Anthropic', tag: this.name },
+            }
           );
           try {
             streamController.abort?.('Anthropic SSE complete');

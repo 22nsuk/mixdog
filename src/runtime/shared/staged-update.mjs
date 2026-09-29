@@ -173,8 +173,13 @@ function inProgressLock(verDir) {
 // Try to claim the staging lock for verDir. Returns true if claimed (caller
 // must release), false if another live worker holds a fresh lock.
 function claimStagingLock(verDir) {
-  const lock = inProgressLock(verDir);
   mkdirSync(verDir, { recursive: true });
+  return claimPidLockFile(inProgressLock(verDir));
+}
+
+// Exclusive `<pid> <ms>` lock file. An existing lock is stolen only when stale
+// (dead owner or old mtime). Returns true when this process now holds it.
+function claimPidLockFile(lock) {
   const write = () => {
     const fd = openSync(lock, 'wx');
     try {
@@ -188,7 +193,6 @@ function claimStagingLock(verDir) {
     return true;
   } catch (err) {
     if (err?.code !== 'EEXIST') return false;
-    // Existing lock: steal only if stale (dead owner or old mtime).
     let owner = 0;
     let ageMs = Infinity;
     try {
@@ -608,38 +612,5 @@ function claimSwapLock(lock) {
   try {
     mkdirSync(dirname(lock), { recursive: true });
   } catch {}
-  try {
-    const fd = openSync(lock, 'wx');
-    try {
-      writeSync(fd, `${process.pid} ${Date.now()}`);
-    } finally {
-      closeSync(fd);
-    }
-    return true;
-  } catch (err) {
-    if (err?.code !== 'EEXIST') return false;
-    let owner = 0;
-    let ageMs = Infinity;
-    try {
-      owner = Number.parseInt(String(readFileSync(lock, 'utf8')).trim().split(/\s+/)[0], 10);
-    } catch {}
-    try {
-      ageMs = Date.now() - statSync(lock).mtimeMs;
-    } catch {}
-    if (pidAlive(owner) && ageMs < STALE_INPROGRESS_MS) return false;
-    try {
-      unlinkSync(lock);
-    } catch {}
-    try {
-      const fd = openSync(lock, 'wx');
-      try {
-        writeSync(fd, `${process.pid} ${Date.now()}`);
-      } finally {
-        closeSync(fd);
-      }
-      return true;
-    } catch {
-      return false;
-    }
-  }
+  return claimPidLockFile(lock);
 }

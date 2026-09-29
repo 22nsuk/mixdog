@@ -20,23 +20,6 @@ const PROBE_UNREADABLE = 'unreadable';
 // session load path uses).
 const ABSENT_CODES = new Set(['ENOENT', 'ENOTDIR']);
 
-// Deterministic fault seam (tests only): invoked with the path before every
-// stat and every read (`phase` is 'stat' or 'read'); returning an Error makes
-// that syscall fail. Structurally gated — without the explicit test-mode env
-// the hook cannot be installed and an already installed one goes inert.
-const PROBE_FAULT_ENV = 'MIXDOG_SESSION_LOAD_FAULT_HOOKS';
-let _probeFaultHook = null;
-
-function _probeFault(path, phase) {
-  if (!_probeFaultHook) return;
-  if (process.env[PROBE_FAULT_ENV] !== '1') {
-    _probeFaultHook = null; // gate revoked after install: stay inert
-    return;
-  }
-  const injected = _probeFaultHook(path, phase);
-  if (injected instanceof Error) throw injected;
-}
-
 // The absent/unreadable verdict for a failed stat or read.
 function _failureVerdict(err) {
   const code = err?.code || 'EUNKNOWN';
@@ -49,7 +32,6 @@ function _failureVerdict(err) {
  */
 export function probePath(path) {
   try {
-    _probeFault(path, 'stat');
     const info = statSync(path);
     return {
       state: PROBE_PRESENT,
@@ -75,7 +57,6 @@ export function probePath(path) {
  */
 export function readTextFile(path) {
   try {
-    _probeFault(path, 'read');
     return { state: PROBE_PRESENT, text: readFileSync(path, 'utf8'), code: null };
   } catch (err) {
     const { state, code } = _failureVerdict(err);

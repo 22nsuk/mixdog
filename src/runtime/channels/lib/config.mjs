@@ -1,6 +1,6 @@
 import { mkdirSync } from 'node:fs';
-import { readSection, updateSection, CONFIG_PATH as MIXDOG_CONFIG_PATH } from '../../shared/config.mjs';
-import { listSchedules } from '../../shared/schedules-db.mjs';
+import { readSection, updateSection, configPath } from '../../shared/config.mjs';
+import { listSchedules } from './schedules-db.mjs';
 import { resolvePluginData } from '../../shared/plugin-paths.mjs';
 const DATA_DIR = resolvePluginData();
 const DEFAULT_ACCESS = {
@@ -63,9 +63,9 @@ async function loadConfig() {
     });
   } catch (err) {
     if (err.code === 'ENOENT') {
-      mkdirSync(DATA_DIR, { recursive: true });
+      mkdirSync(resolvePluginData(), { recursive: true });
       updateSection('channels', () => DEFAULT_CONFIG);
-      process.stderr.write(`mixdog: default channels config created in ${MIXDOG_CONFIG_PATH}\n`);
+      process.stderr.write(`mixdog: default channels config created in ${configPath()}\n`);
       return applyDefaults(DEFAULT_CONFIG);
     }
     throw err;

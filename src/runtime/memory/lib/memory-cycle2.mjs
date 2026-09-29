@@ -1,6 +1,13 @@
 // Cycle 2 maintains searchable history. It never writes standing memory or
 // changes the legacy active/archived classification.
 import { flushEmbeddingDirty } from './memory-embed.mjs';
+import { holdEmbeddingWarm } from './embedding-provider.mjs';
+import {
+  quarantinedIds,
+  recordReviewFailure,
+  recordReviewSuccess,
+  reviewPausedUntil,
+} from './memory-cycle2-quarantine.mjs';
 import { reviewHistory } from './memory-cycle2-review.mjs';
 import { applyHistoryReview } from './memory-cycle2-mutations.mjs';
 import { __mixdogMemoryLog, throwIfAborted, isStoreFault } from './memory-cycle2-shared.mjs';
@@ -19,20 +26,51 @@ const emptyResult = () => ({ processed: 0, kept: 0, merged: 0, linked: 0, held: 
 async function maintainHistory(db, config, options, result) {
   const { signal } = options;
   throwIfAborted(signal);
-  const rows = (
-    await db.query(
-      `
+  const now = (options.now ?? Date.now)();
+  // While review is paused or a failing batch is cooling down / dead-lettered,
+  // its rows stay out of selection, so nothing re-enqueues them.
+  // Only automatic (scheduler/coalesced) runs are contained; an explicit
+  // user-requested run always reviews and surfaces its own failure.
+  const automatic = options.coalescedRetry === true;
+  const excluded = !automatic ? [] : reviewPausedUntil(db) > now ? null : quarantinedIds(db, now);
+  const rows = excluded
+    ? (
+        await db.query(
+          `
     SELECT id, ts, element, summary, project_id
     FROM entries
     WHERE is_root = 1 AND cycle2_reviewed_at IS NULL AND duplicate_of IS NULL
+      ${excluded.length ? 'AND NOT (id = ANY($2::bigint[]))' : ''}
     ORDER BY ts DESC, id DESC
     LIMIT $1
   `,
-      [Math.max(1, Math.floor(Number(config.batch_size) || 50))]
-    )
-  ).rows;
+          [Math.max(1, Math.floor(Number(config.batch_size) || 50)), ...(excluded.length ? [excluded] : [])]
+        )
+      ).rows
+    : [];
   if (rows.length) {
-    const review = await reviewHistory(db, rows, config, options);
+    // Backlog is being worked: keep the embed model resident between batches.
+    holdEmbeddingWarm();
+    const ids = rows.map((row) => Number(row.id));
+    let review;
+    try {
+      review = await reviewHistory(db, rows, config, options);
+    } catch (error) {
+      if (!automatic || signal?.aborted || isStoreFault(error)) throw error;
+      const failure = recordReviewFailure(db, ids, error, config, now);
+      if (failure.firstFailure && failure.raw !== null) {
+        __mixdogMemoryLog(`[cycle2] invalid review output for batch ${failure.key}: ${failure.raw}\n`);
+      }
+      if (failure.dead) {
+        __mixdogMemoryLog(
+          `[cycle2] batch ${failure.key} (${ids.length} rows) dead-lettered after ${failure.fails} failures: ${error.message}\n`
+        );
+      }
+      // Already backed off/dead-lettered here; a coalesced retry would only re-run it.
+      error.cycle2Quarantined = true;
+      throw error;
+    }
+    recordReviewSuccess(db, ids);
     result.deferred += review.deferredIds.length;
     // Validate every packet before applying any verdict. Bad model output
     // leaves the queue intact and is a failed run, not a successful no-op.
@@ -121,8 +159,10 @@ export async function runCycle2(db, config = {}, options = {}) {
     } catch (error) {
       throwIfAborted(signal);
       // Do not write retry metadata after an ambiguous store failure.
-      if (retry && !isStoreFault(error)) await markCycleRequest(db, 'cycle2', 'retry-error', signature);
-      if (retry && attempt < maxRetries) scheduleRetry();
+      if (retry && !isStoreFault(error) && !error.cycle2Quarantined) {
+        await markCycleRequest(db, 'cycle2', 'retry-error', signature);
+      }
+      if (retry && attempt < maxRetries && !error.cycle2Quarantined) scheduleRetry();
       __mixdogMemoryLog(`[cycle2] history maintenance failed: ${error.message}\n`);
       return { ok: false, ...result, error: error.message, storeFault: isStoreFault(error) };
     } finally {

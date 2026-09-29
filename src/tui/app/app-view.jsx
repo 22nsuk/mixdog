@@ -5,10 +5,9 @@
 // are assembled in app-view/: the transcript viewport and the floating-panel
 // slot; both are plain functions over the same ctx, so the element tree this
 // module returns is unchanged.
-import { Box, Text } from 'ink';
+import { Box } from 'ink';
 import { theme, surfaceBackground } from '../theme.mjs';
-import { centerLine } from './app-format.mjs';
-import { localPackageVersion } from '../../runtime/shared/update-checker.mjs';
+import { renderWelcomeBanner } from './app-view/welcome-banner.jsx';
 import { Spinner } from '../components/Spinner.jsx';
 import { StatusLine } from '../components/StatusLine.jsx';
 import { PromptInput } from '../components/PromptInput.jsx';
@@ -16,6 +15,20 @@ import { QueuedCommands } from '../components/QueuedCommands.jsx';
 import { renderFloatingPanel } from './app-view/floating-panel.jsx';
 import { renderTranscriptViewport } from './app-view/transcript-viewport.jsx';
 import { hintCell } from './app-view/transcript-viewport/trailing-bands.jsx';
+
+// Slash-palette selection move: 'home'/'end' jump, ±1 wraps, larger steps clamp.
+function stepPaletteIndex(index, direction, total) {
+  if (total === 0) return 0;
+  if (direction === 'home') return 0;
+  if (direction === 'end') return total - 1;
+  let step;
+  if (direction === 'left') step = -1;
+  else if (direction === 'right') step = 1;
+  else step = Number(direction) || 0;
+  if (step === 1 || step === -1) return (index + step + total) % total;
+  return Math.max(0, Math.min(total - 1, index + step));
+}
+
 export function renderAppView(ctx) {
   const {
     acceptSlashPalette,
@@ -96,18 +109,7 @@ export function renderAppView(ctx) {
       commandPaletteOpen={slashPaletteOpen}
       commandPaletteOptionCount={slashCommands.length}
       onCommandPaletteNavigate={(direction) => {
-        setSlashIndex((index) => {
-          const total = slashCommands.length;
-          if (total === 0) return 0;
-          if (direction === 'home') return 0;
-          if (direction === 'end') return total - 1;
-          let step;
-          if (direction === 'left') step = -1;
-          else if (direction === 'right') step = 1;
-          else step = Number(direction) || 0;
-          if (step === 1 || step === -1) return (index + step + total) % total;
-          return Math.max(0, Math.min(total - 1, index + step));
-        });
+        setSlashIndex((index) => stepPaletteIndex(index, direction, slashCommands.length));
       }}
       onCommandPaletteAccept={acceptSlashPalette}
       onCommandPaletteCancel={cancelSlashPalette}
@@ -171,36 +173,7 @@ export function renderAppView(ctx) {
     <Box flexDirection="column" width={frameColumns} height={resizeState.rows} backgroundColor={surfaceBackground()}>
       {/* Empty-transcript header stays outside the bottom-anchored viewport and
           has its own reserved rows, so it cannot steal space from the input. */}
-      {showWelcomeBanner ? (
-        <Box
-          flexDirection="column"
-          height={7}
-          flexShrink={0}
-          marginTop={3}
-          marginBottom={1}
-          backgroundColor={surfaceBackground()}
-        >
-          <Text color={theme.text} bold>
-            {centerLine('███╗   ███╗██╗██╗  ██╗██████╗  ██████╗  ██████╗ ', frameColumns)}
-          </Text>
-          <Text color={theme.text} bold>
-            {centerLine('████╗ ████║██║╚██╗██╔╝██╔══██╗██╔═══██╗██╔════╝ ', frameColumns)}
-          </Text>
-          <Text color={theme.logo ?? theme.claude} bold>
-            {centerLine('██╔████╔██║██║ ╚███╔╝ ██║  ██║██║   ██║██║  ███╗', frameColumns)}
-          </Text>
-          <Text color={theme.logo ?? theme.claude} bold>
-            {centerLine('██║╚██╔╝██║██║ ██╔██╗ ██║  ██║██║   ██║██║   ██║', frameColumns)}
-          </Text>
-          <Text color={theme.logo ?? theme.claude} bold>
-            {centerLine('██║ ╚═╝ ██║██║██╔╝ ██╗██████╔╝╚██████╔╝╚██████╔╝', frameColumns)}
-          </Text>
-          <Box height={1} flexShrink={0} />
-          <Text color={theme.inactive}>
-            {centerLine(`mixdog coding agent · v${localPackageVersion()} · ${state.cwd}`, frameColumns, 4)}
-          </Text>
-        </Box>
-      ) : null}
+      {showWelcomeBanner ? renderWelcomeBanner({ frameColumns, cwd: state.cwd }) : null}
 
       {/* Transcript viewport — app-view/transcript-viewport.jsx. */}
       {renderTranscriptViewport(ctx)}

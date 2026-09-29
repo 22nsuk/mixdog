@@ -602,6 +602,18 @@ export function shouldCompactForRequestMedia(messages) {
   return false;
 }
 
+// Anthropic's 5m message-tail TTL (agent-runtime/cache-strategy.mjs gives it
+// to agent sessions). A send this long after the previous one finds the tail
+// cache expired and would rewrite the whole accumulated transcript; compacting
+// first makes that cold write the compacted transcript instead.
+const AGENT_MESSAGE_CACHE_TTL_MS = 5 * 60_000;
+
+export function shouldCompactForExpiredAgentCache(sessionRef, opts) {
+  if (!isAgentOwner(sessionRef) || opts?.cacheStrategy?.messages !== '5m') return false;
+  const lastSendAt = Number(sessionRef.lastProviderSendAt);
+  return lastSendAt > 0 && Date.now() - lastSendAt > AGENT_MESSAGE_CACHE_TTL_MS;
+}
+
 export function shouldCompactForSession(
   messageTokensEst,
   policy,
@@ -803,7 +815,7 @@ export function emitCompactEvent(opts, event = {}) {
 // or relay may not expose Haiku at all), so guessing a cheaper model risks a
 // hard compact failure. The summary runs on the session's own model unless an
 // operator explicitly configures compaction.summaryModel.
-export function resolveHandoffSummaryModel(sessionRef, _opts = {}) {
+export function resolveHandoffSummaryModel(sessionRef) {
   const cfg = sessionRef?.compaction && typeof sessionRef.compaction === 'object' ? sessionRef.compaction : {};
   const explicit =
     String(cfg.summaryModel || '').trim() || String(process.env.MIXDOG_AGENT_COMPACT_SUMMARY_MODEL || '').trim();

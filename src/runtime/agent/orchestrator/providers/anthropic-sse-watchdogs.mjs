@@ -6,18 +6,13 @@
  * half-open socket — the 391s-hang root cause).
  */
 import { runAbortable } from '../../../shared/abort-race.mjs';
+import { OAUTH_STREAM_LABELS } from './lib/anthropic-stream-labels.mjs';
 import {
   PROVIDER_FIRST_BYTE_TIMEOUT_MS,
   PROVIDER_SSE_IDLE_WATCHDOG_ENABLED,
   PROVIDER_SSE_IDLE_TIMEOUT_MS,
   streamStalledError,
 } from '../stall-policy.mjs';
-
-const log = (line) => {
-  try {
-    process.stderr.write(`[anthropic-oauth] ${line}\n`);
-  } catch {}
-};
 
 function positiveMs(value) {
   return Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : 0;
@@ -30,8 +25,21 @@ function positiveMs(value) {
  * @param {AbortSignal|null} deps.signal
  * @param {((reason?: Error) => void)|null} deps.abortStream
  * @param {(err: Error) => Error} deps.attachStallPartial  enriches the idle-stall error
+ * @param {{ display: string, tag: string }} deps.labels  provider name for errors and stderr lines
  */
-export function createAnthropicSseWatchdogs({ state, reader, signal, abortStream, attachStallPartial }) {
+export function createAnthropicSseWatchdogs({
+  state,
+  reader,
+  signal,
+  abortStream,
+  attachStallPartial,
+  labels = OAUTH_STREAM_LABELS,
+}) {
+  const log = (line) => {
+    try {
+      process.stderr.write(`[${labels.tag}] ${line}\n`);
+    } catch {}
+  };
   // Transport-idle window. The legacy semanticIdleTimeoutMs seam remains as
   // a fallback for existing tests/callers, but production uses the shared
   // byte/event inactivity policy.
@@ -66,7 +74,7 @@ export function createAnthropicSseWatchdogs({ state, reader, signal, abortStream
   };
 
   const firstMessageTimeoutError = () => {
-    const err = new Error(`Anthropic OAuth SSE stream produced no message_start within ${firstMessageTimeoutMs}ms`);
+    const err = new Error(`${labels.display} SSE stream produced no message_start within ${firstMessageTimeoutMs}ms`);
     err.code = 'EEMPTYSTREAM';
     err.isEmptyStream = true;
     err.firstByteTimeout = true;
@@ -104,7 +112,7 @@ export function createAnthropicSseWatchdogs({ state, reader, signal, abortStream
 
   const stallError = () =>
     attachStallPartial(
-      streamStalledError('Anthropic OAuth SSE', idleTimeoutMs, { emittedToolCall: !!state?.emittedToolCall })
+      streamStalledError(`${labels.display} SSE`, idleTimeoutMs, { emittedToolCall: !!state?.emittedToolCall })
     );
   // Only actual transport silence trips this. Anthropic keepalives prove
   // that the generation connection is still alive.
@@ -141,7 +149,7 @@ export function createAnthropicSseWatchdogs({ state, reader, signal, abortStream
             idleReject = reject;
             reader.read().then(resolve, reject);
           }),
-        'Anthropic OAuth SSE stream aborted'
+        `${labels.display} SSE stream aborted`
       );
     } finally {
       idleReject = null;

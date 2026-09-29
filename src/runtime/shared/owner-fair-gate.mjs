@@ -1,4 +1,4 @@
-import { createFairCallScheduler } from '../../standalone/fair-call-scheduler.mjs';
+import { createFairCallScheduler } from './fair-call-scheduler.mjs';
 import { positiveInt } from './numbers.mjs';
 import { currentToolExecutionOwner } from './tool-execution-owner.mjs';
 

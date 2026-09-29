@@ -15,7 +15,7 @@ test('the reference truncation notice reports the cap the scan actually applied'
       _maskedLinesCache: new Map(),
     };
 
-    const out = _cheapReferenceSearch(graph, 'target', '/repo', { nodes: [node] });
+    const out = _cheapReferenceSearch(graph, 'target', { nodes: [node] });
 
     assert.match(out, /total hits exceeded 2, showing first 2/);
   } finally {

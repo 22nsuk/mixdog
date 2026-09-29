@@ -23,7 +23,8 @@
  *   - output-styles/common.md        — shared built-in output composition policy
  *   - output-styles/<name>.md        — selected built-in depth variant or standalone user style
  *   - agent/AGENT.md                 — common agent contract: chain of command, handoff (BP3, all profiles)
- *   - agent/10..50-*.md              — per-hidden-agent bodies (consumed by loadScopedRoleInstructions)
+ *   - agent/4*-*.md                  — per-hidden-agent bodies (consumed by loadScopedRoleInstructions)
+ *   - routes/*.md                    — optional provider/model-scoped rules appended to BP1 (buildRouteRulesContent)
  *
  * Core memory snapshot is injected separately from the memory worker (pgdata)
  * (Lead only).
@@ -361,7 +362,7 @@ function buildRouteRulesContent({
   return omitToolRoutes(parts.join('\n'), omitTools, allowTools);
 }
 
-function buildLeadRoleContent({ PLUGIN_ROOT, DATA_DIR: _DATA_DIR, includeLeadBrief = true }) {
+function buildLeadRoleContent({ PLUGIN_ROOT, includeLeadBrief = true }) {
   const RULES_DIR = path.join(PLUGIN_ROOT, 'rules');
   const lead = readOptional(path.join(RULES_DIR, 'lead', 'LEAD.md'));
   if (!lead) return '';
@@ -429,7 +430,7 @@ function buildAgentRoleContent({ PLUGIN_ROOT, profile = 'full' }) {
 }
 
 /**
- * BP2 role rules for narrow hidden retrieval roles. These roles already carry a separate
+ * BP3 role rules for narrow hidden retrieval roles. These roles already carry a separate
  * read-only tool schema shard, so keeping the full agent worker prefix does
  * not improve cross-role cache reuse and only adds unrelated shell/edit/git
  * guidance.

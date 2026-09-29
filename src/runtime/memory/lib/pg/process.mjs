@@ -1,7 +1,7 @@
 import { __mixdogMemoryLog } from '../memory-log.mjs';
 import { sleep as delay } from '../../../shared/sleep.mjs';
 
-// pg-process.mjs — lower-level PG lifecycle helpers for mixdog 0.4.0
+// process.mjs — lower-level PG lifecycle helpers
 //
 // Public API:
 //   startPg({ runtimeDir, pgdataDir, port?, logPath? }) → { pid, port }
@@ -83,7 +83,7 @@ async function awaitExistingPostmaster({ pgdataDir, waitMs }) {
 }
 
 async function findFreePort(preferred) {
-  // I2: clamp out-of-range callers to the valid window.
+  // Clamp out-of-range callers to the valid window.
   if (preferred < PG_PORT_MIN || preferred > PG_PORT_MAX) preferred = PG_PORT_MIN;
   if (await isTcpPortFree(preferred)) return preferred;
   for (let p = preferred + 1; p <= PG_PORT_MAX; p++) {

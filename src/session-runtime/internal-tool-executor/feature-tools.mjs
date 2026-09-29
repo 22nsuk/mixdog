@@ -1,9 +1,10 @@
 // Optional feature tools gated by settings for model-initiated calls: office,
 // media and tidy (each loaded on first use), and the setup tool.
 import { STANDALONE_DATA_DIR } from '../runtime-paths.mjs';
+import { createCallerContextResolvers } from './caller-context.mjs';
 
 export function createFeatureToolHandlers({ rt, setupTool, officeToolsEnabled, mediaToolEnabled, tidyToolEnabled }) {
-  const signalFor = (callerCtx) => callerCtx?.signal || rt.session?.controller?.signal || null;
+  const { sessionIdFor, signalFor } = createCallerContextResolvers(rt);
   const requireEnabled = (callerCtx, enabled, label) => {
     if (callerCtx?.invocationSource === 'model-tool' && !enabled()) {
       throw new Error(`${label} is disabled in settings; start a new session to refresh the tool list`);
@@ -33,7 +34,7 @@ export function createFeatureToolHandlers({ rt, setupTool, officeToolsEnabled, m
       const { executeTidyTool } = await import('../../runtime/tidy/tool.mjs');
       return await executeTidyTool(args, {
         cwd: callerCwd,
-        sessionId: callerCtx?.sessionId || callerCtx?.callerSessionId || rt.session?.id,
+        sessionId: sessionIdFor(callerCtx),
         signal: signalFor(callerCtx),
       });
     },

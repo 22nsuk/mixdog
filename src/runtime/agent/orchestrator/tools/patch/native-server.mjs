@@ -17,7 +17,7 @@ import { performance } from 'node:perf_hooks';
 import { packageNativeToolPath } from '../../../../shared/native-tool-paths.mjs';
 import { getPluginData } from '../../config.mjs';
 import { ensurePatchBinary, findCachedPatchBinary } from '../patch-binary-fetcher.mjs';
-import { envFlag } from '../../../../shared/env.mjs';
+import { ioTraceEnabled } from '../io-trace.mjs';
 
 const PLUGIN_ROOT =
   process.env.MIXDOG_ROOT ||
@@ -54,17 +54,6 @@ export function nativePatchTraceEnabled() {
   return /^(1|true|yes)$/i.test(process.env.MIXDOG_PATCH_NATIVE_TRACE || '');
 }
 
-function ioTraceEnabled() {
-  return envFlag('MIXDOG_IO_TRACE');
-}
-
-export function ioTrace(event, fields = {}) {
-  if (!ioTraceEnabled()) return;
-  try {
-    process.stderr.write(`[io-trace] ${JSON.stringify({ event, ts: Date.now(), ...fields })}\n`);
-  } catch {}
-}
-
 export function patchTraceEnabled() {
   return (
     ioTraceEnabled() ||
@@ -92,9 +81,10 @@ function nativePatchPersistent() {
 // The engine contract is proven by the RUNNING SESSION, never by a separate
 // probe of a path: the process that will execute the work ANSWERS `CONTRACT`
 // over the real protocol — bytes that merely appear (a startup printer) are
-// not an answer, and the artifact judged is always the one about to run. A wrapper that prints the marker cannot serve the
-// protocol, a swapped artifact cannot change a process that is already
-// running, and one session means one verification for any number of callers.
+// not an answer, and the artifact judged is always the one about to run. A
+// wrapper that prints the marker cannot serve the protocol, a swapped artifact
+// cannot change a process that is already running, and one session means one
+// verification for any number of callers.
 // The marker search below is only a negative pre-filter (skip spawning an
 // artifact that cannot possibly answer); it is never the proof.
 export const NATIVE_PATCH_ENGINE_CONTRACT = 'mixdog-patch-engine-contract:3';

@@ -13,7 +13,7 @@ import {
   retireShellJobRecord,
 } from './shell-job-records.mjs';
 import { executeTaskTool } from '../task-tool.mjs';
-import { shellJobsStatus } from '../../../../../../ui/statusline-segments.mjs';
+import { shellJobsStatus } from '../../../../../shared/statusline/statusline-segments.mjs';
 
 // The reader caches for 1s and refreshes in the background, so a probe polls
 // until the scan lands instead of assuming the first call is populated.

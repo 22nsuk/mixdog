@@ -33,16 +33,19 @@ const {
   hasSecret: _hasSecret,
 } = _require('../../lib/keychain-cjs.cjs');
 
-const DATA_DIR = resolvePluginData();
-
-const CONFIG_PATH = join(DATA_DIR, 'mixdog-config.json');
+// Resolved per call: the pristine-execution boundary retargets
+// MIXDOG_resolvePluginData() at runtime, so an import-time capture would write into the
+// wrong data dir.
+function configPath() {
+  return join(resolvePluginData(), 'mixdog-config.json');
+}
 
 const GENERATED_KEY = '_generated';
 
-// Process-wide short-TTL cache of the RAW utf8 string of CONFIG_PATH (never
+// Process-wide short-TTL cache of the RAW utf8 string of configPath() (never
 // the parsed object). Parallel agent spawns each hit the non-RMW read path
 // (readAll → readSection/readConfig/readCapabilities); without this every
-// spawn pays a synchronous readFileSync(CONFIG_PATH) on the event loop,
+// spawn pays a synchronous readFileSync(configPath()) on the event loop,
 // serializing the whole fanout behind redundant disk I/O. Caching the raw
 // string — not the parsed object — lets each caller re-JSON.parse for an
 // isolated, freely-mutable object (no shared-reference poisoning). Only the
@@ -67,6 +70,7 @@ export function invalidateConfigReadCache() {
 
 function readConfigRawCached() {
   const now = Date.now();
+  if (_configReadCache && _configReadCache.path !== configPath()) _configReadCache = null;
   if (_configReadCache) {
     // Fast path (only when a TTL window is configured): serve without any
     // syscall until the window lapses.
@@ -77,7 +81,7 @@ function readConfigRawCached() {
     // raw is still current, cross-process writes included — atomic writers land
     // a new inode with a fresh mtime, so this reliably detects them.
     try {
-      const st = statSync(CONFIG_PATH);
+      const st = statSync(configPath());
       if (st.mtimeMs === _configReadCache.mtimeMs && st.size === _configReadCache.size) {
         _configReadCache.atMs = now;
         return _configReadCache.raw;
@@ -92,28 +96,28 @@ function readConfigRawCached() {
   // stuck on stale bytes — the cache always converges toward fresh.
   let st = null;
   try {
-    st = statSync(CONFIG_PATH);
+    st = statSync(configPath());
   } catch (err) {
     if (err.code === 'ENOENT') {
       _configReadCache = null;
       return null;
     }
-    process.stderr.write(`[config] readConfigRawCached: unexpected stat error for ${CONFIG_PATH}: ${err.message}\n`);
+    process.stderr.write(`[config] readConfigRawCached: unexpected stat error for ${configPath()}: ${err.message}\n`);
     throw err;
   }
   let raw;
   try {
-    raw = readFileSync(CONFIG_PATH, 'utf8');
+    raw = readFileSync(configPath(), 'utf8');
   } catch (err) {
     if (err.code === 'ENOENT') {
       _configReadCache = null;
       return null;
     }
     // Fail closed on unknown read errors (EACCES, EIO, …); do NOT cache.
-    process.stderr.write(`[config] readJsonFile: unexpected read error for ${CONFIG_PATH}: ${err.message}\n`);
+    process.stderr.write(`[config] readJsonFile: unexpected read error for ${configPath()}: ${err.message}\n`);
     throw err;
   }
-  _configReadCache = { raw, mtimeMs: st.mtimeMs, size: st.size, atMs: now };
+  _configReadCache = { raw, path: configPath(), mtimeMs: st.mtimeMs, size: st.size, atMs: now };
   return raw;
 }
 
@@ -188,41 +192,27 @@ function stripGeneratedMarker(data) {
   return rest;
 }
 
-function readJsonFile(path) {
-  let raw;
-  if (path === CONFIG_PATH) {
-    // Non-RMW read path: served from the short-TTL raw-string cache. Returning
-    // {} on a read error here would let a subsequent updateSection() serialize
-    // an empty object over an existing-but-temporarily-unreadable config and
-    // erase every other section, so read errors surface (throw) uncached.
-    raw = readConfigRawCached();
-  } else {
-    try {
-      raw = readFileSync(path, 'utf8');
-    } catch (err) {
-      if (err.code === 'ENOENT') return null;
-      process.stderr.write(`[config] readJsonFile: unexpected read error for ${path}: ${err.message}\n`);
-      throw err;
-    }
-  }
+function readConfigFile() {
+  // Non-RMW read path: served from the short-TTL raw-string cache. Returning
+  // {} on a read error here would let a subsequent updateSection() serialize
+  // an empty object over an existing-but-temporarily-unreadable config and
+  // erase every other section, so read errors surface (throw) uncached.
+  const raw = readConfigRawCached();
   if (raw == null) return null;
   try {
     return JSON.parse(raw);
   } catch (err) {
     // Quarantine a malformed mixdog-config.json so the next boot starts fresh
-    // instead of looping on a broken file.
-    if (path === CONFIG_PATH) {
-      // A cached raw string that fails to parse must not be re-served; drop it
-      // so the post-quarantine/restore read hits disk fresh (malformed = never
-      // cached).
-      invalidateConfigReadCache();
-      quarantineMalformedConfig(err);
-    }
+    // instead of looping on a broken file. A cached raw string that fails to
+    // parse must not be re-served; drop it so the post-quarantine/restore read
+    // hits disk fresh (malformed = never cached).
+    invalidateConfigReadCache();
+    quarantineMalformedConfig(err);
     return null;
   }
 }
 
-function writeJsonFile(path, data) {
+function writeConfigFile(data) {
   // R4 data-at-rest: mixdog-config.json holds provider apiKeys; clamp to
   // owner-only on POSIX via 0o600/0o700 mode bits, AND fail-closed on
   // Windows where those bits are advisory — `secret: true` makes the
@@ -230,33 +220,29 @@ function writeJsonFile(path, data) {
   // temp, lock, and parent dir, throwing if the ACL cannot be enforced
   // so the key is never left world-readable. 0o700 on the parent dir
   // restricts directory traversal in shared-home setups on POSIX.
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  mkdirSync(dirname(configPath()), { recursive: true, mode: 0o700 });
   // NOTE: lock:false here — callers that perform read-modify-write
   // (updateConfig/updateSection and their async twins) hold the lock at
   // the outer RMW boundary, so the inner write must not try to re-acquire
   // the same lock file (would self-deadlock on `openSync('wx')`). Direct
   // whole-config writers go through `writeAll` below.
-  if (path === CONFIG_PATH) {
-    try {
-      backupUserData(DATA_DIR, 'pre-config-write');
-    } catch {}
-  }
-  writeJsonAtomicSync(path, data, { lock: false, fsyncDir: true, mode: 0o600, secret: true });
-  if (path === CONFIG_PATH) {
-    // Our own write just changed CONFIG_PATH on disk; drop the stale raw cache
-    // synchronously so the next in-process readAll() reflects it immediately.
-    invalidateConfigReadCache();
-    try {
-      markUserDataInitialized(DATA_DIR);
-    } catch {}
-    try {
-      backupUserData(DATA_DIR, 'post-config-write');
-    } catch {}
-  }
+  try {
+    backupUserData(resolvePluginData(), 'pre-config-write');
+  } catch {}
+  writeJsonAtomicSync(configPath(), data, { lock: false, fsyncDir: true, mode: 0o600, secret: true });
+  // Our own write just changed configPath() on disk; drop the stale raw cache
+  // synchronously so the next in-process readAll() reflects it immediately.
+  invalidateConfigReadCache();
+  try {
+    markUserDataInitialized(resolvePluginData());
+  } catch {}
+  try {
+    backupUserData(resolvePluginData(), 'post-config-write');
+  } catch {}
 }
 
 function readAll() {
-  const parsed = readJsonFile(CONFIG_PATH);
+  const parsed = readConfigFile();
   if (parsed != null) return canonicalizeUnifiedConfig(parsed);
   // Symmetric with readAllForRmW(): a missing/unreadable config on a data
   // dir that was previously initialized means the file was LOST (deleted,
@@ -267,8 +253,8 @@ function readAll() {
   // readAll() runs OUTSIDE the config lock (unlike the RMW path), so we do
   // not write here to avoid an unlocked-write race; the next updateSection
   // re-persists the file under the lock.
-  if (hasUserDataInitMarker(DATA_DIR)) {
-    const restored = loadLatestMixdogConfigFromBackup(DATA_DIR);
+  if (hasUserDataInitMarker(resolvePluginData())) {
+    const restored = loadLatestMixdogConfigFromBackup(resolvePluginData());
     if (restored && isPlainObject(restored)) {
       process.stderr.write(
         '[config] read: restored mixdog-config.json from latest user-data backup (missing after init)\n'
@@ -280,9 +266,9 @@ function readAll() {
 }
 
 function quarantineMalformedConfig(parseErr) {
-  const corrupt = `${CONFIG_PATH}.corrupt-${Date.now()}`;
+  const corrupt = `${configPath()}.corrupt-${Date.now()}`;
   try {
-    if (existsSync(CONFIG_PATH)) renameWithRetrySync(CONFIG_PATH, corrupt);
+    if (existsSync(configPath())) renameWithRetrySync(configPath(), corrupt);
   } catch {}
   process.stderr.write(
     `[config] mixdog-config.json is malformed (${parseErr.message}). Renamed to ${corrupt}. Restore it or delete to start fresh.\n`
@@ -290,7 +276,7 @@ function quarantineMalformedConfig(parseErr) {
 }
 
 function restoreAllForRmWOrThrow(reason) {
-  const restored = loadLatestMixdogConfigFromBackup(DATA_DIR);
+  const restored = loadLatestMixdogConfigFromBackup(resolvePluginData());
   if (restored && isPlainObject(restored)) {
     process.stderr.write(`[config] RMW read: restored mixdog-config.json from latest user-data backup (${reason})\n`);
     return restored;
@@ -308,15 +294,15 @@ function restoreAllForRmWOrThrow(reason) {
 function readAllForRmW() {
   let raw;
   try {
-    raw = readFileSync(CONFIG_PATH, 'utf8');
+    raw = readFileSync(configPath(), 'utf8');
   } catch (err) {
     if (err.code === 'ENOENT') {
-      if (hasUserDataInitMarker(DATA_DIR)) {
+      if (hasUserDataInitMarker(resolvePluginData())) {
         return restoreAllForRmWOrThrow('config file missing after user-data was initialized');
       }
       return {};
     }
-    process.stderr.write(`[config] readAllForRmW: unexpected read error for ${CONFIG_PATH}: ${err.message}\n`);
+    process.stderr.write(`[config] readAllForRmW: unexpected read error for ${configPath()}: ${err.message}\n`);
     throw err;
   }
   try {
@@ -330,7 +316,7 @@ function readAllForRmW() {
 }
 
 function writeAll(data) {
-  writeJsonFile(CONFIG_PATH, canonicalizeUnifiedConfig(data));
+  writeConfigFile(canonicalizeUnifiedConfig(data));
 }
 
 // Serialize a read-modify-write under the same file lock. Concurrent
@@ -345,7 +331,7 @@ function withConfigLock(fn) {
   // hundreds of ms with the daemon's event loop parked and every other writer
   // queued behind it. The CONFIG file keeps secret:true, which is where the
   // API keys actually live.
-  return withFileLockSync(`${CONFIG_PATH}.lock`, fn);
+  return withFileLockSync(`${configPath()}.lock`, fn);
 }
 
 export function readSection(section) {
@@ -380,40 +366,36 @@ export function updateSection(section, updater) {
 // ── Async write path (non-blocking) ─────────────────────────────────
 // Parity with the sync RMW above, but every heavy blocker (cross-process
 // lock wait, owner-only icacls ACL, user-data backup copy tree) is awaited
-// off the event loop. Reuses the SAME lock file (`${CONFIG_PATH}.lock`) and
+// off the event loop. Reuses the SAME lock file (`${configPath()}.lock`) and
 // secret:true ACL protocol, so an async writer and a sync writer are mutually
 // exclusive against one another AND against other processes — cross-process
 // RMW linearizability is preserved. The in-lock read (readAllForRmW) stays
 // synchronous: it is a small local read, not the hitch source.
-async function writeJsonFileAsync(path, data) {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  if (path === CONFIG_PATH) {
-    try {
-      await backupUserDataAsync(DATA_DIR, 'pre-config-write');
-    } catch {}
-  }
-  await writeJsonAtomicAsync(path, data, { lock: false, fsyncDir: true, mode: 0o600, secret: true });
-  if (path === CONFIG_PATH) {
-    // Parity with writeJsonFile: invalidate synchronously after the async
-    // write resolves so this process never serves a stale cached config.
-    invalidateConfigReadCache();
-    try {
-      markUserDataInitialized(DATA_DIR);
-    } catch {}
-    try {
-      await backupUserDataAsync(DATA_DIR, 'post-config-write');
-    } catch {}
-  }
+async function writeConfigFileAsync(data) {
+  mkdirSync(dirname(configPath()), { recursive: true, mode: 0o700 });
+  try {
+    await backupUserDataAsync(resolvePluginData(), 'pre-config-write');
+  } catch {}
+  await writeJsonAtomicAsync(configPath(), data, { lock: false, fsyncDir: true, mode: 0o600, secret: true });
+  // Parity with writeConfigFile: invalidate synchronously after the async
+  // write resolves so this process never serves a stale cached config.
+  invalidateConfigReadCache();
+  try {
+    markUserDataInitialized(resolvePluginData());
+  } catch {}
+  try {
+    await backupUserDataAsync(resolvePluginData(), 'post-config-write');
+  } catch {}
 }
 
 async function writeAllAsync(data) {
-  await writeJsonFileAsync(CONFIG_PATH, canonicalizeUnifiedConfig(data));
+  await writeConfigFileAsync(canonicalizeUnifiedConfig(data));
 }
 
 function withConfigLockAsync(fn) {
   // Same reasoning as withConfigLock: the ACL belongs on the config file, not
   // on its lock marker, and icacls has no business inside the lock.
-  return withFileLock(`${CONFIG_PATH}.lock`, fn);
+  return withFileLock(`${configPath()}.lock`, fn);
 }
 
 // Process-wide registry at the lock-owning layer: every public async RMW path
@@ -558,4 +540,4 @@ export function hasStoredSecret(account) {
   }
 }
 
-export { CONFIG_PATH };
+export { configPath };

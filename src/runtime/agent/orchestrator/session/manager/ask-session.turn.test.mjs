@@ -24,7 +24,7 @@ const { enqueuePendingMessage } = await import('./pending-messages.mjs');
 const { renderShellCompletionEnvelope } = await import('../../../../shared/task-notification-envelope.mjs');
 const { _withRegisteredProviderForTestAsync } = await import('../../providers/registry.mjs');
 const { SessionClosedError } = await import('./session-errors.mjs');
-const { modelToolSchemaAllowlist } = await import('../../../../../session-runtime/tool-profile.mjs');
+const { modelToolSchemaAllowlist } = await import('../../runtime-core/tool-profile.mjs');
 // Registered after the store's own 'exit' drain so the directories that
 // drain recreates are removed as well.
 process.on('exit', () => {

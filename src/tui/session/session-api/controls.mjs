@@ -6,7 +6,7 @@ import { projectNameFromPath } from '../labels.mjs';
 import { recomputePromptHistory } from '../prompt-history.mjs';
 import { appendPromptHistory, buildMergedPromptHistory, loadPromptHistory } from '../../prompt-history-store.mjs';
 import { abortGoalTurn } from '../goal-turn-state.mjs';
-import { goalStateSnapshot } from '../../../session-runtime/goal-state.mjs';
+import { goalStateSnapshot } from '../../../runtime/agent/orchestrator/runtime-core/goal-state.mjs';
 import { createApiHelpers } from './shared.mjs';
 
 export function createSessionControlsApi(bag) {

@@ -1,14 +1,13 @@
 import { statSync, lstatSync, realpathSync, createWriteStream } from 'node:fs';
 import * as fsPromises from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
-import { performance } from 'node:perf_hooks';
 import { randomBytes } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { getAbortSignalForSession } from '../../session/abort-lookup.mjs';
 import { hashText } from './hash-utils.mjs';
 import { sleep } from '../../../../shared/sleep.mjs';
-import { envFlag } from '../../../../shared/env.mjs';
+import { ioTraceDone, ioTraceStart } from '../io-trace.mjs';
 
 const STREAMING_THRESHOLD_BYTES = 1024 * 1024;
 
@@ -28,35 +27,6 @@ function expectedTargetSnapshotChanged(currentStat, expected) {
   }
   if (Number.isFinite(expected.ino) && Number(currentStat.ino) !== Number(expected.ino)) return true;
   return false;
-}
-
-function ioTraceEnabled() {
-  return envFlag('MIXDOG_IO_TRACE');
-}
-
-function ioTraceStart() {
-  return ioTraceEnabled() ? performance.now() : 0;
-}
-
-function ioTrace(event, fields = {}) {
-  if (!ioTraceEnabled()) return;
-  try {
-    process.stderr.write(
-      `[io-trace] ${JSON.stringify({
-        event,
-        ts: Date.now(),
-        ...fields,
-      })}\n`
-    );
-  } catch {}
-}
-
-function ioTraceDone(event, started, fields = {}) {
-  if (!started || !ioTraceEnabled()) return;
-  ioTrace(event, {
-    ...fields,
-    ms: Number((performance.now() - started).toFixed(3)),
-  });
 }
 
 function atomicWriteShouldFsync(value) {

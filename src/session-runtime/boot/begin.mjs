@@ -8,7 +8,7 @@ import { createProviderReadiness } from '../provider-readiness.mjs';
 import { createRoutePreparationGate } from '../route-preparation.mjs';
 import { createRuntimeFeatureGates } from '../runtime-feature-gates.mjs';
 import { createLazyRuntimeModules } from '../runtime-modules.mjs';
-import { normalizeToolProfile } from '../tool-profile.mjs';
+import { normalizeToolProfile } from '../../runtime/agent/orchestrator/runtime-core/tool-profile.mjs';
 
 // The boot record: `rt` (shared mutable runtime state, promoted from closure
 // `let`s so extracted modules read/write live values through one reference),

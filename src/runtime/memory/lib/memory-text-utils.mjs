@@ -102,7 +102,7 @@ function isEntityConcept(token) {
   return !/\p{Script=Hangul}/u.test(token) || isIdentifierToken(token);
 }
 
-function isStructuralTimeToken(token) {
+export function isStructuralTimeToken(token) {
   return /^\d{4}-\d{2}-\d{2}(?:~\d{4}-\d{2}-\d{2})?$/u.test(token) || /^\d{1,2}:\d{2}(?:~\d{1,2}:\d{2})?$/u.test(token);
 }
 

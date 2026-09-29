@@ -8,6 +8,7 @@
  */
 import { randomBytes } from 'node:crypto';
 import { resolveCodexAuth } from '../auth.mjs';
+import { timeoutSignal } from '../bounded-signal.mjs';
 import { decodeBase64Media } from '../download.mjs';
 import { mediaError } from '../lanes.mjs';
 import { upstreamError } from '../upstream-error.mjs';
@@ -96,13 +97,12 @@ export async function generateImage(
   // a newly discovered model can still be rejected by the Codex version gate.
   await warmVersion();
   const body = codexImageRequestBody({ model, prompt, options, references });
-  const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
   const res = await fetchFn(CODEX_RESPONSES_URL, {
     method: 'POST',
     headers: codexImageRequestHeaders(auth),
     body: JSON.stringify(body),
     redirect: 'error',
-    signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+    signal: timeoutSignal(signal, REQUEST_TIMEOUT_MS),
   });
   if (!res.ok || !res.body) throw upstreamError('ChatGPT image', res.status, await res.text().catch(() => ''));
 

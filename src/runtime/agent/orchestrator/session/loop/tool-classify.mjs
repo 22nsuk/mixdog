@@ -39,7 +39,7 @@ export function _isShellTool(name) {
 // produces a stable hash regardless of arg-object key order. Anything
 // non-serializable falls back to String(args) — still deterministic for
 // the model's typical structured-arg shape.
-export function _canonicalArgs(args) {
+function _canonicalArgs(args) {
   if (args == null || typeof args !== 'object') {
     try {
       return JSON.stringify(args);

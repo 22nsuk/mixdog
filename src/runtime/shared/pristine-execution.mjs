@@ -10,7 +10,6 @@ import { platformEntryKey } from './native-asset.mjs';
 import { clean } from './clean.mjs';
 
 const contractPath = fileURLToPath(new URL('./pristine-execution-contract.json', import.meta.url));
-const patchManifestPath = fileURLToPath(new URL('../agent/orchestrator/tools/patch-manifest.json', import.meta.url));
 
 const PRISTINE_EXECUTION_CONTRACT = Object.freeze(JSON.parse(readFileSync(contractPath, 'utf8')));
 
@@ -118,7 +117,8 @@ function hostDataDir(env) {
   return join(home, 'data');
 }
 
-function seedVerifiedPatchBinaryCache(sourceDataDir, dataDir, { manifestPath = patchManifestPath } = {}) {
+function seedVerifiedPatchBinaryCache(sourceDataDir, dataDir, { manifestPath } = {}) {
+  if (!manifestPath) return false;
   try {
     const sourcePatchDir = join(sourceDataDir, 'patch-bin');
     const manifestBytes = readFileSync(manifestPath);
@@ -198,6 +198,7 @@ export function createPristineExecutionBoundary({
   env = process.env,
   approvedExecutionEnv = {},
   apiKeyResolver = getAgentApiKey,
+  patchManifestPath,
 } = {}) {
   const routeError = validateExplicitPristineRoute({ provider, model, effort, fast });
   if (routeError) throw new Error(routeError);
@@ -265,7 +266,7 @@ export function createPristineExecutionBoundary({
 
   try {
     const sourceDataDir = hostDataDir(hostEnv);
-    seedVerifiedPatchBinaryCache(sourceDataDir, dataDir);
+    seedVerifiedPatchBinaryCache(sourceDataDir, dataDir, { manifestPath: patchManifestPath });
     const approvedNames = new Set(contract.approvedExecutionEnv || []);
     for (const name of Object.keys(approvedExecutionEnv || {})) {
       if (!approvedNames.has(name)) {

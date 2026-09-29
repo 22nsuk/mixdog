@@ -101,11 +101,9 @@ function build(spec, sessionId) {
   spec.files.forEach((file, index) => {
     const refs = file.refs.map((target) => {
       const artifact = artifacts[target];
-      return file.refStyle === 0
-        ? artifact.path
-        : file.refStyle === 1
-          ? normalizeOutputPath(artifact.path)
-          : artifact.path.split(/[\\/]/).pop();
+      if (file.refStyle === 0) return artifact.path;
+      if (file.refStyle === 1) return normalizeOutputPath(artifact.path);
+      return artifact.path.split(/[\\/]/).pop();
     });
     if (file.missing) refs.push(MISSING);
     const content = refs.length ? JSON.stringify({ archive: index, refs }) : `evidence ${index}`;

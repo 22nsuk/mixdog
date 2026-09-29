@@ -12,7 +12,7 @@ test('headless session creation does not mention unregistered Skill or Goal tool
   const { createSession } = await import('./session-lifecycle.mjs');
   const { deleteSession } = await import('../store.mjs');
   const { _withRegisteredProviderForTest } = await import('../../providers/registry.mjs');
-  const { modelToolSchemaAllowlist } = await import('../../../../../session-runtime/tool-profile.mjs');
+  const { modelToolSchemaAllowlist } = await import('../../runtime-core/tool-profile.mjs');
   let session;
   t.after(() => {
     if (session) assert.equal(deleteSession(session.id, { deferSummaryUpdate: true }), true);

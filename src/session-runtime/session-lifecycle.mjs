@@ -4,13 +4,13 @@
 // mutable runtime state flows through the rt bag. The route derivations live
 // in route-state.mjs / route-resolution.mjs and the session construction in
 // session-create.mjs.
-import { ensureProviderEnabled } from './config-helpers.mjs';
+import { ensureProviderEnabled } from '../runtime/agent/orchestrator/runtime-core/config-helpers.mjs';
 import { bootProfile } from './boot-profile.mjs';
 import { createWarmupSchedulers } from './warmup-schedulers.mjs';
 import { warmCatalogsInBackground } from '../runtime/agent/orchestrator/providers/model-catalog.mjs';
 import { envFlag } from '../runtime/shared/env.mjs';
 import { createPrewarmSchedulers } from './prewarm.mjs';
-import { hasActiveAutomation } from '../standalone/channel-admin.mjs';
+import { hasActiveAutomation } from './services/channel-admin.mjs';
 import { createSessionTranscript } from './session-transcript.mjs';
 import { createRouteResolution } from './route-resolution.mjs';
 import { createSessionCreator } from './session-create.mjs';

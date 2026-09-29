@@ -23,7 +23,7 @@ export function finalizeAntigravityTurn({ response, collector, useModel, opts, o
   const candidate = response.candidates?.[0] || null;
   const responseParts = candidate?.content?.parts ?? [];
   const textParts = responseParts.filter((p) => p?.thought !== true && 'text' in p);
-  const rawContent = textParts.map((p) => ('text' in p ? p.text : '')).join('');
+  const rawContent = textParts.map((p) => p.text).join('');
   const providerMetadata = parseGeminiTextPartMetadata(responseParts);
   const content = textLeakGuard?.enabled ? textLeakGuard.scrubAssistantText(rawContent) : rawContent;
   const leakedToolCalls = textLeakGuard?.getLeakedToolCalls() ?? [];

@@ -97,7 +97,14 @@ async function* responseSseEvents(response, signal) {
           if (!line.startsWith('data:')) continue;
           const data = line.slice(5).trim();
           if (!data || data === '[DONE]') continue;
-          yield JSON.parse(data);
+          let event;
+          try {
+            event = JSON.parse(data);
+          } catch {
+            // A malformed frame is skipped; the well-formed ones around it still count.
+            continue;
+          }
+          yield event;
         }
       }
     }
@@ -414,7 +421,7 @@ function variantGroupModel(baseId, variants, provider) {
     display: cursorVariantDisplay(representative.entry, representative),
     provider,
     mode: 'chat',
-    contextWindow: Number(representative.entry?.contextWindow) || 200_000,
+    contextWindow: Number(representative.entry?.contextWindow) || CURSOR_DEFAULT_CONTEXT_WINDOW,
     ...(Number(representative.entry?.maxTokens) ? { outputTokens: Number(representative.entry.maxTokens) } : {}),
     reasoning: supportsReasoning,
     supportsReasoning,
@@ -443,7 +450,7 @@ function normalizeCursorCatalog(entries, provider) {
     groups.set('auto', [
       {
         ...parseCursorVariantId('default'),
-        entry: { id: 'default', name: 'Auto', contextWindow: 200_000, maxTokens: 64_000 },
+        entry: { id: 'default', name: 'Auto', contextWindow: CURSOR_DEFAULT_CONTEXT_WINDOW, maxTokens: 64_000 },
       },
     ]);
     catalog.rawIds.add('default');
@@ -779,6 +786,7 @@ export class CursorOAuthProvider extends CursorProviderBase {
 export const __cursorModelInternals = Object.freeze({
   normalizeCursorCatalog,
   parseCursorVariantId,
+  responseSseEvents,
   selectCursorVariant,
   selectParameterizedCursorVariant,
   toCursorMessages,

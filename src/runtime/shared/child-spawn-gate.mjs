@@ -1,7 +1,6 @@
 import { availableParallelism } from 'node:os';
 import { createOwnerFairGate } from './owner-fair-gate.mjs';
 import { currentToolExecutionOwner } from './tool-execution-owner.mjs';
-import { acquireRemoteSpawnLease, remoteSpawnLeasesEnabled } from './child-spawn-remote.mjs';
 import { positiveInt } from './numbers.mjs';
 
 // ── Module-global child-spawn semaphore ──────────────────────────────────
@@ -128,21 +127,6 @@ const SLOW_WAIT_MS = Math.max(1000, Number(process.env.MIXDOG_CHILD_SPAWN_SLOW_M
 const SLOW_WARN_THROTTLE_MS = 30000;
 
 let _lastSlowWarnAt = 0;
-let _lastFallbackWarnAt = 0;
-
-function _warnLeaseFallback(error, laneName) {
-  const now = Date.now();
-  if (now - _lastFallbackWarnAt < SLOW_WARN_THROTTLE_MS) return;
-  _lastFallbackWarnAt = now;
-  try {
-    process.stderr.write(
-      `[child-spawn-gate] lane=${laneName} machine spawn budget unavailable` +
-        ` (${error?.message || error}); using this process's bounded local lane\n`
-    );
-  } catch {
-    /* ignore */
-  }
-}
 
 function _maybeWarnSlow(waitedMs, laneName, limit, queued) {
   if (waitedMs < SLOW_WAIT_MS) return;
@@ -180,25 +164,6 @@ export function acquire(signal = null, laneName = 'search', options = {}) {
   const lane = _lane(normalizedLaneName);
   const ownerKey = options?.ownerKey || currentToolExecutionOwner();
   const waitTimeoutMs = options?.waitTimeoutMs ?? lane.waitTimeoutMs;
-  // Session shards defer to the machine-wide budget owned by the daemon-side
-  // pool; the local lane remains the bounded fallback when the pool channel
-  // cannot answer. Real admission rejections (wait timeout, queue full)
-  // surface unchanged.
-  if (remoteSpawnLeasesEnabled()) {
-    return acquireRemoteSpawnLease({
-      lane: normalizedLaneName,
-      ownerKey,
-      signal,
-      waitTimeoutMs,
-    }).catch((error) => {
-      if (error?.code !== 'ELEASEFALLBACK') throw error;
-      // Only a genuinely dead pool channel reaches here (the client re-arms
-      // while the link is alive). Say so loudly: from this point the cap is
-      // per-process, so N shards can hold N× the machine-wide budget.
-      _warnLeaseFallback(error, normalizedLaneName);
-      return _acquireLocal(signal, normalizedLaneName, lane, ownerKey, waitTimeoutMs);
-    });
-  }
   return _acquireLocal(signal, normalizedLaneName, lane, ownerKey, waitTimeoutMs);
 }
 
@@ -240,7 +205,7 @@ function _abortError() {
  * Best-effort capacity probe for NON-COMPETING prewarm/warmup work. Returns
  * true only when a slot could be taken right now without queuing — i.e. below
  * the cap AND with no waiter already queued. Speculative warmers
- * code_graph / find prewarm) consult this to skip/defer when the daemon is
+ * (code_graph / find prewarm) consult this to skip/defer when the daemon is
  * busy, so a fire-and-forget warm never pushes a real tool query into the
  * queue (the "non-competing under fanout" guarantee). This is a probe, NOT a
  * reservation: the answer can go stale under a race, which is acceptable for
@@ -254,7 +219,7 @@ export function hasSpareCapacity(laneName = 'search') {
 
 export function snapshot() {
   return {
-    mode: remoteSpawnLeasesEnabled() ? 'remote-lease' : 'local',
+    mode: 'local',
     maxInflight: Number.isFinite(DEFAULT_MAX_INFLIGHT) ? DEFAULT_MAX_INFLIGHT : null,
     lanes: [..._lanes.entries()].map(([name, lane]) => {
       const state = lane.gate.snapshot();

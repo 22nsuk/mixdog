@@ -23,6 +23,18 @@ function extractSignature(headers, parser) {
 // Stripe's documented replay tolerance. A captured signature older (or more
 // than this skew newer) than the window is rejected even if the HMAC matches.
 const STRIPE_TOLERANCE_MS = 5 * 60 * 1000;
+// timingSafeEqual throws on length mismatch / malformed hex; wrap so a crafted
+// signature header can't crash the request handler.
+function hexDigestsEqual(providedHex, expectedHex) {
+  try {
+    const a = Buffer.from(providedHex, 'hex');
+    const b = Buffer.from(expectedHex, 'hex');
+    if (a.length !== b.length) return false;
+    return crypto.timingSafeEqual(a, b);
+  } catch {
+    return false;
+  }
+}
 function verifySignature(secret, rawBody, signatureValue, parser) {
   if (parser === 'stripe') {
     // Stripe signs `${t}.${payload}`, not the body alone, and the t= field
@@ -34,27 +46,11 @@ function verifySignature(secret, rawBody, signatureValue, parser) {
     if (!vMatch || !tMatch) return false;
     const ts = Number(tMatch[1]);
     if (!Number.isFinite(ts) || Math.abs(Date.now() - ts * 1000) > STRIPE_TOLERANCE_MS) return false;
-    const expected = crypto.createHmac('sha256', secret).update(`${tMatch[1]}.${rawBody}`).digest('hex');
-    // timingSafeEqual throws on length mismatch / malformed hex; wrap so a
-    // crafted signature header can't crash the request handler.
-    try {
-      const a = Buffer.from(vMatch[1], 'hex');
-      const b = Buffer.from(expected, 'hex');
-      if (a.length !== b.length) return false;
-      return crypto.timingSafeEqual(a, b);
-    } catch {
-      return false;
-    }
+    const expected = crypto.createHmac('sha256', secret).update(Buffer.concat([Buffer.from(`${tMatch[1]}.`), Buffer.from(rawBody)])).digest('hex');
+    return hexDigestsEqual(vMatch[1], expected);
   }
   const expected = crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
-  try {
-    const a = Buffer.from(signatureValue, 'hex');
-    const b = Buffer.from(expected, 'hex');
-    if (a.length !== b.length) return false;
-    return crypto.timingSafeEqual(a, b);
-  } catch {
-    return false;
-  }
+  return hexDigestsEqual(signatureValue, expected);
 }
 
 export { extractSignature, verifySignature };

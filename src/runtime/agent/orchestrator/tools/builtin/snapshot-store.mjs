@@ -118,26 +118,18 @@ function loadScopeFromDisk(scopeKey) {
 // Infinity to a unique sentinel on write and back on read. Shape-agnostic deep
 // clone (does NOT mutate the live in-memory snapshot objects).
 const INFINITY_SENTINEL = '__mixdog_Infinity_sentinel__';
-function _withInfinitySentinels(value) {
-  if (value === Infinity) return INFINITY_SENTINEL;
-  if (Array.isArray(value)) return value.map(_withInfinitySentinels);
+function _replaceDeep(value, from, to) {
+  if (value === from) return to;
+  if (Array.isArray(value)) return value.map((item) => _replaceDeep(item, from, to));
   if (value && typeof value === 'object') {
     const out = {};
-    for (const [k, v] of Object.entries(value)) out[k] = _withInfinitySentinels(v);
+    for (const [k, v] of Object.entries(value)) out[k] = _replaceDeep(v, from, to);
     return out;
   }
   return value;
 }
-function _reviveInfinitySentinels(value) {
-  if (value === INFINITY_SENTINEL) return Infinity;
-  if (Array.isArray(value)) return value.map(_reviveInfinitySentinels);
-  if (value && typeof value === 'object') {
-    const out = {};
-    for (const [k, v] of Object.entries(value)) out[k] = _reviveInfinitySentinels(v);
-    return out;
-  }
-  return value;
-}
+const _withInfinitySentinels = (value) => _replaceDeep(value, Infinity, INFINITY_SENTINEL);
+const _reviveInfinitySentinels = (value) => _replaceDeep(value, INFINITY_SENTINEL, Infinity);
 
 function persistScopeSync(scopeKey, { exitDrain = false } = {}) {
   const path = snapshotScopeFilePath(scopeKey);

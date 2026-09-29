@@ -58,7 +58,9 @@ export function createQueueOps(bag, { kickDrain }) {
           (entry.mode === 'task-notification' ? notificationDisplayText(entry.text) : String(entry.text || '')),
       };
       if (next.mode === 'task-notification' && next.key) {
-        const duplicateQueued = pending.some((entry) => entry?.mode === 'task-notification' && entry?.key === next.key);
+        const duplicateQueued = pending.some(
+          (queued) => queued?.mode === 'task-notification' && queued?.key === next.key
+        );
         if (duplicateQueued) continue;
         pendingNotificationKeys.add(next.key);
       }

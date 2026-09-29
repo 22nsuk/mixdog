@@ -116,7 +116,7 @@ export function createManageActions({ getDb, log }) {
     }
     const nowMs = Date.now();
     const sourceRef = `manual:${nowMs}-${process.pid}`;
-    const manageProjectId = resolveProjectScope(typeof args.cwd === 'string' && args.cwd ? args.cwd : null);
+    const manageProjectId = resolveProjectScope(args.cwd);
     try {
       const newId = await insertManualRootEntry(db, {
         element,

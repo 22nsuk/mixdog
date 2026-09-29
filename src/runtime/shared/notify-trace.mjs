@@ -3,12 +3,23 @@
 // in the field (2026-08-17: bench shell output never rendered while the model
 // queue twin worked every time). One append-only line per decision point keeps
 // the delivery chain reconstructable after the fact. Small, bounded lines;
-// best-effort writes; never throws into the caller.
-import { appendFileSync, mkdirSync } from 'node:fs';
+// best-effort writes; never throws into the caller. Lines are queued and
+// written asynchronously; the file keeps its last 1 MiB once it passes 4 MiB.
+import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { createAsyncLogAppender } from './async-log-appender.mjs';
 import { resolvePluginData } from './plugin-paths.mjs';
 
+const NOTIFY_TRACE_MAX_BYTES = 4 * 1024 * 1024;
+const NOTIFY_TRACE_KEEP_BYTES = 1024 * 1024;
+const appender = createAsyncLogAppender({ maxBytes: NOTIFY_TRACE_MAX_BYTES, keepBytes: NOTIFY_TRACE_KEEP_BYTES });
+
 let traceDir = null;
+
+/** Resolves once every trace line queued so far is on disk. */
+export function flushNotifyTrace() {
+  return appender.flush();
+}
 
 // Resolved per call: a pristine boundary retargets MIXDOG_DATA_DIR/MIXDOG_HOME
 // at runtime, and its traces must stay inside that isolated root.
@@ -32,7 +43,7 @@ export function notifyTrace(stage, fields = {}) {
       if (value === undefined || value === null) continue;
       parts.push(`${key}=${String(value).replace(/\s+/g, ' ').slice(0, 120)}`);
     }
-    appendFileSync(tracePath(), `${parts.join(' ')}\n`);
+    appender.append(tracePath(), `${parts.join(' ')}\n`);
   } catch {
     /* tracing must never break delivery */
   }

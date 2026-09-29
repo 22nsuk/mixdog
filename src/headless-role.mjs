@@ -4,6 +4,7 @@ import {
   formatPristineExecutionAudit,
   validateExplicitPristineRoute,
 } from './runtime/shared/pristine-execution.mjs';
+import { BUNDLED_PATCH_MANIFEST_PATH } from './runtime/agent/orchestrator/tools/patch-manifest-path.mjs';
 import { installProcessSignalCleanup, waitWithTimeout } from './runtime/shared/process-shutdown.mjs';
 import { sleep } from './runtime/shared/sleep.mjs';
 import { clean } from './runtime/shared/clean.mjs';
@@ -42,7 +43,7 @@ async function buildAgentRunner(cwd, boundary) {
   // Import runtime/config modules only after MIXDOG_DATA_DIR and all behavioral
   // guards point at the ephemeral pristine boundary.
   const [{ createStandaloneAgent }, cfgMod, reg, mgr] = await Promise.all([
-    import('./standalone/agent-tool.mjs'),
+    import('./session-runtime/services/agent-tool.mjs'),
     import('./runtime/agent/orchestrator/config.mjs'),
     import('./runtime/agent/orchestrator/providers/registry.mjs'),
     import('./runtime/agent/orchestrator/session/manager.mjs'),
@@ -58,6 +59,69 @@ async function buildAgentRunner(cwd, boundary) {
     dataDir: cfgMod.getPluginData(),
     cwd,
   });
+}
+
+// One-shot memoized shutdown: close the agent, drain the trace, close native
+// patch servers, then remove the pristine boundary. Each step is time-boxed
+// against a shared deadline and failures never skip the later steps.
+function createRoleCleanup(run, { tag, context }) {
+  let cleanupPromise = null;
+  const shutdown = async () => {
+    const deadline = Date.now() + HEADLESS_SHUTDOWN_TIMEOUT_MS - HEADLESS_CLEANUP_RESERVE_MS;
+    const runCleanupStep = async (start, maxMs, label) => {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return;
+      const budget = Math.min(maxMs, remaining);
+      // waitWithTimeout intentionally unrefs its timer. Keep this one-shot
+      // headless cleanup alive until the step settles or consumes its budget,
+      // otherwise an unresolved close can terminate Node before `finally`.
+      const keepAlive = setTimeout(() => {}, budget + 1);
+      try {
+        await waitWithTimeout(start(), budget, label);
+      } finally {
+        clearTimeout(keepAlive);
+      }
+    };
+    try {
+      if (run.agentRunner) {
+        await runCleanupStep(
+          () => run.agentRunner.execute({ type: 'close', tag }, context),
+          HEADLESS_CLOSE_TIMEOUT_MS,
+          'headless agent close'
+        );
+      }
+    } catch {
+      // Trace drain and boundary cleanup remain mandatory when close hangs.
+    }
+    try {
+      if (run.drainTrace) {
+        await runCleanupStep(run.drainTrace, HEADLESS_SHUTDOWN_TIMEOUT_MS, 'headless trace drain');
+      }
+    } catch {
+      // Telemetry must never block cleanup of the pristine boundary.
+    } finally {
+      try {
+        await runCleanupStep(
+          async () => {
+            const closeNativePatchServers = globalThis.__mixdogCloseNativePatchServers;
+            if (typeof closeNativePatchServers === 'function') {
+              await closeNativePatchServers();
+            }
+          },
+          HEADLESS_CLOSE_TIMEOUT_MS,
+          'headless native patch close'
+        );
+      } catch {
+        // The boundary cleanup below remains mandatory if native shutdown hangs.
+      } finally {
+        run.boundary?.cleanup();
+      }
+    }
+  };
+  return () => {
+    cleanupPromise ??= shutdown();
+    return cleanupPromise;
+  };
 }
 
 export async function runHeadlessRole({
@@ -117,89 +181,38 @@ export async function runHeadlessRole({
     fast,
   });
 
-  let boundary = null;
-  let agentRunner = null;
   let signalCleanup = null;
-  let cleanupPromise = null;
-  let drainTrace = null;
   let taskId = null;
   let lastOutput = '';
-  const cleanup = (_reason = 'headless-exit') => {
-    if (cleanupPromise) return cleanupPromise;
-    cleanupPromise = (async () => {
-      const deadline = Date.now() + HEADLESS_SHUTDOWN_TIMEOUT_MS - HEADLESS_CLEANUP_RESERVE_MS;
-      const runCleanupStep = async (start, maxMs, label) => {
-        const remaining = deadline - Date.now();
-        if (remaining <= 0) return;
-        const budget = Math.min(maxMs, remaining);
-        // waitWithTimeout intentionally unrefs its timer. Keep this one-shot
-        // headless cleanup alive until the step settles or consumes its budget,
-        // otherwise an unresolved close can terminate Node before `finally`.
-        const keepAlive = setTimeout(() => {}, budget + 1);
-        try {
-          await waitWithTimeout(start(), budget, label);
-        } finally {
-          clearTimeout(keepAlive);
-        }
-      };
-      try {
-        if (agentRunner) {
-          await runCleanupStep(
-            () => agentRunner.execute({ type: 'close', tag }, context),
-            HEADLESS_CLOSE_TIMEOUT_MS,
-            'headless agent close'
-          );
-        }
-      } catch {
-        // Trace drain and boundary cleanup remain mandatory when close hangs.
-      }
-      try {
-        if (drainTrace) {
-          await runCleanupStep(drainTrace, HEADLESS_SHUTDOWN_TIMEOUT_MS, 'headless trace drain');
-        }
-      } catch {
-        // Telemetry must never block cleanup of the pristine boundary.
-      } finally {
-        try {
-          await runCleanupStep(
-            async () => {
-              const closeNativePatchServers = globalThis.__mixdogCloseNativePatchServers;
-              if (typeof closeNativePatchServers === 'function') {
-                await closeNativePatchServers();
-              }
-            },
-            HEADLESS_CLOSE_TIMEOUT_MS,
-            'headless native patch close'
-          );
-        } catch {
-          // The boundary cleanup below remains mandatory if native shutdown hangs.
-        } finally {
-          boundary?.cleanup();
-        }
-      }
-    })();
-    return cleanupPromise;
-  };
+  // Live handles the shutdown path reads at cleanup time, not at creation.
+  const run = { boundary: null, agentRunner: null, drainTrace: null };
+  const cleanup = createRoleCleanup(run, { tag, context });
   try {
     try {
-      boundary = createPristineExecutionBoundary({ provider, model, effort, fast });
+      run.boundary = createPristineExecutionBoundary({
+        provider,
+        model,
+        effort,
+        fast,
+        patchManifestPath: BUNDLED_PATCH_MANIFEST_PATH,
+      });
     } catch (error) {
       writeErr(`mixdog: ${error?.message || error}\n`);
       return 1;
     }
-    writeErr(`${formatPristineExecutionAudit(boundary.audit)}\n`);
+    writeErr(`${formatPristineExecutionAudit(run.boundary.audit)}\n`);
     signalCleanup = installProcessSignalCleanup({
       name: 'mixdog-headless',
       timeoutMs: HEADLESS_SHUTDOWN_TIMEOUT_MS,
       cleanup,
     });
-    agentRunner = await agentRunnerFactory(cwd, boundary);
+    run.agentRunner = await agentRunnerFactory(cwd, run.boundary);
     try {
-      ({ drainAgentTrace: drainTrace } = await import('./runtime/agent/orchestrator/agent-trace.mjs'));
+      ({ drainAgentTrace: run.drainTrace } = await import('./runtime/agent/orchestrator/agent-trace.mjs'));
     } catch {
-      drainTrace = null;
+      run.drainTrace = null;
     }
-    const started = await agentRunner.execute(spawnArgs, context);
+    const started = await run.agentRunner.execute(spawnArgs, context);
     lastOutput = clean(started);
     taskId = taskIdFromOutput(started);
     if (!taskId) {
@@ -208,7 +221,7 @@ export async function runHeadlessRole({
     }
 
     for (;;) {
-      lastOutput = clean(await agentRunner.execute({ type: 'read', task_id: taskId }, context));
+      lastOutput = clean(await run.agentRunner.execute({ type: 'read', task_id: taskId }, context));
       if (TERMINAL_STATUS_RE.test(lastOutput)) break;
       await sleep(500);
     }

@@ -30,7 +30,10 @@ export function cleanupStaleTranscriptSpillDirs({ root = tmpdir(), now = Date.no
           try {
             process.kill(ownerPid, 0);
             pidAlive = true;
-          } catch {}
+          } catch (error) {
+            // EPERM: the process exists but belongs to another user — alive.
+            pidAlive = error?.code === 'EPERM';
+          }
         }
         if (!pidAlive) {
           rmSync(path, { recursive: true, force: true });

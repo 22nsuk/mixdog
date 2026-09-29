@@ -9,12 +9,13 @@
  * the event loop and inside the provider stream worker (a worker failure can
  * therefore always be re-run inline with identical results).
  *
- * Framing rules are byte-identical to the previous inline Anthropic loop:
+ * Framing rules:
  *   - `:`-prefixed lines are comment/keepalive frames and are dropped.
  *   - blank lines are record separators and are dropped.
- *   - `event: ` sets the current event name, which persists (across chunks)
- *     until the next `event: ` line.
- *   - `data: ` payloads are trimmed; empty payloads are dropped.
+ *   - `event:` sets the current event name, which persists (across chunks)
+ *     until the next `event:` line.
+ *   - `data:` payloads are trimmed; empty payloads are dropped. The space
+ *     after the colon is optional (`data:{}` and `data: {}` are equal).
  *   - any other line is ignored.
  * CRLF transports behave as before: the trailing `\r` is removed by trim() on
  * the value lines, and a bare `\r` line matches no prefix and is ignored.
@@ -50,12 +51,12 @@ export function frameSseRegion(text, currentEvent = '') {
     index = end + 1;
     if (end === start) continue; // record separator
     if (text.charCodeAt(start) === COLON_CODE) continue; // comment / ping keepalive
-    if (text.startsWith('event: ', start)) {
-      name = text.slice(start + 7, end).trim();
+    if (text.startsWith('event:', start)) {
+      name = text.slice(start + 6, end).trim();
       continue;
     }
-    if (!text.startsWith('data: ', start)) continue;
-    const data = text.slice(start + 6, end).trim();
+    if (!text.startsWith('data:', start)) continue;
+    const data = text.slice(start + 5, end).trim();
     if (!data) continue;
     frames.push({ name, data });
   }

@@ -44,14 +44,10 @@ export function applyCompatProviderChatOptions(params, providerName, opts = {}, 
     const rawThinking = opts.deepseekThinking ?? opts.thinking ?? config?.thinking;
     const rawEffort = opts.deepseekReasoningEffort ?? opts.effort ?? config?.reasoningEffort;
     if (rawThinking !== undefined || rawEffort !== undefined) {
-      const disabled =
-        rawThinking === false ||
-        String(rawThinking?.type ?? rawThinking ?? rawEffort)
-          .trim()
-          .toLowerCase() === 'disabled' ||
-        String(rawThinking?.type ?? rawThinking ?? rawEffort)
-          .trim()
-          .toLowerCase() === 'none';
+      const thinkingMode = String(rawThinking?.type ?? rawThinking ?? rawEffort)
+        .trim()
+        .toLowerCase();
+      const disabled = rawThinking === false || thinkingMode === 'disabled' || thinkingMode === 'none';
       params.thinking = { type: disabled ? 'disabled' : 'enabled' };
       if (!disabled) {
         const effort = String(rawEffort ?? '')

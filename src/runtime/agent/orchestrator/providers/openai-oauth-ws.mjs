@@ -32,6 +32,7 @@
 import { performance } from 'node:perf_hooks';
 import { appendAgentTrace } from '../agent-trace.mjs';
 import { acquireWebSocket, _sendFrame, drainOpenaiWsPool } from './openai-ws-pool.mjs';
+import { sleepWithAbort } from './retry-classifier.mjs';
 import { _logicalResponseItemMatch, parseToolSearchArgs, _streamResponse } from './openai-ws-stream.mjs';
 import {
   HANDSHAKE_MAX_ATTEMPTS,
@@ -160,22 +161,7 @@ async function _acquireWithRetry({
       const sleepStart = performance.now();
       try {
         if (externalSignal) {
-          await new Promise((resolve, reject) => {
-            const t = setTimeout(() => {
-              externalSignal.removeEventListener('abort', onAbort);
-              resolve();
-            }, backoff);
-            const onAbort = () => {
-              clearTimeout(t);
-              const reason = externalSignal.reason;
-              reject(reason instanceof Error ? reason : new Error('OpenAI OAuth WS acquire aborted'));
-            };
-            if (externalSignal.aborted) {
-              onAbort();
-              return;
-            }
-            externalSignal.addEventListener('abort', onAbort, { once: true });
-          });
+          await sleepWithAbort(backoff, externalSignal, undefined, 'OpenAI OAuth WS acquire aborted');
         } else {
           await _sleepFn(backoff);
         }

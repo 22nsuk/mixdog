@@ -156,13 +156,7 @@ export function createSessionOAuthFlowRegistry({ ttlMs = DEFAULT_FLOW_TTL_MS } =
     const flow = requireFlow(id);
     if (flow.state !== 'pending') return oauthFlowStatus(flow);
     finishFlow(flow, 'cancelled');
-    let failure = null;
-    try {
-      await flow.cancel?.();
-    } catch (error) {
-      failure = error;
-    }
-    if (failure) throw failure;
+    await flow.cancel?.();
     return oauthFlowStatus(flow);
   }
 

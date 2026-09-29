@@ -14,6 +14,7 @@
  */
 import { compareSemver } from '../../runtime/shared/update-checker.mjs';
 import { resolvePluginData } from '../../runtime/shared/plugin-paths.mjs';
+import { hasEnabledAutomation } from '../../runtime/shared/automation-presence.mjs';
 import { providerRowUsable } from './provider-usable.mjs';
 import { constants as fsConstants, readFileSync } from 'node:fs';
 import { access, readdir, readFile } from 'node:fs/promises';
@@ -216,7 +217,20 @@ function reportChannels(runtime) {
       row('warn', 'enabled · worker status unavailable');
       return;
     }
-    row(worker.running ? 'ok' : 'warn', `enabled · worker ${worker.running ? 'running' : 'stopped'}`);
+    if (worker.running) {
+      row('ok', 'enabled · worker running');
+      return;
+    }
+    // The worker boots only for enabled schedules or webhooks, so without
+    // them a stopped worker is idle, not a fault.
+    const setup = await runtime.getChannelSetup?.();
+    if (setup && !hasEnabledAutomation(setup)) {
+      row('ok', 'enabled · idle (no active schedules or webhooks)');
+      return;
+    }
+    row('warn', setup ? 'enabled · worker stopped with active automation' : 'enabled · worker stopped', {
+      hint: 'enabled schedules and webhooks are not running',
+    });
   };
 }
 

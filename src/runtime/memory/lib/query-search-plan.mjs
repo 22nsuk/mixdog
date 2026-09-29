@@ -87,7 +87,7 @@ export function resolveSearchPlan(args, resolveProjectScope) {
   // query-less browsing stays newest-first through the default above.
   // Callers asking for a timeline can pin sort:'date' explicitly.
 
-  // Derive projectScope from caller cwd (falls back to process.cwd()).
+  // Derive projectScope from caller cwd (no cwd → the explicit session cwd, else COMMON).
   // Explicit args.projectScope (string) takes priority so callers can
   // override to 'all', 'common', or a specific slug.
   const projectScope = resolveQueryProjectScope(args, resolveProjectScope);

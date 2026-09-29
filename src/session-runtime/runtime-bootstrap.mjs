@@ -3,7 +3,7 @@
 // two steps stay separate exports because the runtime creates
 // provider-readiness state between them.
 import { performance } from 'node:perf_hooks';
-import { ensureStandaloneEnvironment } from '../standalone/seeds.mjs';
+import { ensureStandaloneEnvironment } from './services/seeds.mjs';
 import { listOfficeJournals } from '../runtime/office/core/journal.mjs';
 import { bootProfile, profiledImport } from './boot-profile.mjs';
 import {

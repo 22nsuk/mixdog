@@ -59,7 +59,7 @@ export function stripAnsi(s) {
 
 const UNSAFE_TEXT_CONTROL_RE = /[\u0001-\u0006\u0008\u000B\u000C\u000E-\u001A\u001C-\u001F\u007F]/g;
 
-function inspectShellTextChunk(value, _channel = 'stdout') {
+function inspectShellTextChunk(value) {
   const text = String(value ?? '');
   if (!text) return { text: '', binary: false, bytes: 0 };
   const bytes = Buffer.byteLength(text, 'utf8');
@@ -454,7 +454,7 @@ export class TaskOutput {
       );
       // Display-only path: scrub escape codes in direct mode, but never record
       // a binary verdict from an arbitrary tail slice.
-      return this.direct ? inspectShellTextChunk(merged, 'stdout').text : merged;
+      return this.direct ? inspectShellTextChunk(merged).text : merged;
     } catch {
       return '';
     }
@@ -466,7 +466,7 @@ export class TaskOutput {
   // across both capture modes.
   _sanitizeChunk(text, channel) {
     if (!text) return text;
-    const inspected = inspectShellTextChunk(text, channel);
+    const inspected = inspectShellTextChunk(text);
     if (inspected.binary && !this.binaryOutput) {
       this.binaryOutput = { channel, bytes: inspected.bytes };
       return `[binary output on ${channel} sanitized; non-printable bytes removed]\n${inspected.text}`;
@@ -585,6 +585,9 @@ export class ExecResult {
     // the spill files now owned by the shell-jobs registry.
     this.backgrounded = opts.backgrounded === true;
     this.jobId = opts.jobId || null;
+    // A command queued behind a saturated shell lane is no shell job; this
+    // promise settles when the queued run finishes.
+    this.settled = opts.settled || null;
     this.backgroundMessage = opts.backgroundMessage || null;
     // Survivors observed AFTER the shell process exited (process group on
     // POSIX, process tree + held stdio on win32). Non-null means the command

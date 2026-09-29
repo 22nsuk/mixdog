@@ -313,7 +313,10 @@ test('fresh-context projection retains native calls together with their tool out
     (message) => message?.role === 'assistant' && message.content === 'running the older shell command'
   );
   // Compaction drops an older assistant's opaque replay; the call it made stays.
-  assert.deepEqual(projectedAssistant?.toolCalls?.map((call) => call.id), [callId]);
+  assert.deepEqual(
+    projectedAssistant?.toolCalls?.map((call) => call.id),
+    [callId]
+  );
   assert.equal(compacted.messages.find((message) => message.toolCallId === callId)?.content, 'background task started');
 
   const wire = convertMessagesToResponsesInput(compacted.messages, { replayEncryptedReasoning: true });

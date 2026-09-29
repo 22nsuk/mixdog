@@ -8,8 +8,8 @@ import { PATCH_TOOL_DEFS } from '../../tools/patch-tool-defs.mjs';
 import { CODE_GRAPH_TOOL_DEFS } from '../../tools/code-graph-tool-defs.mjs';
 import { buildSkillToolDefs } from '../../context/collect.mjs';
 import { filterModelEditTools } from '../../../../shared/edit-tool-dialect.mjs';
-import { filterMcpToolsForSession } from '../../../../../session-runtime/extension-scopes.mjs';
-import { ROUTE_TOOL_ORDER } from '../../../../../session-runtime/tool-catalog-data.mjs';
+import { filterMcpToolsForSession } from '../../runtime-core/extension-scopes.mjs';
+import { ROUTE_TOOL_ORDER } from '../../runtime-core/tool-catalog-data.mjs';
 
 // Merge externally-connected MCP tools with the plugin's in-process tools
 // (registered by agent's toolExecutor adapter). Internal tools are exposed

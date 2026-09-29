@@ -4,7 +4,7 @@
  * items, reasoning items, web_search / tool_search / custom tool calls and
  * pending function_call completion.
  */
-import { makeInvalidToolArgsMarker } from '../openai-compat-stream.mjs';
+import { makeInvalidToolArgsMarker } from '../lib/openai-tool-args.mjs';
 import { customToolCallFromResponseItem, nativeToolSearchCallFromArguments } from '../custom-tool-wire.mjs';
 
 // Completed function_call.arguments parse for the OpenAI Responses stream.

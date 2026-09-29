@@ -61,23 +61,6 @@ export function createStreamSafetyStamps() {
   };
 }
 
-/**
- * Run an async function with exponential-backoff retry on transient errors.
- *
- * Behavior:
- *   - Calls `fn()` up to `maxAttempts` times.
- *   - Between attempts, sleeps `backoffMs[attemptIndex]`.
- *   - Honors `signal` (AbortSignal): aborts current attempt's wait and re-
- *     throws caller's reason. Does NOT abort an in-flight call — that's
- *     the provider's own responsibility via its native abort plumbing.
- *   - Uses classifyError() to decide retry. 'transient' → retry,
- *     'auth' / 'permanent' / 'unknown' → throw immediately.
- *   - Classification is typed-only: an error with no status/errno/SDK type is
- *     'unknown' and is surfaced immediately instead of being replayed.
- *
- * Returns whatever `fn()` resolves to. Throws the last error if every retry
- * is exhausted, or the first error if it's classified non-transient.
- */
 const providerRecoveryExhaustedErrors = new WeakSet();
 
 export function markProviderRecoveryExhausted(error, { owner = 'provider', attempts = null } = {}) {
@@ -252,6 +235,23 @@ export function retryDelayLabel(delayMs, delayReason) {
   return `, delay ${delayMs}ms${note}`;
 }
 
+/**
+ * Run an async function with exponential-backoff retry on transient errors.
+ *
+ * Behavior:
+ *   - Calls `fn()` up to `maxAttempts` times.
+ *   - Between attempts, sleeps `backoffMs[attemptIndex]`.
+ *   - Honors `signal` (AbortSignal): aborts current attempt's wait and re-
+ *     throws caller's reason. Does NOT abort an in-flight call — that's
+ *     the provider's own responsibility via its native abort plumbing.
+ *   - Uses classifyError() to decide retry. 'transient' → retry,
+ *     'auth' / 'permanent' / 'unknown' → throw immediately.
+ *   - Classification is typed-only: an error with no status/errno/SDK type is
+ *     'unknown' and is surfaced immediately instead of being replayed.
+ *
+ * Returns whatever `fn()` resolves to. Throws the last error if every retry
+ * is exhausted, or the first error if it's classified non-transient.
+ */
 export async function withRetry(fn, opts = {}) {
   const retry = retryOptions(opts);
   const { maxAttempts, signal, onRetry, perAttemptTimeoutMs, perAttemptLabel, sleepFn } = retry;

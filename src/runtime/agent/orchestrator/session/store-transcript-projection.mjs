@@ -9,7 +9,7 @@
  * that lazily enters the heavier reconnect-recovery boundary (dynamic imports
  * preserved verbatim so the cold summary path stays leaf-only).
  */
-import { sessionContextMeasurement, contextMeasurementStats } from '../../../../ui/context-measurement.mjs';
+import { sessionContextMeasurement, contextMeasurementStats } from '../../../shared/context-measurement.mjs';
 import { nextProjectionStamp } from './store-transcript-cache.mjs';
 import { cleanValue, desktopSession, positiveNumber } from './store-summary-fields.mjs';
 
@@ -41,14 +41,12 @@ export async function projectStoredTranscript(sessionId, doc, options) {
       if (session?.activeTurnCheckpoint) projectCheckpoint();
     }
   }
-  const { restoreTranscriptItems, sessionContextSnapshotProjection } = await import(
-    '../../../../tui/session/session-api-ext.mjs'
-  );
+  const { restoreTranscriptItems, sessionContextSnapshotProjection } = await import('./transcript-restore/restore.mjs');
   let preparedContextProjection = null;
   try {
     const [{ prepareSessionProjection }, { createContextStatus }, { primeContextEstimates }] = await Promise.all([
       import('./manager.mjs'),
-      import('../../../../session-runtime/context-status.mjs'),
+      import('../runtime-core/context-status.mjs'),
       import('./context-utils.mjs'),
     ]);
     const prepared = prepareSessionProjection(session, 'full');

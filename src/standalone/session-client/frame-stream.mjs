@@ -5,7 +5,7 @@
 // owner: onHealthy on the first bytes, onLoss for a transient loss worth a
 // reconnect, onFatal for a token/route rejection.
 import http from 'node:http';
-import { createSseFrameParser } from '../sse-frames.mjs';
+import { createSseFrameParser } from '../../session-runtime/services/sse-frames.mjs';
 
 const FATAL_STATUSES = new Set([401, 403, 404]);
 

@@ -2,8 +2,8 @@
 // runtime API. Stateless helpers are imported directly; the runtime injects
 // live state getters plus the closure callbacks (`deps`). Each surface lives in
 // its own module and shares the extension-change sync and scope decorators.
-import { clean } from './session-text.mjs';
-import { EXTENSION_SCOPE_KINDS, withExtensionScope } from './extension-scopes.mjs';
+import { clean } from '../runtime/agent/orchestrator/runtime-core/session-text.mjs';
+import { EXTENSION_SCOPE_KINDS, withExtensionScope } from '../runtime/agent/orchestrator/runtime-core/extension-scopes.mjs';
 import { createExtensionSync } from './resource-extension-sync.mjs';
 import { createScopeDecorators } from './resource-scope-decorate.mjs';
 import { createMcpResourceApi } from './resource-mcp-api.mjs';

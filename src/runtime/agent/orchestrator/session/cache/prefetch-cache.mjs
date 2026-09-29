@@ -14,7 +14,7 @@ import { writeJsonAtomicSync } from '../../../../shared/atomic-file.mjs';
 import { resolvePluginData } from '../../../../shared/plugin-paths.mjs';
 import { setBoundedTextCacheEntry } from './text-cache-budget.mjs';
 
-// I: cap is configurable via MIXDOG_PREFETCH_CACHE_MAX env var; default 200.
+// Entry cap: MIXDOG_PREFETCH_CACHE_MAX env var, default 200.
 const _envCap = Number(process.env.MIXDOG_PREFETCH_CACHE_MAX);
 const PREFETCH_CACHE_MAX = Number.isFinite(_envCap) && _envCap > 0 ? _envCap : 200;
 const PREFETCH_TTL_MS = 60 * 60 * 1000; // 1 hour
@@ -190,6 +190,4 @@ export function drainPrefetchDiskWrites() {
   _flushDiskWrites();
 }
 
-try {
-  process.once('beforeExit', drainPrefetchDiskWrites);
-} catch {}
+process.once('beforeExit', drainPrefetchDiskWrites);

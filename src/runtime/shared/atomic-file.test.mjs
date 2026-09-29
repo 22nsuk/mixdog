@@ -378,17 +378,17 @@ test('an async lock wait on a live foreign holder never blocks the event loop', 
   assert.equal(existsSync(lock), false);
 });
 
-test('a sync waiter fails fast while an async acquisition is still opening the lock', async (t) => {
+test('a sync waiter fails fast while an async acquisition is still publishing the lock', async (t) => {
   const { lock } = fixture(t);
-  const open = fsPromises.open;
+  const link = fsPromises.link;
   const opening = Promise.withResolvers();
   const proceed = Promise.withResolvers();
-  t.mock.method(fsPromises, 'open', async (target, ...args) => {
+  t.mock.method(fsPromises, 'link', async (from, target, ...args) => {
     if (target === lock) {
       opening.resolve();
       await proceed.promise;
     }
-    return open(target, ...args);
+    return link(from, target, ...args);
   });
   syncBuiltinESMExports();
   t.after(() => {
@@ -510,6 +510,29 @@ test('secret create-only publication never weakens the published file ACL during
   assert.equal(result.status, 0, result.error?.message || result.stderr || result.stdout);
 });
 
+test('a lock is never visible without a readable owner record', async (t) => {
+  const { lock } = fixture(t);
+  const link = fsPromises.link;
+  const observed = [];
+  t.mock.method(fsPromises, 'link', async (from, target, ...args) => {
+    await link(from, target, ...args);
+    if (target === lock) observed.push(readFileSync(lock, 'utf8'));
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  await withFileLock(lock, () => {
+    const parts = readFileSync(lock, 'utf8').trim().split(/\s+/);
+    assert.equal(Number(parts[0]), process.pid);
+    assert.equal(parts.length, 3);
+  });
+  assert.equal(observed.length, 1);
+  assert.match(observed[0], /^\d+ \d+ [0-9a-f]{24}\n$/);
+  assert.equal(existsSync(lock), false);
+});
+
 test('failed lock-owner writes never run the mutation or remove a replacement lock', (t) => {
   const { dir, lock } = fixture(t);
   const source = `
@@ -525,21 +548,18 @@ test('failed lock-owner writes never run the mutation or remove a replacement lo
     const replacement = 'replacement owner\\n';
     for (const acquire of [withFileLockSync, withFileLock]) {
       for (const replace of [false, true]) {
-        // The owner record is written through the open handle: an fd on the
-        // sync path, a FileHandle on the async path.
+        // The owner record is staged in a private file before it is linked to
+        // the lock path; failing that write must leave no lock and no stage.
         const failOwnerWrite = () => {
-          if (replace) {
-            fs.unlinkSync(lock);
-            write(lock, replacement);
-          }
+          if (replace) write(lock, replacement);
           throw failure;
         };
         fs.writeFileSync = (target, ...args) => {
-          if (typeof target !== 'number') return write(target, ...args);
+          if (typeof target !== 'string' || !target.startsWith(lock + '.')) return write(target, ...args);
           failOwnerWrite();
         };
         fsp.writeFile = async (target, ...args) => {
-          if (typeof target === 'string') return writeAsync(target, ...args);
+          if (typeof target !== 'string' || !target.startsWith(lock + '.')) return writeAsync(target, ...args);
           failOwnerWrite();
         };
         syncBuiltinESMExports();

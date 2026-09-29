@@ -133,8 +133,10 @@ export function createAntigravityStreamCollector({ tools, useModel, onToolCall, 
         const leaked = textLeakGuard.getLeakedToolCalls();
         error.partialToolCalls = [...streamedNativeToolCalls, ...leaked];
         const replay = createProviderReplay('antigravity', leaked.length ? [] : streamedParts);
-        if (replay) replay.requestContext = { model: useModel };
-        if (replay) error.partialProviderReplay = replay;
+        if (replay) {
+          replay.requestContext = { model: useModel };
+          error.partialProviderReplay = replay;
+        }
       }
       throw error;
     }

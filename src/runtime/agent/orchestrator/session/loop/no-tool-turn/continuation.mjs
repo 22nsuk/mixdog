@@ -7,7 +7,7 @@
 // as the final answer.
 import { writeLoopDiagnostic } from './diagnostic.mjs';
 
-export const PROVIDER_CONTINUATION_NO_TOOL_LIMIT = Math.max(
+const PROVIDER_CONTINUATION_NO_TOOL_LIMIT = Math.max(
   1,
   Number(process.env.MIXDOG_PROVIDER_CONTINUATION_NO_TOOL_LIMIT) || 8
 );

@@ -25,6 +25,7 @@
  */
 
 import { THEME_REGISTRY, THEME_ORDER, THEME_ALIASES, DEFAULT_THEME_ID, basicPalette } from './themes/index.mjs';
+import { BLACK_CIRCLE, RESULT_GUTTER_GLYPH, RESULT_GUTTER_CONT_GLYPH, RIGHT_ARROW, LEFT_ARROW } from './figures.mjs';
 
 /**
  * Live singleton consumed across the TUI. Seeded with the default palette and
@@ -163,7 +164,6 @@ export async function loadThemeSettingFromConfig() {
 }
 
 /* --- Glyphs --------------------------------------------------------------- */
-import { BLACK_CIRCLE, RESULT_GUTTER_GLYPH, RESULT_GUTTER_CONT_GLYPH, RIGHT_ARROW, LEFT_ARROW } from './figures.mjs';
 
 /** Turn marker — BLACK_CIRCLE (`⏺` on macOS; `●` elsewhere). */
 export const TURN_MARKER = BLACK_CIRCLE;

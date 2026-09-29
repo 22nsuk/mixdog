@@ -1,0 +1,193 @@
+// builtin-features.mjs — common install-first lifecycle for the first-party
+// built-in features (Extensions → Built-in).
+//
+// `installed` is a persisted activation marker in the config `builtins`
+// section. A feature's tools reach the session tool surface only once the
+// feature is BOTH installed and enabled; its toggle merely flips `enabled`
+// after installation. Voice keeps its on-disk runtime probe, and Browser
+// Use / Computer Use keep their bridge-presence gate plus desktop-side
+// installed markers — this section covers the runtime-persisted features.
+//
+// Fresh profiles start with an explicit empty `builtins` section, so every
+// feature presents as "not installed". A config that predates the section is
+// an active profile: it is grandfathered as installed so an upgrade never
+// removes a working tool surface. The daemon stamps the section at its first
+// config adoption, which always happens before onboarding completes, so a
+// brand-new profile can never be mistaken for a grandfathered one.
+// MIXDOG_FEATURE_* env overrides (headless/bench) bypass the gate entirely.
+
+import { featureEnvOverride, memoryToolsEnabled, moduleEnabled } from './config-helpers.mjs';
+import { readBridgeDiscovery } from '../../../bridge-discovery.mjs';
+import { HEADLESS_MODEL_TOOL_NAMES, HEADLESS_TOOL_PROFILE, normalizeToolProfile } from './tool-profile.mjs';
+import { DEFERRED_DEFAULT_LEAD_TOOLS } from './tool-catalog-data.mjs';
+
+// Browser Use / Computer Use have no install marker: the desktop app publishes
+// a loopback bridge discovery file while the feature is on. The same file
+// names gate the session tool surface in the bridge clients.
+const BROWSER_BRIDGE_DISCOVERY_FILE = 'browser-bridge.json';
+const COMPUTER_BRIDGE_DISCOVERY_FILE = 'computer-bridge.json';
+
+function bridgePresent(file) {
+  try {
+    return readBridgeDiscovery(file) !== null;
+  } catch {
+    return false;
+  }
+}
+
+export const INSTALLABLE_BUILTIN_IDS = Object.freeze(['git', 'memory', 'office', 'tidy', 'localProvider']);
+const GRANDFATHERED_BUILTIN_IDS = Object.freeze(['git', 'memory', 'office']);
+
+/** Model-facing activation for one gated feature: an explicit MIXDOG_FEATURE_*
+ *  env override (headless/bench) wins, otherwise the install marker and the
+ *  persisted toggle both have to agree. */
+export function builtinFeatureActive(configLike, id) {
+  if (id === 'webSearch') {
+    return featureEnvOverride('MIXDOG_FEATURE_WEB_SEARCH') ?? moduleEnabled(configLike, 'webSearch', true);
+  }
+  if (id === 'memory') {
+    return (
+      featureEnvOverride('MIXDOG_FEATURE_MEMORY') ??
+      (builtinInstalled(configLike, 'memory') && memoryToolsEnabled(configLike, true))
+    );
+  }
+  if (id === 'git') {
+    return localGitToolsActive(configLike);
+  }
+  if (id === 'office') {
+    return (
+      featureEnvOverride('MIXDOG_FEATURE_OFFICE') ??
+      (builtinInstalled(configLike, 'office') && moduleEnabled(configLike, 'office', true))
+    );
+  }
+  // Code tidy installs like office: the tool ships with the runtime, but the
+  // engines it drives are downloaded per project, so the user opts in once.
+  // The `code-tidy` skill follows through `requires: tidy`.
+  if (id === 'tidy') {
+    return (
+      featureEnvOverride('MIXDOG_FEATURE_TIDY') ??
+      (builtinInstalled(configLike, 'tidy') && moduleEnabled(configLike, 'tidy', true))
+    );
+  }
+  if (id === 'localProvider') {
+    return builtinInstalled(configLike, 'localProvider') && moduleEnabled(configLike, 'localProvider', true);
+  }
+  // Media Studio is a hidden built-in like setup: no Settings card, no install
+  // step, always on. The lane catalog ships with the runtime and sign-in happens
+  // per provider; only the env override (headless) or a hand-edited module
+  // toggle gates it, and a signed-out catalog fails per call with the lanes it
+  // does have. The image/video skills follow through `requires: media`.
+  if (id === 'media') {
+    return featureEnvOverride('MIXDOG_FEATURE_MEDIA') ?? moduleEnabled(configLike, 'media', true);
+  }
+  // Bridge-gated features (skills that describe the `browser` / `computer`
+  // tools use these ids in metadata.requires so they are offered only while
+  // the tool itself can reach a live desktop bridge).
+  if (id === 'browser') {
+    return featureEnvOverride('MIXDOG_FEATURE_BROWSER') ?? bridgePresent(BROWSER_BRIDGE_DISCOVERY_FILE);
+  }
+  if (id === 'computer') {
+    return featureEnvOverride('MIXDOG_FEATURE_COMPUTER') ?? bridgePresent(COMPUTER_BRIDGE_DISCOVERY_FILE);
+  }
+  return false;
+}
+
+/** The session-surface exclusion list. Session build, the empty-session policy
+ *  refresh, and the deferred tool catalog all consume THIS list, so an
+ *  uninstalled or disabled feature never reaches a session's tool surface.
+ *  Browser Use / Computer Use activate on bridge presence (plus their env
+ *  overrides), which the caller passes in. */
+export function featureDisallowedToolsFor(
+  configLike,
+  { browserAvailable = false, computerAvailable = false, toolProfile = 'interactive' } = {}
+) {
+  const browser = featureEnvOverride('MIXDOG_FEATURE_BROWSER') ?? browserAvailable === true;
+  const computer = featureEnvOverride('MIXDOG_FEATURE_COMPUTER') ?? computerAvailable === true;
+  const denied = [
+    ...(builtinFeatureActive(configLike, 'webSearch') ? [] : ['web_search', 'web_fetch']),
+    ...(builtinFeatureActive(configLike, 'memory') ? [] : ['memory', 'recall']),
+    ...(localGitToolsActive(configLike, toolProfile) ? [] : ['git']),
+    ...(builtinFeatureActive(configLike, 'git') ? [] : ['github']),
+    ...(browser ? [] : ['browser', 'browser_devtools']),
+    ...(computer ? [] : ['computer']),
+    ...(builtinFeatureActive(configLike, 'office') ? [] : ['office']),
+    ...(builtinFeatureActive(configLike, 'media') ? [] : ['media']),
+    ...(builtinFeatureActive(configLike, 'tidy') ? [] : ['tidy']),
+  ];
+  // Headless exec uses the Lead surface and excludes Skill/MCP tools. When
+  // only its eager defaults remain, neither schemas nor loader guidance help.
+  // Derive this from the two catalog contracts, not a second feature list.
+  if (
+    normalizeToolProfile(toolProfile) === HEADLESS_TOOL_PROFILE &&
+    HEADLESS_MODEL_TOOL_NAMES.every((name) => denied.includes(name) || DEFERRED_DEFAULT_LEAD_TOOLS.includes(name))
+  ) {
+    denied.push('load_tool');
+  }
+  return denied;
+}
+
+export function builtinInstalled(configLike, id) {
+  return configLike?.builtins?.[id]?.installed === true;
+}
+
+// The Git command tool needs no desktop extension installation in headless
+// runs. Existing feature overrides and explicit OFF preferences still apply.
+export function localGitToolsActive(configLike, toolProfile = 'interactive') {
+  return (
+    featureEnvOverride('MIXDOG_FEATURE_GIT') ??
+    (moduleEnabled(configLike, 'git', true) && (toolProfile === 'headless' || builtinInstalled(configLike, 'git')))
+  );
+}
+
+/** Capabilities that ask the user once per session before their first live
+ *  call: the desktop and the browser are the user's, and one approval at the
+ *  moment of first use is how the user learns the model reached for them. */
+export const BRIDGE_FIRST_USE_IDS = Object.freeze(['browser', 'computer']);
+
+/** On unless the profile turns it off for that capability;
+ *  MIXDOG_BRIDGE_FIRST_USE_APPROVAL overrides per process (headless, bench). */
+export function builtinFirstUseApproval(configLike, id) {
+  return (
+    featureEnvOverride('MIXDOG_BRIDGE_FIRST_USE_APPROVAL') ?? configLike?.builtins?.[id]?.firstUseApproval !== false
+  );
+}
+
+export function setBuiltinFirstUseApprovalInConfig(configLike, id, enabled) {
+  const next = { ...(configLike || {}) };
+  next.builtins = { ...(next.builtins || {}) };
+  next.builtins[id] = { ...(next.builtins[id] || {}), firstUseApproval: enabled !== false };
+  return next;
+}
+
+export function setBuiltinInstalledInConfig(configLike, id, installed = true) {
+  const next = { ...(configLike || {}) };
+  next.builtins = { ...(next.builtins || {}) };
+  if (installed === true) {
+    next.builtins[id] = { ...(next.builtins[id] || {}), installed: true };
+  } else {
+    const entry = { ...(next.builtins[id] || {}) };
+    delete entry.installed;
+    next.builtins[id] = entry;
+  }
+  return next;
+}
+
+/** Stamp or grandfather the `builtins` section on config adoption. Returns the
+ *  same object when the section already exists, so callers can use identity to
+ *  decide whether a persist is needed. */
+export function withGrandfatheredBuiltins(configLike) {
+  const config = configLike && typeof configLike === 'object' ? configLike : {};
+  if (config.builtins && typeof config.builtins === 'object') return config;
+  let next = { ...config, builtins: {} };
+  // User-mark keys only: a default in-memory config may carry harmless
+  // structural keys before onboarding ever writes, and must stay "fresh".
+  const existingProfile = ['presets', 'providers', 'modules', 'default', 'memoryTools', 'recap'].some(
+    (key) => config[key] !== undefined
+  );
+  if (existingProfile) {
+    for (const id of GRANDFATHERED_BUILTIN_IDS) {
+      next = setBuiltinInstalledInConfig(next, id, true);
+    }
+  }
+  return next;
+}

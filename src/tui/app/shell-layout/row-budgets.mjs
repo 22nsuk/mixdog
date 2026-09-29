@@ -5,6 +5,7 @@
  */
 import { isLiveSpinnerMetaVisible } from '../live-spinner-visibility.mjs';
 import { promptContentRows, wrappedDetailRows, queuedBandRows } from '../text-layout.mjs';
+import { CORE_MULTILINE_TEXT_ENTRY_KINDS } from '../panel-signature.mjs';
 
 const SCROLL_HINT_ROWS = 0;
 const LIVE_STATUS_ROWS = 0;
@@ -51,7 +52,7 @@ function promptBoxBudget(inputBoxHidden, promptLayoutValueRef, promptContentColu
 // overflow hidden), so under-reserving here pushed the bordered title off
 // the top of the panel. Width matches the panel interior: frame − 2 border
 // − 2 paddingX, same wrap-ansi math ink uses for wrap="wrap".
-function textEntryBudget(textEntryPrompt, textEntryLayoutRows, frameColumns, CORE_MULTILINE_TEXT_ENTRY_KINDS) {
+function textEntryBudget(textEntryPrompt, textEntryLayoutRows, frameColumns) {
   const textEntryKind = String(textEntryPrompt?.kind || '');
   const textEntryMultiline = CORE_MULTILINE_TEXT_ENTRY_KINDS.has(textEntryKind);
   const textEntryDetailText = String(textEntryPrompt?.detail || '').trim();
@@ -139,7 +140,7 @@ function floatingPanelBudget({
 
 // Token order: [tool, picker, context, usage, slash, text, inputBoxHidden,
 // floatingPanelRows, promptBoxRows, promptMetaRows, queuedRows, WELCOME_ROWS]
-// — see PANEL_LAYOUT_SIG / panelKindSignature in App.jsx.
+// — see PANEL_LAYOUT_SIG / panelKindSignature in panel-signature.mjs.
 function layoutSignature({ toolApproval, picker, contextPanel, usagePanel, slashPaletteOpen, surfaces, rows }) {
   const pickerFit = picker?.fillAvailable ? 'fill' : 'fit';
   const pickerSignature = picker ? `picker:${picker.kind || ''}:${pickerFit}` : '';
@@ -169,7 +170,6 @@ export function computeRowBudgets({
   onboardingActive,
   promptLayoutValueRef,
   promptContentColumns,
-  CORE_MULTILINE_TEXT_ENTRY_KINDS,
   toolApproval,
   picker,
   contextPanel,
@@ -179,12 +179,7 @@ export function computeRowBudgets({
   const { textEntryPrompt, hasTextEntryPrompt, hasFloatingPanel, expandedOptionPanel, inputBoxHidden } = surfaces;
   const { liveSpinner, liveSpinnerIsCommand, latestTranscriptItem, inputHint } = hints;
   const prompt = promptBoxBudget(inputBoxHidden, promptLayoutValueRef, promptContentColumns);
-  const textEntry = textEntryBudget(
-    textEntryPrompt,
-    textEntryLayoutRows,
-    frameColumns,
-    CORE_MULTILINE_TEXT_ENTRY_KINDS
-  );
+  const textEntry = textEntryBudget(textEntryPrompt, textEntryLayoutRows, frameColumns);
   const OPTION_PANEL_EXTRA_ROWS = expandedOptionPanel ? 3 : 0;
   const queuedVisible = !hasFloatingPanel && !inputBoxHidden && state.queued?.length > 0;
   // While the slash palette is open it owns the area above the prompt, so the

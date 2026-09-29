@@ -90,7 +90,6 @@ function Harness({ items, revision, refs, control }) {
     frameColumns: COLUMNS,
     toolOutputExpanded: false,
     transcriptContentHeight: VIEW_ROWS,
-    transcriptBottomSlackRows: 0,
     transcriptGuardRows: 0,
     floatingPanelRows: 0,
     overlayHintRequested: false,

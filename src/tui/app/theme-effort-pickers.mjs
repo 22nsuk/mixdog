@@ -120,7 +120,7 @@ export function createThemeEffortPickers({
     const own = surface.claim();
     setProviderPrompt(null);
     setSettingsPrompt(null);
-    const items = Array.isArray(state.effortOptions) && state.effortOptions.length > 0 ? state.effortOptions : [];
+    const items = Array.isArray(state.effortOptions) ? state.effortOptions : [];
     if (!items.length) {
       store.pushNotice('Current model has no effort levels.', 'warn');
       return;

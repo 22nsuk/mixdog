@@ -4,23 +4,12 @@
  * carries, the stall partial, and `finish` (the success result or the
  * EOF-without-terminal failure).
  */
-import { extractCacheWriteTokens, extractCachedTokens, traceAgentSse, traceAgentUsage } from '../../agent-trace.mjs';
-import { dedupeToolCallList } from '../anthropic-leaked-toolcall.mjs';
+import { traceAgentSse, traceAgentUsage } from '../../agent-trace.mjs';
+import { dedupeToolCallList } from '../lib/leaked-toolcall.mjs';
 import { _displayCodexModel } from '../openai-codex-model.mjs';
 import { createProviderReplay } from '../lib/provider-replay.mjs';
 import { LABEL } from './response-state.mjs';
 import { createResponseStamps } from './response-stamps.mjs';
-
-export function usageFromResponse(rawUsage, serviceTier) {
-  return {
-    inputTokens: rawUsage.input_tokens || 0,
-    outputTokens: rawUsage.output_tokens || 0,
-    cachedTokens: extractCachedTokens(rawUsage),
-    cacheWriteTokens: extractCacheWriteTokens(rawUsage),
-    promptTokens: rawUsage.input_tokens || 0,
-    raw: serviceTier ? { ...rawUsage, service_tier: serviceTier } : rawUsage,
-  };
-}
 
 export function createResponseOutcome({ state }) {
   const { stampToolSafety, stampOutcome, stallPartial, stampStreamError, attachStreamPartial, endedEarlyError } =

@@ -46,6 +46,37 @@ function runtime(overrides = {}) {
   };
 }
 
+test('a stopped channel worker is idle without automation and a warning with it', async () => {
+  const stopped = { getChannelSettings: () => ({ enabled: true, status: { running: false } }) };
+  const channelsCheck = async (overrides) =>
+    (await runDoctorChecks(runtime({ ...stopped, ...overrides }), state)).checks.find(
+      (check) => check.id === 'channels'
+    );
+
+  const idle = await channelsCheck({
+    getChannelSetup: async () => ({
+      schedules: [{ name: 'nightly', enabled: false }, { name: 'once', enabled: true, status: 'done' }],
+      webhooks: [{ name: 'deploy', enabled: false }],
+    }),
+  });
+  assert.equal(idle.level, 'ok');
+  assert.equal(idle.detail, 'enabled · idle (no active schedules or webhooks)');
+
+  for (const setup of [
+    { schedules: [{ name: 'nightly', enabled: true }], webhooks: [] },
+    { schedules: [], webhooks: [{ name: 'deploy' }] },
+  ]) {
+    const active = await channelsCheck({ getChannelSetup: async () => setup });
+    assert.equal(active.level, 'warn');
+    assert.equal(active.detail, 'enabled · worker stopped with active automation');
+    assert.deepEqual(active.fix, { hint: 'enabled schedules and webhooks are not running' });
+  }
+
+  const unknown = await channelsCheck({});
+  assert.equal(unknown.level, 'warn');
+  assert.equal(unknown.detail, 'enabled · worker stopped');
+});
+
 function reportRow(report, label) {
   const row = report.split('\n').find((line) => line.slice(2).startsWith(`${label}:`));
   assert.ok(row, `missing ${label} row`);

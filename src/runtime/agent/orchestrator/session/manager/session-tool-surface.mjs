@@ -8,7 +8,7 @@
 import { collectPromptSkillsCached } from '../../context/collect.mjs';
 import { isAgentOwner } from '../../agent-owner.mjs';
 import { getHiddenAgent } from '../../internal-agents.mjs';
-import { workflowDisallowsAgentTool } from '../../../../../session-runtime/workflow.mjs';
+import { workflowDisallowsAgentTool } from '../../runtime-core/workflow.mjs';
 import { sessionOrchestrationMode } from '../../../../shared/orchestration.mjs';
 import { finalizeSessionToolList, resolveSessionTools, permissionFromToolSpec } from './tool-resolution.mjs';
 import { unusedModelEditToolName } from '../../../../shared/edit-tool-dialect.mjs';

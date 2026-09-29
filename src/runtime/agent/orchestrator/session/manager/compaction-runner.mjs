@@ -1,7 +1,7 @@
 // Session compaction runner — one fresh-context Compact contract.
-// Self-contained: operates on a live `session` object + opts, using pure
-// compact/context helpers. No runtime-liveness (_runtimeState) coupling —
-// manager.mjs still owns scheduling / stage gating and simply calls
+// Operates on a live `session` object + opts, using pure compact/context
+// helpers. Its only runtime-liveness read is isSessionCompactionBlocked;
+// manager.mjs owns scheduling / stage gating and simply calls
 // runSessionCompaction().
 import { getProvider } from '../../providers/registry.mjs';
 import { HANDOFF_TIMEOUT_MAX_MS } from '../compact/constants.mjs';
@@ -30,7 +30,7 @@ import {
   resolveHandoffSummaryModel,
   resolveWorkerCompactPolicy,
 } from '../loop/compact-policy.mjs';
-import { snapshotProviderRequestTools } from '../../../../../session-runtime/tool-catalog.mjs';
+import { snapshotProviderRequestTools } from '../../runtime-core/tool-catalog.mjs';
 
 // 'compacting' is a transient in-flight stage written just before Compact
 // runs. If the process crashes or only partially
@@ -158,7 +158,7 @@ export async function runHandoffCompaction({
     signal,
     config,
     provider: provider || getProvider(session?.provider) || null,
-    model: model || resolveHandoffSummaryModel(session, { budgetTokens }) || session?.model,
+    model: model || resolveHandoffSummaryModel(session) || session?.model,
     sendOpts: { session },
   });
 }

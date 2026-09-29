@@ -95,7 +95,7 @@ function _codexInstallationId(sendOpts) {
 // The identity block is rebuilt per request: never cached on the pooled
 // socket, or a later turn would
 // replay the first turn's identity.
-function _codexMetadataBase(_entry, { poolKey, cacheKey, sendOpts, handshake = false } = {}) {
+function _codexMetadataBase({ poolKey, cacheKey, sendOpts, handshake = false } = {}) {
   const rawSessionId =
     cleanString(
       sendOpts?.codexSessionId ||
@@ -113,10 +113,9 @@ function _codexMetadataBase(_entry, { poolKey, cacheKey, sendOpts, handshake = f
         cacheKey ||
         rawSessionId
     ) || rawSessionId;
-  const rawInstallationId = _codexInstallationId(sendOpts);
+  const installationId = _codexInstallationId(sendOpts);
   const sessionId = _codexUuidV7(rawSessionId);
   const threadId = _codexUuidV7(rawThreadId);
-  const installationId = rawInstallationId;
   const startedAt = Number.isFinite(Number(sendOpts?.turnStartedAtUnixMs))
     ? Math.floor(Number(sendOpts.turnStartedAtUnixMs))
     : _sessionStartedAtUnixMs(rawSessionId);
@@ -178,7 +177,7 @@ export function _metadataTrace(metadata) {
 // The WebSocket handshake carries compatibility identity and routing fields.
 // Installation data stays in per-request client_metadata.
 export function _codexWsCompatibilityHeaders(context = {}) {
-  const metadata = _codexMetadataBase(null, context);
+  const metadata = _codexMetadataBase(context);
   const headers = {};
   if (metadata.session_id) headers['session-id'] = metadata.session_id;
   if (metadata.thread_id) {
@@ -207,7 +206,7 @@ export function _codexWsCompatibilityHeaders(context = {}) {
 
 export function _withCodexWsClientMetadata(frame, entry, enabled, context = {}) {
   if (!enabled || !frame || typeof frame !== 'object') return frame;
-  const base = _codexMetadataBase(entry, context);
+  const base = _codexMetadataBase(context);
   const explicitLogicalTurnId = cleanString(
     context?.sendOpts?.turnId || context?.sendOpts?.codexTurnId || context?.sendOpts?.session?.turnId
   );

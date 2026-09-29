@@ -4,9 +4,8 @@ import test from 'node:test';
 import { _noteSearchTimeoutForTest, _resetNativeSearchClientForTest } from './native-search-client.mjs';
 
 // `noteSearchTimeout` returns 'runtime' for a recurrence inside the window;
-// that is the only branch the caller acts on (settleTimeout →
-// reportRuntimeWorkerUnhealthy), so 'shard' was a stale expectation.
-test('native search keeps the server on a first timeout and marks the runtime worker on a 30s recurrence', () => {
+// that is the only branch the caller acts on (settleTimeout recycles the server).
+test('native search keeps the server on a first timeout and recycles it on a 30s recurrence', () => {
   _resetNativeSearchClientForTest();
   const startedAt = 1_000_000;
   const firstServer = {};

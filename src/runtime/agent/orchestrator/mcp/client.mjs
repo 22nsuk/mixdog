@@ -1,3 +1,4 @@
+import { setMaxListeners } from 'node:events';
 import { mkdirSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
@@ -323,12 +324,12 @@ export async function executeMcpTool(name, args, options = {}) {
   const server = scopedServer(scopeId, serverName);
   if (!server) throw new Error(`MCP server "${serverName}" not connected`);
   const definition = (server.tools || []).find((tool) => tool.name === name);
+  const callSignal = options?.signal || null;
   const dispatch = (target) =>
     definition?.mcpOperation
       ? _callMcpFeatureWithTimeout(target, definition.mcpOperation, args, callSignal)
       : _callToolWithTimeout(target, toolName, args, callSignal);
   const gate = callAdmissionFor(server);
-  const callSignal = options?.signal || null;
   return gate.run(
     options?.ownerKey || currentToolExecutionOwner(),
     async () => {
@@ -502,11 +503,31 @@ function isMcpCallAbortError(err) {
   return err?.code === 'EMCPCALLABORTED' || err?.name === 'AbortError';
 }
 
+// One turn signal is shared by every parallel MCP call of that turn, and each
+// in-flight call holds two abort listeners on it (this race and the SDK
+// request), both removed when the call settles. Node's default of 50 warned at
+// ~25 parallel calls (`MaxListenersExceededWarning: 51 abort listeners`) although
+// nothing accumulated. The ceiling is high enough for real fan-out and still
+// warns on a genuine leak.
+const MCP_ABORT_LISTENER_CEILING = 1024;
+const abortCeilingRaised = new WeakSet();
+
+function allowConcurrentAbortListeners(signal) {
+  if (abortCeilingRaised.has(signal)) return;
+  abortCeilingRaised.add(signal);
+  try {
+    setMaxListeners(MCP_ABORT_LISTENER_CEILING, signal);
+  } catch {
+    /* not an EventTarget (test doubles) */
+  }
+}
+
 /** Settle as soon as `signal` aborts. Promise.race keeps a later rejection of
  *  `promise` handled, so the abandoned call cannot surface as an unhandled
  *  rejection. */
-function raceMcpAbort(promise, signal, message) {
+export function raceMcpAbort(promise, signal, message) {
   if (!signal) return promise;
+  allowConcurrentAbortListeners(signal);
   if (signal.aborted) {
     void Promise.resolve(promise).catch(() => {});
     return Promise.reject(mcpAbortError(signal, message));
@@ -756,6 +777,11 @@ async function connectServer(
       closeServer: _closeServer,
     });
     if (!toolsResult || !Array.isArray(toolsResult.tools)) {
+      try {
+        await _closeServer({ client, transport });
+      } catch {
+        /* ignore */
+      }
       throw new Error(`[mcp-client] ListTools returned invalid shape for "${name}": missing or non-array tools field`);
     }
     if (genAtStart !== currentConnectAbortGeneration(scopeId)) {

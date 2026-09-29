@@ -2,11 +2,11 @@ export { createMixdogSessionRuntime } from './session-runtime/runtime-core.mjs';
 export {
   compactToolSearchDescription,
   defaultDeferredToolNames,
-} from './session-runtime/tool-catalog.mjs';
+} from './runtime/agent/orchestrator/runtime-core/tool-catalog.mjs';
 export {
   SKILL_TOOL,
   TOOL_SEARCH_TOOL,
-} from './session-runtime/tool-defs.mjs';
+} from './runtime/agent/orchestrator/runtime-core/tool-defs.mjs';
 export {
   __renderToolSearchForTest,
   __saveModelSettingsForTest,

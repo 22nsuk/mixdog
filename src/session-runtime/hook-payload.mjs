@@ -3,16 +3,15 @@
  * dispatch (session id, transcript path, cwd, permission mode, effort).
  */
 import { join } from 'node:path';
-import { clean } from './session-text.mjs';
-import { STANDALONE_DATA_DIR } from './runtime-paths.mjs';
-import { SESSION_ID_PATTERN } from './lifecycle/shared.mjs';
+import { clean } from '../runtime/agent/orchestrator/runtime-core/session-text.mjs';
+import { pluginDataDir } from './runtime-paths.mjs';
+import { SESSION_ID_PATTERN } from '../runtime/agent/orchestrator/runtime-core/session-id.mjs';
 
 export function createHookPayload({ rt, cfgMod }) {
   function hookTranscriptPath(sessionId) {
     const id = clean(sessionId);
     if (!id || !SESSION_ID_PATTERN.test(id)) return null;
-    const dataDir = cfgMod.getPluginData?.() || STANDALONE_DATA_DIR;
-    return join(dataDir, 'sessions', `${id}.json`);
+    return join(pluginDataDir(cfgMod), 'sessions', `${id}.json`);
   }
   function hookEffortPayload() {
     const level = clean(rt.route.effectiveEffort || rt.route.effort);

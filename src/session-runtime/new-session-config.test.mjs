@@ -9,7 +9,7 @@ import {
 } from './config-lifecycle.mjs';
 import { createNewSessionConfig } from './new-session-config.mjs';
 import { createSessionLifecycle } from './session-lifecycle.mjs';
-import { makeResolveRoute } from './config-helpers.mjs';
+import { makeResolveRoute } from '../runtime/agent/orchestrator/runtime-core/config-helpers.mjs';
 import { applyConfigPatch, diffConfig } from '../runtime/shared/config-patch.mjs';
 
 const resolveRoute = makeResolveRoute(() => 'test-provider');

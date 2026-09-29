@@ -1,7 +1,7 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { getAgentApiKey } from '../../../shared/provider-api-key.mjs';
 import { canFallbackNonStreaming, emitProviderRetryStage, withRetry } from './retry-classifier.mjs';
-import { appendAgentTrace } from '../agent-trace.mjs';
+import { traceNonStreamingFallback } from './lib/transport-fallback-trace.mjs';
 import {
   PROVIDER_CACHE_CREATE_TIMEOUT_MS,
   PROVIDER_CACHE_CREATE_TOTAL_TIMEOUT_MS,
@@ -189,11 +189,7 @@ export class GeminiProvider {
     if (!canFallbackNonStreaming(streamErr, { signal })) return null;
     let aggregated;
     try {
-      try {
-        opts?.onStageChange?.('requesting');
-      } catch {
-        /* heartbeat best-effort */
-      }
+      signalRequesting(opts);
       aggregated = await generate(signal || undefined);
     } catch {
       return null;
@@ -209,26 +205,7 @@ export class GeminiProvider {
     } catch {
       /* best-effort */
     }
-    try {
-      appendAgentTrace({
-        sessionId: opts?.sessionId || opts?.session?.id || null,
-        iteration: Number.isFinite(Number(opts?.iteration)) ? Number(opts.iteration) : null,
-        kind: 'transport_fallback',
-        provider: 'gemini',
-        model,
-        transport: 'non-streaming',
-        payload: {
-          from: 'stream',
-          to: 'non-streaming',
-          reason: streamErr?.retryClassifier || streamErr?.code || streamErr?.message || 'stream_failed',
-          error_code: streamErr?.code || null,
-          error_http_status: Number(streamErr?.httpStatus || streamErr?.status || 0) || null,
-          error_classifier: streamErr?.retryClassifier || streamErr?.midstreamClassifier || null,
-        },
-      });
-    } catch {
-      /* best-effort */
-    }
+    traceNonStreamingFallback({ provider: 'gemini', model, opts, streamErr });
     return aggregated;
   }
 

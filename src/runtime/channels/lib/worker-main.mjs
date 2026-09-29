@@ -1,15 +1,14 @@
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { createRequire } from 'node:module';
-const _require = createRequire(import.meta.url);
 import { loadConfig, createProvider, DATA_DIR } from './config.mjs';
 import { resolveVoiceRuntime } from './voice-runtime-fetcher.mjs';
+import { whisperThreadCount } from './voice-transcription.mjs';
+import { TOOL_DEFS } from '../tool-defs.mjs';
 import { ensureReady, stopVoiceWhisperServer } from './whisper-server.mjs';
 import { ensurePrivateRuntimeRoot, resolveRuntimeRoot } from '../../shared/runtime-root.mjs';
 import { Scheduler } from './scheduler.mjs';
 import { hasPending as dispatchHasPending } from '../../agent/orchestrator/dispatch-persist.mjs';
-import { setListener as setActivityBusListener } from '../../agent/orchestrator/activity-bus.mjs';
 import { stripSoftWarns } from '../../agent/orchestrator/tool-loop-guard.mjs';
 import { JsonStateFile } from './state-file.mjs';
 import {
@@ -34,6 +33,7 @@ import { createOwnerHeartbeat } from './owner-heartbeat.mjs';
 import { runWorkerIpc } from './worker-ipc.mjs';
 import { createOwnedRuntime } from './owned-runtime.mjs';
 import { runWorkerBootstrap } from './worker-bootstrap.mjs';
+const _require = createRequire(import.meta.url);
 // Zombie-Lead repro (2026-07-02): logCrash-then-survive left a worker alive
 // after an unhandled rejection whose async state was already corrupted
 // (observed: EPERM on active-instance.json rename retry), so it spun
@@ -135,6 +135,12 @@ const scheduler = new Scheduler(
   // Single resolved main-channel id used for the schedule `channel` flag.
   config.channelId
 );
+// Schedules fire as visible sessions; the session runner belongs to the
+// session-runtime layer, so this worker entry injects it (lazy, like webhooks).
+scheduler.setScheduleRunner(async (schedule, opts) => {
+  const { runScheduleSession } = await import('../../../session-runtime/schedule-session-run.mjs');
+  return runScheduleSession(schedule, opts);
+});
 // Register the pending-dispatch probe so the scheduler treats an in-flight
 // bridge dispatch as "active" regardless of user-inbound silence.
 scheduler.setPendingCheck(() => {
@@ -144,10 +150,6 @@ scheduler.setPendingCheck(() => {
     return false;
   }
 });
-// Bridge the orchestrator-side activity notifier into the scheduler so
-// events like `addPending` can bump lastActivity without importing the
-// scheduler instance directly (avoids module cycles).
-setActivityBusListener(() => scheduler.noteActivity());
 let webhookServer = null;
 let eventPipeline = null;
 let bridgeRuntimeConnected = false;
@@ -155,45 +157,39 @@ let bridgeRuntimeConnected = false;
 const { logOwnership, currentOwnerState } = createOwnerHeartbeat();
 // ── Owned-runtime lifecycle ─────────────────────────────────────────────────
 // Live getters/setters keep shared worker state visible across lifecycle phases.
-const {
-  startAutomationRuntime,
-  startOwnedRuntime,
-  stopOwnedRuntime,
-  refreshBridgeOwnership,
-  reloadRuntimeConfig,
-  notifyRemoteAcquired,
-} = createOwnedRuntime({
-  getConfig: () => config,
-  setConfig: (v) => {
-    config = v;
-  },
-  getProvider: () => provider,
-  setProvider: (v) => {
-    provider = v;
-  },
-  getBridgeRuntimeConnected: () => bridgeRuntimeConnected,
-  setBridgeRuntimeConnected: (v) => {
-    bridgeRuntimeConnected = v;
-  },
-  getWebhookServer: () => webhookServer,
-  setWebhookServer: (v) => {
-    webhookServer = v;
-  },
-  getEventPipeline: () => eventPipeline,
-  setEventPipeline: (v) => {
-    eventPipeline = v;
-  },
-  getChannelBridgeActive: () => channelBridgeActive,
-  instanceId: INSTANCE_ID,
-  TERMINAL_LEAD_PID,
-  sendNotifyToParent,
-  scheduler,
-  statusState,
-  logOwnership,
-  currentOwnerState,
-  wireWebhookHandlers,
-  wireEventQueueHandlers,
-});
+const { startAutomationRuntime, startOwnedRuntime, stopOwnedRuntime, reloadRuntimeConfig, notifyRemoteAcquired } =
+  createOwnedRuntime({
+    getConfig: () => config,
+    setConfig: (v) => {
+      config = v;
+    },
+    getProvider: () => provider,
+    setProvider: (v) => {
+      provider = v;
+    },
+    getBridgeRuntimeConnected: () => bridgeRuntimeConnected,
+    setBridgeRuntimeConnected: (v) => {
+      bridgeRuntimeConnected = v;
+    },
+    getWebhookServer: () => webhookServer,
+    setWebhookServer: (v) => {
+      webhookServer = v;
+    },
+    getEventPipeline: () => eventPipeline,
+    setEventPipeline: (v) => {
+      eventPipeline = v;
+    },
+    getChannelBridgeActive: () => channelBridgeActive,
+    instanceId: INSTANCE_ID,
+    TERMINAL_LEAD_PID,
+    sendNotifyToParent,
+    scheduler,
+    statusState,
+    logOwnership,
+    currentOwnerState,
+    wireWebhookHandlers,
+    wireEventQueueHandlers,
+  });
 function injectAndRecord(channelId, _name, content, options) {
   // Strip soft-warn marker blocks (Tool-loop / Repeated-input / legacy
   // Repeated-tool / Mixed-tool / Tool-budget / Same-file multi-chunk /
@@ -234,7 +230,7 @@ function wireWebhookHandlers() {
   // Webhook fires run as sessions (schedules parity); the Automations
   // session row is the only surface (channel relay retired).
   webhookServer.setBridgeDispatch(async ({ prompt, model, cwd, workflow, attachments, delivery, context, signal }) => {
-    const { runWebhookSession } = await import('../../shared/webhook-session-run.mjs');
+    const { runWebhookSession } = await import('../../../session-runtime/webhook-session-run.mjs');
     const run = await runWebhookSession({
       name: context?.endpoint || 'webhook',
       model: model || null,
@@ -264,7 +260,6 @@ function wireEventQueueHandlers(eventQueue) {
 // Inbound messaging, provider interaction handlers, and channel voice-message
 // transcription are DELETED with Discord/Telegram (user decision: PWA replaces
 // channels). The headless provider emits no events, so nothing wires here.
-import { TOOL_DEFS } from '../tool-defs.mjs';
 // Tool dispatch in worker mode goes through the IPC `call` handler at the
 // bottom of this file (parent's `callWorker` → `handleToolCall`). There is no
 // orphan worker-level MCP Server: the parent (server.mjs) owns the single
@@ -284,7 +279,6 @@ const { handleToolCall, handleToolCallWithBridgeRetry } = createToolDispatch({
     },
     writeBridgeState,
     notifyRemoteAcquired,
-    refreshBridgeOwnership,
     startChannelBridge: () => start({ messaging: true }),
     stopOwnedRuntime,
     reloadRuntimeConfig,
@@ -341,15 +335,12 @@ async function start(options = {}) {
       if (config.voice?.enabled === false) return;
       const runtime = resolveVoiceRuntime(DATA_DIR);
       if (!runtime?.installed) return;
-      const _cpuCount = (() => {
-        try {
-          return os.cpus().length;
-        } catch {
-          return 2;
-        }
-      })();
-      const threadCount = config.voice?.transcription?.threadCount ?? Math.max(1, Math.ceil(_cpuCount / 4));
-      await ensureReady({ serverCmd: runtime.serverCmd, modelPath: runtime.modelPath, threadCount, host: '127.0.0.1' });
+      await ensureReady({
+        serverCmd: runtime.serverCmd,
+        modelPath: runtime.modelPath,
+        threadCount: whisperThreadCount(config),
+        host: '127.0.0.1',
+      });
     } catch (err) {
       try {
         process.stderr.write(`mixdog: voice.transcription pre-warm skipped: ${err}\n`);

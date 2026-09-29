@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import test from 'node:test';
 
 import { pluginManifest } from '../runtime/shared/plugin-manifest.mjs';
-import { addPlugin, listRegisteredPlugins, pluginAdminStatus } from '../standalone/plugin-admin.mjs';
+import { addPlugin, listRegisteredPlugins, pluginAdminStatus } from './services/plugin-admin.mjs';
 import { createCwdPlugins } from './cwd-plugins.mjs';
 
 const emptyMetadata = { author: '', homepage: '', repository: '', license: '', keywords: [] };

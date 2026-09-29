@@ -129,7 +129,7 @@ writeCatalog('litellm-catalog.json', litellm);
 writeCatalog('modelsdev-catalog.json', modelsdev);
 writeModels(antigravity);
 
-const catalog = await import('../../agent/orchestrator/providers/model-catalog.mjs');
+const catalog = await import('./model-catalog.mjs');
 const { priceUsage } = await import('./cost.mjs');
 const { UsageLedger, makeUsageRecord } = await import('./usage-ledger.mjs');
 const { refreshUnpricedUsage } = await import('./usage-pricing-refresh.mjs');

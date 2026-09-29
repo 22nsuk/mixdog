@@ -11,7 +11,7 @@
 //   { bundledManifest, download }.
 
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { BUNDLED_PATCH_MANIFEST_PATH as BUNDLED_MANIFEST_PATH } from './patch-manifest-path.mjs';
 import {
   binSuffix,
   createBinaryDownloader,
@@ -28,7 +28,6 @@ import {
   validSha256,
 } from '../../../shared/native-asset.mjs';
 
-const BUNDLED_MANIFEST_PATH = fileURLToPath(new URL('./patch-manifest.json', import.meta.url));
 const MANIFEST_URL =
   'https://raw.githubusercontent.com/tribgames/mixdog/main/src/runtime/agent/orchestrator/tools/patch-manifest.json';
 

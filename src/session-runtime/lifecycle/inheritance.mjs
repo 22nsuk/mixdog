@@ -13,7 +13,7 @@ import {
   inheritanceFitMessage,
   inheritanceRouteTarget,
 } from '../inheritance-fit.mjs';
-import { clean } from '../session-text.mjs';
+import { clean } from '../../runtime/agent/orchestrator/runtime-core/session-text.mjs';
 
 export function createInheritance(deps, { compactConversation, saveSession }) {
   const { getSession, getRoute, mgr, createCurrentSession, invalidateContextStatusCache, getReservedSessionId } = deps;

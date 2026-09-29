@@ -16,7 +16,7 @@ import { createSessionRuntime } from './session.mjs';
 import { registerRenderFrameSource, scheduleRenderFrameAck, TUI_RENDER_FPS } from './session/render-timing.mjs';
 import { installProcessSignalCleanup } from '../runtime/shared/process-shutdown.mjs';
 import { finishProcessLifecycle } from '../runtime/shared/process-lifecycle.mjs';
-import { rgbSgr } from '../ui/ansi.mjs';
+import { rgbSgr } from '../runtime/shared/statusline/ansi.mjs';
 import {
   emitTerminalBackground,
   getThemeSetting,
@@ -498,6 +498,86 @@ function installTuiConsoleGuard() {
   };
 }
 
+// The palette lives in THIS process: bind the three theme methods locally and
+// mirror the switch to the session runtime with persist:false, purely so its
+// themeEpoch bump re-renders this tree.
+function bindLocalThemeMethods(store) {
+  const remoteSetTheme = store.setTheme;
+  store.listThemes = () => listThemes();
+  store.getTheme = () => getThemeSetting();
+  store.setTheme = (id, options = {}) => {
+    const applied = setThemeSetting(id, options);
+    void Promise.resolve(remoteSetTheme?.(id, { ...options, persist: false })).catch(() => {
+      /* the local palette is already applied */
+    });
+    return applied;
+  };
+}
+
+// An unreadable status counts as completed so a transport hiccup cannot
+// resurrect a wizard the user already dismissed.
+async function resolveOnboardingVerdict(store) {
+  try {
+    const onboardingStatus = await store.getOnboardingStatus?.();
+    if (onboardingStatus && typeof onboardingStatus === 'object') return onboardingStatus.completed === true;
+  } catch {
+    /* status probe failed → treat as completed */
+  }
+  return true;
+}
+
+// Hand the ink renderer's drag-selection accessors to the store so App's mouse
+// handler can push selection rectangles (absolute terminal cells) that ink
+// paints as an inverse highlight.
+const RENDER_SELECTION_BINDINGS = [
+  ['setSelection', 'setRenderSelection'],
+  ['getSelectionText', 'getRenderSelectionText'],
+  ['getWordRectAt', 'getWordRectAt'],
+  ['getLineRectAt', 'getLineRectAt'],
+  ['getSelectionRows', 'getRenderSelectionRows'],
+];
+function bindRenderSelection(store, instance) {
+  for (const [instanceKey, storeKey] of RENDER_SELECTION_BINDINGS) {
+    if (typeof instance[instanceKey] === 'function') store[storeKey] = instance[instanceKey];
+  }
+}
+
+// Zombie-Lead repro (2026-07-02): stdio can die (TTY hangup, EPIPE on a
+// detached/piped stdout) without the process ever receiving SIGHUP/SIGTERM.
+// Treat a dead stdio surface as fatal and route it through signalCleanup.
+// 'error' whitelist: only codes that mean the stream is truly gone; transient
+// EAGAIN or resize noise must NOT be fatal.
+const STDIO_DEATH_FATAL_CODES = new Set(['EPIPE', 'ERR_STREAM_DESTROYED', 'EIO']);
+function registerStdioDeathGuards(signalCleanup) {
+  const listeners = [];
+  const register = (stream, event, { requireCode = false } = {}) => {
+    if (!stream || typeof stream.on !== 'function') return;
+    let source = 'stderr';
+    if (stream === process.stdin) source = 'stdin';
+    else if (stream === process.stdout) source = 'stdout';
+    const handler = (err) => {
+      if (requireCode && !(err && STDIO_DEATH_FATAL_CODES.has(err.code))) return;
+      void signalCleanup.run('stdio-dead', {
+        code: 1,
+        shouldExit: true,
+        error: err || new Error(`stdio ${event} (source: ${source})`),
+      });
+    };
+    stream.on(event, handler);
+    listeners.push([stream, event, handler]);
+  };
+  // stdin end/close/error: the input side is gone — no point keeping the renderer alive.
+  register(process.stdin, 'end');
+  register(process.stdin, 'close');
+  register(process.stdin, 'error', { requireCode: true });
+  // stdout/stderr: 'close' always means the fd is gone (fatal); 'error' is filtered.
+  register(process.stdout, 'error', { requireCode: true });
+  register(process.stdout, 'close');
+  register(process.stderr, 'error', { requireCode: true });
+  register(process.stderr, 'close');
+  return listeners;
+}
+
 export async function runTui({ provider, model, toolMode, remote, forceOnboarding } = {}) {
   const startedAt = performance.now();
   bootProfile('run:start', { provider, model, toolMode, remote });
@@ -597,18 +677,7 @@ export async function runTui({ provider, model, toolMode, remote, forceOnboardin
     // theme methods locally (same pattern as the ink selection helpers below)
     // and mirror the switch to the session runtime with persist:false, purely so its
     // themeEpoch bump re-renders this tree.
-    if (store.isRemoteSession === true) {
-      const remoteSetTheme = store.setTheme;
-      store.listThemes = () => listThemes();
-      store.getTheme = () => getThemeSetting();
-      store.setTheme = (id, options = {}) => {
-        const applied = setThemeSetting(id, options);
-        void Promise.resolve(remoteSetTheme?.(id, { ...options, persist: false })).catch(() => {
-          /* the local palette is already applied */
-        });
-        return applied;
-      };
-    }
+    if (store.isRemoteSession === true) bindLocalThemeMethods(store);
     bootProfile('store:ready', { ms: (performance.now() - startedAt).toFixed(1) });
   } catch (error) {
     splash.stop();
@@ -632,15 +701,7 @@ export async function runTui({ provider, model, toolMode, remote, forceOnboardin
   // the status once here and hand the decided verdict to App. An unreadable
   // status counts as completed so a transport hiccup cannot resurrect a
   // wizard the user already dismissed (`mixdog --onboarding` still forces it).
-  let onboardingCompleted = true;
-  try {
-    const onboardingStatus = await store.getOnboardingStatus?.();
-    if (onboardingStatus && typeof onboardingStatus === 'object') {
-      onboardingCompleted = onboardingStatus.completed === true;
-    }
-  } catch {
-    /* status probe failed → treat as completed */
-  }
+  const onboardingCompleted = await resolveOnboardingVerdict(store);
   // Stop the spinner BEFORE ink mounts so no stray splash write can land
   // between (or after) ink's first frames.
   splash.stop();
@@ -683,35 +744,7 @@ export async function runTui({ provider, model, toolMode, remote, forceOnboardin
   // 'error' whitelist: only codes that mean the stream is truly gone.
   // Transient EAGAIN (backpressure) or terminal-resize noise must NOT be
   // treated as fatal here — only EPIPE / ERR_STREAM_DESTROYED / EIO.
-  const STDIO_DEATH_FATAL_CODES = new Set(['EPIPE', 'ERR_STREAM_DESTROYED', 'EIO']);
-  const stdioDeathListeners = [];
-  const registerStdioDeath = (stream, event, { requireCode = false } = {}) => {
-    if (!stream || typeof stream.on !== 'function') return;
-    let source = 'stderr';
-    if (stream === process.stdin) source = 'stdin';
-    else if (stream === process.stdout) source = 'stdout';
-    const handler = (err) => {
-      if (requireCode && !(err && STDIO_DEATH_FATAL_CODES.has(err.code))) return;
-      void signalCleanup.run('stdio-dead', {
-        code: 1,
-        shouldExit: true,
-        error: err || new Error(`stdio ${event} (source: ${source})`),
-      });
-    };
-    stream.on(event, handler);
-    stdioDeathListeners.push([stream, event, handler]);
-  };
-  // stdin end/close/error: TTY/pipe on the input side is gone — nothing left
-  // to read from, no point keeping the renderer alive.
-  registerStdioDeath(process.stdin, 'end');
-  registerStdioDeath(process.stdin, 'close');
-  registerStdioDeath(process.stdin, 'error', { requireCode: true });
-  // stdout/stderr: 'close' always means the fd is gone (fatal); 'error' is
-  // filtered to the whitelist above so resize/EAGAIN noise doesn't kill us.
-  registerStdioDeath(process.stdout, 'error', { requireCode: true });
-  registerStdioDeath(process.stdout, 'close');
-  registerStdioDeath(process.stderr, 'error', { requireCode: true });
-  registerStdioDeath(process.stderr, 'close');
+  const stdioDeathListeners = registerStdioDeathGuards(signalCleanup);
 
   // exitOnCtrlC:false — App handles Ctrl+C as an interrupt/line-clear so Ink
   // does not exit abruptly. Explicit exits go through /exit or /quit so teardown
@@ -743,21 +776,7 @@ export async function runTui({ provider, model, toolMode, remote, forceOnboardin
     // that ink paints as an inverse highlight. render() returns synchronously
     // after the first mount, while the mouse handler only fires on user drag, so
     // wiring it here (post-render) is in time.
-    if (mouseTracking && typeof instance.setSelection === 'function') {
-      store.setRenderSelection = instance.setSelection;
-    }
-    if (mouseTracking && typeof instance.getSelectionText === 'function') {
-      store.getRenderSelectionText = instance.getSelectionText;
-    }
-    if (mouseTracking && typeof instance.getWordRectAt === 'function') {
-      store.getWordRectAt = instance.getWordRectAt;
-    }
-    if (mouseTracking && typeof instance.getLineRectAt === 'function') {
-      store.getLineRectAt = instance.getLineRectAt;
-    }
-    if (mouseTracking && typeof instance.getSelectionRows === 'function') {
-      store.getRenderSelectionRows = instance.getSelectionRows;
-    }
+    if (mouseTracking) bindRenderSelection(store, instance);
     // [mixdog] One-shot full clear+repaint. Mouse selection uses it to dismiss
     // WT's native highlight; session replacement also uses it to erase physical
     // rows from a taller outgoing transcript, so expose it independently of

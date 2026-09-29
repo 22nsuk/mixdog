@@ -12,6 +12,7 @@ import {
 } from './retry-classifier.mjs';
 import { frameProviderSseChunk, releaseProviderSseStream, retainProviderSseStream } from './stream-json-pool.mjs';
 import { splitSseRegion } from './lib/sse-framing.mjs';
+import { OAUTH_STREAM_LABELS } from './lib/anthropic-stream-labels.mjs';
 import { stampStreamOutcome, STREAM_TRANSPORTS, STREAM_OUTCOME_VERSION } from './lib/stream-outcome.mjs';
 import { createAnthropicSseTurn } from './anthropic-sse-turn.mjs';
 import { createAnthropicSseWatchdogs } from './anthropic-sse-watchdogs.mjs';
@@ -55,8 +56,13 @@ function _captureMidstreamAbort(state, reason) {
 
 // Abort-aware mid-stream backoff sleep → shared sleepWithAbort
 // (retry-classifier.mjs). abortMessage preserves the prior fallback text.
-export function _midstreamSleepWithAbort(ms, signal, sleepFn) {
-  return sleepWithAbort(ms, signal, sleepFn, 'Anthropic OAuth mid-stream retry backoff aborted');
+export function _midstreamSleepWithAbort(
+  ms,
+  signal,
+  sleepFn,
+  abortMessage = 'Anthropic OAuth mid-stream retry backoff aborted'
+) {
+  return sleepWithAbort(ms, signal, sleepFn, abortMessage);
 }
 
 // Anthropic's documented error-event `type` enumeration → HTTP equivalent.
@@ -88,11 +94,11 @@ function _statusForAnthropicSseError(event, payload) {
   return 0;
 }
 
-function _anthropicSseError(event) {
+function _anthropicSseError(event, labels) {
   const payload = event?.error && typeof event.error === 'object' ? event.error : event;
   const type = payload?.type || event?.type || 'error';
   const message = payload?.message || 'Anthropic SSE error';
-  const err = new Error(`Anthropic OAuth SSE error ${type}: ${message}`);
+  const err = new Error(`${labels.display} SSE error ${type}: ${message}`);
   err.name = 'AnthropicSseError';
   err.code = 'EANTHROPIC_SSE_ERROR';
   err.providerErrorType = type;
@@ -115,11 +121,11 @@ function _anthropicSseError(event) {
 // must stop reading (a terminal frame). A malformed record is skipped exactly
 // like the former per-event JSON.parse throw — and, unlike a whole-batch
 // rejection, the well-formed records beside it still run.
-function applyAnthropicSseEvent(framedEvent, { turn, watchdogs, state, progress }) {
+function applyAnthropicSseEvent(framedEvent, { turn, watchdogs, state, progress, labels }) {
   const event = framedEvent.value;
   try {
     if (framedEvent.name === 'error' || event?.type === 'error' || event?.error) {
-      throw _anthropicSseError(event);
+      throw _anthropicSseError(event, labels);
     }
     switch (event.type) {
       case 'message_start':
@@ -170,7 +176,7 @@ export async function parseSSEStream(
   state,
   onTextDelta,
   knownToolNames,
-  { relayProgressUpdates = false } = {}
+  { relayProgressUpdates = false, labels = OAUTH_STREAM_LABELS } = {}
 ) {
   // Anthropic/Claude parity: every received SSE byte proves transport
   // activity, including comment and named ping keepalives. Content kinds
@@ -191,6 +197,7 @@ export async function parseSSEStream(
     onTextDelta,
     knownToolNames,
     relayProgressUpdates,
+    labels,
   });
   const watchdogs = createAnthropicSseWatchdogs({
     state,
@@ -198,10 +205,11 @@ export async function parseSSEStream(
     signal,
     abortStream,
     attachStallPartial: turn.attachStallPartial,
+    labels,
   });
   const abortedError = () => {
     _captureMidstreamAbort(state, signal.reason);
-    return signal.reason instanceof Error ? signal.reason : new Error('Anthropic OAuth SSE stream aborted');
+    return signal.reason instanceof Error ? signal.reason : new Error(`${labels.display} SSE stream aborted`);
   };
   const onAbort = () => {
     try {
@@ -252,7 +260,7 @@ export async function parseSSEStream(
       currentEvent = framedChunk.currentEvent;
       for (const framedEvent of framedChunk.events) {
         if (framedEvent.error) continue;
-        if (applyAnthropicSseEvent(framedEvent, { turn, watchdogs, state, progress })) break streamLoop;
+        if (applyAnthropicSseEvent(framedEvent, { turn, watchdogs, state, progress, labels })) break streamLoop;
       }
     }
     turn.flushLeak();
@@ -274,7 +282,7 @@ export async function parseSSEStream(
       reader.releaseLock();
     } catch (err) {
       try {
-        process.stderr.write(`[anthropic-oauth] reader releaseLock failed: ${err?.message ?? String(err)}\n`);
+        process.stderr.write(`[${labels.tag}] reader releaseLock failed: ${err?.message ?? String(err)}\n`);
       } catch {}
     }
   }
@@ -288,12 +296,8 @@ export async function parseSSEStream(
  * That keeps recovery limited to transport/stream stalls without risking
  * duplicate eager tool execution.
  */
-// Thin wrapper: the SSE mid-stream decision tree now lives in the shared
-// classifyMidstreamError (retry-classifier.mjs, policy.mode='sse'). Kept as a
-// named export so internal call sites AND anthropic.mjs (which imports this
-// symbol) keep resolving it. Behavior is byte-identical — the shared function
-// is the relocated original, gated by SSE_MIDSTREAM_POLICY (defaultRetries=3,
-// perClassifierGate:false).
+// Thin wrapper over the shared classifyMidstreamError (retry-classifier.mjs,
+// policy.mode='sse'), gated by SSE_MIDSTREAM_POLICY.
 export function _classifyMidstreamError(err, state) {
   return classifyMidstreamError(err, state, SSE_MIDSTREAM_POLICY);
 }

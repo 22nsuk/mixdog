@@ -13,10 +13,9 @@ import { createLoopState, finishLoop, shouldSuppressAgentMidTurnText } from './l
 import { applyRetryAction, beginIteration, sendProviderRequest, settleSendResult } from './loop/send-phase.mjs';
 import { runToolPhase } from './loop/tool-phase.mjs';
 
-// Facade re-exports: these symbols moved to split modules under ./loop/ but
-// remain part of loop.mjs's public surface (imported by scripts/tests and other
-// runtime modules). Re-export the already-imported local bindings so every
-// existing import path keeps working (no duplicate module binding).
+// Facade re-exports: these symbols live in ./loop/ modules and are part of
+// loop.mjs's public surface (imported by scripts/tests and other runtime
+// modules).
 export {
   preDispatchDenyForSession,
   repairTranscriptBeforeProviderSend,

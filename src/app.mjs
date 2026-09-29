@@ -29,7 +29,7 @@ function warnWhenTuiBundleStale(bundle) {
     const hotSources = [
       join(__dirname, 'runtime', 'agent', 'orchestrator', 'session', 'agent-loop.mjs'),
       join(__dirname, 'runtime', 'agent', 'orchestrator', 'session', 'loop', 'stored-tool-args.mjs'),
-      join(__dirname, 'standalone', 'agent-tool.mjs'),
+      join(__dirname, 'session-runtime', 'services', 'agent-tool.mjs'),
     ];
     // The TUI half of the guard used to sample ONE path that does not exist
     // (tui/engine/session-api-ext.mjs), so every real src/tui edit ran silently

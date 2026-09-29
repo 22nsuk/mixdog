@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 
-import { createGoalRuntime } from './goal-runtime.mjs';
+import { createGoalRuntime } from '../runtime/agent/orchestrator/runtime-core/goal-runtime.mjs';
 
 const HOUR_MS = 60 * 60 * 1000;
 const MINUTE_MS = 60 * 1000;

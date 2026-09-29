@@ -21,24 +21,12 @@ import {
   resolveSearchScope,
   uncRefusalMessage,
 } from './search-path-diagnostics.mjs';
-// Facade re-export: path-diagnostic helpers moved to search-path-diagnostics.mjs;
-// keep prior importers of search-tool.mjs unchanged.
-export {
-  _suggestIndexedPaths,
-  basePathDiagnostic,
-  buildNotFoundHint,
-  isUncOrSmbPath,
-  relativePathPrefix,
-  relativeSearchResultPath,
-  resolveSearchScope,
-  uncRefusalMessage,
-} from './search-path-diagnostics.mjs';
 import { buildGlobCacheKey, DEFAULT_IGNORE_GLOBS, rootScanIgnoreGlobs } from './search-builders.mjs';
 import { runRg, runRgWindowedLines } from './native-search-runner.mjs';
 import { markScopedCacheIncomplete } from '../../session/cache/scoped-cache-outcome.mjs';
 import { cacheGet, cacheSet, runResultCacheInFlight, statPathsForMtime, visitPathsForMtime } from './cache-layers.mjs';
 import { recordLocalSearchCacheHit } from './local-search-telemetry.mjs';
-import { uniqueStrings, coerceNonNegInt, globMtimeTiePath, resolveHeadLimit } from './lib/search-input-helpers.mjs';
+import { capPatternList, globMtimeTiePath, resolveSearchWindow, uniqueStrings } from './lib/search-input-helpers.mjs';
 import { reportToolProgress } from './lib/tool-progress.mjs';
 import { statReachable } from './fs-reachability.mjs';
 
@@ -156,13 +144,7 @@ function requestedGlobPatterns(args) {
 // cache on the original count so a capped glob never collides with an
 // exact N-pattern request or is served as the whole set.
 function capGlobPatterns(patterns, options) {
-  if (patterns.length <= GLOB_PATTERN_ARRAY_CAP) return { patterns, note: '', total: 0 };
-  if (options?.scopedCacheOutcome) markScopedCacheIncomplete(options.scopedCacheOutcome);
-  return {
-    patterns: patterns.slice(0, GLOB_PATTERN_ARRAY_CAP),
-    note: `[capped at ${GLOB_PATTERN_ARRAY_CAP} of ${patterns.length} patterns]\n`,
-    total: patterns.length,
-  };
+  return capPatternList(patterns, GLOB_PATTERN_ARRAY_CAP, options);
 }
 
 // Call-scoped stat cache: the preflight stats each root, the per-group rg
@@ -219,20 +201,6 @@ function globUncRefusal(baseEntries, patterns, resolvedForSearchRoot) {
     if (isAbsolute(p) && isUncOrSmbPath(p)) return uncRefusalMessage('glob', p, p);
   }
   return null;
-}
-
-function globWindow(args) {
-  const headLimitCoerced = coerceNonNegInt(args.head_limit);
-  if (Number.isNaN(headLimitCoerced)) {
-    return {
-      error: `Error: invalid limit ${JSON.stringify(args.head_limit)}; expected a non-negative integer (0 = unlimited)`,
-    };
-  }
-  const offsetCoerced = coerceNonNegInt(args.offset);
-  if (Number.isNaN(offsetCoerced)) {
-    return { error: `Error: invalid offset ${JSON.stringify(args.offset)}; expected a non-negative integer` };
-  }
-  return { headLimit: resolveHeadLimit(headLimitCoerced, _globDefaultHeadLimit()), offset: offsetCoerced || 0 };
 }
 
 // The rg argument list for one pattern group. Explicit literal basenames
@@ -590,7 +558,7 @@ export async function executeGlobTool(args, workDir, options = {}) {
   };
   const refusal = globUncRefusal(baseEntries, patterns, resolvedForSearchRoot);
   if (refusal) return refusal;
-  const window = globWindow(args);
+  const window = resolveSearchWindow(args, _globDefaultHeadLimit());
   if (window.error) return window.error;
   const { headLimit, offset } = window;
   const { sortMode, includeNoise, extraIgnoreGlobs } = globScanOptions(args);

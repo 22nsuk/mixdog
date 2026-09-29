@@ -1,9 +1,8 @@
-// Thin facade. The agent loop implementation moved to ./agent-loop.mjs and the
-// pre-send auto-compact pass to ./pre-send-compact.mjs. This module re-exports
-// the exact public surface (agentLoop plus the tool/approval/transcript
-// helpers) so every existing import path -- scripts/tests, the manager.mjs
-// dynamic import('./loop.mjs'), and other runtime modules -- keeps resolving
-// unchanged.
+// Thin facade over ./agent-loop.mjs (the loop; the pre-send auto-compact pass
+// is ./pre-send-compact.mjs). Re-exports the public surface (agentLoop plus the
+// tool/approval/transcript helpers) for scripts/tests, the lazy
+// import('../loop.mjs') in manager/runtime-loaders.mjs, and other runtime
+// modules.
 export {
   agentLoop,
   preDispatchDenyForSession,

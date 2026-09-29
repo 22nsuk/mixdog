@@ -1,6 +1,6 @@
 // Offline model metadata for quick picker rows: the sync catalog lookup and a
 // model record filled from it.
-import { clean } from '../session-text.mjs';
+import { clean } from '../../runtime/agent/orchestrator/runtime-core/session-text.mjs';
 import { getModelMetadataSync } from '../../runtime/agent/orchestrator/providers/model-catalog.mjs';
 
 export function metadataFor(provider, modelId) {

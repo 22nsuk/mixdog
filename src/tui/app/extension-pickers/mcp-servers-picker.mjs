@@ -62,16 +62,20 @@ export function createMcpServersPicker({ store, theme, surface, getPicker, setPr
       fn();
     };
     // Optimistic: instantly reopen with the row flipped + pending status.
-    openMcpServersPicker({ highlightValue, optimistic: { name, enabled: target } });
+    const reopen = (options) =>
+      void openMcpServersPicker(options).catch((e) =>
+        store.pushNotice(`mcp panel failed: ${e?.message || e}`, 'error')
+      );
+    reopen({ highlightValue, optimistic: { name, enabled: target } });
     Promise.resolve(store.setMcpServerEnabled?.(name, target))
       .then(() => {
         // Per-server serialization in the runtime already converged rapid
         // re-toggles to the last requested state; just refresh the row.
-        settle(() => openMcpServersPicker({ highlightValue }));
+        settle(() => reopen({ highlightValue }));
       })
       .catch((e) => {
         store.pushNotice(`mcp toggle failed: ${e?.message || e}`, 'error');
-        settle(() => openMcpServersPicker({ highlightValue }));
+        settle(() => reopen({ highlightValue }));
       });
   };
 

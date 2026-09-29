@@ -269,8 +269,9 @@ function rememberDuration(entry, durationSeconds) {
   mutateIndex((assets) => {
     const row = assets.find((item) => item.id === entry.id);
     if (!row || row.durationSeconds === durationSeconds) return null;
-    row.durationSeconds = durationSeconds;
-    return assets;
+    // Copy the row: the cached array is only replaced after the write succeeds.
+    // Copy the row: the cached array is only replaced after the write succeeds.
+    return assets.map((item) => (item === row ? { ...row, durationSeconds } : item));
   });
   entry.durationSeconds = durationSeconds;
 }
@@ -468,7 +469,12 @@ export function deleteMediaAssets({ ids, kind = null, before, missing = false, a
     }
     return true;
   };
-  if (dryRun) return { ids: readIndex().filter(matches).map((entry) => entry.id) };
+  if (dryRun)
+    return {
+      ids: readIndex()
+        .filter(matches)
+        .map((entry) => entry.id),
+    };
   let removed = [];
   mutateIndex((assets) => {
     const doomed = assets.filter(matches);

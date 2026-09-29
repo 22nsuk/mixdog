@@ -1,7 +1,8 @@
 import { statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, relative, resolve } from 'node:path';
-import { listProjects } from '../../../../../standalone/projects.mjs';
+import { listProjects } from '../../../../shared/projects.mjs';
 import { explicitSessionCwd, readLastSessionCwd } from '../../../../shared/user-cwd.mjs';
+import { canonicalGraphPath } from '../code-graph-state.mjs';
 import { listCachedCodeGraphRoots } from './disk-cache.mjs';
 import { _findDirProjectRoot } from './project-root.mjs';
 
@@ -28,11 +29,6 @@ export function _isFilesystemRootPath(value) {
   } catch {
     return false;
   }
-}
-
-function pathKey(path) {
-  const abs = resolve(path);
-  return process.platform === 'win32' ? abs.toLowerCase() : abs;
 }
 
 export function _pathIsWithin(root, candidate) {
@@ -83,7 +79,7 @@ export function collectTrustedCodeGraphRoots(
     const detected = row.detect ? projectRoot(candidate) : null;
     if (detected) candidate = resolve(detected);
     if (_isFilesystemRootPath(candidate) || !directory(candidate) || !_pathIsWithin(root, candidate)) continue;
-    const key = pathKey(candidate);
+    const key = canonicalGraphPath(candidate);
     if (!found.has(key)) found.set(key, candidate);
   }
   return [...found.values()].sort((a, b) => a.localeCompare(b));

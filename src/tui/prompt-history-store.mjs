@@ -99,6 +99,8 @@ const FLUSH_CAP = 5; // flush immediately once this many appends are queued
 const memCache = new Map(); // filePath -> entries[] (optimistic in-memory view)
 const pendingAppends = new Map(); // filePath -> string[] appends since last flush
 const pendingTimers = new Map(); // filePath -> timeout handle
+const WRITE_RETRY_MAX_MS = 30_000;
+const writeFailures = new Map(); // filePath -> consecutive failed flushes
 
 function flushPendingSyncForEviction(filePath) {
   const timer = pendingTimers.get(filePath);
@@ -156,12 +158,17 @@ function reconcileWithDisk(filePath, pend) {
   return out;
 }
 
-function scheduleWriteBehind(filePath) {
+/** Delay before retry number `failures` (1-based) of a failing flush: doubles from the flush window up to a cap. */
+export function writeRetryDelayMs(failures) {
+  return Math.min(WRITE_RETRY_MAX_MS, WRITE_BEHIND_MS * 2 ** Math.max(0, failures));
+}
+
+function scheduleWriteBehind(filePath, delayMs = WRITE_BEHIND_MS) {
   if (!filePath) return;
   if (pendingTimers.has(filePath)) clearTimeout(pendingTimers.get(filePath));
   const timer = setTimeout(() => {
     void writeBehindFlush(filePath);
-  }, WRITE_BEHIND_MS);
+  }, delayMs);
   if (typeof timer.unref === 'function') timer.unref();
   pendingTimers.set(filePath, timer);
 }
@@ -181,13 +188,17 @@ async function writeBehindFlush(filePath) {
   rememberCachedEntries(filePath, merged);
   const ok = await writeEntriesAsync(filePath, merged);
   if (!ok) {
-    // Retry: re-queue our appends ahead of any newer ones (oldest → newest).
+    // Retry with capped exponential backoff: re-queue our appends ahead of any
+    // newer ones (oldest → newest).
+    const failures = (writeFailures.get(filePath) || 0) + 1;
+    writeFailures.set(filePath, failures);
     const cur = pendingAppends.get(filePath) || [];
     pendingAppends.set(filePath, pend.concat(cur));
-    scheduleWriteBehind(filePath);
-  } else if (!pendingAppends.get(filePath)?.length) {
-    pendingAppends.delete(filePath);
+    scheduleWriteBehind(filePath, writeRetryDelayMs(failures));
+    return;
   }
+  writeFailures.delete(filePath);
+  if (!pendingAppends.get(filePath)?.length) pendingAppends.delete(filePath);
 }
 
 // Synchronously flush any coalesced pending writes. Registered on process exit

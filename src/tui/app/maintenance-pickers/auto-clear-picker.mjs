@@ -53,13 +53,12 @@ export function createAutoClearPicker({
     // after Esc — on open or on any later toggle — can never paint over the
     // user's surface.
     const own = surface.claim();
+    const panelFailed = (e) => store.pushNotice(`auto-clear panel failed: ${e?.message || e}`, 'error');
     const applyAutoClear = (patch = {}) => {
       // Bound to the claim on this keypress: a write acking after Esc must not
       // re-open the Auto-clear panel.
       const settled = own.defer(() => {
-        void Promise.resolve(render()).catch((e) =>
-          store.pushNotice(`auto-clear panel failed: ${e?.message || e}`, 'error')
-        );
+        void Promise.resolve(render()).catch(panelFailed);
       });
       void Promise.resolve(store.setAutoClear?.(patch))
         .then((next) => {
@@ -102,7 +101,7 @@ export function createAutoClearPicker({
           if (item?._action === 'provider-default') openProviderDurationEditor(item._entry);
         },
         onCancel: () => {
-          void render();
+          void render().catch(panelFailed);
         },
       });
     };
@@ -145,7 +144,7 @@ export function createAutoClearPicker({
           if (item?._action === 'toggle') {
             applyAutoClear({ enabled: !enabled });
           } else if (item?._action === 'advanced') {
-            renderAdvanced();
+            void renderAdvanced().catch(panelFailed);
           }
         },
         onCancel: () => {
@@ -158,9 +157,7 @@ export function createAutoClearPicker({
     setSettingsPrompt(null);
     own.context(null);
     closeUsagePanel();
-    return Promise.resolve(options.advanced === true ? renderAdvanced() : render()).catch((e) =>
-      store.pushNotice(`auto-clear panel failed: ${e?.message || e}`, 'error')
-    );
+    return Promise.resolve(options.advanced === true ? renderAdvanced() : render()).catch(panelFailed);
   };
 
   return { openAutoClearPicker };

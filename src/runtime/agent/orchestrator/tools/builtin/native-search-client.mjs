@@ -10,7 +10,6 @@
 // executable.
 import { existsSync } from 'node:fs';
 import { bindChildLifecycle, createNativeSearchTransport } from './native-search-transport.mjs';
-import { reportRuntimeWorkerUnhealthy } from '../../../../shared/session-runtime-health.mjs';
 import { invalidateBuiltinResultCache } from './cache-layers.mjs';
 import { getPluginData } from '../../config.mjs';
 import { ensureGraphBinary } from '../graph-binary-fetcher.mjs';
@@ -44,6 +43,8 @@ let _binaryResolveStarted = false;
 let _warmPromise = null;
 let _lastTimeoutRecycleAt = 0;
 const _abortSignalSubscribers = new WeakMap();
+
+const searchServerDisabled = () => process.env.MIXDOG_SEARCH_SERVER === '0';
 
 function codedError(code, message, cause = null) {
   const error = new Error(message);
@@ -429,7 +430,7 @@ export { completeNativeCancellation as _ackNativeSearchCancellationForTest };
 // call this fire-and-forget to have the resident
 // server up before the first tool call. Honors the same kill switch.
 export async function warmNativeSearchServer(timeoutMs = 5_000) {
-  if (process.env.MIXDOG_SEARCH_SERVER === '0') return false;
+  if (searchServerDisabled()) return false;
   if (!_warmPromise) {
     const warm = (async () => {
       try {
@@ -501,11 +502,6 @@ async function requestNative(server, request, execOptions, deadlineMs) {
       // if it does not comply. Killing it here also destroyed every warm
       // inventory, so the next call re-walked from cold and timed out again.
       if (action !== 'runtime') return;
-      reportRuntimeWorkerUnhealthy({
-        reason: 'native search timed out again after server recycle',
-        code: 'NATIVE_SEARCH_TIMEOUT_STREAK',
-        subsystem: 'native-search',
-      });
       queueMicrotask(() => {
         if (_server === server) {
           _teardown(error, { countFailure: false, detail: 'repeated request timeouts' });
@@ -640,7 +636,7 @@ function consumedDeadline(response, deadlineMs) {
 /** Returns a runRgWindowedLines-shaped result, or null when the native server
  *  is disabled or the response carries no line list. */
 export async function tryServeSearch(argsList, execOptions = {}, opts = {}) {
-  if (process.env.MIXDOG_SEARCH_SERVER === '0') return null;
+  if (searchServerDisabled()) return null;
   const deadlineMs = callerDeadlineMs(execOptions, REQUEST_TIMEOUT_MS);
   const buildRequest = (server, remaining) => ({
     id: ++server.sequence,
@@ -730,7 +726,7 @@ export async function tryServeSearch(argsList, execOptions = {}, opts = {}) {
 }
 
 export async function tryServeFuzzySearch(args, execOptions = {}) {
-  if (process.env.MIXDOG_SEARCH_SERVER === '0') return null;
+  if (searchServerDisabled()) return null;
   const deadlineMs = callerDeadlineMs(execOptions, REQUEST_TIMEOUT_MS);
   const response = await requestNativeWithRestart(
     (server, remaining) => ({
@@ -783,7 +779,7 @@ export async function tryServeFuzzySearch(args, execOptions = {}) {
 }
 
 export async function tryServeListMetadata(paths, execOptions = {}) {
-  if (process.env.MIXDOG_SEARCH_SERVER === '0') return null;
+  if (searchServerDisabled()) return null;
   const list = Array.isArray(paths) ? paths.map(String) : [];
   if (list.length === 0) return [];
   if (list.length > 50_000) {

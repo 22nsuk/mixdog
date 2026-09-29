@@ -9,10 +9,8 @@
 // parameters, context window); this file seeds them from the same route/state
 // pair and assembles the route input from all three.
 import { createContextSelection } from './route-selection/context-window.mjs';
-import { createEffortSelection, effortItemsFor } from './route-selection/effort.mjs';
+import { createEffortSelection } from './route-selection/effort.mjs';
 import { createFastParameterSelection } from './route-selection/fast-parameters.mjs';
-
-export { effortItemsFor };
 
 export function createRouteSelection({ providerModels, state, currentRoute }) {
   const isCurrentRoute = (model) => currentRoute?.provider === model.provider && currentRoute?.model === model.id;

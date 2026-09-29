@@ -3,8 +3,8 @@
  *
  * POST-RENDER (not streaming): given a full markdown string, returns a styled
  * terminal string. The REPL streams raw tokens live for "it feels alive" feel,
- * then on turn-end clears the streamed block and re-prints this rendered form
- * (approach (a) from the brief). Because we always have the complete text by
+ * then on turn-end clears the streamed block and re-prints this rendered form.
+ * Because we always have the complete text by
  * the time we render, a simple line-oriented parser is enough — no need for an
  * incremental/streaming markdown state machine.
  *
@@ -27,7 +27,7 @@ import {
   visibleWidth,
   rgb,
   compose,
-} from './ansi.mjs';
+} from '../runtime/shared/statusline/ansi.mjs';
 
 // Default Mixdog dark markdown semantics (mirrors src/tui/theme.mjs mixdogPalette md* keys).
 const PALETTE = {

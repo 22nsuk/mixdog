@@ -4,6 +4,7 @@ import { relative } from 'node:path';
 import { _graphRel, _getSourceTextForNode, _getSourceLinesForNode } from './source-access.mjs';
 import { _astCallerCallSites, _astFileCallSites, _astCallDisplayCol, _astRelInScope } from './ast-calls.mjs';
 import {
+  _escapeRegExp,
   _unicodeBoundaryPattern,
   _lookupCandidateNodes,
   _getTokenSymbolsForNode,
@@ -81,16 +82,23 @@ export function _impactSourceNodes(node, graph, targetSymbol = '') {
   return out;
 }
 
-function _buildImpactSummary(node, graph, cwd, targetSymbol = '') {
+// A file's import edges, reverse edges, and their union — the structural
+// neighbourhood `related` lists and `impact` starts from.
+function _structuralNeighbors(node, graph, cwd) {
   const imports = node.resolvedImports.map((p) => _graphRel(p, cwd));
   const dependents = [...(graph.reverse.get(node.rel) || [])].sort();
   const related = [...new Set([...imports, ...dependents])].sort();
+  return { imports, dependents, related };
+}
+
+function _buildImpactSummary(node, graph, cwd, targetSymbol = '') {
+  const { imports, dependents, related } = _structuralNeighbors(node, graph, cwd);
   const symbols = targetSymbol ? [targetSymbol] : _collectImpactSymbols(node).slice(0, 8);
   const symbolImpact = [];
   const externalCallers = new Set();
   let externalReferences = 0;
   for (const symbol of symbols) {
-    const refs = _parseReferenceEntries(_cheapReferenceSearch(graph, symbol, cwd, { language: node.lang })).filter(
+    const refs = _parseReferenceEntries(_cheapReferenceSearch(graph, symbol, { language: node.lang })).filter(
       (entry) => entry.file !== node.rel
     );
     if (refs.length === 0) continue;
@@ -112,9 +120,7 @@ function _buildImpactSummary(node, graph, cwd, targetSymbol = '') {
 }
 
 export function _formatRelated(node, graph, cwd) {
-  const imports = node.resolvedImports.map((p) => _graphRel(p, cwd));
-  const dependents = [...(graph.reverse.get(node.rel) || [])].sort();
-  const related = [...new Set([...imports, ...dependents])].sort();
+  const { imports, dependents, related } = _structuralNeighbors(node, graph, cwd);
   const lines = [
     `file\t${node.rel}`,
     `language\t${node.lang}`,
@@ -321,7 +327,7 @@ export function _findSymbolAcrossGraph(
   return lines.join('\n');
 }
 
-export function _resolveReferenceLanguageNode(graph, symbol, rel, _cwd, language = null) {
+export function _resolveReferenceLanguageNode(graph, symbol, rel, language = null) {
   if (rel) {
     const node = graph.nodes.get(rel);
     if (!node) return { kind: 'file-not-found', node: null, file: rel };
@@ -339,7 +345,7 @@ export function _resolveReferenceLanguageNode(graph, symbol, rel, _cwd, language
 }
 
 function _referenceKind(line, symbol, lang = null) {
-  const escaped = String(symbol || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const escaped = _escapeRegExp(symbol);
   if (!escaped) return 'reference';
   const text = String(line || '');
   if (
@@ -440,13 +446,12 @@ function _textReferenceEntries(graph, symbol, referenceText) {
   for (const entry of _parseReferenceEntries(referenceText)) {
     const node = graph.nodes.get(entry.file);
     if (!node) continue;
-    const sourceText = _getSourceTextForNode(graph, node);
-    const sourceLines = sourceText.split(/\r?\n/);
+    const sourceLines = _getSourceLinesForNode(graph, node);
     const line = String(sourceLines[entry.line - 1] || '').trim();
     if (!line) continue;
     if (_referenceKind(line, symbol, node.lang) !== 'reference') continue;
     const _encByteCol = _toByteColumn(sourceLines[entry.line - 1] || '', entry.col);
-    const owner = _symbolPathForPosition(node, sourceText, entry.line, _encByteCol);
+    const owner = _symbolPathForPosition(node, entry.line, _encByteCol);
     detailed.push({
       ...entry,
       kind: 'reference',

@@ -14,7 +14,7 @@ import {
 } from '../../runtime/local-provider/managed-runtime.mjs';
 import { deferComputerSessionRelease, endComputerExecution } from '../../runtime/computer-bridge/client.mjs';
 import { developerOption, developerOptionEnabled } from '../../runtime/shared/developer-options.mjs';
-import { hasOwn } from '../session-text.mjs';
+import { hasOwn } from '../../runtime/agent/orchestrator/runtime-core/session-text.mjs';
 import {
   normalizeSystemShellConfig,
   normalizeSystemShellCommand,
@@ -27,11 +27,11 @@ import {
   setMemoryToolsEnabledInConfig,
   formatDurationMs,
   parseDurationMs,
-} from '../config-helpers.mjs';
-import { applyDeferredToolSurface } from '../tool-catalog.mjs';
+} from '../../runtime/agent/orchestrator/runtime-core/config-helpers.mjs';
+import { applyDeferredToolSurface } from '../../runtime/agent/orchestrator/runtime-core/tool-catalog.mjs';
 import { ONBOARDING_VERSION } from '../quick-web-search-models.mjs';
 import { createSettingsApi } from '../settings-api.mjs';
-import { createSessionTitleController } from '../session-title.mjs';
+import { createSessionTitleController } from '../../runtime/agent/orchestrator/runtime-core/session-title.mjs';
 import { closeNativeToolTransports, closePatchRuntimeIfLoaded, withTeardownDeadline } from '../native-teardown.mjs';
 import { createChannelConfigApi } from '../channel-config-api.mjs';
 import { createMediaApi } from '../media-api.mjs';
@@ -73,7 +73,6 @@ export function wireApis(boot) {
     dataRoot: () => dataDirOf(boot.cfgMod),
     promoteGeneratedTitle: (sessionId, title, stage) => boot.mgr.updateSessionGeneratedTitle(sessionId, title, stage),
   });
-  boot.disposeGlobalExtensionSubscription = () => {};
   boot.lifecycleApi = lifecycleApiFor(boot);
   boot.resourceApi = resourceApiFor(boot);
   boot.disposeGlobalExtensionSubscription = () => boot.resourceApi.disposeGlobalExtensionSubscription?.();

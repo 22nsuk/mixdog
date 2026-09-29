@@ -4,10 +4,7 @@
  * (create de-dupe + prune), cache-state attach, usage resolution, and the
  * cache trace writer.
  *
- * Owns the module-level
- * geminiGlobalCaches / geminiGlobalCacheCreates maps. gemini.mjs imports
- * these helpers; no re-export needed (all names are internal to the
- * provider — none were part of the module's external surface).
+ * Owns the module-level geminiGlobalCaches / geminiGlobalCacheCreates maps.
  */
 import { traceHash, stableTraceStringify, summarizeTraceTools, traceTextShape } from './trace-utils.mjs';
 

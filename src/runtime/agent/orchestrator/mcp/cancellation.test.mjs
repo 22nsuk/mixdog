@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { _registerMcpServerForTest, executeMcpTool, getMcpAdmissionSnapshot } from './client.mjs';
+import { _registerMcpServerForTest, executeMcpTool, getMcpAdmissionSnapshot, raceMcpAbort } from './client.mjs';
 
 const never = () => new Promise(() => {});
 
@@ -143,4 +143,35 @@ test('cancellation never turns into a reconnect-and-retry (no duplicate side eff
     setTimeout(resolve, 50);
   });
   assert.equal(calls, 1, 'the aborted call is never replayed against a reconnected server');
+});
+
+test('parallel calls sharing one turn signal neither warn about listeners nor keep any after settling', async () => {
+  const warnings = [];
+  const onWarning = (warning) => warnings.push(warning);
+  process.on('warning', onWarning);
+  try {
+    const controller = new AbortController();
+    const settles = [];
+    const calls = Array.from({ length: 80 }, (_, index) =>
+      raceMcpAbort(
+        new Promise((resolve) => {
+          settles.push(() => resolve(index));
+        }),
+        controller.signal,
+        'aborted'
+      )
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    for (const settle of settles) settle();
+    assert.equal((await Promise.all(calls)).length, 80);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(
+      warnings.filter((warning) => warning.name === 'MaxListenersExceededWarning'),
+      []
+    );
+    // Settled calls removed their listeners: aborting now reaches nobody.
+    controller.abort();
+  } finally {
+    process.off('warning', onWarning);
+  }
 });

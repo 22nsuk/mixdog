@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test, { mock } from 'node:test';
-import * as ansi from '../ui/ansi.mjs';
+import * as ansi from '../runtime/shared/statusline/ansi.mjs';
 
 let colors = false;
-mock.module('../ui/ansi.mjs', {
+mock.module('../runtime/shared/statusline/ansi.mjs', {
   namedExports: { ...ansi, colorEnabled: () => colors },
 });
 

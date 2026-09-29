@@ -1,5 +1,5 @@
 import { callAgentDispatch } from './agent-ipc.mjs';
-import { resolveMaintenancePreset } from '../../shared/llm/index.mjs';
+import { resolveMaintenancePreset } from '../../agent/orchestrator/maintenance-preset.mjs';
 import { createSemaphore, throwIfAborted } from './memory-cycle2-shared.mjs';
 
 // Reuse the history lineage search: nearest semantic and lexical predecessors
@@ -217,7 +217,13 @@ export async function reviewHistory(db, rows, config = {}, options = {}) {
           prompt
         );
         throwIfAborted(signal);
-        return parseHistoryReview(raw, packet);
+        try {
+          return parseHistoryReview(raw, packet);
+        } catch (error) {
+          // Keep the model output so the failing batch can be logged once.
+          error.rawVerdict = raw;
+          throw error;
+        }
       })
     )
   );

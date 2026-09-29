@@ -18,7 +18,7 @@ import { getPluginData } from '../config.mjs';
 import { writeJsonAtomicSync, withFileLock } from '../../../shared/atomic-file.mjs';
 import { boundProviderAuthPath } from '../../../shared/provider-auth-binding.mjs';
 import { getLlmDispatcher } from '../../../shared/llm/http-agent.mjs';
-import { decodeJwtPayload, expiryFromAccessToken } from './lib/oauth-token-utils.mjs';
+import { decodeJwtPayload, expiryFromAccessToken, oauthCredentialStatus } from './lib/oauth-token-utils.mjs';
 import { createOpenAIOAuthLogin } from './openai-oauth-login.mjs';
 import { CODEX_OAUTH_ORIGINATOR } from './openai-codex-endpoints.mjs';
 
@@ -125,8 +125,6 @@ export function describeOpenAIOAuthCredentials() {
     }
     const hasRefresh = Boolean(tokens.refresh_token);
     const expiresAt = _normalizeExpiresAt(tokens.expires_at ?? tokens.expiresAt);
-    const expiring = expiresAt > 0 && expiresAt < Date.now() + TOKEN_REFRESH_SKEW_MS;
-    const expired = expiresAt > 0 && expiresAt <= Date.now();
     const source = tokens.source || 'oauth';
     // Account identity for multi-account rosters: the id_token's email
     // when present, else a short prefix of the ChatGPT account id.
@@ -134,48 +132,8 @@ export function describeOpenAIOAuthCredentials() {
     const email = typeof claims.email === 'string' ? claims.email : '';
     const accountId = tokens.account_id ? `${String(tokens.account_id).slice(0, 8)}…` : '';
     const identity = { ...(email ? { email } : {}), ...(accountId ? { accountId } : {}) };
-    if (!hasRefresh) {
-      return {
-        authenticated: expiresAt === 0 || !expired,
-        usable: expiresAt === 0 || !expired,
-        refreshable: false,
-        reauthRequired: expired,
-        status: expired ? 'Reauth Required' : 'Access Only',
-        detail: `${source}; no refresh token`,
-        expiresAt,
-        ...identity,
-      };
-    }
-    if (expired)
-      return {
-        authenticated: true,
-        usable: false,
-        refreshable: true,
-        reauthRequired: false,
-        status: 'Refresh Required',
-        detail: source,
-        expiresAt,
-        ...identity,
-      };
-    if (expiring)
-      return {
-        authenticated: true,
-        usable: true,
-        refreshable: true,
-        reauthRequired: false,
-        status: 'Refresh Soon',
-        detail: source,
-        expiresAt,
-        ...identity,
-      };
     return {
-      authenticated: true,
-      usable: true,
-      refreshable: true,
-      reauthRequired: false,
-      status: 'Valid',
-      detail: source,
-      expiresAt,
+      ...oauthCredentialStatus({ hasRefresh, expiresAt, detail: source, refreshSkewMs: TOKEN_REFRESH_SKEW_MS }),
       ...identity,
     };
   } catch (err) {

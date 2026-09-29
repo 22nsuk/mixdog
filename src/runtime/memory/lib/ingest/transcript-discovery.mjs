@@ -7,7 +7,7 @@ import path from 'node:path';
 const ACTIVE_WINDOW_MS = 30 * 60_000;
 
 export function isSkippedWatchPath(relOrBase) {
-  return relOrBase.includes('tmp') || relOrBase.includes('cache') || relOrBase.includes('plugins');
+  return relOrBase.split(/[\\/]+/).some((seg) => seg === 'tmp' || seg === 'cache' || seg === 'plugins');
 }
 
 export function isTranscriptJsonlName(name) {

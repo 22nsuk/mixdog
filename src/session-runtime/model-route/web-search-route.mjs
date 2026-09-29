@@ -2,10 +2,10 @@
  * web-search-route.mjs — the native web-search route: read with the
  * follow-Main default, list candidate models, and validate + save a selection.
  */
-import { clean, hasOwn } from '../session-text.mjs';
-import { coerceEffortFor } from '../effort.mjs';
-import { fastCapableFor } from '../model-capabilities.mjs';
-import { ensureProviderEnabled } from '../config-helpers.mjs';
+import { clean, hasOwn } from '../../runtime/agent/orchestrator/runtime-core/session-text.mjs';
+import { coerceEffortFor } from '../../runtime/agent/orchestrator/runtime-core/effort.mjs';
+import { fastCapableFor } from '../../runtime/agent/orchestrator/runtime-core/model-capabilities.mjs';
+import { ensureProviderEnabled } from '../../runtime/agent/orchestrator/runtime-core/config-helpers.mjs';
 import {
   isDefaultWebSearchRouteConfig,
   isWebSearchCapableProvider,
@@ -13,7 +13,7 @@ import {
   webSearchRouteOrDefault,
   WEB_SEARCH_DEFAULT_MODEL,
   WEB_SEARCH_DEFAULT_PROVIDER,
-} from '../workflow.mjs';
+} from '../../runtime/agent/orchestrator/runtime-core/workflow.mjs';
 
 const defaultWebSearchRoute = (toolType) =>
   normalizeWebSearchRouteConfig({

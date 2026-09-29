@@ -8,12 +8,12 @@ import { runPreSendCompactPass } from '../pre-send-compact.mjs';
 import {
   refreshDeferredMcpToolCatalog,
   snapshotProviderRequestTools,
-} from '../../../../../session-runtime/tool-catalog.mjs';
+} from '../../runtime-core/tool-catalog.mjs';
 import {
   finalizeProviderRequestTools,
   providerNativeToolPrefixCount,
   runWithProviderRequestToolsScope,
-} from '../../../../../session-runtime/provider-request-tools.mjs';
+} from '../../runtime-core/provider-request-tools.mjs';
 
 const isDynamicTool = (tool) =>
   tool.deferLoading === true || tool.defer_loading === true || String(tool.name || '').startsWith('mcp__');

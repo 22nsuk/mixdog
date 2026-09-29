@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createSettingsApi } from '../settings-api.mjs';
-import { setModuleEnabledInConfig } from '../config-helpers.mjs';
+import { setModuleEnabledInConfig } from '../../runtime/agent/orchestrator/runtime-core/config-helpers.mjs';
 import { createSetupToolExecutor } from './executor.mjs';
 
 const run = async (executor, args) => JSON.parse(await executor.execute(args));

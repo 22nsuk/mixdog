@@ -12,7 +12,11 @@ export const CODE_GRAPH_RUNTIME = '../runtime/agent/orchestrator/tools/code-grap
 export const STATUSLINE_SESSION_ROUTES = '../vendor/statusline/src/gateway/session-routes.mjs';
 
 const SESSION_RUNTIME_DIR = dirname(fileURLToPath(import.meta.url));
-const STANDALONE_SOURCE_ROOT = dirname(SESSION_RUNTIME_DIR);
-export const STANDALONE_ROOT = STANDALONE_SOURCE_ROOT;
+export const STANDALONE_ROOT = dirname(SESSION_RUNTIME_DIR);
 const mixdogHome = process.env.MIXDOG_HOME || join(homedir(), '.mixdog');
 export const STANDALONE_DATA_DIR = process.env.MIXDOG_DATA_DIR || join(mixdogHome, 'data');
+
+/** The data directory a runtime writes to: its config module's plugin data dir, else the standalone default. */
+export function pluginDataDir(cfgMod) {
+  return cfgMod.getPluginData?.() || STANDALONE_DATA_DIR;
+}

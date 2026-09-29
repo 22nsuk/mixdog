@@ -493,7 +493,7 @@ function providerAdmissionKey(providerName, provider) {
     provider?.config?.apiKey ||
     // OAuth access tokens rotate. Prefer stable account identity above and
     // a stable refresh credential below so a refresh cannot open a second
-    // 64-wide lane while old-token requests are still running.
+    // admission lane while old-token requests are still running.
     provider?.tokens?.refresh_token ||
     provider?.credentials?.refreshToken ||
     provider?.tokens?.access_token ||

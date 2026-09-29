@@ -9,7 +9,7 @@
  * stream, synthesized (native `call_...` id shape), and dispatched like
  * native ones. Additive: the native function_call path is untouched.
  */
-import { createLeakGuard } from './anthropic-leaked-toolcall.mjs';
+import { createLeakGuard } from './lib/leaked-toolcall.mjs';
 
 /**
  * @param {object} deps

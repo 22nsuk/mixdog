@@ -13,8 +13,8 @@ import {
 } from '../../../shared/skill-document.mjs';
 import { readSkillToolDependencies, skillToolDependenciesRoot } from '../../../shared/skill-tool-dependencies.mjs';
 import { loadConfig, normalizeSkillsConfig } from '../config.mjs';
-import { builtinFeatureActive, withGrandfatheredBuiltins } from '../../../../session-runtime/builtin-features.mjs';
-import { SKILL_TOOL } from '../../../../session-runtime/tool-defs.mjs';
+import { builtinFeatureActive, withGrandfatheredBuiltins } from '../runtime-core/builtin-features.mjs';
+import { SKILL_TOOL } from '../runtime-core/tool-defs.mjs';
 import { extensionScopesFromConfig, skillAllowedForCwd } from '../../../shared/extension-scopes.mjs';
 import { currentSkillContext, latestSkillBodies, skillMessageText } from './skill-state.mjs';
 import { compactPromptManifestText } from './deferred-tools.mjs';

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { GOAL_TOOL_DEFS } from '../../../../session-runtime/goal-tool-defs.mjs';
-import { toolSearchNativePayload } from '../../../../session-runtime/tool-catalog.mjs';
+import { GOAL_TOOL_DEFS } from '../runtime-core/goal-tool-defs.mjs';
+import { toolSearchNativePayload } from '../runtime-core/tool-catalog.mjs';
 import { nativeToolSearchOutputInput } from './custom-tool-wire.mjs';
 import { toOpenAIResponsesTool } from './openai-responses-payload.mjs';
 import { toResponsesTools } from './openai-compat-wire.mjs';

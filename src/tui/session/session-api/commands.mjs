@@ -4,7 +4,6 @@
  * a turn is running). Each shows a command status while it holds the lock.
  */
 import { compactEventDetail } from '../labels.mjs';
-import { formatDoctorReport, runDoctorChecks } from '../../app/doctor.mjs';
 
 export function createSessionCommandsApi(bag) {
   const {
@@ -18,6 +17,9 @@ export function createSessionCommandsApi(bag) {
     routeState,
     syncContextStats,
     replaceItems,
+    // Injected by the store composer (session-local.mjs): the doctor checks
+    // live in the app layer, which the session layer must not import.
+    doctor,
   } = bag;
 
   // Run `work` under the command lock with a visible commandStatus.
@@ -150,8 +152,8 @@ export function createSessionCommandsApi(bag) {
         // Yield one event-loop turn so Ink paints the running indicator
         // before the health checks start — same pattern as compact.
         await new Promise((resolve) => setTimeout(resolve, 0));
-        const result = await runDoctorChecks(runtime, getState);
-        if (options.notice) pushNotice(formatDoctorReport(result), 'info');
+        const result = await doctor.runDoctorChecks(runtime, getState);
+        if (options.notice) pushNotice(doctor.formatDoctorReport(result), 'info');
         return result;
       });
     },

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { saveModelSettings } from './model-capabilities.mjs';
+import { saveModelSettings } from '../runtime/agent/orchestrator/runtime-core/model-capabilities.mjs';
 import { createModelRouteApi } from './model-route-api.mjs';
 
 test('saveModelSettings updates modelSettings without a sync config write', () => {

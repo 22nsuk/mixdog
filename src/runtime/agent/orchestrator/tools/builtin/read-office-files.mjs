@@ -71,6 +71,9 @@ function decodeXmlEntities(text) {
     .replace(/&amp;/g, '&');
 }
 
+// Collapses line breaks (and their surrounding blanks) into single spaces.
+const flattenLines = (text) => text.replace(/\s*\n+\s*/g, ' ').trim();
+
 // A figure is content the page shows, but it carries no text runs: read as
 // plain text a picture or a chart vanished completely, so a figure-led report
 // looked like prose with a gap. The marker says what sits there, and repeats
@@ -123,9 +126,7 @@ function markHiddenSlideShapes(xml) {
   if (!/<p:cNvPr\b[^>]*\bhidden="(?:1|true)"/.test(xml)) return xml;
   return xml.replace(/<p:(sp|pic|graphicFrame)\b[\s\S]*?<\/p:\1>/g, (block) => {
     if (!/<p:cNvPr\b[^>]*\bhidden="(?:1|true)"/.test(block)) return block;
-    const inside = ooxmlPartText(block, { textTag: 'a:t', paraTag: 'a:p' })
-      .replace(/\s*\n+\s*/g, ' ')
-      .trim();
+    const inside = flattenLines(ooxmlPartText(block, { textTag: 'a:t', paraTag: 'a:p' }));
     const label = (inside || drawingMarker(block).replace(/^\[|\]$/g, '')).replace(/&/g, '&amp;').replace(/</g, '&lt;');
     return `<a:p><a:r><a:t>[hidden: ${label}]</a:t></a:r></a:p>`;
   });
@@ -405,12 +406,7 @@ function noteBodies(buf, entries, part, tag) {
     // no words; they are not notes.
     if (/\bw:type="/.test(attributes)) continue;
     const id = /\bw:id="(-?\d+)"/.exec(attributes)?.[1] || '';
-    bodies.set(
-      id,
-      ooxmlPartText(inner, { textTag: 'w:t', paraTag: 'w:p' })
-        .replace(/\s*\n+\s*/g, ' ')
-        .trim()
-    );
+    bodies.set(id, flattenLines(ooxmlPartText(inner, { textTag: 'w:t', paraTag: 'w:p' })));
   }
   return bodies;
 }
@@ -490,12 +486,9 @@ function sheetFigures(buf, entries, sheetPart) {
     const chartId = /<c:chart\b[^>]*\br:id="([^"]+)"/.exec(anchor)?.[1];
     if (chartId) {
       const chartXml = partText(buf, entries, targets.get(chartId));
-      const title = ooxmlPartText(/<c:title\b[\s\S]*?<\/c:title>/.exec(chartXml)?.[0] || '', {
-        textTag: 'a:t',
-        paraTag: 'a:p',
-      })
-        .replace(/\s*\n+\s*/g, ' ')
-        .trim();
+      const title = flattenLines(
+        ooxmlPartText(/<c:title\b[\s\S]*?<\/c:title>/.exec(chartXml)?.[0] || '', { textTag: 'a:t', paraTag: 'a:p' })
+      );
       figures.push(title ? `[chart: ${title}]` : '[chart]');
       continue;
     }

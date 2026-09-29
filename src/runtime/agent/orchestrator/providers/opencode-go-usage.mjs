@@ -9,6 +9,7 @@ import { recordQuotaReadings } from './lib/quota-readings.mjs';
 const CACHE_FILE = 'opencode-go-usage-cache.json';
 const LIVE_TTL_MS = 5 * 60_000;
 const STALE_TTL_MS = 60 * 60_000;
+const FETCH_TIMEOUT_MS = 6500;
 // The console replaced its server-rendered page (usage inlined in the HTML) with
 // a SPA over this REST API, so scraping `/workspace/{id}/go` now yields an empty
 // shell. `GET /api/go/status` answers a service-account key that carries the
@@ -146,7 +147,7 @@ export async function fetchOpenCodeGoUsageSnapshot(_config = {}, { force = false
     throw err;
   }
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 6500);
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
     const res = await fetch(`${BASE_URL}/api/go/status`, {
       signal: controller.signal,

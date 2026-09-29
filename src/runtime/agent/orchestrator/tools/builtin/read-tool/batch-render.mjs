@@ -27,7 +27,7 @@ const bodyTextFor = (value) => {
     .join('\n');
 };
 
-const TRUNCATED_MARKER = /\[TRUNCATED (?:—|-) file is (\d+) lines \/ (\d+) KB\./;
+const TRUNCATED_MARKER = /\[TRUNCATED (?:—|-) (\d+) lines \/ (\d+) KB;/;
 // When `read` emitted a smart-cap marker, surface the truncation state in the
 // header so downstream skimming spots it without parsing the body.
 const truncatedSuffix = (textBody) => {

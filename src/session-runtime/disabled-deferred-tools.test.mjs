@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { buildRequestBody } from '../runtime/agent/orchestrator/providers/openai-responses-payload.mjs';
-import { TOOL_SEARCH_TOOL } from './tool-defs.mjs';
+import { TOOL_SEARCH_TOOL } from '../runtime/agent/orchestrator/runtime-core/tool-defs.mjs';
 import {
   applyDeferredToolSurface,
   deferredCatalogUnion,
@@ -9,7 +9,7 @@ import {
   renderToolSearch,
   selectDeferredTools,
   snapshotProviderRequestTools,
-} from './tool-catalog.mjs';
+} from '../runtime/agent/orchestrator/runtime-core/tool-catalog.mjs';
 
 const tool = (name) => ({
   name,

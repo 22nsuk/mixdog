@@ -1,4 +1,4 @@
-import { SESSION_ID_PATTERN } from './lifecycle/shared.mjs';
+import { SESSION_ID_PATTERN } from '../runtime/agent/orchestrator/runtime-core/session-id.mjs';
 
 function requiredSessionId(value) {
   const sessionId = String(value || '').trim();

@@ -6,7 +6,7 @@
  * module of the stream reads and writes this one object.
  */
 import { createActiveToolItemTracker } from '../tool-stream-state.mjs';
-import { createToolCallDedupe } from '../anthropic-leaked-toolcall.mjs';
+import { createToolCallDedupe } from '../lib/leaked-toolcall.mjs';
 
 export const LABEL = 'OpenAI OAuth HTTP fallback';
 

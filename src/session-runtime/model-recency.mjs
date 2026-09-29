@@ -1,7 +1,7 @@
 // Provider-model version parsing, recency comparison, sorting, and cache-row
 // construction. Pure except for the
 // injected route provider (for sort priority) and webSearchCapableFor predicate.
-import { clean } from './session-text.mjs';
+import { clean } from '../runtime/agent/orchestrator/runtime-core/session-text.mjs';
 
 function parsedProviderModelVersion(id) {
   const text = clean(id).toLowerCase();

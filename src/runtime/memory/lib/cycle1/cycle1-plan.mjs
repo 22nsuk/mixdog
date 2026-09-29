@@ -2,7 +2,7 @@
 // The bounds one cycle1 run works within, resolved once from the flat config,
 // the nested cycle1 wrap shape and the caller's options.
 import { CYCLE1_INPUT_TOKEN_BUDGET } from '../memory-chunk-quality.mjs';
-import { resolveMaintenancePreset } from '../../../shared/llm/index.mjs';
+import { resolveMaintenancePreset } from '../../../agent/orchestrator/maintenance-preset.mjs';
 
 const CYCLE1_MIN_BATCH = 3;
 const CYCLE1_SESSION_CAP = 10;

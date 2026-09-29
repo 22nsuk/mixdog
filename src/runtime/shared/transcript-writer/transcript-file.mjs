@@ -6,8 +6,7 @@
 import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-// Canonical project-slug mapping for `<mixdogHome>/projects/<slug>` transcript
-// dirs (originally shared with the retired channel session-discovery).
+// Canonical project-slug mapping for `<mixdogHome>/projects/<slug>` transcript dirs.
 export function cwdToProjectSlug(cwd) {
   return resolve(cwd)
     .replace(/\\/g, '/')

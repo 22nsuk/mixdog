@@ -17,7 +17,10 @@ import {
  * media, since that item carries no text field), everything else with
  * function_call_output.
  */
-function pushToolResult(m, { out, pendingToolMedia, pendingToolLoads, customToolCallNameById, nativeSearchCalls, opts }) {
+function pushToolResult(
+  m,
+  { out, pendingToolMedia, pendingToolLoads, customToolCallNameById, nativeSearchCalls, opts }
+) {
   const { output, mediaContent } = splitToolContentForOpenAIResponses(m.content);
   if (customToolCallNameById.has(m.toolCallId || '')) {
     out.push({

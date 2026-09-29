@@ -1,14 +1,12 @@
-import { clean } from '../session-text.mjs';
-import { normalizeAgentId, normalizeWorkflowId, normalizeWorkflowRoute } from '../workflow.mjs';
+import { oneLine } from '../../runtime/shared/clean.mjs';
+import { normalizeAgentId, normalizeWorkflowId, normalizeWorkflowRoute } from '../../runtime/agent/orchestrator/runtime-core/workflow.mjs';
 
 export function resolveDataDir({ cfgMod, STANDALONE_DATA_DIR }) {
   return cfgMod.getPluginData?.() || STANDALONE_DATA_DIR;
 }
 
-// Frontmatter values are single-line by format; collapse any newlines.
-export function oneLine(value) {
-  return clean(value).replace(/\s+/g, ' ');
-}
+// Frontmatter values are single-line by format; oneLine collapses any newlines.
+export { oneLine };
 
 // Custom agents keep their workflow-style id; fixed roles use the agent id.
 export function agentEditorId(agentId) {

@@ -2,7 +2,7 @@
 // queued entry passes before it runs, and the deferred enqueue of the next
 // continuation prompt once the session is idle.
 import { clean } from '../../../runtime/shared/clean.mjs';
-import { goalDeadlineReached } from '../../../session-runtime/goal-text.mjs';
+import { goalDeadlineReached } from '../../../runtime/agent/orchestrator/runtime-core/goal-text.mjs';
 import { isGoalQueuedEntry } from '../queue-helpers.mjs';
 
 export function createContinuationQueue({ runtime, flags, getState, getPending, enqueue, visibility }) {

@@ -48,7 +48,7 @@ export const BUILTIN_TOOLS = [
       compressible: false,
     },
     description:
-      "Read file windows or images. One call per read stage: {file_path, offset, limit} entries for every located site (≤10 per call), never a whole large file. Content in context is never read again. Missing paths are reported, never replaced. Directories: list. Binaries: bounded hex. Rows carry no line numbers; `[lines a-b]` gives each block's range. Never count rows: before writing a line number, copy it from grep, code_graph or git diff output; otherwise cite path and symbol.",
+      "Read file windows or images. One call per read stage: {file_path, offset, limit} entries for every located site (≤10 files per call), never a whole large file. Content in context is never read again. Missing paths are reported, never replaced. Directories: list. Binaries: bounded hex. Rows carry no line numbers; `[lines a-b]` gives each block's range. Never count rows: before writing a line number, copy it from grep, code_graph or git diff output; otherwise cite path and symbol.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -58,7 +58,6 @@ export const BUILTIN_TOOLS = [
             {
               type: 'array',
               minItems: 1,
-              maxItems: PUBLIC_PATH_BATCH_LIMIT,
               items: {
                 anyOf: [
                   { type: 'string' },
@@ -66,7 +65,7 @@ export const BUILTIN_TOOLS = [
                     type: 'object',
                     properties: {
                       file_path: { type: 'string' },
-                      offset: { type: 'integer', minimum: 1, maximum: PUBLIC_READ_WINDOW_MAX },
+                      offset: { type: 'integer', minimum: 1 },
                       limit: { type: 'integer', minimum: 1, maximum: PUBLIC_READ_WINDOW_MAX },
                     },
                     required: ['file_path'],
@@ -82,7 +81,6 @@ export const BUILTIN_TOOLS = [
         offset: {
           type: 'integer',
           minimum: 1,
-          maximum: PUBLIC_READ_WINDOW_MAX,
           description: '1-based start line; default 1; batch default.',
         },
         limit: {
@@ -147,7 +145,7 @@ export const BUILTIN_TOOLS = [
       openWorldHint: true,
       compressible: true,
     },
-    description: `Run programs, builds, tests and computation. Never use shell commands or scripts for work covered by dedicated tools: cat/head/tail→read, ls→list, find→glob, filename lookup→find, grep/rg→grep, code structure→code_graph, file edits/writes (sed/awk/redirection)→edit/apply_patch, Git→git when that tool is on the surface. Tool names are not shell commands. ${_shellBackgroundDisabled ? 'Commands run in the foreground until completion.' : 'After a 10s foreground window (not a timeout), unfinished work continues under task_id; use task wait, not read polling.'}`,
+    description: `Run programs, builds, tests and computation. Never use shell commands or scripts for work covered by dedicated tools: cat/head/tail→read, ls→list, find→glob, filename lookup→find, grep/rg→grep, code structure→code_graph, file edits/writes (sed/awk/redirection)→edit/apply_patch, Git→git when that tool is on the surface. Tool names are not shell commands. ${_shellBackgroundDisabled ? 'Commands run in the foreground until completion.' : 'After a 10s foreground window (not a timeout; wait_ms extends it up to 120s for one call, e.g. a test suite), unfinished work continues under task_id; use task wait, not read polling. If no execution slot frees within the admission wait, the command is queued as a background task with a task_id.'}`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -157,6 +155,13 @@ export const BUILTIN_TOOLS = [
           minimum: 0,
           description:
             'Hard kill deadline in ms (omit or 0 = none), separate from the 10s foreground window; set one for throwaway probes so a slow check fails fast.',
+        },
+        wait_ms: {
+          type: 'integer',
+          minimum: 1000,
+          maximum: 120000,
+          description:
+            'Foreground wait in ms before unfinished work continues as a background task (default 10000); raise it for a command that should return its result in this call.',
         },
       },
       required: ['command'],
@@ -364,7 +369,7 @@ export const BUILTIN_TOOLS = [
           description: 'Known directory; defaults to the current Project.',
         },
         hidden: { type: 'boolean', description: 'Include dotfiles.' },
-        meta: { type: 'boolean', description: 'Per-entry size bytes, UTC mtime, octal mode.' },
+        meta: { type: 'boolean', description: 'Per-entry size bytes, UTC mtime, octal mode; text files also get a line count.' },
         limit: {
           type: 'integer',
           minimum: 0,

@@ -1,11 +1,5 @@
-import { USAGE_PATH, readJson, writeJson } from './config.mjs';
-
-const FLUSH_DELAY_MS = 5000;
-
-let usageDirty = false;
-let usageFlushTimer = null;
-let activeUsageState = null;
-let lastUsageFlushWarnAt = 0;
+import { USAGE_PATH, readJson } from './config.mjs';
+import { createDebouncedJsonWriter } from './debounced-json-writer.mjs';
 
 function now() {
   return new Date().toISOString();
@@ -17,50 +11,11 @@ function defaultState() {
   };
 }
 
-// 5s debounce — every web-search/crawl/batch path mutates usage at least once
-// (lastUsedAt/percentUsed/cooldownUntil). Without coalescing, callers that
-// don't explicitly flush would either spam fsync per call or lose the dirty
-// state on crash. process.on('exit') still fires for graceful shutdown.
-function scheduleUsageFlush(state) {
-  usageDirty = true;
-  activeUsageState = state;
-  if (usageFlushTimer) return;
-  usageFlushTimer = setTimeout(() => {
-    usageFlushTimer = null;
-    flushUsageState();
-  }, FLUSH_DELAY_MS);
-  if (usageFlushTimer.unref) usageFlushTimer.unref();
-}
-
-function flushUsageState() {
-  if (usageFlushTimer) {
-    clearTimeout(usageFlushTimer);
-    usageFlushTimer = null;
-  }
-  if (usageDirty && activeUsageState) {
-    try {
-      writeJson(USAGE_PATH, activeUsageState);
-      usageDirty = false;
-    } catch (err) {
-      // Usage state is best-effort telemetry. A Windows AV/indexer can
-      // hold the destination open. Keep the dirty state and retry quietly.
-      const nowMs = Date.now();
-      if (nowMs - lastUsageFlushWarnAt > 60000) {
-        lastUsageFlushWarnAt = nowMs;
-        process.stderr.write(`[web-search-state] flushUsageState delayed: ${err?.code || err?.message || err}\n`);
-      }
-      if (!usageFlushTimer) {
-        usageFlushTimer = setTimeout(() => {
-          usageFlushTimer = null;
-          flushUsageState();
-        }, FLUSH_DELAY_MS * 2);
-        if (usageFlushTimer.unref) usageFlushTimer.unref();
-      }
-    }
-  }
-}
-
-process.on('exit', flushUsageState);
+// Every web-search/crawl/batch path mutates usage at least once
+// (lastUsedAt/percentUsed/cooldownUntil), so writes are coalesced.
+const usageWriter = createDebouncedJsonWriter({ path: USAGE_PATH, label: 'web-search-state' });
+const scheduleUsageFlush = usageWriter.schedule;
+const flushUsageState = usageWriter.flush;
 
 export { flushUsageState };
 
@@ -80,7 +35,7 @@ export function loadUsageState() {
     if (legacyRoutingCache !== undefined) scheduleUsageFlush(state);
   }
   _instance = state;
-  activeUsageState = state;
+  usageWriter.track(state);
   return state;
 }
 

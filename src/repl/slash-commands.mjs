@@ -2,7 +2,7 @@
  * repl/slash-commands.mjs — the REPL's `/command` table. Every command writes
  * to `ctx.out`; only `/exit` and `/quit` return 'exit'.
  */
-import { dim, green, red, yellow, colorEnabled } from '../ui/ansi.mjs';
+import { dim, green, red, yellow, colorEnabled } from '../runtime/shared/statusline/ansi.mjs';
 import { createSessionStats } from '../ui/session-stats.mjs';
 import { statuslineFor } from './turn-output.mjs';
 

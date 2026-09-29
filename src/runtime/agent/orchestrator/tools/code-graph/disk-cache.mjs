@@ -113,7 +113,7 @@ function _residentDiskBytes() {
   return total;
 }
 
-function _pruneDiskCodeGraphEntries(_now = Date.now()) {
+function _pruneDiskCodeGraphEntries() {
   for (const [cwd, entry] of _diskCodeGraphCache) {
     if (!entry || typeof entry !== 'object') {
       _dropDiskEntry(cwd);
@@ -326,7 +326,7 @@ function _loadDiskCodeGraphCache(now = Date.now()) {
     process.stderr.write(`[code-graph] disk manifest load failed: ${err?.message || err}\n`);
   }
   if (!_diskManifest) _diskManifest = {};
-  _pruneDiskCodeGraphEntries(now);
+  _pruneDiskCodeGraphEntries();
   try {
     const dir = _codeGraphDiskDir();
     mkdirSync(dir, { recursive: true });

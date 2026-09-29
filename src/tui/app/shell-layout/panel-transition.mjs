@@ -5,6 +5,12 @@
  * reads back.
  */
 import { isCompletedTranscriptTailAppendedThisCommit } from '../live-spinner-visibility.mjs';
+import {
+  PANEL_LAYOUT_SIG,
+  isInstantPanelCloseTransition,
+  panelKindSignature,
+  panelSignatureFlags,
+} from '../panel-signature.mjs';
 
 function signatureRows(signature, index) {
   return Number(String(signature).split('|')[index]) || 0;
@@ -22,13 +28,7 @@ function signatureRows(signature, index) {
 //   promoted user transcript row in the SAME commit (session-flow drain →
 //   pushUserOrSyntheticItem → runTurn spinner, one microtask flush). Queue
 //   edits/removals without a tail append keep the mask.
-function sameCommitBackfillRows({
-  prevSignature,
-  nextSignature,
-  latestTranscriptItem,
-  previousTailId,
-  PANEL_LAYOUT_SIG,
-}) {
+function sameCommitBackfillRows({ prevSignature, nextSignature, latestTranscriptItem, previousTailId }) {
   const doneTailAppendedThisCommit = isCompletedTranscriptTailAppendedThisCommit(latestTranscriptItem, previousTailId);
   const spinnerMetaCollapseRows = doneTailAppendedThisCommit
     ? Math.max(
@@ -55,10 +55,6 @@ export function resolvePanelTransition({
   panelTransitionEpoch,
   panelTransitionRef,
   panelCloseInkMaskRowsRef,
-  panelSignatureFlags,
-  panelKindSignature,
-  isInstantPanelCloseTransition,
-  PANEL_LAYOUT_SIG,
 }) {
   const { panelLayoutSignature, bottomClusterRows, desiredFloatingPanelRows } = budgets;
   const panelTransition = panelTransitionRef.current;
@@ -103,7 +99,6 @@ export function resolvePanelTransition({
         nextSignature: panelLayoutSignature,
         latestTranscriptItem: hints.latestTranscriptItem,
         previousTailId: panelTransition.tailId,
-        PANEL_LAYOUT_SIG,
       });
       panelCloseInkMaskRowsRef.current = Math.max(0, panelShrinkRows - backfilled);
       panelTransition.clearRows = 0;

@@ -25,7 +25,7 @@ export function createEagerDispatcher({
   executeToolFn = executeTool,
 }) {
   const pending = new Map();
-  const epoch = { mutation: 0 };
+  const epoch = { mutation: 0, log: [] };
   const admission = createEagerAdmission({
     tools,
     cwd,

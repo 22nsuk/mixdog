@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { assertPublicUrl, resolveAndValidate } from './ssrf-guard.mjs';
+import { abortRace, assertPublicUrl, resolveAndValidate } from './ssrf-guard.mjs';
 
 test('IANA special-purpose IPv4 ranges are refused as destinations', async () => {
   for (const address of ['192.0.0.8', '192.0.2.1', '192.88.99.1', '198.51.100.7', '203.0.113.9']) {
@@ -26,6 +26,22 @@ test('IPv6 forms that carry a private IPv4 or a non-public prefix are refused', 
   ]) {
     assert.throws(() => assertPublicUrl(`http://[${address}]/`), /Blocked request to private address/, address);
     await assert.rejects(resolveAndValidate(address), /Blocked request to private address/, address);
+  }
+});
+
+test('an already-aborted race does not leave the dropped promise as an unhandled rejection', async () => {
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on('unhandledRejection', onUnhandled);
+  try {
+    const controller = new AbortController();
+    controller.abort(new Error('stop'));
+    const dropped = Promise.reject(new Error('late dns failure'));
+    await assert.rejects(abortRace(dropped, controller.signal, 'dns'), /stop/);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
   }
 });
 

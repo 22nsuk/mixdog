@@ -46,6 +46,34 @@ function traceXaiResponses(fields) {
   traceXaiResponsesCacheContext(fields);
 }
 
+/** Record one completed turn's usage; `extra` carries provider-specific trace fields. */
+export function traceCompatResponseUsage({
+  opts,
+  provider,
+  model,
+  response,
+  inputTokens,
+  outputTokens,
+  cachedTokens,
+  ...extra
+}) {
+  traceAgentUsage({
+    sessionId: opts.sessionId || opts.session?.id || null,
+    iteration: Number.isFinite(Number(opts.iteration)) ? Number(opts.iteration) : null,
+    inputTokens,
+    outputTokens,
+    cachedTokens,
+    cacheWriteTokens: 0,
+    promptTokens: inputTokens,
+    model: response.model || model,
+    modelDisplay: response.model || model,
+    responseId: response.id || null,
+    rawUsage: response.usage,
+    provider,
+    ...extra,
+  });
+}
+
 function chatCompletionUsage(providerName, usage) {
   const input = usage.prompt_tokens ?? usage.input_tokens ?? 0;
   return withCostUsd(
@@ -104,7 +132,7 @@ export function normalizeCompatChatResponse({
     (stopReason === 'length' && Array.isArray(toolCalls) && toolCalls.length > 0) ||
     stopReason === 'content_filter'
   ) {
-    const err = Object.assign(new Error(`${providerName} response incomplete: finish_reason=${stopReason}`), {
+    throw Object.assign(new Error(`${providerName} response incomplete: finish_reason=${stopReason}`), {
       name: 'ProviderIncompleteError',
       code: 'PROVIDER_INCOMPLETE',
       providerIncomplete: true,
@@ -115,7 +143,6 @@ export function normalizeCompatChatResponse({
       responseId: response.id || null,
       rawUsage: response.usage || null,
     });
-    throw err;
   }
   writeCompatCacheTrace({
     provider: providerName,
@@ -129,20 +156,14 @@ export function normalizeCompatChatResponse({
   });
   if (response.usage) {
     const inputTokens = Number(response.usage.prompt_tokens ?? response.usage.input_tokens ?? 0);
-    const cachedTokens = extractCompatCachedTokens(response.usage);
-    traceAgentUsage({
-      sessionId: opts.sessionId || opts.session?.id || null,
-      iteration: Number.isFinite(Number(opts.iteration)) ? Number(opts.iteration) : null,
+    traceCompatResponseUsage({
+      opts,
+      provider: providerName,
+      model: useModel,
+      response,
       inputTokens,
       outputTokens: Number(response.usage.completion_tokens ?? response.usage.output_tokens ?? 0),
-      cachedTokens,
-      cacheWriteTokens: 0,
-      promptTokens: inputTokens,
-      model: response.model || useModel,
-      modelDisplay: response.model || useModel,
-      responseId: response.id || null,
-      rawUsage: response.usage,
-      provider: providerName,
+      cachedTokens: extractCompatCachedTokens(response.usage),
     });
   }
   const capturesReasoningContent =
@@ -207,27 +228,20 @@ export function normalizeXaiResponsesHttp({
   });
   if (response.usage) {
     const inputTokens = Number(response.usage.input_tokens ?? response.usage.prompt_tokens ?? 0);
-    const cachedTokens = extractCompatCachedTokens(response.usage);
     const cacheChain = grokCacheChainTraceFields(opts.providerState, previousResponseId, continuationResetReason);
-    traceAgentUsage({
-      sessionId: opts.sessionId || opts.session?.id || null,
-      iteration: Number.isFinite(Number(opts.iteration)) ? Number(opts.iteration) : null,
+    traceCompatResponseUsage({
+      opts,
+      provider: 'xai',
+      model: useModel,
+      response,
       inputTokens,
       outputTokens: Number(response.usage.output_tokens ?? response.usage.completion_tokens ?? 0),
-      cachedTokens,
-      cacheWriteTokens: 0,
-      promptTokens: inputTokens,
-      model: response.model || useModel,
-      modelDisplay: response.model || useModel,
-      responseId: response.id || null,
-      rawUsage: response.usage,
-      provider: 'xai',
+      cachedTokens: extractCompatCachedTokens(response.usage),
       requestPrevResponseId: cacheChain.requestPrevResponseId,
       chainContinuous: cacheChain.chainContinuous,
       continuationResetReason: cacheChain.continuationResetReason,
     });
   }
-  const nextPreviousResponseId = response.id;
   const encryptedReasoningItems = encryptedXaiReasoningItems(response.output);
   const providerReplay = createProviderReplay('xai-responses', response.output);
   const encryptedReasoningHistory = xaiEncryptedReasoningHistory(opts, messages, encryptedReasoningItems);
@@ -248,7 +262,7 @@ export function normalizeXaiResponsesHttp({
       ...(opts.providerState || {}),
       xaiResponses: {
         previousResponseId: null,
-        responseId: nextPreviousResponseId,
+        responseId: response.id,
         store: false,
         encryptedReasoningItems,
         encryptedReasoningHistory,
@@ -279,7 +293,6 @@ export function normalizeXaiResponsesWebSocket({
   cacheLane,
 }) {
   const responseId = result.responseId || previousResponseId || null;
-  const nextPreviousResponseId = responseId;
   const encryptedReasoningItems = encryptedXaiReasoningItems(result.responseItems);
   const providerReplay = createProviderReplay('xai-responses', result.responseItems);
   const encryptedReasoningHistory = xaiEncryptedReasoningHistory(opts, messages, encryptedReasoningItems);
@@ -309,15 +322,15 @@ export function normalizeXaiResponsesWebSocket({
     model: result.model || useModel,
     toolCalls: result.toolCalls,
     stopReason: result.stopReason || null,
-    // P1 audit fix: same truncated signal as the HTTP path (see
-    // _doSendXaiResponses above) for the WebSocket transport.
+    // P1 audit fix: same truncated signal as the HTTP path, for the
+    // WebSocket transport.
     ...(result.stopReason === 'length' && (result.content || '').length > 0 ? { truncated: true } : {}),
     providerReplay,
     providerState: {
       ...(opts.providerState || {}),
       xaiResponses: {
         previousResponseId: null,
-        responseId: nextPreviousResponseId,
+        responseId,
         store: false,
         encryptedReasoningItems,
         encryptedReasoningHistory,

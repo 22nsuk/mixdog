@@ -1,12 +1,12 @@
 // Plugin registry edits and the MCP entries a plugin owns.
-import { clean } from './session-text.mjs';
+import { clean } from '../runtime/agent/orchestrator/runtime-core/session-text.mjs';
 import {
   addPlugin as registryAddPlugin,
   removePlugin as registryRemovePlugin,
   setPluginEnabled as registrySetPluginEnabled,
   updatePlugin as registryUpdatePlugin,
-} from '../standalone/plugin-admin.mjs';
-import { pluginMcpServerName, pluginServerMatcher } from './plugin-mcp.mjs';
+} from './services/plugin-admin.mjs';
+import { pluginMcpServerName, pluginServerMatcher } from '../runtime/agent/orchestrator/runtime-core/plugin-mcp.mjs';
 
 const pluginKey = (plugin) => clean(plugin.id || plugin.name || plugin);
 

@@ -65,7 +65,10 @@ async function readRangeFromHandle(fh, fullPath, offset, limit, stHint, hooks) {
       : READ_MAX_OUTPUT_BYTES;
   const bodyOutputBytes = Math.max(1, maxOutputBytes - Math.min(384, Math.floor(maxOutputBytes / 3)));
   const deadline = Date.now() + READ_STREAM_TIMEOUT_MS;
-  const lines = createReadLineCollector({ offset, limit, bodyOutputBytes, rangeIndex, startLine: anchor.line });
+  const lines = createReadLineCollector({ offset, limit, bodyOutputBytes, rangeIndex,
+    startLine: anchor.line,
+    fileSize: stForIndex?.size || 0,
+  });
 
   let stop = false;
   while (!stop) {
@@ -142,7 +145,6 @@ async function readRangeFromHandle(fh, fullPath, offset, limit, stHint, hooks) {
 
 async function tryWindowedSmartReadSummary(fullPath, st, source = 'read_smart_stream', hooks = {}) {
   const { ioTraceStart, ioTraceDone } = streamingHooks(hooks);
-  const displayPath = hooks.displayPath || fullPath;
   const traceStart = ioTraceStart();
   try {
     const totalLines = await countLogicalLinesBytesSync(fullPath, st.size, st, hooks);
@@ -168,7 +170,7 @@ async function tryWindowedSmartReadSummary(fullPath, st, source = 'read_smart_st
       headRows,
       headRaw: head.lines,
       tailEntries,
-      marker: () => buildSmartReadTruncationMarker(totalLines, st.size, displayPath),
+      marker: () => buildSmartReadTruncationMarker(totalLines, st.size),
     });
     const result = {
       text,
@@ -480,7 +482,6 @@ function smartReadSnapshotRanges(selectedHeadRaw, selectedTailEntries) {
 export async function streamSmartReadSummary(fullPath, st, source = 'read_smart_stream', hooks = {}) {
   const windowed = await tryWindowedSmartReadSummary(fullPath, st, source, hooks);
   if (windowed) return windowed;
-  const displayPath = hooks.displayPath || fullPath;
 
   const fh = await fsPromises.open(fullPath, 'r');
   let scan = null;
@@ -502,7 +503,7 @@ export async function streamSmartReadSummary(fullPath, st, source = 'read_smart_
       headRows,
       headRaw,
       tailEntries,
-      marker: () => buildSmartReadTruncationMarker(lineNo, st.size, displayPath),
+      marker: () => buildSmartReadTruncationMarker(lineNo, st.size),
     });
 
     return {

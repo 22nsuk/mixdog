@@ -4,8 +4,8 @@ import { getUsageLedger } from '../runtime/shared/llm/usage-ledger.mjs';
 import { importUsageHistory } from '../runtime/shared/llm/usage-ledger-import.mjs';
 import { refreshUnpricedUsageAsync } from '../runtime/shared/llm/usage-pricing-refresh.mjs';
 import { resolvePluginData } from '../runtime/shared/plugin-paths.mjs';
-import { usageStatsSnapshot } from '../standalone/usage-stats-model.mjs';
-import { resolveUsageStatsPeriod } from '../standalone/usage-stats-period.mjs';
+import { usageStatsSnapshot } from './services/usage-stats-model.mjs';
+import { resolveUsageStatsPeriod } from './services/usage-stats-period.mjs';
 import { usageRollupDayKey } from '../runtime/shared/llm/usage-rollup.mjs';
 import { ACCOUNT_PROVIDERS, readProviderAccountPool } from '../runtime/shared/provider-accounts.mjs';
 

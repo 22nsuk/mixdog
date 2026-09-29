@@ -1,24 +1,9 @@
-// Grok OAuth browser login + PKCE exchange.
-/**
- * Grok CLI OAuth provider ("Grok Build").
- *
- * Authenticates against xAI's shared OAuth client via PKCE (discovery at
- * https://auth.x.ai/.well-known/openid-configuration). Credentials come from
- * Mixdog's own token store (grok-oauth.json).
- *
- * Every OAuth inference request routes through cli-chat-proxy.grok.com/v1,
- * matching Grok Build's session-auth contract. Model discovery still merges
- * api.x.ai and proxy catalogs because each publishes a different subset.
- *
- * Inference is delegated to an inner OpenAICompatProvider('xai') — the only
- * preset wired for the Responses API — with the proxy URL + CLI headers
- * injected via config.extraHeaders, bearer swapped for the OAuth access token.
- */
+// Grok OAuth browser login + PKCE exchange against xAI's shared OAuth client
+// (the consent screen renders it as "Grok Build").
 import { createServer } from 'node:http';
 import { randomBytes } from 'node:crypto';
+import { getLlmDispatcher } from '../../../shared/llm/http-agent.mjs';
 import { createOAuthPkce, parseOAuthCodeInput } from './lib/oauth-pkce.mjs';
-
-// xAI's shared OAuth client. The consent screen renders this as "Grok Build".
 import {
   CLIENT_ID,
   SCOPE,
@@ -61,6 +46,7 @@ export async function exchangeAuthorizationCode({ discovery, pkce, code }) {
     // redirects so they can't be replayed to an untrusted host.
     redirect: 'error',
     signal: AbortSignal.timeout(TOKEN_TIMEOUT_MS),
+    dispatcher: getLlmDispatcher(),
   });
   if (!tokenRes.ok) {
     const text = await tokenRes.text().catch(() => '');
@@ -128,9 +114,9 @@ export async function beginOAuthLogin() {
       }
       const code = u.searchParams.get('code');
       if (!code || u.searchParams.get('state') !== state) {
+        // Reject this request only; the valid callback may still arrive.
         res.writeHead(400);
         res.end('Invalid');
-        finish(null);
         return;
       }
       res.writeHead(200, { 'Content-Type': 'text/html' });

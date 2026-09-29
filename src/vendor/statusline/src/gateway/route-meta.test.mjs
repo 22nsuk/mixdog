@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -14,7 +14,12 @@ process.on('exit', () => {
 });
 
 const { recordGatewayUsageEvent, settleGatewayUsageWrites } = await import('./route-meta.mjs');
-const usagePath = join(root, 'gateway-usage.local.json');
+const usagePath = join(root, 'gateway-usage.local.jsonl');
+const { loadUsageEvents } = await import('./route-meta.mjs');
+
+function readJsonl(path) {
+  return readFileSync(path, 'utf8').split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l));
+}
 
 function record(count, tag) {
   for (let index = 0; index < count; index += 1) {
@@ -23,7 +28,7 @@ function record(count, tag) {
 }
 
 function storedEvents(tag) {
-  return JSON.parse(readFileSync(usagePath, 'utf8')).events.filter((event) => event.requestKind === tag);
+  return readJsonl(usagePath).filter((event) => event.requestKind === tag);
 }
 
 test('a usage flush against a held lock never blocks the event loop and lands after release', async () => {
@@ -79,11 +84,46 @@ test('process exit writes still-pending usage events synchronously', () => {
       timeout: 20_000,
     });
     assert.equal(result.status, 0, result.stderr);
-    const events = JSON.parse(readFileSync(join(dir, 'gateway-usage.local.json'), 'utf8')).events;
+    const events = readJsonl(join(dir, 'gateway-usage.local.jsonl'));
     assert.deepEqual(
       events.map((event) => event.inputTokens),
       [0, 1, 2]
     );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('legacy JSON store migrates idempotently to JSONL with a backup; readers see appended events incrementally', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mixdog-route-meta-migrate-'));
+  try {
+    const now = Date.now();
+    const legacy = join(dir, 'gateway-usage.local.json');
+    writeFileSync(legacy, JSON.stringify({ version: 1, events: [1, 2, 3].map((n) => ({ ts: now, provider: 'p', inputTokens: n })) }));
+    const source = `
+      import { appendFileSync } from 'node:fs';
+      const m = await import(${JSON.stringify(new URL('./route-meta.mjs', import.meta.url).href)});
+      const a = m.loadUsageEvents().map((e) => e.inputTokens);
+      m.recordGatewayUsageEvent({ provider: 'p', model: 'm', inputTokens: 4 });
+      await m.settleGatewayUsageWrites();
+      appendFileSync(process.env.MIXDOG_DATA_DIR + '/gateway-usage.local.jsonl', '{"ts":' + Date.now() + ',"inputTokens":5,"torn":');
+      const b = m.loadUsageEvents().map((e) => e.inputTokens);
+      console.log(JSON.stringify({ a, b }));
+    `;
+    const run = () => spawnSync(process.execPath, ['--input-type=module', '-e', source], {
+      encoding: 'utf8', timeout: 20_000, env: { ...process.env, MIXDOG_DATA_DIR: dir, MIXDOG_HOME: dir },
+    });
+    const first = run();
+    assert.equal(first.status, 0, first.stderr);
+    assert.deepEqual(JSON.parse(first.stdout), { a: [1, 2, 3], b: [1, 2, 3, 4] });
+    assert.equal(existsSync(legacy), false);
+    assert.equal(existsSync(`${legacy}.migrated.bak`), true);
+    // Crash between the two migration renames: both files present -> only the backup rename is redone.
+    writeFileSync(legacy, JSON.stringify({ events: [{ ts: now, inputTokens: 99 }] }));
+    const second = run();
+    assert.equal(second.status, 0, second.stderr);
+    assert.equal(existsSync(legacy), false);
+    assert.ok(!JSON.parse(second.stdout).a.includes(99));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

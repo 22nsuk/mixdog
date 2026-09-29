@@ -9,7 +9,6 @@
 import { markProviderRecoveryExhausted, withRetry } from './retry-classifier.mjs';
 import { consumeCompatResponsesStream } from './openai-compat-stream.mjs';
 import { getModelMetadataSync } from './model-catalog.mjs';
-import { traceAgentUsage } from '../agent-trace.mjs';
 import { PROVIDER_FIRST_BYTE_TIMEOUT_MS, createPassthroughSignal } from '../stall-policy.mjs';
 import { extractCompatCachedTokens } from './openai-compat-trace.mjs';
 import {
@@ -28,7 +27,7 @@ import {
   compatResponsesReplayProvider,
   compatStreamRetryReporter,
 } from './compat-request-policy.mjs';
-import { encryptedXaiReasoningItems } from './openai-compat-response-normalization.mjs';
+import { encryptedXaiReasoningItems, traceCompatResponseUsage } from './openai-compat-response-normalization.mjs';
 
 // providerState slot + providerReplay tag. Distinct from the xAI slot so a
 // provider switch never replays foreign encrypted items into this gateway.
@@ -154,19 +153,14 @@ export async function sendCompatResponses(provider, messages, useModel, tools, o
   const outputTokens = Number(usage?.output_tokens ?? usage?.completion_tokens ?? 0);
   const cachedTokens = usage ? extractCompatCachedTokens(usage) : 0;
   if (usage) {
-    traceAgentUsage({
-      sessionId: opts.sessionId || opts.session?.id || null,
-      iteration: Number.isFinite(Number(opts.iteration)) ? Number(opts.iteration) : null,
+    traceCompatResponseUsage({
+      opts,
+      provider: provider.name,
+      model: useModel,
+      response,
       inputTokens,
       outputTokens,
       cachedTokens,
-      cacheWriteTokens: 0,
-      promptTokens: inputTokens,
-      model: response.model || useModel,
-      modelDisplay: response.model || useModel,
-      responseId: response.id || null,
-      rawUsage: usage,
-      provider: provider.name,
       requestPrevResponseId: previousResponseId || null,
       continuationResetReason: continuationResetReason || null,
     });

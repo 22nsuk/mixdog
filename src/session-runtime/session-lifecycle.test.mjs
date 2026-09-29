@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { makeResolveRoute } from './config-helpers.mjs';
+import { makeResolveRoute } from '../runtime/agent/orchestrator/runtime-core/config-helpers.mjs';
 import { resolveRouteContextState, resolveRouteEffortState } from './session-lifecycle.mjs';
 import { createLifecycleApi } from './lifecycle-api.mjs';
 import { inheritanceFit, inheritanceRouteTarget } from './inheritance-fit.mjs';

@@ -1,5 +1,5 @@
 import { open } from 'node:fs/promises';
-import { createHash } from 'node:crypto';
+import { hashText } from './hash-utils.mjs';
 import {
   getReadRangeIndex,
   nearestReadRangeAnchor,
@@ -61,7 +61,7 @@ export async function readSourceWindows(path, intervals, { signal } = {}) {
       scanned += bytesRead;
       if (scanned > READ_MAX_SCAN_BYTES) throw new Error('source context scan exceeds byte budget');
       if (position === 0 && !index.prefixHash) {
-        index.prefixHash = createHash('sha256').update(buffer.subarray(0, bytesRead)).digest('hex');
+        index.prefixHash = hashText(buffer.subarray(0, bytesRead));
         scheduleReadRangeIndexPersist(index);
       }
       let start = 0;

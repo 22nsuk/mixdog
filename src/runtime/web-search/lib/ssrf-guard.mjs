@@ -159,9 +159,12 @@ function _ipv6Hextets(ip) {
 // outlive the request's timeout budget. The signal is the same one that
 // bounds the outbound fetch (AbortSignal.timeout / requestTimeoutMs), so
 // DNS is bounded by the same deadline as the connection.
-function _abortRace(promise, signal, label) {
+export function abortRace(promise, signal, label) {
   if (!signal) return promise;
-  if (signal.aborted) return Promise.reject(signal.reason || new Error(`${label} aborted`));
+  if (signal.aborted) {
+    promise.catch(() => {});
+    return Promise.reject(signal.reason || new Error(`${label} aborted`));
+  }
   return new Promise((resolve, reject) => {
     const onAbort = () => reject(signal.reason || new Error(`${label} aborted`));
     signal.addEventListener('abort', onAbort, { once: true });
@@ -176,6 +179,17 @@ function _abortRace(promise, signal, label) {
       }
     );
   });
+}
+
+// A name with no records of a family is not an error: the other families (or
+// the empty-result check in the caller) decide whether the host is usable.
+async function _recordsOrEmpty(promise, signal, label) {
+  try {
+    return await abortRace(promise, signal, label);
+  } catch (err) {
+    if (err.code !== 'ENODATA' && err.code !== 'ENOTFOUND') throw err;
+    return [];
+  }
 }
 
 export async function resolveAndValidate(hostname, { signal } = {}) {
@@ -201,35 +215,20 @@ export async function resolveAndValidate(hostname, { signal } = {}) {
   // dns.lookup mirrors what the platform resolver will hand to the connector;
   // resolve4/resolve6 catch entries the stub resolver returns even when the
   // OS lookup table would omit them.
-  let lookupAddrs = [];
-  try {
-    lookupAddrs = await _abortRace(dns.promises.lookup(hostname, { all: true }), signal, 'dns.lookup');
-  } catch (err) {
-    if (err.code !== 'ENODATA' && err.code !== 'ENOTFOUND') throw err;
-  }
+  const lookupAddrs = await _recordsOrEmpty(dns.promises.lookup(hostname, { all: true }), signal, 'dns.lookup');
   for (const entry of lookupAddrs) {
     if (entry.family === 4) assertPrivateIpv4(entry.address);
     else _validateIpv6(entry.address);
     push(entry.address, entry.family);
   }
 
-  let v4Addrs = [];
-  try {
-    v4Addrs = await _abortRace(dns.promises.resolve4(hostname), signal, 'dns.resolve4');
-  } catch (err) {
-    if (err.code !== 'ENODATA' && err.code !== 'ENOTFOUND') throw err;
-  }
+  const v4Addrs = await _recordsOrEmpty(dns.promises.resolve4(hostname), signal, 'dns.resolve4');
   for (const ip of v4Addrs) {
     assertPrivateIpv4(ip);
     push(ip, 4);
   }
 
-  let v6Addrs = [];
-  try {
-    v6Addrs = await _abortRace(dns.promises.resolve6(hostname), signal, 'dns.resolve6');
-  } catch (err) {
-    if (err.code !== 'ENODATA' && err.code !== 'ENOTFOUND') throw err;
-  }
+  const v6Addrs = await _recordsOrEmpty(dns.promises.resolve6(hostname), signal, 'dns.resolve6');
   for (const ip of v6Addrs) {
     _validateIpv6(ip);
     push(ip, 6);
@@ -283,10 +282,7 @@ export async function pinnedFetch(url, options = {}) {
   // All returned addresses are validated. Let the connector try both IP
   // families instead of failing a usable site on an unreachable first address.
   const pinned = addresses[0];
-  // undici is ~100 modules; the hook bus imports this file at runtime boot,
-  // so load it on the first pinned request instead of on every launch.
-  const { Agent, fetch: undiciFetch } = await import('undici');
-  const dispatcher = new Agent({
+  return fetchThroughAgent(url, options, {
     connect: {
       autoSelectFamily: true,
       autoSelectFamilyAttemptTimeout: 250,
@@ -305,10 +301,20 @@ export async function pinnedFetch(url, options = {}) {
       },
     },
   });
-  // The per-request Agent owns a dedicated connection pool. If it is never
-  // closed it leaks the kept-alive socket until GC. Destroy it once the body
-  // is fully consumed, cancelled, or the request errors — wrapping the body
-  // stream so the dispatcher outlives streaming reads but is always reclaimed.
+}
+
+/**
+ * One undici request through its own Agent (`agentOptions`). The Agent owns a
+ * dedicated connection pool that would leak its kept-alive socket until GC if
+ * never closed, so it is destroyed once the body is fully consumed, cancelled,
+ * or the request errors — the body stream is wrapped so the dispatcher
+ * outlives streaming reads but is always reclaimed.
+ */
+export async function fetchThroughAgent(url, options, agentOptions) {
+  // undici is ~100 modules; the hook bus imports this file at runtime boot,
+  // so load it on the first pinned request instead of on every launch.
+  const { Agent, fetch: undiciFetch } = await import('undici');
+  const dispatcher = new Agent(agentOptions);
   let response;
   try {
     response = await undiciFetch(url, { ...options, dispatcher });

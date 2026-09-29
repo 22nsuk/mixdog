@@ -4,8 +4,8 @@
 // shared with the CJS rules builder that injects the style into the prompt.
 import { join } from 'node:path';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { clean } from './session-text.mjs';
-import { readJsonSafe } from './fs-utils.mjs';
+import { clean } from '../runtime/agent/orchestrator/runtime-core/session-text.mjs';
+import { readJsonSafe } from '../runtime/agent/orchestrator/runtime-core/fs-utils.mjs';
 import {
   DEFAULT_OUTPUT_STYLE_ID,
   matchOutputStyle,

@@ -25,10 +25,10 @@ const STALE_WORKER_FILE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 // Rotate additional worker logs (10 MB threshold).
 function rotateWorkerLogs() {
-  for (const _rotLog of ROTATED_WORKER_LOGS) {
-    const _rotPath = path.join(DATA_DIR, _rotLog);
+  for (const name of ROTATED_WORKER_LOGS) {
+    const logPath = path.join(DATA_DIR, name);
     try {
-      if (fs.statSync(_rotPath).size > 10 * 1024 * 1024) fs.renameSync(_rotPath, `${_rotPath}.1`);
+      if (fs.statSync(logPath).size > 10 * 1024 * 1024) fs.renameSync(logPath, `${logPath}.1`);
     } catch {}
   }
 }
@@ -39,17 +39,17 @@ function rotateWorkerLogs() {
 // cleanup signal. 7-day TTL keeps recent crash forensics while bounding leak.
 function pruneStaleScopedLogs() {
   try {
-    const _now = Date.now();
-    for (const _f of fs.readdirSync(DATA_DIR)) {
+    const now = Date.now();
+    for (const name of fs.readdirSync(DATA_DIR)) {
       if (
-        !/^(channels|memory)-worker\.\d+\.\d+\.log$/.test(_f) &&
-        !/^mcp-debug\.\d+\.\d+\.log$/.test(_f) &&
-        !/^supervisor\.\d+\.log$/.test(_f)
+        !/^(channels|memory)-worker\.\d+\.\d+\.log$/.test(name) &&
+        !/^mcp-debug\.\d+\.\d+\.log$/.test(name) &&
+        !/^supervisor\.\d+\.log$/.test(name)
       )
         continue;
-      const _p = path.join(DATA_DIR, _f);
+      const filePath = path.join(DATA_DIR, name);
       try {
-        if (_now - fs.statSync(_p).mtimeMs > STALE_WORKER_FILE_TTL_MS) fs.unlinkSync(_p);
+        if (now - fs.statSync(filePath).mtimeMs > STALE_WORKER_FILE_TTL_MS) fs.unlinkSync(filePath);
       } catch {}
     }
   } catch {}
@@ -61,14 +61,14 @@ function pruneStaleScopedLogs() {
 // 7-day TTL is safe because live agent sessions touch their JSON file on
 // every ask iteration, so any file older than 7 days is provably abandoned.
 function pruneStaleSessionFiles() {
-  const _SESSIONS_DIR = path.join(DATA_DIR, 'sessions');
+  const sessionsDir = path.join(DATA_DIR, 'sessions');
   try {
-    const _now = Date.now();
-    for (const _f of fs.readdirSync(_SESSIONS_DIR)) {
-      if (!_f.endsWith('.json')) continue;
-      const _p = path.join(_SESSIONS_DIR, _f);
+    const now = Date.now();
+    for (const name of fs.readdirSync(sessionsDir)) {
+      if (!name.endsWith('.json')) continue;
+      const filePath = path.join(sessionsDir, name);
       try {
-        if (_now - fs.statSync(_p).mtimeMs > STALE_WORKER_FILE_TTL_MS) fs.unlinkSync(_p);
+        if (now - fs.statSync(filePath).mtimeMs > STALE_WORKER_FILE_TTL_MS) fs.unlinkSync(filePath);
       } catch {}
     }
   } catch {}
@@ -88,14 +88,12 @@ export function runWorkerBootstrap({
   try {
     pruneStalePluginDataLogSiblings(DATA_DIR, DEFAULT_STALE_LOG_SIBLING_MAX);
   } catch {}
-  // SIGTERM: do NOT exit here in worker mode — the graceful
-  // `_channelsShutdownHandler` below owns shutdown (stop() → cleanup →
-  // process.exit). In non-worker mode defer to default termination so
-  // process.on('exit') hooks still run.
+  // SIGTERM: do NOT exit here in worker mode — the graceful shutdown handler in
+  // worker-ipc.mjs owns shutdown (stop() → cleanup → process.exit). In
+  // non-worker mode exit explicitly so process.on('exit') hooks still run.
   process.on('SIGTERM', () => {
     if (!isWorkerMode) process.exit(0);
   });
-  // ────────────────────────────────────────────────────────────────────────────
   ensureRuntimeDirs();
   cleanupStaleRuntimeFiles();
   if (!isWorkerMode) {

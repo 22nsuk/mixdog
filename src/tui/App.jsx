@@ -20,13 +20,18 @@ import { useState, useCallback, useEffect, useLayoutEffect, useMemo, useRef } fr
 import { useApp, useStdin, useStdout } from 'ink';
 import { useSession } from './hooks/useSession.mjs';
 import { pickFolder } from '../standalone/folder-dialog.mjs';
-import { SLASH_COMMANDS, slashQuery, slashCommandMatches, compareSlashCommands } from './app/slash-commands.mjs';
+import { deriveSlashPalette } from './app/slash-palette.mjs';
 import { shouldSupersedePanelEpoch, supersedePanelEpoch } from './app/panel-epoch.mjs';
 import { createPanelSurface } from './app/panel-surface.mjs';
-import { promptContentRows, textEntryReservedRows } from './app/text-layout.mjs';
-import stringWidth from 'string-width';
+import { resolvePickerState } from './app/picker-index-mode.mjs';
+import { usePromptLayoutRows } from './app/use-prompt-layout-rows.mjs';
+import { usePanelTransition } from './app/use-panel-transition.mjs';
+import { useUiOpenRequest } from './app/use-ui-open-request.mjs';
 import { useMouseInput } from './app/use-mouse-input.mjs';
 import { useTranscriptScroll } from './app/use-transcript-scroll.mjs';
+import { useTranscriptScrollState } from './app/use-transcript-scroll-state.mjs';
+import { usePromptState } from './app/use-prompt-state.mjs';
+import { useInteractionRefs } from './app/use-interaction-refs.mjs';
 import { usePastedBuffers } from './app/use-pasted-buffers.mjs';
 import { usePromptHint } from './app/use-prompt-hint.mjs';
 import { useWelcomePromptHint } from './app/use-welcome-prompt-hint.mjs';
@@ -45,36 +50,12 @@ import { useTerminalChrome } from './app/use-terminal-chrome.mjs';
 import { useTranscriptWindow } from './app/use-transcript-window.mjs';
 import { transcriptSwapReturnsToTail } from './app/transcript-window.mjs';
 import { terminalSize, projectNameFromPath } from './app/app-format.mjs';
-import { cycleWorkflowFromPrompt as cycleWorkflow } from './app/workflow-cycle.mjs';
+import { useWorkflowTabCycle } from './app/use-workflow-tab-cycle.mjs';
 import { createProjectPicker } from './app/project-picker.mjs';
 import { usePromptHandlers } from './app/use-prompt-handlers.mjs';
 import { useModelCatalogCache } from './app/use-model-catalog-cache.mjs';
 import { useDisabledSkills } from './app/use-disabled-skills.mjs';
-import {
-  CORE_MULTILINE_TEXT_ENTRY_KINDS,
-  PANEL_LAYOUT_SIG,
-  isInstantPanelCloseTransition,
-  panelKindSignature,
-  panelSignatureFlags,
-} from './app/panel-signature.mjs';
-
-// First-run gate. The daemon-backed engine store answers any method it does
-// not implement locally with an async remote call, so a synchronous
-// getOnboardingStatus() probe can hand back a Promise instead of the status
-// object — which read as "not completed" and re-opened a dismissed wizard on
-// every launch. runTui resolves the status before mount and passes the verdict
-// in; only a local store (tests, direct mounts) falls back to the sync probe,
-// and anything unresolvable counts as completed.
-function resolveOnboardingCompleted(store, onboardingCompleted) {
-  if (typeof onboardingCompleted === 'boolean') return onboardingCompleted;
-  try {
-    const status = store.getOnboardingStatus?.();
-    if (!status || typeof status !== 'object' || typeof status.then === 'function') return true;
-    return status.completed === true;
-  } catch {
-    return true;
-  }
-}
+import { resolveOnboardingCompleted, useOnboardingStart } from './app/use-onboarding-start.mjs';
 
 export function App({ store, initialStatusLine = '', forceOnboarding = false, onboardingCompleted = undefined }) {
   const state = useSession(store);
@@ -105,42 +86,22 @@ export function App({ store, initialStatusLine = '', forceOnboarding = false, on
   // wrap their final cell, including macOS terminals rendering rounded borders.
   const rightSafetyColumns = 1;
   const frameColumns = Math.max(1, resizeState.columns - rightSafetyColumns);
-  // scrollOffset = how many transcript ROWS we've scrolled UP from the bottom
-  // (0 = pinned to the latest, showing the newest content). Mouse wheel adjusts
-  // it; accepted prompts only arm bottom-follow; the snap happens when the
-  // transcript actually grows.
-  const [scrollOffset, setScrollOffset] = useState(0);
-  const scrollPositionRef = useRef(0);
-  const scrollTargetRef = useRef(0);
-  const maxScrollRowsRef = useRef(0);
-  const transcriptBottomSlackRowsRef = useRef(0);
-  // Absolute reading-anchor lock. While the user reads older transcript, we
-  // capture the item id + row offset at the VIEWPORT TOP edge once, then re-
-  // derive scrollOffset from that anchor on every commit. Streaming tail growth
-  // (or any height change BELOW the anchor) only moves the bottom, so the top
-  // item stays pinned — no incremental drift, no jump on newline. `dirty` forces
-  // a re-capture after a manual scroll; cleared to null when we follow/pin the
-  // bottom so a fresh scroll-up starts a new anchor.
-  const transcriptAnchorRef = useRef(null);
-  const transcriptAnchorDirtyRef = useRef(false);
-  // Latest render's prefix-row table + dimensions, so a manual scroll can
-  // capture the reading anchor SYNCHRONOUSLY (in the wheel/key callback) instead
-  // of waiting for the post-commit effect — otherwise each scroll notch leaves
-  // the anchor "dirty" for one frame, and if streaming grows the transcript on
-  // that same frame the lock is not engaged yet and the view lurches.
-  const transcriptGeomRef = useRef({ prefixRows: null, totalRows: 0, viewRows: 1 });
-  // Bumped by the measured-height harvest (useTranscriptWindow) and the mouse
-  // drag-release re-measure (useMouseInput) so the row-index memo recomputes
-  // against corrected heights. Owned here because both hooks consume it.
-  const [measuredRowsVersion, setMeasuredRowsVersion] = useState(0);
-  // Auto-follow is separate from manual scroll. While true, new transcript rows
-  // (new items or streaming text wrapping to another line) are folded into the
-  // same glide back to the bottom.
-  const followingRef = useRef(false);
-  const lastItemsCountRef = useRef(0);
-  // Head item of the last committed transcript: a bulk swap (session load /
-  // clear / compaction trim) changes it, a live append never does.
-  const lastFirstItemIdRef = useRef(null);
+  const {
+    scrollOffset,
+    setScrollOffset,
+    scrollPositionRef,
+    scrollTargetRef,
+    maxScrollRowsRef,
+    transcriptBottomSlackRowsRef,
+    transcriptAnchorRef,
+    transcriptAnchorDirtyRef,
+    transcriptGeomRef,
+    measuredRowsVersion,
+    setMeasuredRowsVersion,
+    followingRef,
+    lastItemsCountRef,
+    lastFirstItemIdRef,
+  } = useTranscriptScrollState();
   // picker = null | { type, title, items, onSelect }
   // Rendered as an option panel attached directly above the bottom prompt.
   const pickerOpenedFromEnterRef = useRef(false);
@@ -179,34 +140,12 @@ export function App({ store, initialStatusLine = '', forceOnboarding = false, on
     // not a handover and must not invalidate the in-flight write of a
     // text-entry prompt that is currently on screen.
     if (shouldSupersedePanelEpoch(previousPicker, livePickerRef.current)) supersedePanelEpoch();
-    setPickerState((prev) => {
-      const resolved = typeof next === 'function' ? next(prev) : next;
-      if (resolved && typeof resolved === 'object' && pickerOpenedFromEnterRef.current) {
-        pickerOpenedFromEnterRef.current = false;
-        if (pickerOpenedFromEnterTimerRef.current) {
-          clearTimeout(pickerOpenedFromEnterTimerRef.current);
-          pickerOpenedFromEnterTimerRef.current = null;
-        }
-        return resolved.indexMode ? resolved : { ...resolved, indexMode: 'always' };
-      }
-      // Same-kind reopen (toggle-driven rebuilds like the MCP ←/→ flip):
-      // carry the previous picker's indexMode so an 'always' injected at
-      // Enter-open time survives the rebuild instead of falling back to
-      // 'auto' and hiding the row indexes.
-      if (
-        resolved &&
-        typeof resolved === 'object' &&
-        !resolved.indexMode &&
-        prev &&
-        typeof prev === 'object' &&
-        prev.indexMode &&
-        prev._kind &&
-        prev._kind === resolved._kind
-      ) {
-        return { ...resolved, indexMode: prev.indexMode };
-      }
-      return resolved;
-    });
+    setPickerState((prev) =>
+      resolvePickerState(prev, typeof next === 'function' ? next(prev) : next, {
+        pickerOpenedFromEnterRef,
+        pickerOpenedFromEnterTimerRef,
+      })
+    );
   }, []);
   // Backstop: keep the ref aligned with committed state each render.
   livePickerRef.current = picker;
@@ -271,11 +210,22 @@ export function App({ store, initialStatusLine = '', forceOnboarding = false, on
   // app/use-disabled-skills.mjs.
   const { disabledSkills, setDisabledSkills } = useDisabledSkills({ store });
   const toolApproval = state.toolApproval || null;
-  const [promptDraft, setPromptDraft] = useState('');
-  const [promptDraftOverride, setPromptDraftOverride] = useState(null);
-  const promptLayoutValueRef = useRef('');
-  const [, setPromptLayoutRows] = useState(1);
-  const [textEntryLayoutRows, setTextEntryLayoutRows] = useState(1);
+  const {
+    promptDraft,
+    setPromptDraft,
+    promptDraftOverride,
+    setPromptDraftOverride,
+    promptLayoutValueRef,
+    setPromptLayoutRows,
+    textEntryLayoutRows,
+    setTextEntryLayoutRows,
+    promptValueRef,
+    promptSelectionRef,
+    promptBoxRectRef,
+    promptMouseSelectionRef,
+    promptHistoryNavRef,
+    promptHistoryDraftChangeRef,
+  } = usePromptState();
   // Pasted image/text buffers + their [ref-token] lifecycle:
   // app/use-pasted-buffers.mjs.
   const {
@@ -288,17 +238,6 @@ export function App({ store, initialStatusLine = '', forceOnboarding = false, on
     clearPastedTextsSnapshot,
     registerPastedText,
   } = usePastedBuffers();
-  const promptValueRef = useRef('');
-  const promptSelectionRef = useRef(null);
-  // [mixdog] Prompt-box mouse selection wiring. boxRect is the editable text
-  // node's REAL absolute rect (top/left/height/contentWidth), reported by
-  // PromptInput each render; mouseSelection exposes offsetAtCell/anchorAt/
-  // extendTo/clear so the single mouse handler can drive the prompt's OWN
-  // selectionAnchor engine without the ink-grid rect path.
-  const promptBoxRectRef = useRef(null);
-  const promptMouseSelectionRef = useRef(null);
-  const promptHistoryNavRef = useRef({ active: false, index: -1, seed: '', lastValue: '' });
-  const promptHistoryDraftChangeRef = useRef(false);
   // Transient hint band under the prompt: app/use-prompt-hint.mjs.
   const {
     promptHint,
@@ -329,11 +268,6 @@ export function App({ store, initialStatusLine = '', forceOnboarding = false, on
   const [slashIndex, setSlashIndex] = useState(0);
   const [slashDismissedFor, setSlashDismissedFor] = useState('');
   const slashPaletteRef = useRef({ open: false, count: 0 });
-  // Holding Tab can generate key-repeat faster than a workflow switch can
-  // settle. Without a prompt-local guard every repeat starts (or rejects) an
-  // async switch and pushes a toast, producing a rapid bottom-layout repaint
-  // storm that can visually tear the prompt box in Windows Terminal.
-  const workflowTabCycleRef = useRef({ pending: false, lastAt: 0 });
   const scrollFocusRef = useRef({});
   const onboardingStartedRef = useRef(false);
   const onboardingRef = useRef({
@@ -390,79 +324,30 @@ export function App({ store, initialStatusLine = '', forceOnboarding = false, on
     openUsagePanel: (...a) => openUsagePanel(...a),
     openContextPicker: (...a) => openContextPicker(...a),
   });
-  // Setup tool `open`: the session store publishes { command, seq } when the
-  // model asks for a settings surface; each new seq runs that slash command
-  // exactly as if the user had typed it (own claim, own notices).
-  const uiOpenSeenRef = useRef(0);
-  useEffect(() => {
-    const request = state.uiOpenRequest;
-    const seq = Number(request?.seq) || 0;
-    if (!request?.command || seq <= uiOpenSeenRef.current) return;
-    uiOpenSeenRef.current = seq;
-    // A re-attached TUI replays the retained snapshot; a request older than a
-    // few seconds is history, not an instruction.
-    if (Number(request.at) > 0 && Date.now() - Number(request.at) > 15_000) return;
-    runSlashCommand(request.command);
-  }, [state.uiOpenRequest, runSlashCommand]);
-  // dragRef tracks an in-progress mouse text selection (see the mouse handler):
-  // anchor = where the drag began, last = the latest cell, active = button held.
-  // region: which surface the in-progress (or last) selection belongs to —
-  // 'transcript' | 'status' (both ink-grid) | 'prompt' (PromptInput's own engine)
-  // | null. Press decides it; motion/release stay in that region.
-  // anchorSpan: for word/line multi-click selections, the initial word/line
-  // bounds ({ lo:{x,y}, hi:{x,y}, kind:'word'|'line' }) so a subsequent drag
-  // extends the selection whole-word/whole-line from that span. Null ⇔ an
-  // ordinary char-drag selection.
-  const dragRef = useRef({
-    anchor: null,
-    anchorScroll: 0,
-    last: null,
-    active: false,
-    rect: null,
-    region: null,
-    anchorSpan: null,
-  });
-  const transcriptViewportRef = useRef({ top: 0, bottom: 0 });
-  const panelTransitionRef = useRef({ signature: '', reserve: 0, clearRows: 0, guardRows: 0, epoch: 0 });
-  const panelCloseInkMaskRowsRef = useRef(0);
-  const projectBootInputLatchRef = useRef(false);
-  // [mixdog] Latest terminal row count + the statusline band (bottom rows),
-  // refreshed each render. The mouse handler uses these to (a) clip a status-bar
-  // grid selection to the statusline rows and (b) route a press to the right
-  // region. STATUSLINE_ROWS mirrors the layout reserve below.
-  const frameRowsRef = useRef(24);
+  // Setup tool `open` requests: app/use-ui-open-request.mjs.
+  useUiOpenRequest({ uiOpenRequest: state.uiOpenRequest, runSlashCommand });
+  const {
+    dragRef,
+    transcriptViewportRef,
+    panelTransitionRef,
+    panelCloseInkMaskRowsRef,
+    projectBootInputLatchRef,
+    frameRowsRef,
+    selectionLayoutRef,
+    selectionTextRef,
+    lastClickRef,
+  } = useInteractionRefs();
   const STATUSLINE_BAND_ROWS = 3;
   const promptContentColumns = Math.max(1, frameColumns - 4);
-  const syncPromptLayoutRows = useCallback(
-    (value) => {
-      const text = String(value ?? '');
-      promptLayoutValueRef.current = text;
-      const nextRows = promptContentRows(text, promptContentColumns);
-      setPromptLayoutRows((prev) => (prev === nextRows ? prev : nextRows));
-    },
-    [promptContentColumns]
-  );
-  useEffect(() => {
-    syncPromptLayoutRows(promptLayoutValueRef.current);
-  }, [syncPromptLayoutRows]);
-  useEffect(() => {
-    const kind = String(settingsPrompt?.kind || '');
-    if (!CORE_MULTILINE_TEXT_ENTRY_KINDS.has(kind)) {
-      setTextEntryLayoutRows(1);
-      return;
-    }
-    const cols = Math.max(1, frameColumns - 4 - stringWidth('Sentence > '));
-    setTextEntryLayoutRows(textEntryReservedRows(settingsPrompt?.initialValue, cols, 8));
-  }, [settingsPrompt?.kind, settingsPrompt?.initialValue, frameColumns]);
-  const selectionLayoutRef = useRef(null);
-  const selectionTextRef = useRef('');
-  // lastClickRef tracks the previous left-press cell + time so the mouse handler
-  // can detect a double-click (same cell within 500ms) for word selection.
-  // count = consecutive qualifying presses on the same cell (1=single,
-  // 2=double/word, 3=triple/line). A 4th qualifying press restarts the
-  // sequence at 1 (simplest reset: no ratcheting/back-off). Any non-qualifying
-  // press resets to a fresh single.
-  const lastClickRef = useRef({ x: -1, y: -1, t: 0, count: 0 });
+  // Prompt + text-entry layout rows: app/use-prompt-layout-rows.mjs.
+  const syncPromptLayoutRows = usePromptLayoutRows({
+    frameColumns,
+    promptContentColumns,
+    promptLayoutValueRef,
+    setPromptLayoutRows,
+    settingsPrompt,
+    setTextEntryLayoutRows,
+  });
 
   // ── Post-mount input gate ──────────────────────────────────────────────
   // Let one event-loop poll pass so Ink processes (and discards, because
@@ -643,7 +528,6 @@ export function App({ store, initialStatusLine = '', forceOnboarding = false, on
   // chords, panel Escapes, transcript paging): app/use-global-key-input.mjs.
   useGlobalKeyInput({
     store,
-    state,
     toolApproval,
     picker,
     usagePanel,
@@ -697,19 +581,15 @@ export function App({ store, initialStatusLine = '', forceOnboarding = false, on
     state.clientHostPid,
   ]);
 
-  useEffect(() => {
-    if (onboardingStartedRef.current) return undefined;
-    if (resolveOnboardingCompleted(store, onboardingCompleted) && !forceOnboarding) return undefined;
-    let canceled = false;
-    onboardingStartedRef.current = true;
-    setOnboardingActive(true);
-    setTimeout(() => {
-      if (!canceled) openOnboardingAuthStep();
-    }, 0);
-    return () => {
-      canceled = true;
-    };
-  }, [store, forceOnboarding, onboardingCompleted]);
+  // First-run onboarding wizard launch: app/use-onboarding-start.mjs.
+  useOnboardingStart({
+    store,
+    forceOnboarding,
+    onboardingCompleted,
+    onboardingStartedRef,
+    setOnboardingActive,
+    openOnboardingAuthStep,
+  });
 
   // Prompt submit dispatcher (text-entry prompts, slash commands, chat
   // submit + pasted-token expansion): app/prompt-submit.mjs.
@@ -740,24 +620,18 @@ export function App({ store, initialStatusLine = '', forceOnboarding = false, on
     pastedTextsRef,
   });
 
-  const activeSlashQuery =
-    providerPrompt || settingsPrompt || toolApproval || contextPanel || usagePanel ? null : slashQuery(promptDraft);
-  // "Slash mode" is live whenever a /token is being edited and no other
-  // surface owns the floating area. The palette stays OPEN for the whole
-  // slash session — including 0-match frames — so its 14-row layout never
-  // unmounts/remounts per keystroke (fullscreen repaint flicker fix).
-  const slashModeLive =
-    activeSlashQuery !== null &&
-    !picker &&
-    !toolApproval &&
-    !contextPanel &&
-    !usagePanel &&
-    !exiting &&
-    !state.commandBusy;
-  const slashCommands = !slashModeLive
-    ? []
-    : SLASH_COMMANDS.filter((command) => slashCommandMatches(command, activeSlashQuery)).sort(compareSlashCommands);
-  const slashPaletteOpen = slashModeLive && slashDismissedFor !== promptDraft;
+  const { activeSlashQuery, slashCommands, slashPaletteOpen } = deriveSlashPalette({
+    providerPrompt,
+    settingsPrompt,
+    toolApproval,
+    contextPanel,
+    usagePanel,
+    picker,
+    exiting,
+    commandBusy: state.commandBusy,
+    promptDraft,
+    slashDismissedFor,
+  });
   slashPaletteRef.current = { open: slashPaletteOpen, count: slashCommands.length };
   scrollFocusRef.current = {
     slashPaletteOpen,
@@ -848,11 +722,6 @@ export function App({ store, initialStatusLine = '', forceOnboarding = false, on
     frameRowsRef,
     promptBoxRectRef,
     panelCloseInkMaskRowsRef,
-    CORE_MULTILINE_TEXT_ENTRY_KINDS,
-    panelSignatureFlags,
-    panelKindSignature,
-    isInstantPanelCloseTransition,
-    PANEL_LAYOUT_SIG,
   });
   const {
     latestTranscriptItem,
@@ -864,30 +733,18 @@ export function App({ store, initialStatusLine = '', forceOnboarding = false, on
     panelTransitionGuardRows,
     transcriptGuardRows,
     transcriptContentHeight,
-    transcriptBottomSlackRows,
   } = layout;
-  useEffect(() => {
-    const transition = panelTransitionRef.current;
-    const pendingInkMask = panelCloseInkMaskRowsRef.current;
-    const hadTransitionClearance = panelTransitionClearRows > 0 || panelTransitionGuardRows > 0;
-    transition.signature = panelLayoutSignature;
-    transition.reserve = bottomClusterRows;
-    transition.clearRows = 0;
-    transition.guardRows = 0;
-    if (pendingInkMask > 0) {
-      panelCloseInkMaskRowsRef.current = 0;
-      setPanelInkMaskEpoch((epoch) => epoch + 1);
-      return undefined;
-    }
-    if (!hadTransitionClearance) return undefined;
-    const timer = setTimeout(() => setPanelTransitionEpoch((epoch) => epoch + 1), 0);
-    return () => clearTimeout(timer);
-  }, [panelLayoutSignature, bottomClusterRows, panelTransitionClearRows, panelTransitionGuardRows]);
-  // Record the transcript tail id AFTER every commit so the next render's
-  // spinner-meta-collapse gate (doneTailAppendedThisCommit) can tell a freshly
-  // appended done row from a stale one that was already at the tail.
-  useEffect(() => {
-    panelTransitionRef.current.tailId = latestTranscriptItem?.id ?? null;
+  // Post-commit panel-transition bookkeeping: app/use-panel-transition.mjs.
+  usePanelTransition({
+    panelTransitionRef,
+    panelCloseInkMaskRowsRef,
+    panelLayoutSignature,
+    bottomClusterRows,
+    panelTransitionClearRows,
+    panelTransitionGuardRows,
+    latestTranscriptItem,
+    setPanelInkMaskEpoch,
+    setPanelTransitionEpoch,
   });
   // Row-index/window memo chain + measured-height harvest + anchor lock:
   // extracted to app/use-transcript-window.mjs.
@@ -910,7 +767,6 @@ export function App({ store, initialStatusLine = '', forceOnboarding = false, on
     frameColumns,
     toolOutputExpanded,
     transcriptContentHeight,
-    transcriptBottomSlackRows,
     transcriptGuardRows,
     floatingPanelRows,
     overlayHintRequested,
@@ -933,12 +789,10 @@ export function App({ store, initialStatusLine = '', forceOnboarding = false, on
     setMeasuredRowsVersion,
   });
   // Tab cycles the workflow unless another surface owns the bottom area:
-  // app/workflow-cycle.mjs.
-  const cycleWorkflowFromPrompt = useCallback(() => {
-    if (slashPaletteOpen || toolApproval || picker || settingsPrompt || providerPrompt || contextPanel || usagePanel)
-      return true;
-    return cycleWorkflow({ store, state, cycleGuard: workflowTabCycleRef.current });
-  }, [
+  // app/use-workflow-tab-cycle.mjs.
+  const cycleWorkflowFromPrompt = useWorkflowTabCycle({
+    store,
+    state,
     slashPaletteOpen,
     toolApproval,
     picker,
@@ -946,10 +800,7 @@ export function App({ store, initialStatusLine = '', forceOnboarding = false, on
     providerPrompt,
     contextPanel,
     usagePanel,
-    state.commandBusy,
-    state.workflow,
-    store,
-  ]);
+  });
   // The hardware/IME caret is parked by PromptInput from its OWN measured box
   // position (ink useCursor + useBoxMetrics) — correct now that the transcript
   // is a live column, so the live-frame line count ink relies on is accurate.

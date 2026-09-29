@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { UsageLedger, makeUsageRecord } from './usage-ledger.mjs';
 import { importTraceRow, repriceRestoredDays } from './usage-ledger-import.mjs';
-import { usageStatsSnapshot } from '../../../standalone/usage-stats-model.mjs';
+import { usageStatsSnapshot } from '../../../session-runtime/services/usage-stats-model.mjs';
 import { createUsageStatsApi } from '../../../session-runtime/usage-stats-api.mjs';
 
 const now = new Date(2026, 8, 12, 12).getTime();

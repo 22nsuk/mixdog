@@ -2,7 +2,7 @@
 // servers a plugin's manifest or script contributes.
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
-import { clean } from './session-text.mjs';
+import { clean } from '../runtime/agent/orchestrator/runtime-core/session-text.mjs';
 import {
   normalizePluginMcpServerConfig,
   pluginMcpServerName,
@@ -11,10 +11,10 @@ import {
   pluginServerMatcher,
   resolveContainedPluginPath,
   mergeMcpServerConfig,
-} from './plugin-mcp.mjs';
+} from '../runtime/agent/orchestrator/runtime-core/plugin-mcp.mjs';
 
 /** The `mcpServers` map of a config as a fresh object (never the live one). */
-export function mcpServersOf(config) {
+function mcpServersOf(config) {
   return config.mcpServers && typeof config.mcpServers === 'object' ? { ...config.mcpServers } : {};
 }
 

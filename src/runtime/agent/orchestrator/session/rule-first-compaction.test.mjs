@@ -362,3 +362,55 @@ test('mandatory dialogue above an explicit trigger reaches the provider instead 
   assert.equal(mainCalls, 1);
   assert.equal(compactHooks, 1);
 });
+
+test('agent sessions compact before a send once their 5m message cache has expired', {
+  timeout: 10_000,
+}, async (t) => {
+  const previous = process.env.MIXDOG_DATA_DIR;
+  const root = mkdtempSync(join(tmpdir(), 'mixdog-cache-expiry-compact-'));
+  process.env.MIXDOG_DATA_DIR = root;
+  t.after(() => {
+    if (previous === undefined) delete process.env.MIXDOG_DATA_DIR;
+    else process.env.MIXDOG_DATA_DIR = previous;
+    rmSync(root, { recursive: true, force: true });
+  });
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+  // Two turns `idleMs` apart: how many messages each provider send carried and
+  // whether the session was compacted in between.
+  const twoTurns = async ({ owner, messagesTtl, idleMs }) => {
+    const session = { ...fixture(), id: `cache-expiry-${owner}-${messagesTtl}-${idleMs}`, owner };
+    for (let index = 0; index < 4; index += 1) {
+      session.messages.push(
+        { role: 'assistant', content: '', toolCalls: [{ id: `read-${index}`, name: 'read', arguments: '{}' }] },
+        { role: 'tool', toolCallId: `read-${index}`, content: `file ${index} ${'line '.repeat(1_000)}` }
+      );
+    }
+    const sent = [];
+    const provider = {
+      name: session.provider,
+      async send(messages) {
+        sent.push(messages.length);
+        return { content: 'Done.', usage: { inputTokens: 2_000, outputTokens: 2 } };
+      },
+    };
+    const opts = { session, sessionId: session.id, signal: t.signal, cacheStrategy: { messages: messagesTtl } };
+    const noTools = async () => assert.fail('no tools expected');
+    await agentLoop(provider, session.messages, session.model, [], noTools, process.cwd(), opts);
+    t.mock.timers.tick(idleMs);
+    session.messages.push({ role: 'user', content: 'NEXT_REQUEST' });
+    await agentLoop(provider, session.messages, session.model, [], noTools, process.cwd(), opts);
+    return { sent, compacted: session.messages.some((m) => m.meta?.source === 'compact-execution-recovery') };
+  };
+  const expired = await twoTurns({ owner: 'agent', messagesTtl: '5m', idleMs: 6 * 60_000 });
+  assert.equal(expired.compacted, true);
+  assert.ok(expired.sent[1] < expired.sent[0], JSON.stringify(expired.sent));
+  for (const kept of [
+    { owner: 'agent', messagesTtl: '5m', idleMs: 4 * 60_000 },
+    { owner: 'agent', messagesTtl: '1h', idleMs: 6 * 60_000 },
+    { owner: null, messagesTtl: '5m', idleMs: 6 * 60_000 },
+  ]) {
+    const result = await twoTurns(kept);
+    assert.equal(result.compacted, false, JSON.stringify(kept));
+    assert.ok(result.sent[1] > result.sent[0], JSON.stringify({ kept, sent: result.sent }));
+  }
+});

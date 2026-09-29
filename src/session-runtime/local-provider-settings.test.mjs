@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { createSettingsApi } from './settings-api.mjs';
-import { setModuleEnabledInConfig } from './config-helpers.mjs';
+import { setModuleEnabledInConfig } from '../runtime/agent/orchestrator/runtime-core/config-helpers.mjs';
 import { createSetupToolExecutor } from './setup-tool/executor.mjs';
 import {
   trackLocalInstallation,

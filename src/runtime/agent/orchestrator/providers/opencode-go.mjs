@@ -64,10 +64,10 @@ function normalizeOpenCodeGoResultUsage(result, anthropicRoute) {
   };
 }
 
-function opencodeGoContextWindow(_modelId, current = 0) {
+function opencodeGoContextWindow(modelId, current = 0) {
   const native = Number(current);
   if (Number.isFinite(native) && native > 0) return native;
-  const catalog = getModelMetadataSync(_modelId, 'opencode-go');
+  const catalog = getModelMetadataSync(modelId, 'opencode-go');
   const contextWindow = Number(catalog?.contextWindow);
   if (Number.isFinite(contextWindow) && contextWindow > 0) return Math.floor(contextWindow);
   return 0;

@@ -9,9 +9,10 @@ import { promisify } from 'node:util';
 import { gzip } from 'node:zlib';
 import { getLlmDispatcher } from '../../../../shared/llm/http-agent.mjs';
 import { claudeCliUserAgent } from '../anthropic-oauth-client-version.mjs';
+import { ANTHROPIC_VERSION } from '../lib/anthropic-models.mjs';
 
 const API_URL = 'https://api.anthropic.com/v1/messages';
-export const ANTHROPIC_VERSION = '2023-06-01';
+export { ANTHROPIC_VERSION };
 
 const ANTHROPIC_REQ_GZIP_MIN_BYTES = 8 * 1024;
 let gzipLatchedOff = false;

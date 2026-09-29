@@ -25,10 +25,9 @@ function calendarDayWindow(period) {
   return { startMs: start.getTime(), endMs: end.getTime() };
 }
 
-// R6 P9: calendar Mon-Sun previous/current week. Mon-start ISO convention.
-// Replaces R5 rolling 7-14d range which was empty for sessions where "last
-// week" decisions actually fell on Mon (4/27) of this week. Precise calendar
-// bounds match natural-language intuition.
+// Calendar Mon-Sun previous/current week (Mon-start ISO convention). Precise
+// calendar bounds match natural-language intuition; a rolling 7-14d range
+// missed "last week" decisions that fell on this week's Monday.
 function calendarWeekWindow(period) {
   if (period !== 'this_week' && period !== 'last_week') return null;
   const d = new Date();

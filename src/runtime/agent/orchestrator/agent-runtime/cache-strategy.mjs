@@ -13,7 +13,7 @@
  *   ---   system#4  (unmarked) — volatile session/project environment
  *         (cacheTier:'env'); covered by the messages-tail BP so an
  *         environment change never invalidates the BP3 core write
- *   BP_4  messages  (1h public/hidden agents; Lead linked to autoClear,
+ *   BP_4  messages  (5m public/hidden agents; Lead linked to autoClear,
  *                    whose Anthropic default is 1h — see below) —
  *         sliding tool_result / prior user-text tail
  *
@@ -24,7 +24,7 @@
  *
  * Tier 3 gets its own BP because role/memory context is stable within the
  * session. The volatile environment block stays unmarked and rides the sliding
- * 1h messages BP, which also handles tool_result accumulation and per-call
+ * messages BP, which also handles tool_result accumulation and per-call
  * task/event data while isolating volatile text from stable prefix BPs.
  *
  * Non-breakpoint providers:
@@ -91,18 +91,23 @@ export function resolveLeadMessagesTtl(autoClear) {
  * BP1~3 stay at 1h: the system/role/tier3 prefix is shared across sessions
  * (pool-stable), so the 2x write premium is amortized cross-session and the
  * warm window survives per-session gaps. The volatile message tail (BP4) is
- * per-session, but the 2026-07-16 6.8h trace supports a 1h tail: 24/25 Lead
- * intra-session gaps over 5m were agent waits (5–27m), during which autoClear
- * correctly cannot fire; 32.7% of agent intra-session gaps exceeded 5m due to
- * long tool executions, with sessions surviving through reviewer fix-loop
- * reuse; and no gap over 1h was observed. Tail-cost simulation (input-token
- * equivalents) is Lead 1h=11.75M vs 5m=20.11M and agents 1h=14.46M vs
- * 5m=45.04M: misses that rewrite the accumulated tail dominate the 2x-vs-1.25x
- * write premium. Hidden and public-agent sessions therefore use a 1h tail.
+ * per-session.
  *
  * Lead sessions are linked to the user's autoClear idle-sweep config (see
  * resolveLeadMessagesTtl); its Anthropic default is 1h, while explicit
- * shorter overrides retain the shorter-sweep behavior.
+ * shorter overrides retain the shorter-sweep behavior. The 2026-07-16 6.8h
+ * trace supports the 1h Lead tail: 24/25 Lead intra-session gaps over 5m were
+ * agent waits (5–27m), during which autoClear correctly cannot fire, and no
+ * gap over 1h was observed (tail-cost simulation, input-token equivalents:
+ * 1h=11.75M vs 5m=20.11M).
+ *
+ * Hidden and public-agent sessions use a 5m tail. Replaying the usage
+ * ledger's Anthropic agent requests (2026-09-15..30, 25K requests) found 0.9%
+ * of intra-session gaps over 5m, and pre-send compaction rebuilds an agent
+ * transcript once its 5m tail has expired (compact-policy.mjs
+ * shouldCompactForExpiredAgentCache), so the cold request rewrites the
+ * compacted transcript instead of the whole accumulated tail. Replayed agent
+ * cost vs a 1h tail: -24.6% with that compaction, +2.7% without it.
  * (Tail TTL only affects explicit-breakpoint providers — Anthropic; no-op
  * elsewhere.)
  *
@@ -132,9 +137,10 @@ export function resolveCacheStrategy(agent, { autoClear } = {}) {
     return strategy;
   };
   if (getHiddenAgent(agent) || (agent && agent !== 'lead')) {
-    // Hidden and public agents keep the flat 1h tail — only the Lead
-    // session's tail is linked to autoClear.
-    return applyEnv({ tools: 'none', system: '1h', tier3: '1h', messages: '1h' });
+    // Hidden and public agents use a flat 5m tail that pre-send compaction
+    // rebuilds once it expires — only the Lead session's tail is linked to
+    // autoClear.
+    return applyEnv({ tools: 'none', system: '1h', tier3: '1h', messages: '5m' });
   }
   // Lead session (agent === 'lead', or no agent — raw/CLI callers default
   // to Lead behavior): message tail TTL is linked to autoClear (see
@@ -468,5 +474,3 @@ export function buildProviderCacheOpts(provider, _sessionId, agent, options = {}
   }
   return {};
 }
-
-// --- Helpers ---

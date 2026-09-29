@@ -27,6 +27,12 @@ import { createTranscriptIntake } from './session/transcript-intake.mjs';
 import { createNoticeSurface } from './session/notice-surface.mjs';
 import { attachCrossSurfaceShare } from './session/cross-surface-share.mjs';
 import { createTranscriptRouteMetadata } from '../runtime/shared/transcript-metadata.mjs';
+import { formatDoctorReport, runDoctorChecks } from './app/doctor.mjs';
+// tuiDebug is an opt-in diagnostic trace for the hang chain (runTurn start/end,
+// busy-queue enqueue/drain). Quiet by default so it can never tear through
+// the alternate-screen render; enable with MIXDOG_TUI_DEBUG=1.
+import { tuiDebug, nextId, createTranscriptSpillBuffer } from './session/transcript-spill.mjs';
+
 const SESSION_RUNTIME_MODULE = '../mixdog-session-runtime.mjs';
 
 // The runtime graph is imported lazily, but that import (measured ~250ms) used
@@ -76,7 +82,7 @@ export function preloadMemoryRuntime() {
   }
   memoryRuntimePrewarmPromise ??= (async () => {
     const [{ getStandaloneMemoryRuntime }, { getPluginData }, { fileURLToPath }] = await Promise.all([
-      import('../standalone/memory-runtime-proxy.mjs'),
+      import('../session-runtime/services/memory-runtime-proxy.mjs'),
       import('../runtime/agent/orchestrator/config.mjs'),
       import('node:url'),
     ]);
@@ -118,10 +124,6 @@ const TOOL_APPROVAL_TIMEOUT_MS = (() => {
   return Number.isFinite(value) && value > 0 ? Math.max(1000, Math.round(value)) : 120_000;
 })();
 
-// Opt-in diagnostic trace for the hang chain (runTurn start/end, busy-queue
-// enqueue/drain). Quiet by default so it can never tear through
-// the alternate-screen render; enable with MIXDOG_TUI_DEBUG=1.
-import { tuiDebug, nextId, createTranscriptSpillBuffer } from './session/transcript-spill.mjs';
 export {
   cleanupStaleTranscriptSpillDirs,
   createTranscriptSpillBuffer,
@@ -473,6 +475,7 @@ export async function createLocalSessionRuntime({
   );
   visibleGoalStatus = bag.visibleGoalStatus;
   bag.runTurn = createRunTurn(bag);
+  bag.doctor = { runDoctorChecks, formatDoctorReport };
   const api = createSessionApi(bag);
   attachCrossSurfaceShare({ runtime, api, bag, flags, getState, getPublishedState, listeners, set });
   void Promise.resolve(bag.restoreLeadSteeringFromDisk())

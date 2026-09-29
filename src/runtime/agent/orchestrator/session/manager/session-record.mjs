@@ -3,7 +3,7 @@
 // compaction budget, the origin/permission/cache metadata analytics slice on,
 // the desktop classification, and the record assembled from them. Everything
 // here is field derivation — no I/O, no ownership, no prompt text.
-import { toSessionWorkflowMeta } from '../../../../../session-runtime/workflow.mjs';
+import { toSessionWorkflowMeta } from '../../runtime-core/workflow.mjs';
 import { sessionOrchestrationMode } from '../../../../shared/orchestration.mjs';
 import { preserveBufferConfigFields } from './context-meta.mjs';
 import { positiveInt } from '../../../../shared/numbers.mjs';
@@ -34,7 +34,7 @@ export function normalizeDesktopSessionMetadata(value, cwd = null) {
   return null;
 }
 
-export function initialCompactionConfig(compaction = {}, contextMeta = {}) {
+function initialCompactionConfig(compaction = {}, contextMeta = {}) {
   return {
     auto: compaction?.auto !== false,
     model: compaction?.model || null,

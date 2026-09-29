@@ -2,7 +2,7 @@
 // bounded the way every model-facing tool bounds output: per-engine diagnostic
 // caps with a `more` count first, then progressive trimming until the encoded
 // report fits the tool output budget.
-import { TOOL_OUTPUT_MAX_BYTES } from '../agent/orchestrator/tools/builtin/tool-output-limit.mjs';
+import { TOOL_OUTPUT_MAX_BYTES } from '../shared/tool-output-limit.mjs';
 import { shadowNote } from './shadow.mjs';
 import { worktreeNotes } from './worktree.mjs';
 
@@ -267,6 +267,7 @@ export function buildTidyReport({
   engines = [],
   results = null,
   structural = null,
+  functionLength = null,
   needsApproval = null,
   installed = null,
   errors = [],
@@ -317,6 +318,7 @@ export function buildTidyReport({
     rolled: rollupEngineCounts(results),
     structural,
     structuralSummary: summarizeDiagnostics(structural?.matches),
+    functionLength: isRunAction(action) ? functionLength : null,
     shadows: !isRunAction(action) && Array.isArray(shadows) ? shadows : [],
     workingTree,
     passErrors,
@@ -421,6 +423,7 @@ function composeTidyReport(parts, diagnosticCap) {
         }
       : {}),
     ...(workingTree && Object.keys(workingTree).length ? { workingTree } : {}),
+    ...(parts.functionLength ? { functionLength: parts.functionLength } : {}),
     ...(paged ? { paging: { offset: pageOffset, limit: diagnosticCap } } : {}),
     ...(parts.rules ? { rules: parts.rules } : {}),
     ...(parts.installed ? { installed: parts.installed } : {}),

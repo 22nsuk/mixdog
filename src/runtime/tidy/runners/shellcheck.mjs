@@ -21,7 +21,7 @@ export function parseShellcheckJson(stdout, cwd) {
       code: row?.code ? `SC${row.code}` : 'shellcheck',
       message: String(row?.message || ''),
       severity: severityOf(row?.level),
-      fixable: Boolean(row?.fix),
+      fixable: false,
     })
   );
 }

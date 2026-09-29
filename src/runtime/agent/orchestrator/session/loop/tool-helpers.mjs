@@ -4,7 +4,7 @@
 import { isMcpTool } from '../../mcp/client.mjs';
 import { isBuiltinTool } from '../../tools/builtin.mjs';
 import { isInternalTool } from '../../internal-tools.mjs';
-import { loadSkillToolDependencies } from '../../../../../session-runtime/skill-tool-loading.mjs';
+import { loadSkillToolDependencies } from '../../runtime-core/skill-tool-loading.mjs';
 import {
   collectSkillsCached,
   loadSkillResource,

@@ -247,7 +247,7 @@ function invalidWindowError(field, value) {
 // The find request as the walk sees it: the root, the name pattern (a glob
 // in `path` becomes the pattern), the filters and the page.
 function findFilesRequest(args, workDir) {
-  args.path = coerceReadFamilyPathArg(args.path, workDir);
+  args.path = coerceReadFamilyPathArg(args.path);
   args.path = normalizeInputPath(args.path);
   let inputPath = args.path || '.';
   let namePattern = typeof args.name === 'string' ? args.name : null;

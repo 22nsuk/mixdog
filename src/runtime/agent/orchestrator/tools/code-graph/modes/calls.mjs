@@ -52,12 +52,12 @@ export async function callees(ctx) {
 // The symbol, language and limit a scoped call query runs with, or the error
 // answer when the file anchor does not resolve.
 async function scopedCallContext(mode, ctx) {
-  const { args, cwd, signal, graph, normFile, rel, node, scopeRelPrefix } = ctx;
+  const { args, signal, graph, normFile, rel, node, scopeRelPrefix } = ctx;
   const symbol = requiredSymbol(mode, args);
   const explicitLanguage = languageArg(args);
   const narrowedByCaller = Boolean(rel || scopeRelPrefix || explicitLanguage);
   if (node) await _prewarmSourceTextNodes(graph, [node], { signal });
-  const resolved = _resolveReferenceLanguageNode(graph, symbol, rel, cwd, explicitLanguage);
+  const resolved = _resolveReferenceLanguageNode(graph, symbol, rel, explicitLanguage);
   if (rel && resolved.kind === 'file-not-found') return { error: fileNotFound(mode, ctx) };
   if (rel && resolved.kind === 'symbol-not-present') {
     return { error: `Error: code_graph ${mode}: symbol "${symbol}" not found in ${normFile || rel}` };
@@ -83,7 +83,7 @@ export async function references(ctx) {
   if (scoped.error) return scoped.error;
   const { symbol, lang, narrowedByCaller, userLimit } = scoped;
   const refNodes = await _prewarmReferenceSourceText(graph, symbol, lang, { signal });
-  const refResult = _cheapReferenceSearch(graph, symbol, cwd, {
+  const refResult = _cheapReferenceSearch(graph, symbol, {
     language: lang,
     fileRel: rel,
     scopeRelPrefix,

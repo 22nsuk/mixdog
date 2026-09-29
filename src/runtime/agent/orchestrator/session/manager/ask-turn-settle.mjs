@@ -5,8 +5,8 @@
 // (publishAskTurn).
 import { saveSessionAsync, saveSessionAsyncDeferred } from '../store.mjs';
 import { persistedAssistantTranscriptMetadata } from '../../../../shared/transcript-metadata.mjs';
-import { acknowledgePendingDeferredToolDelta } from '../../../../../session-runtime/deferred-tool-delta.mjs';
-import { acknowledgePendingGoalReminder } from '../../../../../session-runtime/goal-reminder.mjs';
+import { acknowledgePendingDeferredToolDelta } from '../../runtime-core/deferred-tool-delta.mjs';
+import { acknowledgePendingGoalReminder } from '../../runtime-core/goal-reminder.mjs';
 import {
   finalizePendingMessageDelivery,
   drainPendingMessages,

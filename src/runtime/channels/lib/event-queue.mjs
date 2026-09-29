@@ -68,6 +68,7 @@ class EventQueue {
   channelId;
   tickTimer = null;
   batchTimer = null;
+  initialTickTimer = null;
   _processQueueRunning = false;
   _processBatchRunning = false;
   injectFn = null;

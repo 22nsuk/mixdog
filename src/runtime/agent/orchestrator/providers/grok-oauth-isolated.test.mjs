@@ -46,7 +46,7 @@ const response = (body, status = 200) => ({
 async function isolated() {
   const root = resolve('virtual-grok-fixtures');
   const s = {
-    env: {},
+    env: { MIXDOG_DISABLE_LIVE_CLI_VERSIONS: '1' },
     boundPath: null,
     files: new Map(),
     mtimes: new Map(),
@@ -217,7 +217,9 @@ async function isolated() {
     'grok-oauth.mjs',
     'grok-oauth-login.mjs',
     'grok-oauth-tokens.mjs',
-    'provider-model-identities.mjs',
+    'grok-client-version.mjs',
+    'npm-cli-version.mjs',
+    '../../../shared/llm/provider-model-identities.mjs',
     'lib/oauth-token-utils.mjs',
     'lib/oauth-pkce.mjs',
   ]);
@@ -574,6 +576,7 @@ function registerTests() {
       code_challenge_method: 'S256',
     });
     assert.equal(s.requests[0].options.redirect, 'error');
+    assert.equal(s.requests[0].options.dispatcher, 'fixture-dispatcher');
     assert.equal(s.requests[0].options.signal.ms, 30_000);
     s.replies.push(response({ access_token: 'only-access' }));
     await assert.rejects(
@@ -619,9 +622,19 @@ function registerTests() {
       await server.handler({ url: '/unrelated' }, res);
       assert.equal(res.status, 404);
       assert.equal(server.closed, 0);
-      if (mode === 'manual' || mode === 'callback') {
+      if (mode === 'manual' || mode === 'callback' || mode === 'invalid') {
         s.replies.push(response({ access_token: 'access', refresh_token: 'refresh', expires_at: NOW }));
-        if (mode === 'manual') {
+        if (mode === 'invalid') {
+          // A bad request is answered with an error and the login keeps waiting.
+          await server.handler({ url: '/callback?code=code&state=wrong' }, res);
+          assert.equal(res.status, 400);
+          assert.equal(res.body, 'Invalid');
+          await server.handler({ url: `/callback?state=${url.searchParams.get('state')}` }, res);
+          assert.equal(res.status, 400);
+          assert.equal(server.closed, 0);
+          await server.handler({ url: `/callback?code=code&state=${url.searchParams.get('state')}` }, res);
+          assert.equal(res.status, 200);
+        } else if (mode === 'manual') {
           await assert.rejects(started.completeCode('code#wrong-state'), /OAuth state mismatch/);
           await started.completeCode(`code#${url.searchParams.get('state')}`);
         } else {
@@ -636,11 +649,7 @@ function registerTests() {
         server.error(new Error('occupied'));
         await rejected;
       } else {
-        if (mode === 'invalid') {
-          await server.handler({ url: '/callback?code=code&state=wrong' }, res);
-          assert.equal(res.status, 400);
-          assert.equal(res.body, 'Invalid');
-        } else if (mode === 'cancel') started.cancel();
+        if (mode === 'cancel') started.cancel();
         else s.timers[0].fn();
         assert.equal(await started.waitForCallback, null);
       }

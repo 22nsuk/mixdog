@@ -44,21 +44,6 @@ export function createAnthropicMidState(attemptIndex) {
 }
 
 /**
- * @param {object} deps
- * @param {string} deps.label  stderr log tag (provider instance name)
- * @param {string} deps.outcomeProvider  provider id on the canonical outcome stamp
- * @param {string} deps.midstreamOwner  recovery owner recorded when retries are exhausted
- * @param {string} deps.unreachableMessage  message of the never-observed loop-exit error
- * @param {boolean} [deps.initialResponseErrorTerminal]  true when the caller's
- *   request-level retry already spent the budget for a non-OK initial response,
- *   so such an error must not earn an extra SSE retry here
- * @param {number} deps.maxRetries  bounded mid-stream retries for transient stream loss
- * @param {AbortSignal|null} deps.totalSignal
- * @param {{ recoverNonStreaming: Function, issueNonStreamingFallback: Function, requireTransportRecoveryBudget: Function }} deps.recovery
- * @param {Function|null} [deps.onStageChange]  receives the display-only 'reconnecting' stage per retry
- * @param {boolean} [deps.retry529]  false for a background call: an overload mid-stream is not retried
- */
-/**
  * Empty-stream guard. Invariant: a valid Anthropic SSE response ALWAYS opens
  * with message_start (which carries usage.input_tokens). A 200 whose body
  * produced no message_start delivered nothing — no usage, no content, no tool
@@ -87,8 +72,25 @@ export function assertAnthropicStreamNotEmpty(midState, result, label) {
   }
 }
 
+/**
+ * @param {object} deps
+ * @param {string} deps.label  stderr log tag (provider instance name)
+ * @param {string} [deps.displayName]  provider name in error text (default "Anthropic OAuth")
+ * @param {string} deps.outcomeProvider  provider id on the canonical outcome stamp
+ * @param {string} deps.midstreamOwner  recovery owner recorded when retries are exhausted
+ * @param {string} deps.unreachableMessage  message of the never-observed loop-exit error
+ * @param {boolean} [deps.initialResponseErrorTerminal]  true when the caller's
+ *   request-level retry already spent the budget for a non-OK initial response,
+ *   so such an error must not earn an extra SSE retry here
+ * @param {number} deps.maxRetries  bounded mid-stream retries for transient stream loss
+ * @param {AbortSignal|null} deps.totalSignal
+ * @param {{ recoverNonStreaming: Function, issueNonStreamingFallback: Function, requireTransportRecoveryBudget: Function }} deps.recovery
+ * @param {Function|null} [deps.onStageChange]  receives the display-only 'reconnecting' stage per retry
+ * @param {boolean} [deps.retry529]  false for a background call: an overload mid-stream is not retried
+ */
 export function createAnthropicMidstreamRecovery({
   label,
+  displayName = 'Anthropic OAuth',
   outcomeProvider,
   midstreamOwner,
   unreachableMessage,
@@ -108,17 +110,22 @@ export function createAnthropicMidstreamRecovery({
   let firstAttemptClassifier = null;
   const retry = { retry: true };
   const settled = (value) => ({ retry: false, value });
+  const sleepBackoff = (ms) =>
+    _midstreamSleepWithAbort(ms, totalSignal, undefined, `${displayName} mid-stream retry backoff aborted`);
+  const abortStream = (controller, err) => {
+    try {
+      controller?.abort?.(err);
+    } catch {
+      /* best-effort teardown */
+    }
+  };
 
   // Jittered backoff between streaming attempts; the dead stream is torn
   // down first so its socket returns to the pool.
   const retryStreaming = async ({ err, classifier, controller, attemptIndex, message, delayMs = null }) => {
     firstAttemptError = err;
     firstAttemptClassifier = classifier;
-    try {
-      controller?.abort?.(err);
-    } catch {
-      /* best-effort teardown */
-    }
+    abortStream(controller, err);
     log(message);
     const waitMs = delayMs ?? midstreamBackoffFor(attemptIndex + 1);
     emitProviderRetryStage(onStageChange, {
@@ -127,7 +134,7 @@ export function createAnthropicMidstreamRecovery({
       lastErr: err,
       delayMs: waitMs,
     });
-    await _midstreamSleepWithAbort(waitMs, totalSignal);
+    await sleepBackoff(waitMs);
     return retry;
   };
 
@@ -154,9 +161,7 @@ export function createAnthropicMidstreamRecovery({
     // agent loop retracts any exposed text and replays it with a split-call
     // notice.
     if (!midState.userAbort && isToolInputCut(err)) {
-      try {
-        controller?.abort?.(err);
-      } catch {}
+      abortStream(controller, err);
       throw err;
     }
     // Acknowledged reset semantics let the owner tombstone this
@@ -173,9 +178,7 @@ export function createAnthropicMidstreamRecovery({
     // incomplete, never dispatched tool input stays replay-safe.
     // Every retry branch below relies on this early exit.
     if (outcome?.replayUnsafe === true) {
-      try {
-        controller?.abort?.(err);
-      } catch {}
+      abortStream(controller, err);
       throw err;
     }
     // The request-level retry loop already exhausted its full budget on a
@@ -185,9 +188,7 @@ export function createAnthropicMidstreamRecovery({
     // A background call never retries an overload, mid-stream included (see
     // withRetry): nobody waits on it and every retry adds load.
     if (retry529 === false && Number(err?.httpStatus || err?.status || 0) === 529) {
-      try {
-        controller?.abort?.(err);
-      } catch {}
+      abortStream(controller, err);
       throw err;
     }
     const canRetry = attemptIndex < maxRetries;
@@ -288,7 +289,7 @@ export function createAnthropicMidstreamRecovery({
         lastErr: err,
         delayMs: waitMs,
       });
-      await _midstreamSleepWithAbort(waitMs, totalSignal);
+      await sleepBackoff(waitMs);
       return retry;
     }
     if (classifier && !canRetry) {

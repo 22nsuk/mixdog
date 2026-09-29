@@ -10,7 +10,6 @@ function createToolDispatch({ isChannelsDegraded, lifecycle }) {
     setChannelBridgeActive,
     writeBridgeState,
     notifyRemoteAcquired,
-    refreshBridgeOwnership,
     startChannelBridge,
     stopOwnedRuntime,
     reloadRuntimeConfig,
@@ -36,15 +35,11 @@ function createToolDispatch({ isChannelsDegraded, lifecycle }) {
             // (getOwned() is always true), so activate never needs to claim a
             // seat or pre-notify — the not-connected -> connected transition
             // inside startOwnedRuntime fires notifyRemoteAcquired exactly once.
-            if (getOwned?.() !== true) {
-              notifyRemoteAcquired?.();
+            if (getOwned() !== true) {
+              notifyRemoteAcquired();
             }
             try {
-              if (typeof startChannelBridge === 'function') {
-                await startChannelBridge();
-              } else {
-                await refreshBridgeOwnership({ restoreBinding: true });
-              }
+              await startChannelBridge();
             } catch (e) {
               process.stderr.write(`mixdog: bridge activate refresh failed (non-fatal): ${e?.message || e}\n`);
             }

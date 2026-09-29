@@ -36,8 +36,6 @@ export function createWheelRouter({
   stopEdgeAutoscroll,
 }) {
   return (event) => {
-    let up = 0;
-    let down = 0;
     const name = event.name;
     if (name !== 'wheelup' && name !== 'wheeldown') return;
     const seq = typeof event.sequence === 'string' ? event.sequence : '';
@@ -61,36 +59,28 @@ export function createWheelRouter({
       passthroughCtrlWheelZoom();
       return;
     }
-    if (name === 'wheelup') up += 1;
-    else down += 1;
-    // Shared wheel-scroll dispatch (identical slash-palette/overlay/scroll
-    // routing for every wheel source).
-    if (up !== 0 || down !== 0) {
-      const palette = slashPaletteRef.current;
-      if (!dragRef.current.active && palette.open && palette.count > 0) {
-        const step = down - up;
-        if (step !== 0) {
-          setSlashIndex((index) => Math.max(0, Math.min(palette.count - 1, index + step)));
-        }
-        return;
-      }
-      if (overlayBlocksGlobalTranscriptScroll(scrollFocusRef.current)) return;
-      // Wheel while a selection is live (mid-drag OR after release) scrolls
-      // the transcript instead of being dropped: scrollTranscriptRows'
-      // active-drag branch rebuilds the rect (anchor→last), the released
-      // branch shifts it — both keep the highlight and stitch-harvest the
-      // rows that scroll off (ref ScrollKeybindingHandler wheel path).
-      const wheelDir = up - down;
-      const nowWheel = Date.now();
-      const accel = wheelAccelRef.current;
-      if (!WHEEL_ACCEL_ENABLED || accel.dir !== wheelDir || nowWheel - accel.t > WHEEL_ACCEL_IDLE_MS) {
-        accel.step = WHEEL_STEP_ROWS;
-      } else {
-        accel.step = Math.min(WHEEL_STEP_MAX_ROWS, accel.step + WHEEL_STEP_ROWS);
-      }
-      accel.dir = wheelDir;
-      accel.t = nowWheel;
-      queueScrollCoalesced(wheelDir * accel.step);
+    // +1 = wheel up (scroll toward older rows), -1 = wheel down.
+    const wheelDir = name === 'wheelup' ? 1 : -1;
+    const palette = slashPaletteRef.current;
+    if (!dragRef.current.active && palette.open && palette.count > 0) {
+      setSlashIndex((index) => Math.max(0, Math.min(palette.count - 1, index - wheelDir)));
+      return;
     }
+    if (overlayBlocksGlobalTranscriptScroll(scrollFocusRef.current)) return;
+    // Wheel while a selection is live (mid-drag OR after release) scrolls
+    // the transcript instead of being dropped: scrollTranscriptRows'
+    // active-drag branch rebuilds the rect (anchor→last), the released
+    // branch shifts it — both keep the highlight and stitch-harvest the
+    // rows that scroll off (ref ScrollKeybindingHandler wheel path).
+    const nowWheel = Date.now();
+    const accel = wheelAccelRef.current;
+    if (!WHEEL_ACCEL_ENABLED || accel.dir !== wheelDir || nowWheel - accel.t > WHEEL_ACCEL_IDLE_MS) {
+      accel.step = WHEEL_STEP_ROWS;
+    } else {
+      accel.step = Math.min(WHEEL_STEP_MAX_ROWS, accel.step + WHEEL_STEP_ROWS);
+    }
+    accel.dir = wheelDir;
+    accel.t = nowWheel;
+    queueScrollCoalesced(wheelDir * accel.step);
   };
 }

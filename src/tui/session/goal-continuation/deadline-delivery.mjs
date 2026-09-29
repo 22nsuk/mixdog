@@ -1,7 +1,7 @@
 // Deadline notices for the running Goal: the advance warning and the closeout
 // once the duration is reached.
 import { clean } from '../../../runtime/shared/clean.mjs';
-import { goalDeadlineReached, goalDeadlineWarning } from '../../../session-runtime/goal-text.mjs';
+import { goalDeadlineReached, goalDeadlineWarning } from '../../../runtime/agent/orchestrator/runtime-core/goal-text.mjs';
 import { isGoalQueuedEntry } from '../queue-helpers.mjs';
 
 export function createDeadlineDelivery({ runtime, getState, getPending, enqueue, halted }) {

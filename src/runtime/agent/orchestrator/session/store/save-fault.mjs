@@ -13,8 +13,8 @@
  *     canonical file first. There is deliberately NO env-driven fault
  *     configuration: nothing in a production environment can arm this.
  *  2. Conservative reclamation of the store's OWN abandoned scratch files.
- *     A failed commit can leave `<id>.json.<hex>.tmp` bytes behind; the store
- *     used to swallow the unlink failure and leak them forever. Only paths
+ *     A failed commit can leave `<id>.json.<hex>.tmp` bytes behind, and a
+ *     swallowed unlink failure would leak them forever. Only paths
  *     THIS realm minted and then failed to unlink are retried, and only when
  *     they match the store's exact scratch naming. The sessions directory is
  *     never scanned: an unregistered scratch file may be the save worker's or
@@ -74,7 +74,7 @@ export function _registerOrphanSaveTmp(tmp) {
 /**
  * Drop a scratch file. Retries the transient win32 codes once, and on final
  * failure registers the path so the bounded sweeper retries it later instead
- * of leaking it (the previous `catch { /* ignore *\/ }` was terminal).
+ * of leaking it.
  */
 export function _discardSaveTmp(tmp) {
   if (!tmp) return true;

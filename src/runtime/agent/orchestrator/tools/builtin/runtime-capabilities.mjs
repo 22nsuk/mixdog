@@ -355,7 +355,6 @@ function _gitIgnoredEntries(directory, names) {
   return entry.observation.ignored;
 }
 
-/** Resolves once every in-flight startup git probe has finished. */
 /**
  * Boot-time prewarm: start the off-thread `git status` and `git check-ignore`
  * probes for directories a session is likely to open, so the first session's
@@ -400,6 +399,7 @@ export function prewarmGitStartupProbes(directories) {
   }
 }
 
+/** Resolves once every in-flight startup git probe has finished. */
 export async function settleGitStartupProbes() {
   await Promise.all(
     [..._repositoryChangeStates.values(), ..._gitIgnoreObservations.values()].map((entry) => entry.pending)

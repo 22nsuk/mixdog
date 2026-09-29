@@ -14,14 +14,7 @@ import { executePatchTool } from '../../../tools/patch.mjs';
 import { executeInternalTool, isInternalTool } from '../../../internal-tools.mjs';
 import { buildSkillsListResponse, viewSkill } from '../tool-helpers.mjs';
 import { isOnDeferredToolSurface } from '../deferred-call-through.mjs';
-
-let codeGraphRuntimePromise = null;
-async function executeCodeGraphToolLazy(name, args, cwd, signal = null, options = {}) {
-  codeGraphRuntimePromise ??= import('../../../tools/code-graph.mjs');
-  const mod = await codeGraphRuntimePromise;
-  if (typeof mod.executeCodeGraphTool !== 'function') throw new Error('code_graph runtime is not available');
-  return mod.executeCodeGraphTool(name, args, cwd, signal, options);
-}
+import { _executeCodeGraphToolLazy } from '../../manager/runtime-loaders.mjs';
 
 function dispatchMcp(name, args, { cwd, callerSessionId, sessionRef, executeOpts }) {
   const mcpScopeId = sessionRef?.mcpScopeId || null;
@@ -81,7 +74,7 @@ export function dispatchToolCall({ name, args }, ctx) {
   if (name === 'code_graph') {
     // cwd chain: args.cwd (caller-explicit) → session cwd → undefined (handler throws)
     const graphCwd = typeof args?.cwd === 'string' && args.cwd.trim() ? args.cwd.trim() : cwd;
-    return executeCodeGraphToolLazy(name, args, graphCwd, executeOpts.signal || null, toolOpts);
+    return _executeCodeGraphToolLazy(name, args, graphCwd, executeOpts.signal || null, toolOpts);
   }
   if (isInternalTool(name, sessionRef?.mcpScopeId)) return dispatchInternal(name, args, ctx);
   if (name === 'apply_patch') {
@@ -97,7 +90,10 @@ export function dispatchToolCall({ name, args }, ctx) {
   // variants) adapt to a native execution inside executeBuiltinTool's default
   // case; on a shape mismatch it falls back to the redirect guidance message.
   if (name === 'shell' || isBuiltinTool(name) || isExternalAdapterTool(name)) {
-    return executeBuiltinTool(name, args, cwd, completionToolOpts);
+    const builtinOpts = executeOpts.suppressReadUnchangedStub
+      ? { ...completionToolOpts, suppressReadUnchangedStub: true }
+      : completionToolOpts;
+    return executeBuiltinTool(name, args, cwd, builtinOpts);
   }
   return formatUnknownBuiltinToolMessage(name, args, 'tool');
 }

@@ -16,7 +16,7 @@ import { runRgWindowedLines } from '../native-search-runner.mjs';
 import { statReachable } from '../fs-reachability.mjs';
 import { markScopedCacheIncomplete } from '../../../session/cache/scoped-cache-outcome.mjs';
 import { GREP_CONTEXT_MAX, hasUnsupportedRipgrepRegex } from '../arg-guard.mjs';
-import { coerceNonNegInt, resolveHeadLimit } from './search-input-helpers.mjs';
+import { resolveSearchWindow } from './search-input-helpers.mjs';
 import { formatGrepFanoutSections, formatGrepOutput, grepNoMatchesBody } from './grep-output.mjs';
 import { expandGrepAnchorContextOutput } from './grep-context-expander.mjs';
 
@@ -55,10 +55,8 @@ function combinedPathRequest(args, defaultHeadLimit) {
   const rawMode = typeof args.output_mode === 'string' ? args.output_mode.trim() : '';
   if (!['', 'content', 'content_with_context', 'files_with_matches'].includes(rawMode)) return null;
   const outMode = rawMode === 'files_with_matches' ? 'files_with_matches' : 'content';
-  const hlRaw = coerceNonNegInt(args.head_limit);
-  if (Number.isNaN(hlRaw)) return null;
-  const offRaw = coerceNonNegInt(args.offset);
-  if (Number.isNaN(offRaw)) return null;
+  const window = resolveSearchWindow(args, defaultHeadLimit);
+  if (window.error) return null;
   const ctxRaw = args['-C'] !== undefined && args['-C'] !== null && args['-C'] !== '' ? args['-C'] : args.context;
   let contextN = null;
   if (ctxRaw !== undefined && ctxRaw !== null && ctxRaw !== '') {
@@ -69,8 +67,8 @@ function combinedPathRequest(args, defaultHeadLimit) {
   return {
     pattern,
     outMode,
-    headLimit: resolveHeadLimit(hlRaw, defaultHeadLimit),
-    offset: offRaw === null ? 0 : offRaw,
+    headLimit: window.headLimit,
+    offset: window.offset,
     contextN,
     // Leave contextN null for the automatic window: the expander reads that as
     // "no caller-requested radius" and applies the asymmetric default.

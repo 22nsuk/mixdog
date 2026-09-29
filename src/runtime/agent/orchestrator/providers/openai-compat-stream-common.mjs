@@ -25,6 +25,7 @@ function markInBandWireError(err) {
   } catch {}
   return err;
 }
+
 export function synthLeakedOpenAICall(recovered) {
   let args = recovered?.arguments;
   if (args === null || typeof args !== 'object' || Array.isArray(args)) args = {};
@@ -91,7 +92,7 @@ export async function nextAsyncWithWatchdog(
   };
   armIdle();
   try {
-    const result = await new Promise((resolve, reject) => {
+    return await new Promise((resolve, reject) => {
       idleReject = reject;
       if (signal?.aborted) {
         const reason = signal.reason;
@@ -107,7 +108,6 @@ export async function nextAsyncWithWatchdog(
       }
       iterator.next().then(resolve, reject);
     });
-    return result;
   } catch (err) {
     if (idleTimedOut)
       throw streamStalledError(idleLabel || 'compat SSE', idleMs, { emittedToolCall: didEmitToolCall() });

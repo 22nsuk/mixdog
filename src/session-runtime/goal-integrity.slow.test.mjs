@@ -4,8 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { writeJsonAtomicAsync } from '../runtime/shared/atomic-file.mjs';
-import { createGoalRuntime, readStoredGoalSnapshot } from './goal-runtime.mjs';
-import { goalStateReminder } from './goal-text.mjs';
+import { createGoalRuntime, readStoredGoalSnapshot } from '../runtime/agent/orchestrator/runtime-core/goal-runtime.mjs';
+import { goalStateReminder } from '../runtime/agent/orchestrator/runtime-core/goal-text.mjs';
 
 function fixture(t, options = {}) {
   const dataDir = mkdtempSync(join(tmpdir(), 'mixdog-goal-integrity-'));

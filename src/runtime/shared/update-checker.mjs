@@ -9,7 +9,7 @@
  * best-effort convenience check, never a boot-blocking dependency.
  */
 
-import { existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { basename, delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeJsonAtomicSync } from './atomic-file.mjs';
@@ -74,8 +74,6 @@ function readCache(dataDir) {
 
 function writeCache(dataDir, payload) {
   try {
-    const dir = dataDir || resolvePluginData();
-    mkdirSync(dir, { recursive: true });
     writeJsonAtomicSync(cacheFilePath(dataDir), payload, {
       compact: true,
       lock: true,

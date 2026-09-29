@@ -13,6 +13,7 @@ import { createTurnBlocks } from './anthropic-sse-turn/turn-blocks.mjs';
 import { createLeakGuard } from './anthropic-sse-turn/leak-guard.mjs';
 import { createTurnEvents } from './anthropic-sse-turn/turn-events.mjs';
 import { createTurnOutcome } from './anthropic-sse-turn/turn-outcome.mjs';
+import { OAUTH_STREAM_LABELS } from './lib/anthropic-stream-labels.mjs';
 
 /**
  * @param {object} deps
@@ -22,6 +23,7 @@ import { createTurnOutcome } from './anthropic-sse-turn/turn-outcome.mjs';
  * @param {(text: string) => void} [deps.onTextDelta]
  * @param {Iterable<string>} [deps.knownToolNames]
  * @param {boolean} [deps.relayProgressUpdates]  request used thinking.display "updates"
+ * @param {{ display: string, tag: string }} [deps.labels]  provider name for errors and stderr lines
  */
 export function createAnthropicSseTurn({
   state,
@@ -30,6 +32,7 @@ export function createAnthropicSseTurn({
   onTextDelta,
   knownToolNames,
   relayProgressUpdates = false,
+  labels = OAUTH_STREAM_LABELS,
 }) {
   const progress = (kind) => {
     try {
@@ -60,8 +63,9 @@ export function createAnthropicSseTurn({
     progress,
     onToolCall,
     relayProgressUpdates,
+    labels,
   });
-  const outcome = createTurnOutcome({ turn, blocks, state });
+  const outcome = createTurnOutcome({ turn, blocks, state, labels });
 
   return {
     ...events,

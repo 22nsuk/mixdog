@@ -1,4 +1,4 @@
-import { providerNativeToolPrefixCount } from '../../../../../session-runtime/provider-request-tools.mjs';
+import { providerNativeToolPrefixCount } from '../../runtime-core/provider-request-tools.mjs';
 import { actionInputContract } from './action-input-contract.mjs';
 import { isNativeServerToolBlockType } from './anthropic-native-blocks.mjs';
 import { isAnthropicThinkingBlock, sanitizeAnthropicReplayBlocks } from './anthropic-replay-blocks.mjs';
@@ -330,6 +330,10 @@ export function normalizeAnthropicNonStreamingResponse(message, fallbackModel = 
   };
 }
 
+// Anthropic's tool spec forbids oneOf / allOf / anyOf at the TOP level of
+// input_schema (nested usage inside properties is allowed). External MCP
+// servers sometimes emit such schemas; convert them to a flat object schema
+// so the API never sees a 400.
 export function sanitizeAnthropicInputSchema(schema, toolName, logTag) {
   if (!schema || typeof schema !== 'object') {
     return { type: 'object', properties: {} };
@@ -407,6 +411,18 @@ function toAnthropicTools(tools, logTag) {
   });
 }
 
+// Map the orchestrator-level opts.toolChoice into Anthropic's tool_choice.
+// Only 'none' is activated: it lets the hard-cap final turn keep the tool
+// DEFINITIONS in-request (so the tools->system->messages prefix — and its
+// prompt-cache prefix — stay byte-identical to prior turns) while forbidding
+// tool USE, so the model can only emit text. Forced values
+// ('required'->{type:'any'}, {name}->{type:'tool'}) are deliberately NOT
+// mapped: Anthropic returns a 400 for any forced tool_choice while
+// extended/adaptive thinking is enabled, and the only caller that sets
+// opts.toolChoice='required' (the forced-first-tool turn) runs with
+// effort/thinking active on reasoning models — activating it would convert a
+// previously-harmless no-op into a hard 400 on exactly that turn. Attached
+// only when the request actually carries tools.
 export function toAnthropicToolChoice(toolChoice) {
   return toolChoice === 'none' ? { type: 'none' } : undefined;
 }
@@ -464,6 +480,19 @@ export function requestAnthropicTools(tools, messages, opts, provider) {
   return [...nativeTools, ...toAnthropicTools([...activeTools, ...deferredTools], provider)];
 }
 
+// Applies cache_control markers to the FINAL, already-sanitized Anthropic
+// message array — by INVARIANT, never by pre-sanitize index. Because
+// sanitizeAnthropicContentPairs has already run (and must NOT run again
+// after this), the blocks we mark here are exactly the blocks the provider
+// sees, so the cache breakpoint is stable across turns.
+//   message-anchor: prefer a safe tool_result tail, then a previous real user
+//                   text turn if another slot remains. Synthetic
+//                   <system-reminder> messages and current pure-text prompts
+//                   are excluded so first-turn prompts do not create a fresh
+//                   BP4 write on every new session.
+// messageTtl === null disables the tail. BP3 (tier3) rides a system block,
+// so it is not marked here. ANTHROPIC_MSG_SLOTS=0 is honoured upstream by
+// passing messageTtl = null.
 export function applyAnthropicCacheMarkers(
   sanitizedMessages,
   { messageTtl = ANTHROPIC_CACHE_TTL_VOLATILE, messageSlots = 1 } = {}

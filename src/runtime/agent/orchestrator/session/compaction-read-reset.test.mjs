@@ -8,7 +8,7 @@ import { executeBuiltinTool } from '../tools/builtin.mjs';
 import { runSessionCompaction } from './manager/compaction-runner.mjs';
 import { runPreSendCompactPass } from './pre-send-compact.mjs';
 import { resetReadStateAfterCompaction } from './read-dedup.mjs';
-import { createContextStatus } from '../../../../session-runtime/context-status.mjs';
+import { createContextStatus } from '../runtime-core/context-status.mjs';
 
 const SUMMARY = [
   '## Goal',

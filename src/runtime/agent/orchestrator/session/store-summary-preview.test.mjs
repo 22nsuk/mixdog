@@ -4,7 +4,7 @@ import {
   cleanSessionPreview,
   isSessionPreviewNoise,
   sessionMessageText,
-} from '../../../../session-runtime/session-text.mjs';
+} from '../runtime-core/session-text.mjs';
 import { _normalizeSummaryIndex, _sessionSummary } from './store-summary-index.mjs';
 
 // The pre-memo implementation, verbatim: every summary is compared against it.

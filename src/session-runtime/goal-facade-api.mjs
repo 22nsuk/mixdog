@@ -1,4 +1,4 @@
-import { markPendingGoalReminder } from './goal-reminder.mjs';
+import { markPendingGoalReminder } from '../runtime/agent/orchestrator/runtime-core/goal-reminder.mjs';
 
 export function createGoalFacadeApi({ agentStatusState, createCurrentSession, getSession, getSessionId, goalRuntime }) {
   const markGoalReminder = (reason = '') => {

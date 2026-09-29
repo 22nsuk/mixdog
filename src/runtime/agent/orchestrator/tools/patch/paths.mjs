@@ -18,6 +18,10 @@ export function stripDiffPrefix(name) {
   return m ? m[1] : name;
 }
 
+export function specialFilePatchMessage(displayPath) {
+  return `apply_patch: cannot patch special file (FIFO / character / block device / socket): ${normalizeOutputPath(displayPath)}`;
+}
+
 export function resolveEntryPath(basePath, rawName) {
   // A parsed entry without a header path (jsdiff parses arbitrary non-diff
   // text into a headerless entry) must fail as a patch-format error, not as a

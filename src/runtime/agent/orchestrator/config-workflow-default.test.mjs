@@ -17,7 +17,7 @@ test('Default and independent orchestration preserve legacy Solo/Cowork selectio
     import {
       buildDefaultConfig, loadConfig, saveConfig, saveConfigAsync,
     } from './src/runtime/agent/orchestrator/config.mjs';
-    import { createWorkflowHelpers } from './src/session-runtime/workflow.mjs';
+    import { createWorkflowHelpers } from './src/runtime/agent/orchestrator/runtime-core/workflow.mjs';
 
     const path = join(process.env.MIXDOG_DATA_DIR, 'mixdog-config.json');
     const { activeWorkflowId } = createWorkflowHelpers({

@@ -24,6 +24,7 @@ export function chunkFiles(files = [], size = FILES_PER_SPAWN) {
 // Engines colorize the paths they report (air underlines them, mago colors its
 // diffs), so every path-matching parser strips SGR sequences first.
 // eslint-disable-next-line no-control-regex -- SGR escapes are the point
+// biome-ignore lint/suspicious/noControlCharactersInRegex: SGR escapes are the point
 const ANSI_SGR = /\u001B\[[0-9;]*m/g;
 
 export function stripAnsi(text) {

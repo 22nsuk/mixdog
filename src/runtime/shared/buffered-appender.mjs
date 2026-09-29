@@ -137,6 +137,8 @@ function _flush(path, q) {
         q.chunks.unshift(data);
         q.bytes += Buffer.byteLength(data, 'utf8');
         trimBufferedQueue(q);
+      } else {
+        recordDroppedBytes(q, Buffer.byteLength(data, 'utf8'));
       }
     })
     .finally(() => {
@@ -189,24 +191,25 @@ export function getBufferedAppenderStats(path) {
  */
 function drainAllSync() {
   for (const path of queues.keys()) {
-    drainPathSync(path);
+    drainPathSync(path, { exiting: true });
   }
 }
 
 /**
- * Synchronously drain the queue for a single path. Writes any in-flight
- * (already-dequeued but not yet persisted) payload FIRST, then any
- * still-queued chunks, so nothing buffered is lost. Best-effort, never
- * throws.
+ * Synchronously drain the queue for a single path. At process exit the
+ * in-flight (already-dequeued but not yet persisted) payload is written
+ * FIRST, since its async append can no longer land; otherwise the live
+ * async append still owns it and rewriting it would duplicate the bytes.
+ * Then any still-queued chunks are written. Best-effort, never throws.
  */
-export function drainPathSync(path) {
+export function drainPathSync(path, { exiting = false } = {}) {
   const q = queues.get(path);
   if (!q) return;
   if (q.timer) {
     clearTimeout(q.timer);
     q.timer = null;
   }
-  if (q.inFlight) {
+  if (exiting && q.inFlight) {
     try {
       appendFileSync(path, q.inFlight, 'utf8');
     } catch {

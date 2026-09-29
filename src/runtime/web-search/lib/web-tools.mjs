@@ -251,7 +251,7 @@ async function withPuppeteerPage(signal, fn) {
     } catch (error) {
       throw new Error(`puppeteer launch failed: ${error instanceof Error ? error.message : String(error)}`);
     }
-    if (signal?.aborted) throw signal.reason || new Error('aborted');
+    signal?.throwIfAborted();
     if (signal) {
       // Tear down THIS call's page/context only. The browser is pooled and
       // shared with every concurrent scrape, so closing it here killed
@@ -270,14 +270,14 @@ async function withPuppeteerPage(signal, fn) {
     // per step an abort landing mid-setup was lost and the page ran anyway.
     // (The finally below closes whatever was created by then.)
     context = await browser.createBrowserContext();
-    if (signal?.aborted) throw signal.reason || new Error('aborted');
+    signal?.throwIfAborted();
     page = await context.newPage();
-    if (signal?.aborted) throw signal.reason || new Error('aborted');
+    signal?.throwIfAborted();
     cdp = await page.createCDPSession();
-    if (signal?.aborted) throw signal.reason || new Error('aborted');
+    signal?.throwIfAborted();
     await page.setBypassServiceWorker(true);
     const gate = await installPuppeteerSsrfGate(page, cdp, signal);
-    if (signal?.aborted) throw signal.reason || new Error('aborted');
+    signal?.throwIfAborted();
     try {
       return await fn(page);
     } catch (error) {

@@ -1,5 +1,4 @@
-import { readFileSync, writeFileSync, appendFileSync, unlinkSync } from 'node:fs';
-import { appendFile as _appendFile } from 'node:fs';
+import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join, isAbsolute } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { DATA_DIR } from './config.mjs';
@@ -17,42 +16,21 @@ import {
   setDeferred,
   setNextFire,
   setSkippedUntil,
-} from '../../shared/schedules-db.mjs';
-import { runScheduleSession } from '../../shared/schedule-session-run.mjs';
+} from './schedules-db.mjs';
+import { appendBuffered } from '../../shared/buffered-appender.mjs';
+import { tryRead } from './settings.mjs';
 
 const SCHEDULE_LOG = join(DATA_DIR, 'schedule.log');
-// Buffered async logger — coalesces per-line appends into batched writes.
-let _schedLogBuf = [];
-let _schedLogTimer = null;
-function _flushScheduleLog() {
-  _schedLogTimer = null;
-  if (_schedLogBuf.length === 0) return;
-  const lines = _schedLogBuf.join('');
-  _schedLogBuf = [];
-  _appendFile(SCHEDULE_LOG, lines, () => {});
-}
-function _flushSchedLogSync() {
-  if (_schedLogBuf.length === 0) return;
-  const lines = _schedLogBuf.join('');
-  _schedLogBuf = [];
-  try {
-    appendFileSync(SCHEDULE_LOG, lines);
-  } catch {}
-}
-process.on('exit', _flushSchedLogSync);
-// Note: do not install a module-level SIGTERM handler that calls
-// process.exit() here. The channels worker owns shutdown sequencing
-// (drain queues, persist baselines, release the scheduler lock, etc.)
-// and a library-level exit(0) preempts that drain. The `exit` listener
-// above still flushes pending log lines synchronously when the worker
-// finishes its own shutdown.
+// Do not install a module-level SIGTERM handler that calls process.exit()
+// here. The channels worker owns shutdown sequencing (drain queues, persist
+// baselines, release the scheduler lock, etc.) and a library-level exit(0)
+// preempts that drain. The buffered appender drains pending log lines on exit.
 function logSchedule(msg) {
+  msg = msg.replace(/\n$/, '');
   process.stderr.write(`mixdog scheduler: ${msg}\n`);
-  _schedLogBuf.push(`[${new Date().toISOString()}] ${msg}\n`);
-  if (!_schedLogTimer) _schedLogTimer = setTimeout(_flushScheduleLog, 2000);
+  appendBuffered(SCHEDULE_LOG, `[${new Date().toISOString()}] ${msg}\n`);
 }
 
-import { tryRead } from './settings.mjs';
 // node-cron is an optional runtime dep. If the module isn't installed
 // (e.g. a fresh v0.6.190 where node_modules predates the package.json
 // bump), cron expressions are disabled (cron stays null below) instead
@@ -67,6 +45,8 @@ try {
   );
 }
 const TICK_INTERVAL = 6e4;
+// setTimeout's delay ceiling (~24.8 days); longer waits re-arm instead of firing early.
+const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
 // All schedule `time` values must be valid 5- or 6-field cron expressions
 // (node-cron format). Legacy formats (HH:MM, everyNm, hourly, daily) are
 // no longer accepted — migrate to cron: "MM HH * * *", "*/N * * * *", etc.
@@ -127,6 +107,8 @@ class Scheduler {
   sendFn = null;
   injectReadyFn = null;
   pendingCheck = null;
+  // Injected by the host: (schedule, { prompt }) => Promise<{ result }>.
+  scheduleRunner = null;
   // Activity tracking
   lastActivity = 0;
   // timestamp of last inbound message
@@ -171,6 +153,9 @@ class Scheduler {
   }
   setPendingCheck(fn) {
     this.pendingCheck = typeof fn === 'function' ? fn : null;
+  }
+  setScheduleRunner(fn) {
+    this.scheduleRunner = typeof fn === 'function' ? fn : null;
   }
   noteActivity() {
     this.lastActivity = Date.now();
@@ -268,6 +253,7 @@ class Scheduler {
     const dow = now.getDay();
     return {
       hour: now.getHours(),
+      minute: now.getMinutes(),
       dayOfWeek: days[dow],
       isWeekend: dow === 0 || dow === 6,
     };
@@ -281,7 +267,7 @@ class Scheduler {
     const time = this.getTimeContext();
     const header = [
       `[schedule: ${name} | type: ${type} | session: ${state}]`,
-      `[time: ${time.dayOfWeek} ${String(time.hour).padStart(2, '0')}:${String(/* @__PURE__ */ new Date().getMinutes()).padStart(2, '0')} | weekend: ${time.isWeekend}]`,
+      `[time: ${time.dayOfWeek} ${String(time.hour).padStart(2, '0')}:${String(time.minute).padStart(2, '0')} | weekend: ${time.isWeekend}]`,
       `Before starting any work, briefly tell the user what you're about to do in one short sentence.`,
     ].join('\n');
     return `${header}
@@ -475,9 +461,8 @@ ${prompt}`;
       return;
     }
     const delay = fireAt - Date.now();
-    const MAX = 2 ** 31 - 1;
-    if (delay > MAX) {
-      const timer = setTimeout(() => this.armOneShot(schedule, type), MAX);
+    if (delay > MAX_TIMER_DELAY_MS) {
+      const timer = setTimeout(() => this.armOneShot(schedule, type), MAX_TIMER_DELAY_MS);
       this.oneShotTimers.set(schedule.name, timer);
       return;
     }
@@ -552,9 +537,7 @@ ${prompt}`;
     const until = this.skipUntil(schedule.name);
     const fireAt = new Date(schedule.whenAt).getTime();
     const target = Math.max(Number.isFinite(fireAt) ? fireAt : 0, until);
-    const MAX = 2 ** 31 - 1;
-    let delay = target - Date.now();
-    delay = delay > MAX ? MAX : Math.max(delay, 1);
+    const delay = Math.min(Math.max(target - Date.now(), 1), MAX_TIMER_DELAY_MS);
     logSchedule(`one-shot "${schedule.name}" deferred/skipped — re-arming for ${new Date(target).toISOString()}\n`);
     const timer = setTimeout(() => this.fireOneShot(schedule, type), delay);
     this.oneShotTimers.set(schedule.name, timer);
@@ -703,7 +686,10 @@ ${prompt}`;
    *  success; a failure rejects for awaitDispatch callers and resolves false
    *  (after a channel notice) for fire-and-forget cron fires. */
   dispatchScheduleRun(schedule, prompt, channelId, awaitDispatch) {
-    return runScheduleSession(schedule, { prompt })
+    const run = this.scheduleRunner
+      ? this.scheduleRunner(schedule, { prompt })
+      : Promise.reject(new Error('schedule runner not configured'));
+    return run
       .then(({ result }) => {
         this.running.delete(schedule.name);
         if (result && channelId && this.sendFn) {
@@ -720,8 +706,8 @@ ${prompt}`;
         // The cron fire-and-forget contract swallowed failures entirely;
         // surface them on the channel so a failed scheduled run is never
         // silent (one-shots propagate via the awaitDispatch throw instead).
-        if (!awaitDispatch) this.notifyFailure(schedule, `run failed: ${err.message}`);
         if (awaitDispatch) throw err;
+        this.notifyFailure(schedule, `run failed: ${err.message}`);
         return false;
       });
   }
@@ -744,9 +730,7 @@ ${prompt}`;
   resolvePrompt(schedule) {
     const ref = schedule.prompt ?? `${schedule.name}.md`;
     const fromFile = this.loadPrompt(ref);
-    if (fromFile) return fromFile;
-    if (schedule.prompt) return schedule.prompt;
-    return null;
+    return fromFile || schedule.prompt || null;
   }
   loadPrompt(nameOrPath) {
     const full = isAbsolute(nameOrPath) ? nameOrPath : join(this.promptsDir, nameOrPath);

@@ -105,7 +105,7 @@ The runtime absorbs what it can (one `a:pPr` per paragraph; package validation a
 | `charSpacing`, not `letterSpacing` | ignored silently |
 | Bullets: `bullet: true` on each item's first run, `breakLine: true` on every item but the last; `paraSpaceAfter`, not `lineSpacing`, between items | literal bullet characters and lineSpacing double the spacing |
 | `rectRadius` only on `roundRect`; other corners are their own presets | ignored silently |
-| Solid shape fills only; a gradient is a rasterized SVG image (`gradientField`) | gradient fill options are dropped |
+| Solid shape fills only; a gradient is drawn with the kit's `gradient()` (saved as a native `a:gradFill`; `gradientField` is its older name) | pptxgenjs gradient fill options are dropped |
 | `margin: 0` when text must align with a shape edge | boxes carry internal padding |
 | Stacked bar/column `dataLabelPosition` in `ctr`, `inEnd`, `inBase` | `outEnd` corrupts the file → runtime `chart_stacked_label_position` |
 | A secondary-axis combo needs `valAxes` and `catAxes` with two entries each | PowerPoint drops the chart → runtime `chart_axis_undeclared` |

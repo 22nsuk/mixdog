@@ -155,9 +155,9 @@ export function _queueSummaryIndexPrune(ids) {
 }
 
 // ── Incremental storage scan ────────────────────────────────────────────────
-// refreshFromStorage used to re-parse EVERY session JSON (full transcripts,
-// multi-MB files) on each desktop sidebar refresh. A summary only changes when
-// its file changes, so key a per-file row cache on (mtimeMs, size): unchanged
+// A refreshFromStorage that re-parsed EVERY session JSON (full transcripts,
+// multi-MB files) on each desktop sidebar refresh would be far too costly. A
+// summary only changes when its file changes, so key a per-file row cache on (mtimeMs, size): unchanged
 // files reuse the cached row, changed/new files re-parse, vanished files drop
 // out. Storage stays the truth source — the sidecar index is never trusted.
 const _summaryScanCache = new Map(); // filename → { mtimeMs, size, row|null }

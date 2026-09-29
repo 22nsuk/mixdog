@@ -3,19 +3,9 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
-import fs from 'node:fs';
 import { ensureDataDir, getRequestTimeoutMs, loadConfig } from './lib/config.mjs';
 import { normalizeErrorMessage } from '../agent/orchestrator/tools/builtin/path-diagnostics.mjs';
 import { presentErrorText } from '../shared/err-text.mjs';
-
-function readPluginVersion() {
-  try {
-    return JSON.parse(fs.readFileSync(new URL('../../../package.json', import.meta.url), 'utf8')).version || '0.0.1';
-  } catch {
-    return '0.0.1';
-  }
-}
-const PLUGIN_VERSION = readPluginVersion();
 import {
   buildCacheKey,
   buildCacheMeta,
@@ -28,6 +18,9 @@ import { flushUsageState, loadUsageState, updateProviderState } from './lib/stat
 import { closeScrapeBrowserPool, getScrapeCapabilities, scrapeUrls } from './lib/web-tools.mjs';
 import { fetchLoopbackText, fetchPublicImage } from './lib/http-fetch.mjs';
 import { applyFetchPagination, formatResponse } from './lib/formatter.mjs';
+import { PACKAGE_VERSION } from './lib/package-version.mjs';
+import { TOOL_DEFS as toolDefinitions } from './tool-defs.mjs';
+
 ensureDataDir();
 
 const webSearchArgsSchema = z.object({
@@ -172,9 +165,7 @@ function getWebSearchCacheTtlMs(type = 'web') {
   }
 }
 
-function getScrapeCacheTtlMs() {
-  return 60 * 60 * 1000;
-}
+const SCRAPE_CACHE_TTL_MS = 60 * 60 * 1000;
 
 function normalizeCacheUrl(url) {
   try {
@@ -458,7 +449,7 @@ async function _fetchCore(args, { usageState, cacheState, timeoutMs, signal }) {
         };
       }
       const payload = { tool: 'web_fetch', ...page };
-      const cachedEntry = setCachedEntry(cacheState, fetchCacheKey, payload, getScrapeCacheTtlMs());
+      const cachedEntry = setCachedEntry(cacheState, fetchCacheKey, payload, SCRAPE_CACHE_TTL_MS);
       return {
         index: index + 1,
         status: 'success',
@@ -499,14 +490,12 @@ async function _fetchCore(args, { usageState, cacheState, timeoutMs, signal }) {
 
 // Web search is supplied by the runtime through the configured native search
 // route. The module owns argument validation, caching, fan-out, and formatting.
-import { TOOL_DEFS as toolDefinitions } from './tool-defs.mjs';
-
 const WEB_SEARCH_INSTRUCTIONS = '';
 
 const server = new Server(
   {
     name: 'mixdog-web',
-    version: PLUGIN_VERSION,
+    version: PACKAGE_VERSION,
   },
   {
     capabilities: {

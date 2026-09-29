@@ -4,9 +4,17 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { createLeadWorkerIndex } from '../../../../standalone/agent-tool/lead-worker-index.mjs';
-import { createTagRegistry } from '../../../../standalone/agent-tool/tag-registry.mjs';
+import { flushAllIndexWritesSync } from '../../../../session-runtime/services/agent-tool/index-write-queue.mjs';
+import { createLeadWorkerIndex } from '../../../../session-runtime/services/agent-tool/lead-worker-index.mjs';
+import { createTagRegistry } from '../../../../session-runtime/services/agent-tool/tag-registry.mjs';
 import { listStoredAgentWorkers } from './store-summary-reader.mjs';
+
+// The worker/Lead indexes persist through an async writer queue; a test that
+// inspects the file itself first waits for the queue to land.
+function readPersistedIndex(root, name) {
+  flushAllIndexWritesSync();
+  return JSON.parse(readFileSync(join(root, name), 'utf8'));
+}
 
 test('cached pool metadata preserves routing and display fields without depending on tool catalogs', () => {
   const root = mkdtempSync(join(tmpdir(), 'mixdog-worker-header-'));
@@ -364,7 +372,7 @@ test('child terminal leases persist provider deadlines across registry recreatio
       });
       assert.equal(registry.scheduleReap(session.id), true);
     }
-    let stored = JSON.parse(readFileSync(join(root, 'agent-workers.json'), 'utf8'));
+    let stored = readPersistedIndex(root, 'agent-workers.json');
     const rows = Object.values(stored.workers);
     const openaiDeadline = Date.parse(rows.find((row) => row.sessionId === 'openai-child').reapAt);
     const anthropicDeadline = Date.parse(rows.find((row) => row.sessionId === 'anthropic-child').reapAt);
@@ -381,7 +389,7 @@ test('child terminal leases persist provider deadlines across registry recreatio
       mgr: manager,
       emitSubagentEvent: () => {},
     });
-    stored = JSON.parse(readFileSync(join(root, 'agent-workers.json'), 'utf8'));
+    stored = readPersistedIndex(root, 'agent-workers.json');
     const restartedRows = Object.values(stored.workers);
     assert.equal(
       restartedRows.find((row) => row.sessionId === 'openai-child').reapAt,
@@ -438,7 +446,7 @@ test('child boot recovery reaps expired legacy idle rows and preserves remaining
       mgr: { getSession: () => null, listSessions: () => [] },
       emitSubagentEvent: () => {},
     });
-    const stored = JSON.parse(readFileSync(join(root, 'agent-workers.json'), 'utf8'));
+    const stored = readPersistedIndex(root, 'agent-workers.json');
     const rows = Object.values(stored.workers);
     assert.equal(
       rows.some((row) => row.sessionId === 'expired-child'),
@@ -495,17 +503,17 @@ test('Lead lifecycle uses only lead-workers.json and removes the idle lease on r
       false
     );
     assert.equal(existsSync(join(root, 'agent-workers.json')), false);
-    let stored = JSON.parse(readFileSync(join(root, 'lead-workers.json'), 'utf8'));
+    let stored = readPersistedIndex(root, 'lead-workers.json');
     assert.equal(stored.workers['lead-runtime'].status, 'running');
     assert.equal(stored.workers['worker-runtime'], undefined);
 
     assert.equal(index.upsertLeadSession(lead, { status: 'idle', stage: 'idle' }), true);
-    stored = JSON.parse(readFileSync(join(root, 'lead-workers.json'), 'utf8'));
+    stored = readPersistedIndex(root, 'lead-workers.json');
     assert.equal(stored.workers['lead-runtime'].status, 'idle');
     assert.ok(Date.parse(stored.workers['lead-runtime'].reapAt) > Date.now());
 
     assert.equal(index.removeLeadWorkerRow('lead-runtime'), true);
-    stored = JSON.parse(readFileSync(join(root, 'lead-workers.json'), 'utf8'));
+    stored = readPersistedIndex(root, 'lead-workers.json');
     assert.deepEqual(stored.workers, {});
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -552,7 +560,7 @@ test('Lead boot recovery settles a running row whose runtime died, and keeps a l
       cfgMod: { loadConfig: () => ({}) },
       workerRowFromSession: (session, tag, extra) => ({ tag, sessionId: session.id, ...extra }),
     });
-    const stored = JSON.parse(readFileSync(join(root, 'lead-workers.json'), 'utf8'));
+    const stored = readPersistedIndex(root, 'lead-workers.json');
     assert.equal(stored.workers.crashed.status, 'idle');
     assert.equal(stored.workers.crashed.stage, 'idle');
     assert.equal(stored.workers.crashed.turnStartedAt, null);
@@ -751,7 +759,7 @@ test('cancel that removes the worker row does not publish the session as running
     });
     writeFreshHeartbeat(root, 'child-forget');
 
-    const stored = JSON.parse(readFileSync(join(root, 'agent-workers.json'), 'utf8'));
+    const stored = readPersistedIndex(root, 'agent-workers.json');
     const remaining = Array.isArray(stored.workers) ? stored.workers : Object.values(stored.workers || {});
     assert.equal(remaining.filter((row) => row?.sessionId === 'child-forget').length, 0);
 

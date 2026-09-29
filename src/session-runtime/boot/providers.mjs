@@ -1,17 +1,17 @@
 // Boot stage 6: config lifecycle (reload/save/adopt), native web search,
 // provider usage/setup caches, provider model catalogs and quick model rows.
 import { setConfiguredShell } from '../../runtime/agent/orchestrator/tools/builtin/shell-runtime.mjs';
-import { providerSetup } from '../../standalone/provider-admin.mjs';
-import { createUsageDashboard } from '../../standalone/usage-dashboard.mjs';
+import { providerSetup } from '../services/provider-admin.mjs';
+import { createUsageDashboard } from '../services/usage-dashboard.mjs';
 import {
   consumeOpenAICodexResetCredit,
   fetchOAuthUsageSnapshot,
 } from '../../runtime/agent/orchestrator/providers/oauth-usage.mjs';
 import { LOCAL_PROVIDER_ID, configureLocalProviderIdleTtl } from '../../runtime/local-provider/managed-runtime.mjs';
 import { resolve } from 'node:path';
-import { clean } from '../session-text.mjs';
-import { LAZY_SECRET_PROVIDERS } from '../model-capabilities.mjs';
-import { ensureProviderEnabled, normalizeSystemShellConfig } from '../config-helpers.mjs';
+import { clean } from '../../runtime/agent/orchestrator/runtime-core/session-text.mjs';
+import { LAZY_SECRET_PROVIDERS } from '../../runtime/agent/orchestrator/runtime-core/model-capabilities.mjs';
+import { ensureProviderEnabled, normalizeSystemShellConfig } from '../../runtime/agent/orchestrator/runtime-core/config-helpers.mjs';
 import {
   workflowPresetId,
   normalizeWebSearchProviderId,
@@ -20,7 +20,7 @@ import {
   normalizeWebSearchRouteConfig,
   normalizeWorkflowRoute,
   upsertWorkflowPreset,
-} from '../workflow.mjs';
+} from '../../runtime/agent/orchestrator/runtime-core/workflow.mjs';
 import {
   sortProviderModels as sortProviderModelsRaw,
   providerModelCacheRow as providerModelCacheRowRaw,

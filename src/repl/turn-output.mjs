@@ -3,12 +3,12 @@
  * markdown re-render of the streamed block (TTY only, text-only turns) and the
  * per-turn statusline footer.
  */
-import { colorEnabled } from '../ui/ansi.mjs';
+import { colorEnabled } from '../runtime/shared/statusline/ansi.mjs';
 import { buildStreamFinalPatch } from '../ui/stream-finalize.mjs';
 import { eraseStreamedBlock } from './stream-sink.mjs';
 
 /**
- * Approach (a): clear the raw streamed block and re-print as markdown. Only
+ * Clear the raw streamed block and re-print as markdown. Only
  * when we're on a TTY and actually streamed something — otherwise the raw text
  * already on screen is fine (and we must not emit cursor escapes into a pipe).
  */

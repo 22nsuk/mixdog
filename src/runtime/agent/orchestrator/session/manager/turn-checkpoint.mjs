@@ -113,16 +113,12 @@ export function createTurnCheckpointRecorder({ sessionId, generation, turnToken,
     stop() {
       if (stopped) return;
       stopped = true;
-      cancelPendingTurnCheckpoint(sessionId);
+      // Retire queued (not yet written) appends. The durable prefix stays on
+      // disk on purpose: between turn commit and clearTurnCheckpoint a crash
+      // must still recover the turn's work, not just its opening header.
+      cancelJournalWrites(sessionId);
     },
   };
-}
-
-/** Retire queued (not yet written) journal appends for a session. The durable
- * prefix stays on disk on purpose: between turn commit and clearTurnCheckpoint
- * a crash must still recover the turn's work, not just its opening header. */
-function cancelPendingTurnCheckpoint(sessionId) {
-  cancelJournalWrites(sessionId);
 }
 
 export function readTurnCheckpoint(sessionId) {
@@ -141,7 +137,7 @@ export function clearTurnCheckpoint(sessionId, turnToken = null) {
   // turn's checkpoint; retire them BEFORE the token guard reads disk so a
   // lagging write can never resurrect state after the unlink.
   if (!turnToken) {
-    cancelPendingTurnCheckpoint(sessionId);
+    cancelJournalWrites(sessionId);
     let removed = true;
     try {
       unlinkSync(target);
@@ -158,7 +154,7 @@ export function clearTurnCheckpoint(sessionId, turnToken = null) {
   // A token guard prevents an older turn's late terminal save from
   // deleting the checkpoint already created by its queued follow-up.
   if (current.header?.turnToken && current.header.turnToken !== turnToken) return false;
-  cancelPendingTurnCheckpoint(sessionId);
+  cancelJournalWrites(sessionId);
   let removed = true;
   try {
     unlinkSync(target);

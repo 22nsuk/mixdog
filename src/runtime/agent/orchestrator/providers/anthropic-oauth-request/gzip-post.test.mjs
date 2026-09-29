@@ -3,6 +3,9 @@ import test from 'node:test';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { postMessages } from './gzip-post.mjs';
 
+// The live CLI-version lookup also uses fetch; keep it out of the call counts.
+process.env.MIXDOG_DISABLE_LIVE_CLI_VERSIONS = '1';
+
 function withFetch(responder, run) {
   const original = globalThis.fetch;
   const calls = [];

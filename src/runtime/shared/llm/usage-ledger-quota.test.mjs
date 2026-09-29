@@ -106,9 +106,28 @@ test('the open window splits each rise over the requests behind it and forecasts
   );
   assert.equal(history.points[0][0], opened, 'the path opens at zero when the window opened');
   const listed = await ledger.quotaWindowsAsync({ now: at(3, 48) });
-  assert.deepEqual(listed.windows.map((row) => row.current), [true]);
+  assert.deepEqual(
+    listed.windows.map((row) => row.current),
+    [true]
+  );
   assert.equal(listed.windows[0].peak, 40);
   assert.equal(listed.windows[0].tokens, history.totals.tokens, 'a listed window adds up what its own view does');
+});
+
+test('records made before accounts were recorded belong to the account in use when recording began', async (t) => {
+  const ledger = store(t);
+  ledger.record([
+    // Written before records named an account.
+    request(at(0, 10), 'model-a', { account: '' }),
+    request(at(0, 20), 'model-a'),
+    request(at(0, 40), 'model-b', { account: 'work' }),
+  ]);
+  ledger.recordQuota([reading(at(0, 50), 10), reading(at(0, 50), 10, { account: 'work' })]);
+  const first = await ledger.quotaHistoryAsync({ now: at(1), account: 'default' });
+  assert.equal(first.totals.turns, 2, 'the first account named keeps the older records');
+  const other = await ledger.quotaHistoryAsync({ now: at(1), account: 'work' });
+  assert.deepEqual(byModel(other), { 'model-b': 10 }, 'another account never counts them');
+  assert.equal(other.totals.turns, 1);
 });
 
 test('windows reset, page and add up over a period', async (t) => {
@@ -177,7 +196,14 @@ test('the window history pages newest first, each page reading its own windows',
 test('an idle meter stays one row, and the subscription whose meter moved opens first', async (t) => {
   const ledger = store(t);
   // An idle window reads 0 % against a reset that moves with the clock.
-  const idle = (ts) => ({ provider: 'openai-oauth', account: 'default', label: '5H', ts, usedPct: 0, resetAt: ts + 5 * HOUR });
+  const idle = (ts) => ({
+    provider: 'openai-oauth',
+    account: 'default',
+    label: '5H',
+    ts,
+    usedPct: 0,
+    resetAt: ts + 5 * HOUR,
+  });
   ledger.recordQuota([idle(at(0))]);
   ledger.recordQuota([reading(at(0, 30), 10)]);
   ledger.recordQuota([idle(at(1))]);
@@ -203,7 +229,9 @@ test('a subscription opens on its weekly window unless another was asked for', a
 test('a monthly window opens one calendar month before its reset', async (t) => {
   const ledger = store(t);
   const reset = new Date(2026, 9, 15).getTime();
-  ledger.recordQuota([{ provider: 'opencode-go', account: 'default', label: 'M', ts: at(0), usedPct: 12, resetAt: reset }]);
+  ledger.recordQuota([
+    { provider: 'opencode-go', account: 'default', label: 'M', ts: at(0), usedPct: 12, resetAt: reset },
+  ]);
   const history = await ledger.quotaHistoryAsync({ now: at(1) });
   assert.equal(history.period.fromMs, new Date(2026, 8, 15).getTime());
   assert.equal(history.focus.paced, true);
@@ -235,7 +263,10 @@ test('the statistics API names accounts and pages by view', async (t) => {
   });
   const history = await api.getQuotaHistory({});
   assert.equal(history.subscriptions[0].accountLabel, 'Personal');
-  assert.deepEqual(history.models.map((row) => [row.model, row.consumed]), [['model-a', 10]]);
+  assert.deepEqual(
+    history.models.map((row) => [row.model, row.consumed]),
+    [['model-a', 10]]
+  );
   const week = await api.getQuotaHistory({ view: '7d' });
   assert.equal(week.period.view, '7d');
   assert.equal(week.period.days, 7);

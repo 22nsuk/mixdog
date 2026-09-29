@@ -1,3 +1,4 @@
+import { markScopedCacheIncomplete } from '../../../session/cache/scoped-cache-outcome.mjs';
 import { canonicalizeGlobSlashes } from '../path-utils.mjs';
 import { relativePathPrefix } from '../search-path-diagnostics.mjs';
 import { normalizeGrepLine, splitGrepCountPrefix, splitGrepLinePrefix } from '../grep-formatting.mjs';
@@ -44,6 +45,42 @@ export function stringList(value) {
 export function resolveHeadLimit(coerced, defaultLimit) {
   if (coerced === null) return defaultLimit;
   return coerced === 0 ? Infinity : coerced;
+}
+
+// Validates the shared head_limit/offset window arguments. `error` is the
+// tool-error text; otherwise the resolved limit (Infinity = unlimited), the
+// coerced limit as given (null when absent, 0 when explicitly unlimited) and
+// the offset.
+export function resolveSearchWindow(args, defaultHeadLimit) {
+  const headLimitCoerced = coerceNonNegInt(args.head_limit);
+  if (Number.isNaN(headLimitCoerced)) {
+    return {
+      error: `Error: invalid limit ${JSON.stringify(args.head_limit)}; expected a non-negative integer (0 = unlimited)`,
+    };
+  }
+  const offsetCoerced = coerceNonNegInt(args.offset);
+  if (Number.isNaN(offsetCoerced)) {
+    return { error: `Error: invalid offset ${JSON.stringify(args.offset)}; expected a non-negative integer` };
+  }
+  return {
+    headLimit: resolveHeadLimit(headLimitCoerced, defaultHeadLimit),
+    headLimitCoerced,
+    offset: offsetCoerced || 0,
+  };
+}
+
+// A pattern list capped at `cap`. Dropping input patterns means the result
+// cannot cover the requested set — never cache it as complete, and key the
+// cache on the original count (`total`) so a capped request never collides
+// with an exact N-pattern one.
+export function capPatternList(requested, cap, options) {
+  if (requested.length <= cap) return { patterns: requested, note: '', total: 0 };
+  if (options?.scopedCacheOutcome) markScopedCacheIncomplete(options.scopedCacheOutcome);
+  return {
+    patterns: requested.slice(0, cap),
+    note: `[capped at ${cap} of ${requested.length} patterns]\n`,
+    total: requested.length,
+  };
 }
 
 export function globMtimeTiePath(entry) {

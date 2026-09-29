@@ -133,23 +133,27 @@ async function loadProviderExport(cacheKey, spec, exportName, signal = null) {
   return value;
 }
 
+// Provider name -> [module, exported constructor] for the dedicated providers;
+// every other preset name is served by the shared OpenAI-compat constructor.
+const PROVIDER_MODULES = {
+  anthropic: ['./anthropic.mjs', 'AnthropicProvider'],
+  gemini: ['./gemini.mjs', 'GeminiProvider'],
+  'openai-oauth': ['./openai-oauth.mjs', 'OpenAIOAuthProvider'],
+  'anthropic-oauth': ['./anthropic-oauth.mjs', 'AnthropicOAuthProvider'],
+  'grok-oauth': ['./grok-oauth.mjs', 'GrokOAuthProvider'],
+  'cursor-oauth': ['./cursor.mjs', 'CursorOAuthProvider'],
+  'antigravity-oauth': ['./antigravity-oauth.mjs', 'AntigravityOAuthProvider'],
+  'cursor-api': ['./cursor.mjs', 'CursorApiProvider'],
+  openai: ['./openai-ws.mjs', 'OpenAIDirectProvider'],
+  'mixdog-local': ['./mixdog-local.mjs', 'MixdogLocalProvider'],
+  'opencode-go': ['./opencode-go.mjs', 'OpenCodeGoProvider'],
+};
+
 async function loadProviderCtor(name, signal = null) {
-  if (name === 'anthropic') return loadProviderExport('anthropic', './anthropic.mjs', 'AnthropicProvider', signal);
-  if (name === 'gemini') return loadProviderExport('gemini', './gemini.mjs', 'GeminiProvider', signal);
-  if (name === 'openai-oauth')
-    return loadProviderExport('openai-oauth', './openai-oauth.mjs', 'OpenAIOAuthProvider', signal);
-  if (name === 'anthropic-oauth')
-    return loadProviderExport('anthropic-oauth', './anthropic-oauth.mjs', 'AnthropicOAuthProvider', signal);
-  if (name === 'grok-oauth') return loadProviderExport('grok-oauth', './grok-oauth.mjs', 'GrokOAuthProvider', signal);
-  if (name === 'cursor-oauth') return loadProviderExport('cursor-oauth', './cursor.mjs', 'CursorOAuthProvider', signal);
-  if (name === 'antigravity-oauth')
-    return loadProviderExport('antigravity-oauth', './antigravity-oauth.mjs', 'AntigravityOAuthProvider', signal);
-  if (name === 'cursor-api') return loadProviderExport('cursor-api', './cursor.mjs', 'CursorApiProvider', signal);
-  if (name === 'openai') return loadProviderExport('openai', './openai-ws.mjs', 'OpenAIDirectProvider', signal);
-  if (name === 'mixdog-local')
-    return loadProviderExport('mixdog-local', './mixdog-local.mjs', 'MixdogLocalProvider', signal);
-  if (name === 'opencode-go')
-    return loadProviderExport('opencode-go', './opencode-go.mjs', 'OpenCodeGoProvider', signal);
+  if (Object.hasOwn(PROVIDER_MODULES, name)) {
+    const [spec, exportName] = PROVIDER_MODULES[name];
+    return loadProviderExport(name, spec, exportName, signal);
+  }
   if (Object.hasOwn(OPENAI_COMPAT_PRESETS, name)) {
     return loadProviderExport('openai-compat', './openai-compat.mjs', 'OpenAICompatProvider', signal);
   }

@@ -175,33 +175,6 @@ export function sessionLoadCacheStats() {
 // on genuine corruption instead of spinning.
 const SESSION_LOAD_STABLE_ATTEMPTS = 5;
 
-// Deterministic fault injection point (tests only): invoked immediately
-// before every stat and every read with { phase, path, attempt }. The hook
-// may mutate the file system (simulating an atomic rename landing between
-// the two syscalls) or return an Error to make that syscall fail.
-//
-// STRUCTURAL GATE: the seam is inert unless the process was started in
-// explicit fault-injection test mode. Installing a hook without the gate is
-// a no-op (returns false), and an already-installed hook is dropped the
-// moment the gate stops being set, so a production build can never activate
-// it accidentally — not via a stray import, not via a leaked reference.
-const SESSION_LOAD_FAULT_ENV = 'MIXDOG_SESSION_LOAD_FAULT_HOOKS';
-let _sessionLoadFaultHook = null;
-
-function _faultHooksEnabled() {
-  return process.env[SESSION_LOAD_FAULT_ENV] === '1';
-}
-
-function _fault(phase, path, attempt) {
-  if (!_sessionLoadFaultHook) return;
-  if (!_faultHooksEnabled()) {
-    _sessionLoadFaultHook = null; // gate revoked after install: stay inert
-    return;
-  }
-  const injected = _sessionLoadFaultHook({ phase, path, attempt });
-  if (injected instanceof Error) throw injected;
-}
-
 // Only these mean "nothing is at this path right now". Everything else
 // (EACCES, EPERM, EIO, EBUSY, EMFILE, ELOOP, unknown) means a file is very
 // likely THERE and we simply cannot look at it: that must never be reported
@@ -211,9 +184,8 @@ const ABSENT_CODES = new Set(['ENOENT', 'ENOTDIR']);
 
 // Observation states: 'present' (signature valid), 'absent' (ENOENT-class),
 // 'unreadable' (persistent/transient failure — fail closed).
-function _observe(path, attempt) {
+function _observe(path) {
   try {
-    _fault('stat', path, attempt);
     const info = statSync(path, { bigint: true });
     return {
       state: 'present',
@@ -314,13 +286,12 @@ function _releaseDocument(entry) {
 // from the observation alone — reporting {exists:true, session:null} for a
 // perfectly readable replacement is the same false corruption the retry loop
 // exists to avoid. Uncached: no identity was verified around this read.
-function _decisiveReplacementSnapshot(id, path, attempt) {
-  const observed = _observe(path, attempt);
+function _decisiveReplacementSnapshot(id, path) {
+  const observed = _observe(path);
   if (observed.state === 'absent') return { exists: false, session: null };
   if (observed.state !== 'present') return { exists: true, session: null };
   let text = null;
   try {
-    _fault('read', path, attempt);
     text = readFileSync(path, 'utf-8');
   } catch (err) {
     const code = err?.code || 'EUNKNOWN';
@@ -338,7 +309,7 @@ export function _readStoredSessionCached(id, path, { preferInMemory = null } = {
     // parsed (if its bytes are readable and ours) or reported as
     // present-but-invalid, never as absence.
     const isFinal = attempt === SESSION_LOAD_STABLE_ATTEMPTS - 1;
-    const before = _observe(path, attempt);
+    const before = _observe(path);
     last = before;
     if (before.state !== 'present') {
       // Absent: possibly the unlink → rename hole, retry.
@@ -386,7 +357,6 @@ export function _readStoredSessionCached(id, path, { preferInMemory = null } = {
     let text = null;
     let readCode = null;
     try {
-      _fault('read', path, attempt);
       text = readFileSync(path, 'utf-8');
     } catch (err) {
       readCode = err?.code || 'EUNKNOWN';
@@ -405,10 +375,10 @@ export function _readStoredSessionCached(id, path, { preferInMemory = null } = {
       last = { state: 'absent', signature: null, code: readCode };
       // On the last boundary there is no retry left: read the
       // replacement rather than classify it from a bare stat.
-      if (isFinal) return _decisiveReplacementSnapshot(id, path, attempt);
+      if (isFinal) return _decisiveReplacementSnapshot(id, path);
       continue;
     }
-    const after = _observe(path, attempt);
+    const after = _observe(path);
     if (after.state !== 'present' || after.signature !== before.signature) {
       // A rename landed around the read — these bytes may belong to a
       // different inode than `before`, so they must never be cached

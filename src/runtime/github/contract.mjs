@@ -1,4 +1,6 @@
 // One allowlist for the desktop, agent schema, and mutation classifier.
+export const DEFAULT_GITHUB_HOSTNAME = 'github.com';
+
 export const GITHUB_ACTIONS = Object.freeze({
   'repo.list': { fields: ['owner', 'page', 'limit'], list: true },
   'repo.view': { fields: [] },
@@ -171,7 +173,7 @@ export function validateGithubRequest(input) {
   for (const key of ['base', 'head', 'ref', 'tag', 'target', 'workflow']) {
     if (out[key] !== undefined) {
       githubText(out[key], key, 512);
-      if (/^[-]|[\r\n]/.test(out[key])) throw new TypeError(`Invalid ${key}.`);
+      if (/^-|[\r\n]/.test(out[key])) throw new TypeError(`Invalid ${key}.`);
     }
   }
   if (out.inputs !== undefined) {

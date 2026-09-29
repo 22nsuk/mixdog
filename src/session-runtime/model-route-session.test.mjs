@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createModelRouteApi } from './model-route-api.mjs';
-import { createContextStatus } from './context-status.mjs';
+import { createContextStatus } from '../runtime/agent/orchestrator/runtime-core/context-status.mjs';
 import { createRuntimeFacade } from './runtime-facade.mjs';
 import { createContextState } from '../tui/session/context-state.mjs';
 import { SUMMARY_PREFIX } from '../runtime/agent/orchestrator/session/compact.mjs';

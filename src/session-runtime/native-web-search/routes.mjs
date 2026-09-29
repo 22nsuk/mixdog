@@ -3,7 +3,7 @@
  * configured web-search route, or the Main model when the route is the
  * follow-Main default.
  */
-import { webSearchRouteOrDefault } from '../workflow.mjs';
+import { webSearchRouteOrDefault } from '../../runtime/agent/orchestrator/runtime-core/workflow.mjs';
 
 export function createWebSearchRouteCandidates({
   getRoute,

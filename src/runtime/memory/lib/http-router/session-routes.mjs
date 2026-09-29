@@ -34,7 +34,7 @@ const SCOPED_CORE_ROWS = `SELECT id, summary FROM core_entries WHERE project_id 
 export function createSessionRoutes({ getDb, log }) {
   async function buildSessionCoreMemoryPayload(cwd) {
     const db = getDb();
-    const projectId = resolveProjectScope(typeof cwd === 'string' && cwd ? cwd : null);
+    const projectId = resolveProjectScope(cwd);
     const commonRows = (await db.query(ACTIVE_CORE_ROWS)).rows;
     const scopedRows = projectId !== null ? (await db.query(SCOPED_CORE_ROWS, [projectId])).rows : [];
     return {

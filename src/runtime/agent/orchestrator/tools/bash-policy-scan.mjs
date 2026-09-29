@@ -1,6 +1,6 @@
 import { stripQuotedAndHeredoc, extractShellCInner } from './destructive-warning.mjs';
 import { decodePowerShellEncodedCommand } from './shell-policy.mjs';
-import { extractPowerShellCommandInner } from './shell-command.mjs';
+import { extractPowerShellCommandInner } from './shell-powershell.mjs';
 import { evaluateExecPolicyFromTargets, formatExecPolicyBlockMessage } from './shell-exec-policy.mjs';
 
 function _decodeAnsiCQuotes(s) {
@@ -24,8 +24,7 @@ function _extractSubstitutionBodies(s) {
   if (typeof s !== 'string') return [];
   const out = [];
   const re = /\$\(([^()]*(?:\([^()]*\)[^()]*)*)\)|`([^`]*)`/g;
-  let m;
-  while ((m = re.exec(s)) !== null) {
+  for (const m of s.matchAll(re)) {
     const body = m[1] != null ? m[1] : m[2];
     if (body?.trim()) out.push(body);
   }

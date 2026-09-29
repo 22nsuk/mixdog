@@ -6,7 +6,7 @@ import test from 'node:test';
 
 import { createMcpGlue } from './mcp-glue.mjs';
 import { createResourceApi } from './resource-api.mjs';
-import { mergeMcpServerConfig, readProjectMcpServerConfig, saveProjectMcpServer } from './plugin-mcp.mjs';
+import { mergeMcpServerConfig, readProjectMcpServerConfig, saveProjectMcpServer } from '../runtime/agent/orchestrator/runtime-core/plugin-mcp.mjs';
 
 test('project MCP edits preserve document shape and unknown fields', () => {
   const cwd = mkdtempSync(join(tmpdir(), 'mixdog-mcp-standard-'));

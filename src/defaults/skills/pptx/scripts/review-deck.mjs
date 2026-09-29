@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, open, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, open, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { dirname, extname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -140,9 +140,18 @@ export async function runReview({ input, output, provider, model, effort = 'high
   const target = resolve(output);
   await mkdir(dirname(target), { recursive: true });
   const directory = await mkdtemp(join(dirname(target), 'review-input-'));
-  const { packet, files } = await preparePacket(input, directory);
-  const { runHeadlessExec } = execute ? {} : await import('../../../../headless-exec.mjs');
-  const reportFile = await open(target, 'wx');
+  let packet;
+  let files;
+  let runHeadlessExec;
+  let reportFile;
+  try {
+    ({ packet, files } = await preparePacket(input, directory));
+    ({ runHeadlessExec } = execute ? {} : await import('../../../../headless-exec.mjs'));
+    reportFile = await open(target, 'wx');
+  } catch (error) {
+    await rm(directory, { recursive: true, force: true });
+    throw error;
+  }
   let raw = '';
   const errors = [];
   const result = {

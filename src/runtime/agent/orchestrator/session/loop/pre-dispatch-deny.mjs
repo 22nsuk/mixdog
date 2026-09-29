@@ -90,10 +90,9 @@ export function routeWebFetchCall(call) {
 }
 
 /**
- * Exported for smoke tests — same runtime deny as the agent loop. `_toolKind`
- * is accepted for caller compatibility; the rules do not depend on it.
+ * Exported for smoke tests — same runtime deny as the agent loop.
  */
-export function preDispatchDenyForSession(sessionRef, call, _toolKind) {
+export function preDispatchDenyForSession(sessionRef, call) {
   const name = call?.name;
   if (typeof name !== 'string' || !name) return null;
   const schemaName = String(call?.schemaName || name);

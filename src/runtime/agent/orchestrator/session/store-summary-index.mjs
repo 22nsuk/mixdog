@@ -5,14 +5,26 @@
  * file. store.mjs re-exports these so
  * importers stay unchanged.
  */
-import { join } from 'node:path';
+import { appendFileSync, mkdirSync, truncateSync } from 'node:fs';
+import { appendFile, mkdir, readdir, readFile, stat, truncate, unlink } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { getPluginData } from '../config.mjs';
-import { updateJsonAtomicSync, updateJsonAtomic, writeJsonAtomicSync } from '../../../shared/atomic-file.mjs';
+import {
+  withFileLock,
+  withFileLockSync,
+  writeJsonAtomicAsync,
+  writeJsonAtomicSync,
+} from '../../../shared/atomic-file.mjs';
+import {
+  applySummaryLogText,
+  encodeSummaryOps,
+  summaryLogPath,
+} from './store-summary-log.mjs';
 import {
   cleanSessionPreview,
   isSessionPreviewNoise,
   sessionMessageText,
-} from '../../../../session-runtime/session-text.mjs';
+} from '../runtime-core/session-text.mjs';
 import { sessionVisibility } from './store-summary-visibility.mjs';
 import { isStoredSessionId, positiveNumber as _positiveNumber } from './store-summary-fields.mjs';
 
@@ -257,15 +269,25 @@ export function _writeSummaryIndex(rows) {
     .map(_normalizeSummaryRow)
     .filter(Boolean)
     .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
-  writeJsonAtomicSync(
-    summaryIndexPath(),
-    {
-      version: SESSION_SUMMARY_INDEX_VERSION,
-      updatedAt: Date.now(),
-      rows: cleanRows,
-    },
-    { compact: true, lock: true }
-  );
+  // A full rewrite is authoritative: the delta log is emptied under the same
+  // lock, or its older ops would replay over the fresh base.
+  const path = summaryIndexPath();
+  withFileLockSync(`${path}.lock`, () => {
+    writeJsonAtomicSync(
+      path,
+      {
+        version: SESSION_SUMMARY_INDEX_VERSION,
+        updatedAt: Date.now(),
+        rows: cleanRows,
+      },
+      { compact: true, lock: false }
+    );
+    try {
+      truncateSync(summaryLogPath(path), 0);
+    } catch {
+      /* no log yet */
+    }
+  });
   return cleanRows;
 }
 
@@ -282,6 +304,8 @@ export function _writeSummaryIndex(rows) {
 // caller's thread never blocks on this lock at all.
 const SUMMARY_LOCK_TIMEOUT_MS = 0; // try-lock: acquire-or-fail, never wait
 const SUMMARY_RETRY_DELAY_MS = 1000;
+// Delta-log size that triggers folding it into the base (see store-summary-log.mjs).
+const SUMMARY_LOG_COMPACT_BYTES = 1024 * 1024;
 const _pendingUpserts = new Map(); // id → summary row (latest wins)
 const _pendingRemovals = new Set(); // ids to drop (upsert/removal are mutually exclusive per id)
 let _summaryRetryTimer = null;
@@ -325,8 +349,7 @@ function _scheduleSummaryRetry() {
   if (_summarySettleWaiters.size === 0) _summaryRetryTimer.unref?.();
 }
 
-// Defer the flush off the caller's stack: the 1MB+ parse/stringify inside
-// updateJsonAtomicSync (~10ms on a warm cache) has no business on the
+// Defer the flush off the caller's stack: file I/O has no business on the
 // keystroke/session-save path.
 function _scheduleSummaryFlush() {
   if (_summaryFlushScheduled) return;
@@ -347,33 +370,13 @@ export function _flushPendingSummaryOps({ sync = false } = {}) {
   const removals = new Set(_pendingRemovals);
   _pendingUpserts.clear();
   _pendingRemovals.clear();
-  const mutate = (cur) => {
-    const index = _normalizeSummaryIndex(cur);
-    const existingById = new Map(index.rows.map((row) => [row.id, row]));
-    let changed = false;
-    const rows = index.rows.filter((r) => {
-      if (removals.has(r.id) || upserts.has(r.id)) {
-        changed = true;
-        return false;
-      }
-      return true;
-    });
-    for (const row of upserts.values()) {
-      const cleanRow = _normalizeSummaryRow(row);
-      if (!cleanRow) continue;
-      const existing = existingById.get(cleanRow.id) || null;
-      if (existing && JSON.stringify(existing) === JSON.stringify(cleanRow)) {
-        rows.push(existing);
-        continue;
-      }
-      rows.push(cleanRow);
-      changed = true;
-    }
-    if (!changed) return undefined;
-    rows.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
-    return { version: SESSION_SUMMARY_INDEX_VERSION, updatedAt: Date.now(), rows };
-  };
-  const requeue = () => {
+  const cleanUpserts = [];
+  for (const row of upserts.values()) {
+    const cleanRow = _normalizeSummaryRow(row);
+    if (cleanRow) cleanUpserts.push(cleanRow);
+  }
+  const requeue = (error) => {
+    if (error?.code === 'ELOCKCONTENDED' || error?.code === 'ELOCKTIMEOUT') _recordSummaryLockFailure();
     // Lock busy (or transient I/O failure) — re-queue what we took unless
     // a newer op for the same id arrived during the flush, then retry
     // asynchronously.
@@ -389,28 +392,173 @@ export function _flushPendingSummaryOps({ sync = false } = {}) {
   // after 'exit'). Normal scheduled flushes on the lead/TUI main process
   // use the async try-lock: the lock WAIT is off the event loop, so a
   // busy multi-MB index never freezes typing/rendering.
+  if (cleanUpserts.length === 0 && removals.size === 0) return;
+  const text = encodeSummaryOps(cleanUpserts, removals);
+  const path = summaryIndexPath();
   if (sync) {
+    // Exit drain: append only (never compact — that is a full rewrite).
     try {
-      updateJsonAtomicSync(summaryIndexPath(), mutate, {
-        compact: true,
-        lock: true,
-        timeoutMs: SUMMARY_LOCK_TIMEOUT_MS,
-      });
-    } catch {
-      requeue();
+      withFileLockSync(
+        `${path}.lock`,
+        () => {
+          mkdirSync(dirname(path), { recursive: true });
+          appendFileSync(summaryLogPath(path), text, { mode: 0o600 });
+        },
+        { timeoutMs: SUMMARY_LOCK_TIMEOUT_MS }
+      );
+    } catch (error) {
+      requeue(error);
     }
     _notifySummarySettled();
     return;
   }
   _summaryFlushInflight++;
-  updateJsonAtomic(summaryIndexPath(), mutate, { compact: true, lock: true, timeoutMs: SUMMARY_LOCK_TIMEOUT_MS })
-    .catch(() => {
-      requeue();
-    })
+  withFileLock(`${path}.lock`, () => _appendSummaryOpsLocked(path, text), { timeoutMs: SUMMARY_LOCK_TIMEOUT_MS })
+    .then(() => _sweepStaleSummaryTempOnce(path))
+    .catch(requeue)
     .finally(() => {
       _summaryFlushInflight--;
       _notifySummarySettled();
     });
+}
+
+// Append one batch of ops to the delta log; fold the log into the base once it
+// outgrows SUMMARY_LOG_COMPACT_BYTES. Runs under the index lock.
+async function _appendSummaryOpsLocked(path, text) {
+  const logPath = summaryLogPath(path);
+  await mkdir(dirname(path), { recursive: true });
+  await appendFile(logPath, text, { mode: 0o600 });
+  // The ops are durable once appended; a failed compaction is retried by a
+  // later flush and must not re-queue (and re-append) this batch.
+  try {
+    if ((await stat(logPath)).size >= SUMMARY_LOG_COMPACT_BYTES) await _compactSummaryIndexLocked(path);
+  } catch {
+    /* best effort */
+  }
+}
+
+/** Fold base + log into a fresh base and empty the log. The caller holds the
+ *  index lock, which every appender and full rewrite also takes. A crash
+ *  between the two steps leaves ops in the log that the new base already
+ *  has; replay is last-writer-wins per id, so that is harmless. */
+async function _compactSummaryIndexLocked(path) {
+  const logPath = summaryLogPath(path);
+  let logText = '';
+  try {
+    logText = await readFile(logPath, 'utf8');
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+  let base = null;
+  try {
+    base = JSON.parse(await readFile(path, 'utf8'));
+  } catch (error) {
+    if (error?.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error;
+  }
+  const { rows } = _normalizeSummaryIndex(applySummaryLogText(base ?? {}, logText));
+  await writeJsonAtomicAsync(
+    path,
+    { version: SESSION_SUMMARY_INDEX_VERSION, updatedAt: Date.now(), rows },
+    { compact: true, lock: false }
+  );
+  await truncate(logPath, 0);
+}
+
+/** Fold the delta log into the base now (tests, maintenance). Resolves false
+ *  when another process holds the index lock. */
+export async function compactSummaryIndex() {
+  const path = summaryIndexPath();
+  try {
+    await withFileLock(`${path}.lock`, () => _compactSummaryIndexLocked(path), { timeoutMs: SUMMARY_LOCK_TIMEOUT_MS });
+    return true;
+  } catch (error) {
+    if (error?.code === 'ELOCKCONTENDED' || error?.code === 'ELOCKTIMEOUT') {
+      _recordSummaryLockFailure();
+      return false;
+    }
+    throw error;
+  }
+}
+
+// ── Try-lock failure accounting ─────────────────────────────────────────────
+// A refused try-lock re-queues and retries every SUMMARY_RETRY_DELAY_MS; that
+// used to be invisible. Failures are counted and reported at most once per
+// SUMMARY_LOCK_FAILURE_LOG_INTERVAL_MS (the first one immediately).
+const SUMMARY_LOCK_FAILURE_LOG_INTERVAL_MS = 60_000;
+let _lockFailuresTotal = 0;
+let _lockFailuresUnreported = 0;
+let _lastLockFailureReportAt = 0;
+
+function _recordSummaryLockFailure(now = Date.now()) {
+  _lockFailuresTotal += 1;
+  _lockFailuresUnreported += 1;
+  if (_lastLockFailureReportAt !== 0 && now - _lastLockFailureReportAt < SUMMARY_LOCK_FAILURE_LOG_INTERVAL_MS) return;
+  process.stderr.write(
+    `[session-summaries] index lock busy: ${_lockFailuresUnreported} try-lock failure(s) since last report ` +
+      `(${_lockFailuresTotal} total); retrying every ${SUMMARY_RETRY_DELAY_MS}ms\n`
+  );
+  _lastLockFailureReportAt = now;
+  _lockFailuresUnreported = 0;
+}
+
+/** Diagnostic seam: try-lock failures seen by this process. */
+export function summaryLockFailureStats() {
+  return { total: _lockFailuresTotal, unreported: _lockFailuresUnreported };
+}
+
+// ── Stale temp sweep ────────────────────────────────────────────────────────
+// A crash between an atomic write's temp file and its rename orphans
+// `.session-summaries.json.<24 hex>.tmp` (multi-MB each). Only this store's
+// pattern is touched. Deleted only when older than SUMMARY_TMP_MIN_AGE_MS and
+// while holding the index lock: every writer of these temps (full rewrite,
+// compaction) holds that lock for the whole write, so no live writer can own a
+// temp file the sweep sees.
+const SUMMARY_TMP_PATTERN = /^\.session-summaries\.json\.[0-9a-f]{24}\.tmp$/;
+const SUMMARY_TMP_MIN_AGE_MS = 10 * 60 * 1000;
+let _sweptSummaryDir = '';
+
+export async function sweepStaleSummaryTempFiles({ now = Date.now(), minAgeMs = SUMMARY_TMP_MIN_AGE_MS } = {}) {
+  const path = summaryIndexPath();
+  const dir = dirname(path);
+  return withFileLock(
+    `${path}.lock`,
+    async () => {
+      let removed = 0;
+      let names;
+      try {
+        names = await readdir(dir);
+      } catch {
+        return 0;
+      }
+      for (const name of names) {
+        if (!SUMMARY_TMP_PATTERN.test(name)) continue;
+        const file = join(dir, name);
+        try {
+          if (now - (await stat(file)).mtimeMs < minAgeMs) continue;
+          await unlink(file);
+          removed += 1;
+        } catch {
+          /* raced away or unremovable: leave it */
+        }
+      }
+      return removed;
+    },
+    { timeoutMs: SUMMARY_LOCK_TIMEOUT_MS }
+  );
+}
+
+// Once per process and data dir, after the first successful flush. A busy lock
+// skips this round; the next flush tries again.
+async function _sweepStaleSummaryTempOnce(path) {
+  const dir = dirname(path);
+  if (_sweptSummaryDir === dir) return;
+  try {
+    const removed = await sweepStaleSummaryTempFiles();
+    _sweptSummaryDir = dir;
+    if (removed > 0) process.stderr.write(`[session-summaries] removed ${removed} stale temp file(s)\n`);
+  } catch {
+    /* lock busy or I/O error: best effort */
+  }
 }
 
 export function _upsertSessionSummary(session) {

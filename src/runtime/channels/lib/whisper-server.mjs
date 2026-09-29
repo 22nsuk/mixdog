@@ -39,6 +39,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
+import { windowsSystemRoot } from '../../agent/orchestrator/tools/builtin/windows-roots.mjs';
 import { selectWhisperPort, whisperListenerOwned } from './whisper-port.mjs';
 
 // ── Tunables (deterministic; no ranges) ──────────────────────────────────────
@@ -149,7 +150,8 @@ function readPidMeta() {
 // closed (never kill, never reuse).
 function readProcessCommandLine(pid) {
   if (IS_WIN) {
-    const sysRoot = process.env.SystemRoot || process.env.windir || 'C\u003a\\Windows';
+    const sysRoot = windowsSystemRoot();
+    if (!sysRoot) return '';
     const wmic = path.join(sysRoot, 'System32', 'wbem', 'wmic.exe');
     try {
       const r = spawnSync(wmic, ['process', 'where', `ProcessId=${pid}`, 'get', 'CommandLine', '/FORMAT:LIST'], {
@@ -354,7 +356,6 @@ function wireChildExit() {
     mgr.inflight.clear();
     detachChildHandlers();
     clearPidMeta();
-    mgr.state = STATE.DEAD;
     mgr.child = null;
     mgr.port = null;
     mgr.runtimeKey = null;

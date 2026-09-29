@@ -8,7 +8,7 @@
  * Pure formatting: returns a string, never touches stdout. Robust to missing or
  * malformed argument objects (the engine hands us `{ name, arguments, id }`).
  */
-import { bold, cyan, gray } from './ansi.mjs';
+import { bold, cyan, gray } from '../runtime/shared/statusline/ansi.mjs';
 import { parseMcpToolName, isSelfMcpToolName } from '../runtime/shared/tool-primitives.mjs';
 
 const MAX_SUMMARY = 72;

@@ -73,7 +73,7 @@ export function prepareDispatchSession({
   // resolveAgentSessionPermission (prepareAgentSession applies the same).
   const permission = resolveAgentSessionPermission(
     agent,
-    opts.permission ?? (isPoolC ? hidden?.permission || 'read' : null)
+    opts.permission ?? (isPoolC ? hidden.permission || 'read' : null)
   );
   // Pool C hidden-role instructions live in BP2 role-scoped context
   // (loaded by loadScopedRoleInstructions from rules/agent/*.md).

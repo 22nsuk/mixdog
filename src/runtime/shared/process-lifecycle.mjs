@@ -111,6 +111,10 @@ function appendLedgerLine(active, line) {
   return statSync(active.ledger).size <= LIFECYCLE_LEDGER_MAX_BYTES;
 }
 
+// Synchronous append for the paths that cannot await (process-start ordering,
+// fatal/exit records). timeoutMs 0 is a try-lock: it never waits on the lock,
+// so it cannot stall the event loop for more than the one-line append itself.
+// Everything that can run on a live loop uses appendEntryAsync.
 function appendEntry(active, entry) {
   const line = `${JSON.stringify(entry)}\n`;
   if (Buffer.byteLength(line) > LIFECYCLE_LEDGER_MAX_BYTES) return false;
@@ -283,10 +287,6 @@ function priorVanishedEntry(previous) {
   };
 }
 
-function recordPriorVanished(active, previous) {
-  return appendEntry(active, priorVanishedEntry(previous));
-}
-
 function markerMatchesSnapshot(markerPath, previous) {
   try {
     const current = JSON.parse(readFileSync(markerPath, 'utf8'));
@@ -398,19 +398,30 @@ function reapVanishedMarkers(active) {
   } catch {}
   if (existsSync(active.legacyMarker)) candidates.push(active.legacyMarker);
   const occupied = [];
+  const vanished = [];
   for (const markerPath of candidates) {
     try {
       const previous = JSON.parse(readFileSync(markerPath, 'utf8'));
       if (previous?.pid === process.pid && previous?.token !== active.token) {
-        if (recordPriorVanished(active, previous)) unlinkSync(markerPath);
+        vanished.push({ markerPath, previous });
         continue;
       }
       const liveness = pidLiveness(previous?.pid);
       if (liveness === 'occupied') occupied.push({ markerPath, previous });
-      else if (liveness === 'dead' && recordPriorVanished(active, previous)) unlinkSync(markerPath);
+      else if (liveness === 'dead') vanished.push({ markerPath, previous });
     } catch {}
   }
-  void reapOccupiedMarkers(active, occupied).catch(() => {});
+  // The ledger appends run on the async lock path, one at a time: a boot that
+  // finds many dead markers must not hold the event loop in synchronous
+  // locked writes.
+  void (async () => {
+    for (const { markerPath, previous } of vanished) {
+      try {
+        await recordPriorVanishedAsync(active, markerPath, previous);
+      } catch {}
+    }
+    await reapOccupiedMarkers(active, occupied);
+  })().catch(() => {});
 }
 
 async function reapOccupiedMarkers(active, occupied) {

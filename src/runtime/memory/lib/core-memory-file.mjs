@@ -137,7 +137,7 @@ export async function refreshCoreMemoryFile(db, dataDir) {
 export function readSessionCoreMemoryPayload(dataDir, cwd) {
   const file = readCoreMemoryFile(dataDir);
   if (!file) return null;
-  const projectId = resolveProjectScope(typeof cwd === 'string' && cwd ? cwd : null);
+  const projectId = resolveProjectScope(cwd);
   const inScope = (entry) => entry.projectId === null || entry.projectId === projectId;
   const curated = file.curated.filter(inScope).sort((a, b) => {
     if (a.projectId === null && b.projectId !== null) return -1;

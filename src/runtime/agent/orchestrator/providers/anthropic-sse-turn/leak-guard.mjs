@@ -8,7 +8,7 @@
  * additive: the native tool_use path is untouched.
  */
 import { randomBytes } from 'node:crypto';
-import { scanLeakedToolCalls, createToolCallDedupe, knownToolNameSet } from '../anthropic-leaked-toolcall.mjs';
+import { scanLeakedToolCalls, createToolCallDedupe, knownToolNameSet } from '../lib/leaked-toolcall.mjs';
 
 export function createLeakGuard({ turn, state, knownToolNames, onToolCall, relayText, progress }) {
   const knownTools = knownToolNameSet(knownToolNames);

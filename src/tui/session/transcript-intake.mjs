@@ -9,7 +9,7 @@ import {
   isInternalTranscriptDisplayText,
   isModelVisibleToolCompletionWrapper,
 } from '../../runtime/shared/tool-execution-contract.mjs';
-import { isLateToolAnnouncement } from '../../session-runtime/session-text.mjs';
+import { isLateToolAnnouncement } from '../../runtime/agent/orchestrator/runtime-core/session-text.mjs';
 import { appendPromptHistory } from '../prompt-history-store.mjs';
 import {
   buildExecutionResponseToolItem,

@@ -1,7 +1,6 @@
 export const MAX_COMPUTER_REQUEST_BYTES: number;
 export const MAX_COMPUTER_INTERNAL_REQUEST_BYTES: number;
 export const MAX_COMPUTER_RESPONSE_BYTES: number;
-export const MAX_COMPUTER_TEXT_CHARS: number;
 export const MAX_COMPUTER_IMAGE_CHARS: number;
 export const MAX_COMPUTER_FOREGROUND_TEXT_CHARS: number;
 export function validateComputerReply(value: unknown): void;

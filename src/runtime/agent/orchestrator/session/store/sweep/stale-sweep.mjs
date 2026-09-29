@@ -20,8 +20,10 @@ function* sweepStaleSessionSteps(ttlMs, options = {}) {
   const dir = getStoreDir();
   // An unreadable store dir is not an empty one: sweeping (deleting,
   // closing, pruning) on a probe we could not make is never allowed.
-  if (probePath(dir).state !== PROBE_PRESENT)
-    return { cleaned: 0, remaining: 0, details: [], tombstonesCleaned: 0, tombstoneDetails: [], tombstoneErrors: [] };
+  if (probePath(dir).state !== PROBE_PRESENT) {
+    const { openCandidates: _candidates, ...empty } = createSweepTally();
+    return empty;
+  }
   const rows = collectSweepRows(dir);
   pruneSweepRecordCache(new Set(rows.map((row) => row?.id).filter(Boolean)));
   const ctx = { plan, dir, now: Date.now(), tally: createSweepTally() };

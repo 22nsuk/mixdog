@@ -3,12 +3,12 @@
 import { executeBrowserTool } from '../../runtime/browser-bridge/client.mjs';
 import { executeComputerTool } from '../../runtime/computer-bridge/client.mjs';
 import { createBridgeFirstUseGate } from '../bridge-first-use-gate.mjs';
-import { featureEnvOverride } from '../config-helpers.mjs';
+import { featureEnvOverride } from '../../runtime/agent/orchestrator/runtime-core/config-helpers.mjs';
+import { createCallerContextResolvers } from './caller-context.mjs';
 
 export function createBridgeToolHandlers({ rt }) {
   const bridgeFirstUseGate = createBridgeFirstUseGate({ getConfig: () => rt.config });
-  const sessionIdFor = (callerCtx) => callerCtx?.sessionId || callerCtx?.callerSessionId || rt.session?.id;
-  const signalFor = (callerCtx) => callerCtx?.signal || rt.session?.controller?.signal || null;
+  const { sessionIdFor, signalFor } = createCallerContextResolvers(rt);
 
   // Browser Use and Computer Use ask the user once per session before their
   // first live call; the answer is the tool result when it is no.

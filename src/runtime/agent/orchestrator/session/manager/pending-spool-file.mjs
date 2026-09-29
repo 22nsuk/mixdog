@@ -1,10 +1,9 @@
-// The shared cross-process pending-message spool file: where it lives, which
+// The shared cross-process pending-message spool (one shard file per session): where it lives, which
 // session ids and rows may enter it, the single locked transaction shape every
 // mutation uses, and the per-session serialization of those transactions.
 // Nothing here decides WHAT to queue — only how the file is read, written and
 // kept well-formed.
-import { updateJsonAtomic } from '../../../../shared/atomic-file.mjs';
-import { PENDING_MESSAGES_MODE, pendingMessagesPath } from './pending-spool-path.mjs';
+import { updatePendingShard } from './pending-spool-shard.mjs';
 import {
   COMPLETION_NOTIFICATION_KIND,
   completionExecutionId,
@@ -17,16 +16,11 @@ export const _pendingPersistTails = new Map();
 // The spool location is shared with the TUI steering mirror.
 export { pendingMessagesPath, touchPendingSessionEntry } from './pending-spool-path.mjs';
 
-// Single spool transaction shape: every mutation of the shared file is locked,
-// compact and non-fsync; `extra` only ever relaxes the lock timeout.
-export function updateSpool(mutate, extra = null) {
-  return updateJsonAtomic(pendingMessagesPath(), mutate, {
-    compact: true,
-    lock: true,
-    mode: PENDING_MESSAGES_MODE,
-    fsync: false,
-    ...extra,
-  });
+// Single spool transaction shape: every mutation touches only `sessionId`'s
+// own shard file, locked, compact and non-fsync; `extra` only ever relaxes the
+// lock timeout.
+export function updateSpool(sessionId, mutate, extra = null) {
+  return updatePendingShard(sessionId, mutate, extra);
 }
 
 // Publish a session's queue inside a spool transaction. An emptied queue drops

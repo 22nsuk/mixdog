@@ -15,6 +15,7 @@ import { ContextPanel } from '../../components/ContextPanel.jsx';
 import { UsagePanel } from '../../components/UsagePanel.jsx';
 import { TextEntryPanel } from '../../components/TextEntryPanel.jsx';
 import { textEntryClearsByEmpty } from '../text-entry-policy.mjs';
+import { withPickerEnterLatch } from '../picker-enter-latch.mjs';
 import { providerPromptFields, settingsPromptFields } from './text-entry-labels.mjs';
 
 function renderToolApproval({ toolApproval, store, frameColumns, expandedOptionPanel }) {
@@ -80,19 +81,9 @@ function renderPicker({
       key={picker.pickerKey}
       items={picker.items}
       onSelect={(value, item) => {
-        pickerOpenedFromEnterRef.current = true;
-        if (pickerOpenedFromEnterTimerRef.current) {
-          clearTimeout(pickerOpenedFromEnterTimerRef.current);
-          pickerOpenedFromEnterTimerRef.current = null;
-        }
-        try {
+        withPickerEnterLatch(pickerOpenedFromEnterRef, pickerOpenedFromEnterTimerRef, () => {
           if (picker.onSelect) picker.onSelect(value, item);
-        } finally {
-          pickerOpenedFromEnterTimerRef.current = setTimeout(() => {
-            pickerOpenedFromEnterRef.current = false;
-            pickerOpenedFromEnterTimerRef.current = null;
-          }, 3000);
-        }
+        });
       }}
       onCancel={() => {
         if (picker.onCancel) picker.onCancel();

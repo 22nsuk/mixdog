@@ -4,12 +4,14 @@
  * formatting), one shared byte ceiling split across distinct disk windows,
  * and the fan-out of a primary read's body to its duplicate slots.
  */
+import { stat } from 'node:fs/promises';
+import { resolve as resolvePath } from 'node:path';
 import { imageMimeForPath } from '../read-image.mjs';
 import { readEntryCoalescedDiskWindow } from '../read-batch.mjs';
 
-// A path[] Read shares one byte ceiling. Reserve room for headers and split
-// the remaining body budget across distinct disk windows.
-function perTaskOutputBudget(entries, taskCount, options, { normalizeOutputPath, READ_MAX_OUTPUT_BYTES }) {
+// A path[] Read shares one byte ceiling. Reserve room for headers; the
+// remaining body budget is split across distinct disk windows by allocateBudgets.
+function batchBodyBudget(entries, options, { normalizeOutputPath, READ_MAX_OUTPUT_BYTES }) {
   const readCallBudget =
     Number(options?.readOutputBudgetBytes) > 0
       ? Math.min(READ_MAX_OUTPUT_BYTES, Math.trunc(Number(options.readOutputBudgetBytes)))
@@ -25,7 +27,46 @@ function perTaskOutputBudget(entries, taskCount, options, { normalizeOutputPath,
     ),
     Math.floor(readCallBudget / 2)
   );
-  return Math.max(256, Math.floor((readCallBudget - headerReserve) / Math.max(1, taskCount)));
+  return Math.max(256, readCallBudget - headerReserve);
+}
+
+const AVG_LINE_BYTES = 40;
+const MIN_LINE_BYTES = 20; // conservative: shorter lines mean more prefixes
+const LINE_PREFIX_BYTES = 8;
+const READ_RENDER_SLACK_BYTES = 1024; // trailer/marker reserve inside a child read
+
+// Estimated rendered bytes of a task: file bytes plus line-number prefixes,
+// scaled to the requested window when one is given. Unknown size → Infinity.
+async function estimateTaskBytes(entry, workDir) {
+  const st = await stat(resolvePath(workDir || '.', String(entry?.path || ''))).catch(() => null);
+  if (!st?.isFile()) return Infinity;
+  const lines = Math.max(1, st.size / AVG_LINE_BYTES);
+  let need = st.size + st.size / MIN_LINE_BYTES * LINE_PREFIX_BYTES;
+  const limit = Number(entry?.limit);
+  if (Number.isFinite(limit) && limit > 0) need *= Math.min(1, limit / lines);
+  return Math.ceil(need) + READ_RENDER_SLACK_BYTES;
+}
+
+// Water-filling: tasks needing less than the equal share get what they need;
+// the remainder is redistributed to the larger ones. Sum <= total.
+function allocateBudgets(needs, total) {
+  const budgets = new Array(needs.length).fill(0);
+  let open = needs.map((_, i) => i);
+  let remaining = total;
+  while (open.length) {
+    const share = Math.floor(remaining / open.length);
+    const small = open.filter((i) => needs[i] <= share);
+    if (small.length === 0) {
+      for (const i of open) budgets[i] = share;
+      break;
+    }
+    for (const i of small) {
+      budgets[i] = needs[i];
+      remaining -= needs[i];
+    }
+    open = open.filter((i) => needs[i] > share);
+  }
+  return budgets;
 }
 
 // Primary reads only, ordered by path then window so same-file reads chain
@@ -72,7 +113,10 @@ export async function dispatchBatchReads({
   executeChildBuiltinTool,
 }) {
   const tasks = primaryTasks(entries, readIndexFor, helpers);
-  const outputBudget = perTaskOutputBudget(entries, tasks.length, options, helpers);
+  const totalBudget = batchBodyBudget(entries, options, helpers);
+  const needs = await Promise.all(tasks.map((t) => (t.entry?.path ? estimateTaskBytes(t.entry, workDir) : 0)));
+  const allocated = allocateBudgets(needs, totalBudget);
+  const budgetByIndex = new Map(tasks.map((t, i) => [t.index, Math.max(256, allocated[i])]));
   const results = new Array(entries.length);
   const readChains = new Map();
   await Promise.all(
@@ -82,6 +126,7 @@ export async function dispatchBatchReads({
         return Promise.resolve();
       }
       const run = async () => {
+        const outputBudget = budgetByIndex.get(index);
         const readEntry = childReadEntry(entry);
         // Full image children retain their rich blocks; the aggregate
         // assembler flattens them without stringification. Other media

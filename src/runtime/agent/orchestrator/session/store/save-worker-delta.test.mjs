@@ -40,6 +40,7 @@ test.after(async () => {
   // A landed save publishes its summary row through a deferred index flush
   // that writes the index, its lock and temp files into this data dir.
   await settleSessionSummaryIndex();
+  await (await import('./lifecycle-barriers.mjs')).flushSessionCloseMetrics();
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -60,8 +61,10 @@ function makeSession(id, count) {
 }
 const diskBytes = (id) => readFileSync(join(root, 'sessions', `${id}.json`), 'utf8');
 // How many transcript messages one structuredClone call copied.
-const clonedMessages = (value) =>
-  Array.isArray(value) ? value.length : Array.isArray(value?.messages) ? value.messages.length : 0;
+const clonedMessages = (value) => {
+  if (Array.isArray(value)) return value.length;
+  return Array.isArray(value?.messages) ? value.messages.length : 0;
+};
 
 test('12 concurrent sessions keep the delta path after their first save', async () => {
   const sessions = Array.from({ length: 12 }, (_, index) => makeSession(`sess_delta_many_${index}`, 200));
@@ -217,6 +220,12 @@ test('closing a session or unloading a finished one frees its save baselines', a
   assert.equal(closeSession(closedId, 'test-close', { tombstone: true }), true);
   assert.equal(_hasSessionSaveBaseline(closedId), false, 'the parent baseline is gone after close');
   assert.equal(await _probeWorkerDeltaBaseForTest(closedId), false, 'and so is the worker base');
+  // The close metric is queued off the close path and lands after a flush.
+  await (await import('./lifecycle-barriers.mjs')).flushSessionCloseMetrics();
+  assert.match(
+    readFileSync(join(root, 'tool-events.log'), 'utf8'),
+    new RegExp(`\\[session-close\\] .*reason=test-close .*id=${closedId}\\n`)
+  );
 
   // A finished worker is unloaded, not closed, and must not keep its baselines.
   const unloadedId = 'sess_delta_unloaded';

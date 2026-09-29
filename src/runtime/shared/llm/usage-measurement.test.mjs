@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { UsageLedger, makeUsageRecord } from './usage-ledger.mjs';
-import { usageStatsSnapshot } from '../../../standalone/usage-stats-model.mjs';
-import { resolveUsageStatsPeriod } from '../../../standalone/usage-stats-period.mjs';
+import { usageStatsSnapshot } from '../../../session-runtime/services/usage-stats-model.mjs';
+import { resolveUsageStatsPeriod } from '../../../session-runtime/services/usage-stats-period.mjs';
 
 const now = new Date(2026, 8, 13, 12).getTime();
 

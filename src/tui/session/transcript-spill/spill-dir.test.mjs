@@ -23,6 +23,22 @@ test('the stale sweep only reclaims spill directories, never other mixdog-transc
   for (const path of foreign) assert.equal(existsSync(path), true, `${path} is not a spill directory`);
 });
 
+test('an owner pid answering EPERM is alive, so its fresh spill directory survives the sweep', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'mixdog-spill-eperm-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const otherUserPid = 4242;
+  const spill = join(root, `mixdog-transcript-${otherUserPid}-0f1e2d3c-4b5a-4968-8776-a5b4c3d2e1f0-Ab12Cd`);
+  mkdirSync(spill);
+  t.mock.method(process, 'kill', (pid) => {
+    assert.equal(pid, otherUserPid);
+    throw Object.assign(new Error('operation not permitted'), { code: 'EPERM' });
+  });
+
+  cleanupStaleTranscriptSpillDirs({ root });
+
+  assert.equal(existsSync(spill), true);
+});
+
 test('a live process spill directory survives the sweep', (t) => {
   const directories = createSpillDirectories();
   const directory = directories.create();

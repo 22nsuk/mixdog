@@ -1,4 +1,4 @@
-import { performance } from 'node:perf_hooks';
+import { createIoTrace } from './io-trace.mjs';
 import { classifyResultKind } from '../session/result-classification.mjs';
 import { coerceShapeFlex, normalizeInputPath, normalizeOutputPath, resolveAgainstCwd } from './builtin/path-utils.mjs';
 import {
@@ -120,38 +120,16 @@ export { atomicWrite } from './builtin/atomic-write.mjs';
 // the same primitive without circular-import risk.
 import { pwd } from '../../../shared/user-cwd.mjs';
 
-function _ioTraceEnabled() {
-  return /^(1|true|yes|on)$/i.test(String(process.env.MIXDOG_IO_TRACE || ''));
-}
-
-function _ioTraceStart() {
-  return _ioTraceEnabled() ? performance.now() : 0;
-}
-
-function _ioTrace(event, fields = {}) {
-  if (!_ioTraceEnabled()) return;
-  try {
-    process.stderr.write(
-      `[io-trace] ${JSON.stringify({
-        event,
-        ts: Date.now(),
-        ...fields,
-      })}\n`
-    );
-  } catch {}
-}
-
-function _ioTraceDone(event, started, fields = {}) {
-  if (!started || !_ioTraceEnabled()) return;
-  _ioTrace(event, {
-    ...fields,
-    ms: Number((performance.now() - started).toFixed(3)),
-  });
-}
+// Unlike envFlag, this matcher does not trim whitespace around the value.
+const {
+  start: ioTraceStart,
+  trace: ioTrace,
+  done: ioTraceDone,
+} = createIoTrace(() => /^(1|true|yes|on)$/i.test(String(process.env.MIXDOG_IO_TRACE || '')));
 
 const _readStreamingHooks = {
-  ioTraceStart: _ioTraceStart,
-  ioTraceDone: _ioTraceDone,
+  ioTraceStart,
+  ioTraceDone,
   recordReadSnapshot: (...args) => _recordReadSnapshot(...args),
 };
 
@@ -345,7 +323,7 @@ process.on('exit', flushReadRangeIndexesSync);
 // after the default handler in those cases too, so a single hook is
 // enough for both graceful and abrupt shutdowns of the mcp child.
 
-configureReadRangeIndexTelemetry({ trace: _ioTrace, hashText: _hashText });
+configureReadRangeIndexTelemetry({ trace: ioTrace, hashText: _hashText });
 
 const _LOCATOR_BUDGET_TOOLS = new Set(['find', 'glob', 'list']);
 

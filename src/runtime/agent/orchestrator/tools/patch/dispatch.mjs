@@ -26,6 +26,7 @@ import {
   parsedEntryResolvedPath,
   countHunkChanges,
   pathKey,
+  specialFilePatchMessage,
 } from './paths.mjs';
 import { NATIVE_PATCH_TRANSPORT_DEAD, runServerApply, scheduleNativePatchIdleClose } from './native-server.mjs';
 import {
@@ -270,11 +271,7 @@ function applyUnifiedHunksToLines(sourceLines, hunks, { fuzz, displayPath, eol }
 
 function lstatRegularPatchFile(fullPath, displayPath) {
   const st = lstatSync(fullPath);
-  if (isSpecialFileStat(st)) {
-    throw new Error(
-      `apply_patch: cannot patch special file (FIFO / character / block device / socket): ${normalizeOutputPath(displayPath)}`
-    );
-  }
+  if (isSpecialFileStat(st)) throw new Error(specialFilePatchMessage(displayPath));
   return st;
 }
 
@@ -299,11 +296,7 @@ function resolvePatchWriteTarget(fullPath, displayPath, lst) {
         ` (${err?.code || err?.message || String(err)})`
     );
   }
-  if (isSpecialFileStat(snapshotStat)) {
-    throw new Error(
-      `apply_patch: cannot patch special file (FIFO / character / block device / socket): ${normalizeOutputPath(displayPath)}`
-    );
-  }
+  if (isSpecialFileStat(snapshotStat)) throw new Error(specialFilePatchMessage(displayPath));
   if (!snapshotStat.isFile()) {
     throw new Error(`apply_patch: symlink target is not a regular file: ${normalizeOutputPath(displayPath)}`);
   }

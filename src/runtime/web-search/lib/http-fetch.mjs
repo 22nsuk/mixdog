@@ -1,15 +1,7 @@
-import { readFileSync } from 'node:fs';
 import dns from 'node:dns';
 
-import { assertPublicUrl, pinnedFetch } from './ssrf-guard.mjs';
-
-const PKG_VERSION = (() => {
-  try {
-    return JSON.parse(readFileSync(new URL('../../../../package.json', import.meta.url), 'utf8')).version;
-  } catch {
-    return '0.0.1';
-  }
-})();
+import { PACKAGE_VERSION } from './package-version.mjs';
+import { abortRace, assertPublicUrl, fetchThroughAgent, pinnedFetch } from './ssrf-guard.mjs';
 
 export function withTimeout(controller, timeoutMs) {
   return setTimeout(() => controller.abort(), timeoutMs);
@@ -17,7 +9,7 @@ export function withTimeout(controller, timeoutMs) {
 
 export function buildHeaders() {
   return {
-    'User-Agent': `mixdog-web-search/${PKG_VERSION}`,
+    'User-Agent': `mixdog-web-search/${PACKAGE_VERSION}`,
     Accept: 'text/html, application/xhtml+xml, text/markdown, text/plain, application/json;q=0.9, */*;q=0.5',
     'Accept-Language': 'en, ko;q=0.9',
   };
@@ -42,13 +34,18 @@ export function isFatalHttpPathPolicyError(error) {
   return false;
 }
 
+/** Release the socket of a response whose body will not be read. */
+async function discardBody(response) {
+  try {
+    await response.body?.cancel();
+  } catch {}
+}
+
 /** Content-Length already exceeds the cap: reject before reading any byte. */
 async function assertAnnouncedSizeWithinCap(response, maxBytes) {
   const contentLength = Number(response.headers.get('content-length') || 0);
   if (contentLength <= maxBytes) return;
-  try {
-    await response.body?.cancel();
-  } catch {}
+  await discardBody(response);
   throw new Error(`response body too large: Content-Length=${contentLength} > cap=${maxBytes}`);
 }
 
@@ -92,9 +89,7 @@ async function readBodyWithCap(response, maxBytes) {
     if (!isText) {
       // Cancel body before throwing so the underlying socket isn't held
       // until GC — fetchDocument's caller would otherwise leak the connection.
-      try {
-        await response.body?.cancel();
-      } catch {}
+      await discardBody(response);
       throw new Error(`Blocked non-text content-type: ${contentType.split(';')[0].trim()}`);
     }
   }
@@ -108,9 +103,7 @@ async function readBodyWithCap(response, maxBytes) {
     const text = await response.text();
     if (Buffer.byteLength(text, 'utf8') > maxBytes) {
       // response.text() already drained the body, but guard symmetrically.
-      try {
-        await response.body?.cancel();
-      } catch {}
+      await discardBody(response);
       throw new Error(`response body too large: ${text.length} bytes > cap=${maxBytes}`);
     }
     return text;
@@ -135,9 +128,7 @@ async function readBodyBytesWithCap(response, maxBytes) {
   if (!reader) {
     const buf = Buffer.from(await response.arrayBuffer());
     if (buf.byteLength > maxBytes) {
-      try {
-        await response.body?.cancel();
-      } catch {}
+      await discardBody(response);
       throw new Error(`response body too large: ${buf.byteLength} bytes > cap=${maxBytes}`);
     }
     return buf;
@@ -155,88 +146,25 @@ function loopbackHost(hostname) {
   return Boolean(match && Number(match[1]) === 127);
 }
 
-function abortRace(promise, signal) {
-  if (!signal) return promise;
-  if (signal.aborted) return Promise.reject(signal.reason || new Error('local_fetch aborted'));
-  return new Promise((resolve, reject) => {
-    const onAbort = () => reject(signal.reason || new Error('local_fetch aborted'));
-    signal.addEventListener('abort', onAbort, { once: true });
-    promise.then(
-      (value) => {
-        signal.removeEventListener('abort', onAbort);
-        resolve(value);
-      },
-      (error) => {
-        signal.removeEventListener('abort', onAbort);
-        reject(error);
-      }
-    );
-  });
-}
-
 async function pinnedLoopbackFetch(url, options = {}) {
   const parsed = assertLoopbackUrl(url);
   const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
   const literalFamily = host.includes(':') ? 6 : 4;
   const addresses =
     host === 'localhost'
-      ? await abortRace(dns.promises.lookup(host, { all: true }), options.signal)
+      ? await abortRace(dns.promises.lookup(host, { all: true }), options.signal, 'local_fetch')
       : [{ address: host, family: literalFamily }];
   if (!addresses.length || addresses.some((entry) => !loopbackHost(entry.address))) {
     throw new Error(`Blocked non-loopback local_fetch resolution: ${host}`);
   }
   const pinned = addresses[0];
-  const { Agent, fetch: undiciFetch } = await import('undici');
-  const dispatcher = new Agent({
+  return fetchThroughAgent(url, options, {
     connect: {
       lookup: (_hostname, opts, cb) =>
         opts?.all
           ? cb(null, [{ address: pinned.address, family: pinned.family }])
           : cb(null, pinned.address, pinned.family),
     },
-  });
-  let response;
-  try {
-    response = await undiciFetch(url, { ...options, dispatcher });
-  } catch (error) {
-    dispatcher.destroy().catch(() => {});
-    throw error;
-  }
-  if (!response.body) {
-    dispatcher.destroy().catch(() => {});
-    return response;
-  }
-  const reader = response.body.getReader();
-  let cleaned = false;
-  const cleanup = () => {
-    if (cleaned) return;
-    cleaned = true;
-    dispatcher.destroy().catch(() => {});
-  };
-  const monitored = new ReadableStream({
-    async pull(controller) {
-      try {
-        const { done, value } = await reader.read();
-        if (done) {
-          controller.close();
-          cleanup();
-        } else {
-          controller.enqueue(value);
-        }
-      } catch (error) {
-        controller.error(error);
-        cleanup();
-      }
-    },
-    cancel(reason) {
-      reader.cancel(reason).catch(() => {});
-      cleanup();
-    },
-  });
-  return new Response(monitored, {
-    status: response.status,
-    statusText: response.statusText,
-    headers: response.headers,
   });
 }
 
@@ -264,9 +192,7 @@ async function boundedManualFetch(url, { signal, fetchImpl, validateUrl, sameHos
       redirect: 'manual',
     });
     if (!REDIRECT_STATUSES.has(response.status)) return response;
-    try {
-      await response.body?.cancel();
-    } catch {}
+    await discardBody(response);
     if (hops >= MAX_REDIRECTS) throw new Error(`Too many redirects (max ${MAX_REDIRECTS})`);
     const location = response.headers.get('location');
     if (!location) throw new Error(`Redirect ${response.status} without Location header`);
@@ -281,9 +207,7 @@ export async function fetchLoopbackText(url, { signal, fetchImpl = pinnedLoopbac
     validateUrl: assertLoopbackUrl,
   });
   if (!response.ok) {
-    try {
-      await response.body?.cancel();
-    } catch {}
+    await discardBody(response);
     throw new Error(`HTTP ${response.status}`);
   }
   return readBodyWithCap(response, MAX_BODY_BYTES);
@@ -300,16 +224,12 @@ export async function fetchPublicImage(url, { signal, fetchImpl = pinnedFetch } 
     sameHost: true,
   });
   if (!response.ok) {
-    try {
-      await response.body?.cancel();
-    } catch {}
+    await discardBody(response);
     throw new Error(`HTTP ${response.status}`);
   }
   const mimeType = (response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
   if (!SAFE_IMAGE_MIMES.has(mimeType)) {
-    try {
-      await response.body?.cancel();
-    } catch {}
+    await discardBody(response);
     throw new Error(`Blocked unsupported image content-type: ${mimeType || '(missing)'}`);
   }
   const bytes = await readBodyBytesWithCap(response, MAX_BODY_BYTES);
@@ -357,9 +277,7 @@ export async function fetchPinnedForPausedRequest(
       body: respBody,
     };
   } catch (error) {
-    try {
-      await response.body?.cancel();
-    } catch {}
+    await discardBody(response);
     throw error;
   }
 }
@@ -421,17 +339,13 @@ export async function fetchDocument(url, timeoutMs, signal, { request = pinnedFe
           }
           for (const cookie of setCookies) session.jar.setCookieSync(cookie, currentUrl, { ignoreError: true });
         } catch (error) {
-          try {
-            await response.body?.cancel();
-          } catch {}
+          await discardBody(response);
           throw error;
         }
       }
       if (REDIRECT_STATUSES.has(response.status)) {
         // Drain the redirect response body so the socket isn't held until GC.
-        try {
-          await response.body?.cancel();
-        } catch {}
+        await discardBody(response);
         if (hops >= MAX_REDIRECTS) {
           throw new Error(`Too many redirects (max ${MAX_REDIRECTS})`);
         }
@@ -448,9 +362,7 @@ export async function fetchDocument(url, timeoutMs, signal, { request = pinnedFe
       try {
         assertDocumentResponse(response.status, response.headers, currentUrl);
       } catch (error) {
-        try {
-          await response.body?.cancel();
-        } catch {}
+        await discardBody(response);
         throw error;
       }
       return {

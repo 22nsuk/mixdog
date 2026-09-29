@@ -291,6 +291,13 @@ export function cancelBackgroundShellJobWatch(jobId) {
   return entry.notifyCtx || null;
 }
 
+// Owner-session pending-queue delivery for a completion whose notifyFn is gone.
+function enqueueCompletionFallback(sessionId, message, meta) {
+  const visible = modelVisibleToolCompletionMessage(message, meta);
+  if (!visible) return false;
+  return enqueuePendingMessage(sessionId, markCompletionEntry(visible, { executionId: meta?.execution_id, meta })) > 0;
+}
+
 export function watchBackgroundShellJob(jobId, notifyCtx) {
   const ctx =
     notifyCtx && typeof notifyCtx.notifyFn === 'function'
@@ -338,19 +345,7 @@ export function watchBackgroundShellJob(jobId, notifyCtx) {
         resultType: 'shell_task_result',
         instruction: completion.instruction,
         context: ctx || { callerSessionId: owner },
-        enqueueFallback: (sessionId, message, meta) => {
-          const visible = modelVisibleToolCompletionMessage(message, meta);
-          if (!visible) return false;
-          return (
-            enqueuePendingMessage(
-              sessionId,
-              markCompletionEntry(visible, {
-                executionId: meta?.execution_id,
-                meta,
-              })
-            ) > 0
-          );
-        },
+        enqueueFallback: enqueueCompletionFallback,
         logPrefix: 'shell-jobs',
       });
     }
@@ -494,19 +489,7 @@ export async function reconcileRecoveredShellJobCompletions() {
         resultType: 'shell_task_result',
         instruction: completion.instruction,
         context: { callerSessionId: owner },
-        enqueueFallback: (sessionId, message, meta) => {
-          const visible = modelVisibleToolCompletionMessage(message, meta);
-          if (!visible) return false;
-          return (
-            enqueuePendingMessage(
-              sessionId,
-              markCompletionEntry(visible, {
-                executionId: meta?.execution_id,
-                meta,
-              })
-            ) > 0
-          );
-        },
+        enqueueFallback: enqueueCompletionFallback,
         logPrefix: 'shell-jobs-recovery',
       });
       if (delivered) notified += 1;

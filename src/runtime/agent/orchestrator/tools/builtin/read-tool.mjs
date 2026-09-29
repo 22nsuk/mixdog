@@ -92,7 +92,17 @@ function executeModeRead(args, workDir, readStateScope, executeChildBuiltinTool,
   return runReadIo(() => executeSingleReadTool(args, workDir, readStateScope, options, helpers));
 }
 
-export async function executeReadTool(
+// A batch naming more distinct files than the cap was trimmed by arg-guard;
+// the last line names the dropped files so the caller can read them next.
+export async function executeReadTool(args, ...rest) {
+  const skipped = Array.isArray(args?.skipped_files) ? args.skipped_files : [];
+  if (skipped.length > 0) delete args.skipped_files;
+  const out = await executeReadToolBody(args, ...rest);
+  if (skipped.length === 0 || typeof out !== 'string') return out;
+  return `${out}\n[skipped ${skipped.length} more file(s) over the per-call limit: ${skipped.join(', ')} — read them in another call]`;
+}
+
+async function executeReadToolBody(
   args,
   workDir,
   readStateScope,

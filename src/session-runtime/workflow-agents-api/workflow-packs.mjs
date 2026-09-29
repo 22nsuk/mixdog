@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { serializeFrontmatterDoc } from '../../runtime/shared/markdown-frontmatter.mjs';
-import { normalizeWorkflowId, workflowIdFromName, availableWorkflowId, DEFAULT_WORKFLOW_ID } from '../workflow.mjs';
+import { normalizeWorkflowId, workflowIdFromName, availableWorkflowId, DEFAULT_WORKFLOW_ID } from '../../runtime/agent/orchestrator/runtime-core/workflow.mjs';
 import { oneLine, resolveDataDir } from './shared.mjs';
 
 // Workflow packs: the catalog/active switch plus the editor surface (desktop

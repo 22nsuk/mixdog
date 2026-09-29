@@ -30,7 +30,7 @@ import { cancelNativeTasks } from '../../tools/lib/native-spawn-client.mjs';
  * If we delete the file, a late save sees no file, decides nothing to drop,
  * and recreates the session in its pre-close state.
  *
- * Long-term cleanup: `sweepTombstones()` below unlinks tombstones older than
+ * Long-term cleanup: `sweepTombstones()` (idle-cleanup.mjs) unlinks tombstones older than
  * TOMBSTONE_MAX_AGE_MS (1h — vastly longer than the microsecond in-flight race).
  */
 export function closeSession(id, reason = 'manual', opts = {}) {
@@ -67,23 +67,15 @@ export function closeSession(id, reason = 'manual', opts = {}) {
   //    write could silently overwrite the session after the user resumes
   //    it back (BL: burned-session late-save clobber).
   const newGen = tombstone ? markSessionClosed(id, reason) : bumpSessionGeneration(id, reason);
-  // Durable lifecycle barrier check. `null` is ambiguous — it covers both a
-  // legitimate veto (session gone, live owner, contended commit) and a
-  // FAILED durable write. Only the latter publishes a lifecycle commit
-  // error. When the barrier never landed there is no tombstone and no
-  // generation bump on disk, so nothing fences a late save: tearing down
-  // here would abort the provider and clear the crash checkpoint while the
-  // session remains open and resumable on disk — the exact way a failed
-  // close silently destroys a turn. Leave every runtime structure intact,
-  // surface the cause, and report failure to the caller.
-  // ANY nonnumeric result means the barrier is not on disk — a write
-  // failure, a liveness/ownership veto, a contended commit lock, or a
-  // missing record. The detail map only explains WHY when the cause was a
-  // failed write; its absence is not evidence of success. Treating a
-  // detail-less null as a close is what let a vetoed/failed close abort the
-  // provider and drop the crash checkpoint while the session stayed open and
-  // resumable on disk. Leave every runtime structure intact and report
-  // failure in all of them.
+  // Durable lifecycle barrier check. ANY nonnumeric result means the barrier
+  // is not on disk — a write failure, a liveness/ownership veto, a contended
+  // commit lock, or a missing record. Only a failed write publishes a
+  // lifecycle commit error, so a detail-less null is not evidence of success.
+  // Without the barrier there is no tombstone and no generation bump fencing
+  // a late save: tearing down here would abort the provider and clear the
+  // crash checkpoint while the session stays open and resumable on disk — the
+  // way a failed close silently destroys a turn. Leave every runtime
+  // structure intact, surface the cause, and report failure to the caller.
   if (typeof newGen !== 'number') {
     reportCloseBarrierFailure({ id, reason, tombstone, entry });
     return false;

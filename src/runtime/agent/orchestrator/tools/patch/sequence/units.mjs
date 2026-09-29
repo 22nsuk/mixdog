@@ -64,17 +64,11 @@ function sectionUnit(section, basePath, { v4aConvertOpts, readStateScope, dryRun
 }
 
 function parsedEntryUnit(entry, basePath) {
-  const headerName = entryHeaderName(entry);
-  if (!headerName) {
-    throw new Error(
-      'apply_patch: a file section header could not be parsed (no target path) — the patch body is not a valid diff. ' +
-        'Each section must start with `*** Update File: <path>` / `*** Add File: <path>` / `*** Delete File: <path>` ' +
-        '(V4A, wrapped in `*** Begin Patch` / `*** End Patch`), or a `--- a/<path>` + `+++ b/<path>` pair (unified).'
-    );
-  }
+  // Throws the "header could not be parsed (no target path)" error for a headerless entry.
+  const fullPath = parsedEntryResolvedPath(entry, basePath);
   return {
-    displayPath: normalizeOutputPath(stripDiffPrefix(headerName)),
-    fullPath: parsedEntryResolvedPath(entry, basePath),
+    displayPath: normalizeOutputPath(stripDiffPrefix(entryHeaderName(entry))),
+    fullPath,
     buildParsed: async () => [entry],
   };
 }

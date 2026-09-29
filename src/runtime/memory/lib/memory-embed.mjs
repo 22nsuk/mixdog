@@ -1,6 +1,6 @@
 import { __mixdogMemoryLog } from './memory-log.mjs';
 
-import { embedTexts, getEmbeddingModelId } from './embedding-provider.mjs';
+import { embedTexts, getEmbeddingModelId, holdEmbeddingWarm } from './embedding-provider.mjs';
 import { embeddingToSql } from './memory.mjs';
 import { createHash } from 'node:crypto';
 import { pruneEmbeddingCache, resolveEmbeddingCacheMaxRows } from './embedding-cache-retention.mjs';
@@ -160,7 +160,7 @@ export async function cachedEmbedTextBatch(db, texts, options = {}) {
     )
   ).rows;
   throwIfAborted(signal);
-  // Issue 6: pgvector/halfvec returns a text string like "[0.1,0.2,...]".
+  // pgvector/halfvec returns a text string like "[0.1,0.2,...]".
   // Array.from on a string yields individual characters — parse to numeric array.
   const hitMap = new Map(
     hits.map((r) => [
@@ -284,6 +284,7 @@ export async function flushEmbeddingDirty(db, options = {}) {
 
       cursor = ids[ids.length - 1];
       totalAttempted += ids.length;
+      holdEmbeddingWarm();
       let batchDone = false;
       let abortFailure = null;
       try {

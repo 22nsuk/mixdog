@@ -5,13 +5,13 @@
  * rescues tool calls printed as text.
  */
 import { stampStreamOutcome, STREAM_TRANSPORTS } from '../lib/stream-outcome.mjs';
-import { createLeakGuard, createToolCallDedupe } from '../anthropic-leaked-toolcall.mjs';
+import { createLeakGuard, createToolCallDedupe } from '../lib/leaked-toolcall.mjs';
 import { emitCompatToolCallOnce, synthLeakedOpenAICall } from '../openai-compat-stream-common.mjs';
 import { createToolCallAccumulator } from './tool-call-acc.mjs';
 
 export function createCompatStreamState({ knownToolNames, idleMs, onStreamDelta, onToolCall, onTextDelta }) {
   const toolDedupe = createToolCallDedupe();
-  const state = {
+  return {
     idleMs,
     onStreamDelta,
     onToolCall,
@@ -34,7 +34,6 @@ export function createCompatStreamState({ knownToolNames, idleMs, onStreamDelta,
     leakGuard: createLeakGuard({ knownToolNames, harmony: true }),
     leakedCalls: [],
   };
-  return state;
 }
 
 export function reportTransport(state) {

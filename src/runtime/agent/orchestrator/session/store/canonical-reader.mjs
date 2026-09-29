@@ -344,13 +344,6 @@ export function createCanonicalSessionReader({
   return Object.assign(read, {
     forget,
     /**
-     * A strict parse another reader already made of bytes it proved to
-     * belong to `stamp` (stat → read → stat, unchanged): cached exactly as
-     * this reader's own lifecycle reads are — settled stamps only, reused
-     * only while the full stamp is unchanged. Own-commit-only checks never
-     * consult it.
-     */
-    /**
      * A lifecycle barrier this realm just renamed into place. Barrier
      * rewrites are deliberately NOT own commits (write authority re-reads
      * them strictly), but a read-only lifecycle check may reuse the exact
@@ -375,6 +368,13 @@ export function createCanonicalSessionReader({
       }
       remember(target, stamp, lifecycle);
     },
+    /**
+     * A strict parse another reader already made of bytes it proved to
+     * belong to `stamp` (stat → read → stat, unchanged): cached exactly as
+     * this reader's own lifecycle reads are — settled stamps only, reused
+     * only while the full stamp is unchanged. Own-commit-only checks never
+     * consult it.
+     */
     rememberStrictVerdict(target, stamp, record) {
       if (!stamp || isLifecycleUnreadable(record) || !settledStamp(stamp, nowNs())) return;
       remember(target, stamp, Object.freeze({ id: record.id, closed: record.closed, generation: record.generation }));

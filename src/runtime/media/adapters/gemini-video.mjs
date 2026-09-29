@@ -8,6 +8,7 @@
  *     the sample URI with `alt=media`.
  */
 import { resolveGeminiKey } from '../auth.mjs';
+import { boundedSignal } from '../bounded-signal.mjs';
 import { decodeBase64Media, downloadGeminiMedia } from '../download.mjs';
 import { mediaError } from '../lanes.mjs';
 import { upstreamError } from '../upstream-error.mjs';
@@ -19,11 +20,6 @@ const TOTAL_TIMEOUT_MS = 900_000;
 // Submission and each poll need their own ceiling: an unbounded request keeps
 // the 15-minute budget from ever starting (or ever ending).
 const REQUEST_TIMEOUT_MS = 60_000;
-
-function boundedSignal(signal, deadline, capMs = REQUEST_TIMEOUT_MS) {
-  const remaining = Math.max(1, deadline - Date.now());
-  return AbortSignal.any([signal, AbortSignal.timeout(Math.min(capMs, remaining))].filter(Boolean));
-}
 
 function isOmniModel(model) {
   return /omni/i.test(String(model || ''));
@@ -90,7 +86,7 @@ async function generateViaVeo({ model, prompt, options, references = [], signal,
     method: 'POST',
     headers,
     body: JSON.stringify({ instances: [instance], parameters }),
-    signal: boundedSignal(signal, deadline),
+    signal: boundedSignal(signal, deadline, REQUEST_TIMEOUT_MS),
   });
   if (!started.ok) throw upstreamError('Veo video', started.status, await started.text().catch(() => ''));
   const operation = await started.json();
@@ -102,7 +98,7 @@ async function generateViaVeo({ model, prompt, options, references = [], signal,
     await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
     const poll = await fetch(`${BASE_URL}/${operation.name}`, {
       headers,
-      signal: boundedSignal(signal, deadline),
+      signal: boundedSignal(signal, deadline, REQUEST_TIMEOUT_MS),
     });
     if (!poll.ok) throw upstreamError('Veo poll', poll.status, await poll.text().catch(() => ''));
     const data = await poll.json();

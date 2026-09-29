@@ -132,6 +132,9 @@ function renderHtmlToken(token) {
   return raw.replace(/<!--[\s\S]*?-->/g, '');
 }
 
+const OSC8_OPEN = (url) => `\x1b]8;;${url}\x07`;
+const OSC8_CLOSE = '\x1b]8;;\x07';
+
 /** Schemes we are willing to hand to the terminal as an OSC 8 target. */
 const SAFE_LINK_SCHEME_RE = /^(?:https?|mailto|file|ftp):/i;
 
@@ -819,8 +822,6 @@ export function formatToken(token, listBaseIndent = 0, orderedListNumber = null,
       // (Windows Terminal / iTerm); other terminals show the label text as-is.
       // AnsiText only strips `\x1b[...m` SGR, so the OSC 8 `\x1b]8;;…\x07`
       // sequences pass through untouched for the terminal to interpret.
-      const OSC8_OPEN = (url) => `\x1b]8;;${url}\x07`;
-      const OSC8_CLOSE = '\x1b]8;;\x07';
       if (plain && plain !== href) {
         const styledLabel = ex.linkText(linkText);
         return `${OSC8_OPEN(href)}${styledLabel}${OSC8_CLOSE}`;
@@ -850,7 +851,6 @@ export function formatToken(token, listBaseIndent = 0, orderedListNumber = null,
     case 'paragraph':
       return (token.tokens ?? []).map((t) => formatToken(t, 0, null, null, width)).join('') + EOL;
     case 'space':
-      return EOL;
     case 'br':
       return EOL;
     case 'text':

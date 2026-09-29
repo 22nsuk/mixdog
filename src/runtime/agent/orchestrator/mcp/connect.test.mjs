@@ -145,6 +145,15 @@ test('a stdio server registers prefixed tools, instructions, roots and a live to
   assert.equal(clients[0].closed, true);
 });
 
+test('a malformed listTools shape closes the client before the connect fails', async () => {
+  const scopeId = freshScope();
+  behavior = { listTools: async () => ({ tools: 'nope' }) };
+  await connectMcpServers({ bad: { command: 'node', args: ['server.mjs'] } }, { scopeId }).catch(() => {});
+  assert.deepEqual(getMcpTools(scopeId), []);
+  assert.equal(clients.length, 1);
+  assert.equal(clients[0].closed, true);
+});
+
 test('remote transports receive the normalized URL; headers reach HTTP and SSE but never WebSocket', async () => {
   const scopeId = freshScope();
   behavior = { capabilities: { tools: {} } };

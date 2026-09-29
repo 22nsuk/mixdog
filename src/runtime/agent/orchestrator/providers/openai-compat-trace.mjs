@@ -4,8 +4,8 @@
  *
  * Holds the two low-level helpers
  * (summarizeTraceMessages, extractCompatCachedTokens) consumed by both
- * openai-compat.mjs and openai-compat-xai.mjs cache-trace writers. Isolating
- * them here breaks the former import cycle between those two modules.
+ * openai-compat.mjs and openai-compat-xai.mjs cache-trace writers. Keeping
+ * them here avoids an import cycle between those two modules.
  */
 import { traceHash, traceContentShape, traceTextShape } from './trace-utils.mjs';
 

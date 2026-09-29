@@ -1,7 +1,7 @@
 // Transcript route identity is separate from the human-readable model label.
 // These pure helpers keep live rows, persisted messages and restored rows on
 // the same field contract without rewriting older display-only transcripts.
-import { displayModelName } from '../../ui/model-display.mjs';
+import { displayModelName } from './model-display.mjs';
 
 export function transcriptRouteMetadataFields(value) {
   if (!value || typeof value !== 'object') return {};

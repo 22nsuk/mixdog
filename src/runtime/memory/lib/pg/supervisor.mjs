@@ -7,8 +7,7 @@ import { __mixdogMemoryLog } from '../memory-log.mjs';
  *   ensurePgInstance(dataDir) → Promise<{ host, port, runtimeDir, pgdataDir }>
  *   stopPgForShutdown()       → Promise<void>  — call from server-main.mjs shutdown()
  *
- * Depends on Track A's pg-process.mjs for startPg / stopPg / healthcheckPg.
- * Lazy-imported so this module loads cleanly before Track A lands.
+ * Uses process.mjs for startPg / stopPg / healthcheckPg (lazy-imported).
  *
  * active-instance.json additions:
  *   pg_port?        number  — TCP port PG is listening on

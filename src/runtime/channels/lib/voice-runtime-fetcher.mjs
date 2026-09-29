@@ -141,6 +141,13 @@ async function _withInstallLock(rootDir, lockName, fn, { pollMs = 250 } = {}) {
   // "alive" indefinitely without ever releasing this lockfile.
   let foreignWaitSince = 0;
   let samePidWaitSince = 0;
+  const reclaim = () => {
+    try {
+      rmSync(lockPath, { force: true });
+    } catch {}
+    foreignWaitSince = 0;
+    samePidWaitSince = 0;
+  };
   while (true) {
     try {
       fd = openSync(lockPath, 'wx');
@@ -159,11 +166,7 @@ async function _withInstallLock(rootDir, lockName, fn, { pollMs = 250 } = {}) {
         const holder = _readInstallLockToken(lockPath);
         if (!holder) {
           // empty or invalid PID — orphan lockfile, reclaim
-          try {
-            rmSync(lockPath, { force: true });
-          } catch {}
-          foreignWaitSince = 0;
-          samePidWaitSince = 0;
+          reclaim();
           continue;
         }
         const { pid: holderPid, ts: holderTs, token: holderToken } = holder;
@@ -181,11 +184,7 @@ async function _withInstallLock(rootDir, lockName, fn, { pollMs = 250 } = {}) {
           }
           if (ageMs > LOCK_MAX_AGE_MS) {
             if (_installLockTokenMatches(lockPath, holderPid, holderTs, holderToken)) {
-              try {
-                rmSync(lockPath, { force: true });
-              } catch {}
-              foreignWaitSince = 0;
-              samePidWaitSince = 0;
+              reclaim();
               continue;
             }
           }
@@ -196,11 +195,7 @@ async function _withInstallLock(rootDir, lockName, fn, { pollMs = 250 } = {}) {
         try {
           process.kill(holderPid, 0);
         } catch {
-          try {
-            rmSync(lockPath, { force: true });
-          } catch {}
-          foreignWaitSince = 0;
-          samePidWaitSince = 0;
+          reclaim();
           continue;
         }
         // Live foreign pid. Apply age ceiling so a recycled/unrelated
@@ -213,11 +208,7 @@ async function _withInstallLock(rootDir, lockName, fn, { pollMs = 250 } = {}) {
         if (!foreignWaitSince) foreignWaitSince = Date.now();
         if (ageMs > LOCK_MAX_AGE_MS) {
           if (_installLockTokenMatches(lockPath, holderPid, holderTs, holderToken)) {
-            try {
-              rmSync(lockPath, { force: true });
-            } catch {}
-            foreignWaitSince = 0;
-            samePidWaitSince = 0;
+            reclaim();
             continue;
           }
         }
@@ -491,13 +482,18 @@ async function downloadFile(url, destPath, { onProgress = null, timeoutMs = 180_
 // the unzip command (preinstalled on every distro we support, apt-get on
 // Ubuntu / dnf on Fedora). Platform decision is a single switch — no fallback
 // chain, no probing.
-function extractZip(zipPath, destDir) {
+export function extractZip(zipPath, destDir) {
   // Windows: bundled tar.exe (libarchive) misreads `C:` drive letter as
   // host:path and tries DNS resolution. Use PowerShell Expand-Archive,
   // which is Windows-native and path-safe.
   if (process.platform === 'win32') {
-    const ps = `Expand-Archive -LiteralPath ${JSON.stringify(zipPath)} -DestinationPath ${JSON.stringify(destDir)} -Force`;
-    const r = spawnSync('powershell', ['-NoProfile', '-Command', ps], { stdio: 'pipe', windowsHide: true });
+    // Paths travel via env vars so `$` / backticks in them are never expanded.
+    const ps = 'Expand-Archive -LiteralPath $env:MIXDOG_ZIP_PATH -DestinationPath $env:MIXDOG_ZIP_DEST -Force';
+    const r = spawnSync('powershell', ['-NoProfile', '-Command', ps], {
+      stdio: 'pipe',
+      windowsHide: true,
+      env: { ...process.env, MIXDOG_ZIP_PATH: zipPath, MIXDOG_ZIP_DEST: destDir },
+    });
     if (r.status !== 0) {
       throw new Error(
         `[voice-runtime] zip extract failed via Expand-Archive: ${r.stderr?.toString() || r.stdout?.toString() || 'unknown'}`

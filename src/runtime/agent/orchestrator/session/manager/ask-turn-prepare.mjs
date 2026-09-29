@@ -7,8 +7,8 @@ import { withRuntimeUserContext } from '../runtime-user-context.mjs';
 import { estimateJsonBytes } from '../../../../shared/json-metrics.mjs';
 import { positiveInt } from '../../../../shared/numbers.mjs';
 import { appendAgentTrace } from '../../agent-trace.mjs';
-import { snapshotPendingDeferredToolDelta } from '../../../../../session-runtime/deferred-tool-delta.mjs';
-import { snapshotPendingGoalReminder } from '../../../../../session-runtime/goal-reminder.mjs';
+import { snapshotPendingDeferredToolDelta } from '../../runtime-core/deferred-tool-delta.mjs';
+import { snapshotPendingGoalReminder } from '../../runtime-core/goal-reminder.mjs';
 import { resolveSessionContextMeta } from './context-meta.mjs';
 import {
   promptContentText,

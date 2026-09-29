@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { createPrewarmSchedulers } from './prewarm.mjs';
-import { createAutomationProbe } from '../standalone/channel-admin.mjs';
+import { createAutomationProbe } from './services/channel-admin.mjs';
 
 const tick = (ms = 5) => new Promise((resolve) => setTimeout(resolve, ms));
 

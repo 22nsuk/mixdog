@@ -9,6 +9,8 @@ import { extractOoxmlText } from './read-office-files.mjs';
 const WORD_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const DRAWING_NS = 'http://schemas.openxmlformats.org/drawingml/2006/main';
 const PRESENTATION_NS = 'http://schemas.openxmlformats.org/presentationml/2006/main';
+const SHEET_NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+const RELATIONSHIP_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
 
 async function writePackage(path, files) {
   const zip = new JSZip();
@@ -44,8 +46,6 @@ test('a workbook reads as its grid, sheet by sheet', async (t) => {
   const root = await fs.mkdtemp(join(tmpdir(), 'mixdog-read-office-xlsx-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const path = join(root, 'kpi.xlsx');
-  const SHEET_NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
-  const RELATIONSHIP_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
   await writePackage(path, {
     'xl/workbook.xml':
       `<?xml version="1.0"?><workbook xmlns="${SHEET_NS}" xmlns:r="${RELATIONSHIP_NS}"><sheets>` +
@@ -106,8 +106,6 @@ test('a figure is read as a figure, with the description the file gives it', asy
 
   // A dashboard sheet's chart lives outside the cell grid, so a sheet whose
   // message is the chart used to read as an empty sheet.
-  const SHEET_NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
-  const RELATIONSHIP_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
   const DRAWING_SHEET_NS = 'http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing';
   const workbook = join(root, 'kpi.xlsx');
   await writePackage(workbook, {
@@ -196,8 +194,6 @@ test('a footnote is read where it is cited and its source is kept', async (t) =>
 test('hidden sheets and hidden slides say they are hidden', async (t) => {
   const root = await fs.mkdtemp(join(tmpdir(), 'mixdog-read-office-hidden-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
-  const SHEET_NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
-  const RELATIONSHIP_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
   const workbook = join(root, 'ledger.xlsx');
   const cellSheet = (text) =>
     `<?xml version="1.0"?><worksheet xmlns="${SHEET_NS}"><sheetData>` +
@@ -302,8 +298,6 @@ test('hidden Word text is marked, not read as the document body', async (t) => {
 test('hidden rows and columns are marked in the sheet they belong to', async (t) => {
   const root = await fs.mkdtemp(join(tmpdir(), 'mixdog-read-office-hidden-grid-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
-  const SHEET_NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
-  const RELATIONSHIP_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
   const path = join(root, 'plan.xlsx');
   const text = (ref, value) => `<c r="${ref}" t="inlineStr"><is><t>${value}</t></is></c>`;
   const number = (ref, value) => `<c r="${ref}"><v>${value}</v></c>`;
@@ -385,8 +379,6 @@ test('a sheet reads dates and percentages the way it shows them', async (t) => {
   const root = await fs.mkdtemp(join(tmpdir(), 'mixdog-read-office-format-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const path = join(root, 'schedule.xlsx');
-  const SHEET_NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
-  const RELATIONSHIP_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
   await writePackage(path, {
     'xl/workbook.xml':
       `<?xml version="1.0"?><workbook xmlns="${SHEET_NS}" xmlns:r="${RELATIONSHIP_NS}"><sheets>` +

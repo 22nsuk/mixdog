@@ -14,12 +14,8 @@
  * here mutates stored rows. Storage, schema and inserts stay in
  * usage-ledger.mjs.
  */
-import { isConversationUsageSource } from './usage-rollup.mjs';
+import { isConversationUsageSource, num } from './usage-rollup.mjs';
 import { normalizeUsageMeasurement, normalizeLegacyUsageDay } from './usage-measurement.mjs';
-
-// The same non-negative coercion the ledger applies on write: legacy day
-// documents are arbitrary retained JSON and can carry anything.
-const number = (value) => (Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : 0);
 
 // A detail and its terminal summary can overlap on the SAME route.
 // Another provider/model on that day is independent and must survive.
@@ -241,11 +237,11 @@ function mergeLegacyDays(db, { days, hourly, hourlyDay, fromDay, toDay }) {
           'durationTurns',
           'unmeasuredTurns',
         ])
-          target[field] += number(source[field]);
-        if (source.costKnownTurns != null) target.costKnownTurns += number(source.costKnownTurns);
-        else if (number(source.costUsd) > 0 || route.kind === 'local') target.costKnownTurns += number(source.turns);
-        target.costBilled += number(source.costBilled);
-        target.costEstimated += number(source.costEstimated ?? source.costUsd);
+          target[field] += num(source[field]);
+        if (source.costKnownTurns != null) target.costKnownTurns += num(source.costKnownTurns);
+        else if (num(source.costUsd) > 0 || route.kind === 'local') target.costKnownTurns += num(source.turns);
+        target.costBilled += num(source.costBilled);
+        target.costEstimated += num(source.costEstimated ?? source.costUsd);
         target.sessionsComplete = false;
       };
       merge(day, route);

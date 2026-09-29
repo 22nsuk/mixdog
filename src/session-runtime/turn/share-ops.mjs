@@ -18,12 +18,13 @@ export function createShareOps({ getSession, getActiveTurnCount, mgr }) {
     }
   }
 
-  // Absolute path of the shared pending spool file. Live-share owners
+  // Absolute path of THIS session's pending spool shard. Live-share owners
   // fs.watch it for instant cross-surface input pickup; empty string when
-  // the store is unavailable (callers fall back to the poll tick).
+  // there is no session or the store is unavailable (callers fall back to the
+  // poll tick).
   function pendingSpoolPath() {
     try {
-      return mgr.pendingMessagesSpoolPath?.() || '';
+      return mgr.pendingMessagesSpoolPath?.(getSession()?.id) || '';
     } catch {
       return '';
     }

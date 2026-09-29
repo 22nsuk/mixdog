@@ -1,16 +1,16 @@
 // Module-level helpers bound to this runtime's root/data layout, shared by
 // the boot stages.
-import { isKnownProvider } from '../../standalone/provider-admin.mjs';
+import { isKnownProvider } from '../services/provider-admin.mjs';
 import { normalizeAgentPermissionOrNone, readMarkdownDocument } from '../../runtime/shared/markdown-frontmatter.mjs';
-import { makeWebSearchCapableFor } from '../model-capabilities.mjs';
-import { makeResolveDefaultProvider, findPreset, makeResolveRoute } from '../config-helpers.mjs';
+import { makeWebSearchCapableFor } from '../../runtime/agent/orchestrator/runtime-core/model-capabilities.mjs';
+import { makeResolveDefaultProvider, findPreset, makeResolveRoute } from '../../runtime/agent/orchestrator/runtime-core/config-helpers.mjs';
 import { outputStyleStatus as outputStyleStatusRaw } from '../output-styles.mjs';
 import {
   createWorkflowHelpers,
   createWorkflowRouteHelpers,
   normalizeWebSearchProviderId,
   isWebSearchCapableProvider,
-} from '../workflow.mjs';
+} from '../../runtime/agent/orchestrator/runtime-core/workflow.mjs';
 import { STANDALONE_ROOT, STANDALONE_DATA_DIR } from '../runtime-paths.mjs';
 
 export const resolveRoute = makeResolveRoute(makeResolveDefaultProvider(isKnownProvider));
@@ -28,6 +28,4 @@ export const workflowHelpers = createWorkflowHelpers({
 });
 export const { summarizeWorkflowRoutes, agentRouteFromConfig } = createWorkflowRouteHelpers({ findPreset });
 
-export function dataDirOf(cfgMod) {
-  return cfgMod.getPluginData?.() || STANDALONE_DATA_DIR;
-}
+export { pluginDataDir as dataDirOf } from '../runtime-paths.mjs';

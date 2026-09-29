@@ -12,12 +12,12 @@ import {
   validateSkillName,
   validateSkillWhenToUse,
 } from '../runtime/shared/skill-document.mjs';
-import { clean } from './session-text.mjs';
+import { clean } from '../runtime/agent/orchestrator/runtime-core/session-text.mjs';
 import {
   normalizeSkillToolDependencies,
   saveSkillToolDependencies,
 } from '../runtime/shared/skill-tool-dependencies.mjs';
-import { loadSkillToolDependencies } from './skill-tool-loading.mjs';
+import { loadSkillToolDependencies } from '../runtime/agent/orchestrator/runtime-core/skill-tool-loading.mjs';
 
 const DEFAULT_SKILL_BODY = '# Instructions\n\nDescribe how to use this skill.';
 

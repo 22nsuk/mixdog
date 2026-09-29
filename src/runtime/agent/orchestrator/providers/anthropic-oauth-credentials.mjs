@@ -15,8 +15,8 @@ import { boundProviderAuthPath } from '../../../shared/provider-auth-binding.mjs
 import { resolvePluginData } from '../../../shared/plugin-paths.mjs';
 import { getLlmDispatcher } from '../../../shared/llm/http-agent.mjs';
 import { claudeCliUserAgent, resolveCliVersion } from './anthropic-oauth-client-version.mjs';
-import { expiryFromAccessToken, scrubOAuthSecrets } from './lib/oauth-token-utils.mjs';
-import { createOAuthPkce } from './lib/oauth-pkce.mjs';
+import { expiryFromAccessToken, oauthCredentialStatus, scrubOAuthSecrets } from './lib/oauth-token-utils.mjs';
+import { createOAuthPkce, parseOAuthCodeInput } from './lib/oauth-pkce.mjs';
 
 // SSRF guard for the OAuth token endpoint override. Env-supplied URLs must be
 // https with a valid http(s) URL shape; reject file:/data:/ftp:/etc. and any
@@ -162,8 +162,6 @@ export function describeAnthropicOAuthCredentials() {
     const hasInferenceScope = Array.isArray(creds.scopes) && creds.scopes.includes('user:inference');
     const hasRefresh = Boolean(creds.refreshToken);
     const expiresAt = _normalizeExpiresAt(creds.expiresAt);
-    const expiring = expiresAt > 0 && expiresAt < Date.now() + TOKEN_REFRESH_SKEW_MS;
-    const expired = expiresAt > 0 && expiresAt <= Date.now();
     const detail = creds.path || DEFAULT_CREDENTIALS_PATH;
     if (!hasInferenceScope) {
       return {
@@ -176,46 +174,7 @@ export function describeAnthropicOAuthCredentials() {
         expiresAt,
       };
     }
-    if (!hasRefresh) {
-      return {
-        authenticated: expiresAt === 0 || !expired,
-        usable: expiresAt === 0 || !expired,
-        refreshable: false,
-        reauthRequired: expired,
-        status: expired ? 'Reauth Required' : 'Access Only',
-        detail: `${detail}; no refresh token`,
-        expiresAt,
-      };
-    }
-    if (expired)
-      return {
-        authenticated: true,
-        usable: false,
-        refreshable: true,
-        reauthRequired: false,
-        status: 'Refresh Required',
-        detail,
-        expiresAt,
-      };
-    if (expiring)
-      return {
-        authenticated: true,
-        usable: true,
-        refreshable: true,
-        reauthRequired: false,
-        status: 'Refresh Soon',
-        detail,
-        expiresAt,
-      };
-    return {
-      authenticated: true,
-      usable: true,
-      refreshable: true,
-      reauthRequired: false,
-      status: 'Valid',
-      detail,
-      expiresAt,
-    };
+    return oauthCredentialStatus({ hasRefresh, expiresAt, detail, refreshSkewMs: TOKEN_REFRESH_SKEW_MS });
   } catch (err) {
     return {
       authenticated: false,
@@ -303,7 +262,7 @@ async function _refreshOAuthCredentialsUnlocked(creds) {
   }
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30_000);
+  const timeout = setTimeout(() => controller.abort(), OAUTH_TOKEN_TIMEOUT_MS);
   try {
     const res = await fetch(TOKEN_URL, {
       method: 'POST',
@@ -529,26 +488,18 @@ function _oauthParseScopeField(scope) {
     .filter(Boolean);
 }
 
+// A pasted callback URL also names the redirect_uri it came from; every other
+// shape (code#state, code=…, bare code) is the shared parser's.
 function _parseOAuthCodeInput(input) {
-  const value = String(input || '').trim();
-  if (!value) return { code: '', state: '' };
   try {
-    const url = new URL(value);
+    const url = new URL(String(input || '').trim());
     const code = url.searchParams.get('code') || '';
     const state = url.searchParams.get('state') || '';
     if (code || state) return { code, state, redirectUri: `${url.origin}${url.pathname}` };
   } catch {
     /* not a URL */
   }
-  if (value.includes('#')) {
-    const [code, state] = value.split('#', 2);
-    return { code: String(code || '').trim(), state: String(state || '').trim() };
-  }
-  if (value.includes('code=')) {
-    const params = new URLSearchParams(value.startsWith('?') ? value.slice(1) : value);
-    return { code: params.get('code') || '', state: params.get('state') || '' };
-  }
-  return { code: value, state: '' };
+  return parseOAuthCodeInput(input, { allowHashState: true });
 }
 
 async function exchangeAuthorizationCode({ pkce, code, state, redirectUri }) {
@@ -611,7 +562,7 @@ async function exchangeAuthorizationCode({ pkce, code, state, redirectUri }) {
   };
 }
 
-export async function beginOAuthLogin() {
+export async function beginOAuthLogin({ openBrowserFn = null } = {}) {
   const pkce = createOAuthPkce();
   const state = randomBytes(32).toString('base64url');
   const buildUrl = (redirectUri) => {
@@ -630,8 +581,8 @@ export async function beginOAuthLogin() {
   const manualUrl = buildUrl(OAUTH_MANUAL_REDIRECT_URI);
   const openLoginUrl = async (targetUrl, label = 'login') => {
     try {
-      const { openInBrowser } = await import('../../../shared/open-url.mjs');
-      openInBrowser(targetUrl.toString());
+      const openInBrowser = openBrowserFn || (await import('../../../shared/open-url.mjs')).openInBrowser;
+      await openInBrowser(targetUrl.toString());
     } catch (err) {
       process.stderr.write(
         `[anthropic-oauth] browser open failed for ${label} URL: ${String(err?.message || err).slice(0, 200)}\n`
@@ -665,9 +616,9 @@ export async function beginOAuthLogin() {
       }
       const code = u.searchParams.get('code');
       if (!code || u.searchParams.get('state') !== state) {
+        // Reject this request only; the valid callback may still arrive.
         res.writeHead(400);
         res.end('Invalid');
-        finish(null);
         return;
       }
       try {

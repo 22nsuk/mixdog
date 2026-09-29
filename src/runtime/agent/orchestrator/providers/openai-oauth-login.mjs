@@ -5,8 +5,8 @@
  * exchange, the localhost callback server, and interactive login helpers.
  * openai-oauth.mjs re-exports beginOAuthLogin/loginOAuth as a facade so
  * existing importers resolve unchanged. Token persistence + JWT parsing stay
- * owned by openai-oauth.mjs and are injected here to avoid a circular import
- * of its module-level token store state.
+ * owned by openai-oauth-tokens.mjs and are injected here to avoid a circular
+ * import of its module-level token store state.
  */
 import { createServer } from 'node:http';
 import { randomBytes } from 'node:crypto';

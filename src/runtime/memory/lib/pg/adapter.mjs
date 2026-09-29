@@ -76,9 +76,9 @@ function installPoolErrorHandler(pool, label, { onConnectionLoss } = {}) {
   return pool;
 }
 
-// pg-adapter.mjs — PG connection manager for mixdog 0.4.0
-// Single owner: supervisor-pg.ensurePgInstance(dataDir) starts PG.
-// pg-adapter calls supervisor-pg — never pg-process directly.
+// adapter.mjs — PG connection manager.
+// Single owner: supervisor.mjs ensurePgInstance(dataDir) starts PG.
+// This adapter calls the supervisor — never process.mjs directly.
 //
 // Public API:
 //   ensurePgInstance(dataDir, { schema? }) → { db, pool, host, port, runtimeDir, pgdataDir }

@@ -12,6 +12,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { probePath, PROBE_PRESENT } from './store/fs-probe.mjs';
+import { readJsonProjection } from '../../../shared/pending-json-projection.mjs';
 import { listStoredAgentWorkers as assembleStoredAgentWorkers } from './store-agent-worker-pool.mjs';
 import {
   TAG_TOMBSTONE_TTL_MS,
@@ -162,8 +163,12 @@ function preferUnconfirmedCancel(a, b) {
 }
 
 function storedAgentWorkerIndex() {
+  const path = storedAgentWorkerIndexPath();
+  // This process's own queued (not yet persisted) writes win over the file.
+  const projected = readJsonProjection(path);
+  if (projected) return projected;
   try {
-    return JSON.parse(readFileSync(storedAgentWorkerIndexPath(), 'utf8'));
+    return JSON.parse(readFileSync(path, 'utf8'));
   } catch {
     return null;
   }
@@ -405,11 +410,14 @@ function promoteHeartbeatSidecar(bySessionId, sessionId, heartbeatAt) {
 }
 
 function storedLeadWorkerRows() {
-  let parsed = null;
-  try {
-    parsed = JSON.parse(readFileSync(storedLeadWorkerIndexPath(), 'utf8'));
-  } catch {
-    /* no resident Lead pool */
+  const path = storedLeadWorkerIndexPath();
+  let parsed = readJsonProjection(path);
+  if (!parsed) {
+    try {
+      parsed = JSON.parse(readFileSync(path, 'utf8'));
+    } catch {
+      /* no resident Lead pool */
+    }
   }
   return workerRows(parsed);
 }

@@ -1,13 +1,10 @@
 import { createHash } from 'node:crypto';
 import { estimateTokens } from './token-estimate.mjs';
-import { isWhitespace } from './token-estimate-floors.mjs';
+import { beginIdentity, endIdentity, putJsonElement, putJsonString, putRaw, putShapeText } from './context-identity-writer.mjs';
 import { positiveInt } from '../../../shared/numbers.mjs';
 import { hasPlainPrototype } from '../../../shared/object.mjs';
 import { createContextFingerprinter } from './context-fingerprint.mjs';
-import {
-  isFinalizedProviderRequestTools,
-  providerNativeToolPrefixCount,
-} from '../../../../session-runtime/provider-request-tools.mjs';
+import { estimateRequestReserveTokens } from './context-tool-schema.mjs';
 import {
   contentFileDescriptors,
   contentImageDescriptors,
@@ -96,6 +93,7 @@ export function providerTokenCalibration(provider) {
 const IMAGE_TOKEN_ALLOWANCE = 1_568;
 
 export { estimateTokens };
+export { estimateRequestReserveTokens, estimateToolSchemaTokens, toolSchemaSignature } from './context-tool-schema.mjs';
 
 // Opaque replay payloads (Anthropic thinking signatures, OpenAI encrypted
 // reasoning blobs, redacted data) are long base64-ish strings that ARE billed
@@ -931,167 +929,6 @@ function pruneSignatureStates(chain) {
   }
 }
 
-// --- Identity serialization -------------------------------------------------
-//
-// A message's identity is hashed as the UTF-8 bytes of JSON.stringify(identity)
-// followed by '\0'. The bytes are produced here directly into a reused scratch
-// buffer: the transcript text inside an identity is escaped (and, for the
-// shape identity, normalized) on the fly instead of first building the
-// escaped JSON, the placeholder-stripped copy and the whitespace-collapsed
-// copy of every message. The byte stream — and so every digest — is exactly
-// the one JSON.stringify produces.
-const IDENTITY_SCRATCH = Buffer.allocUnsafe(1 << 16);
-const HEX_DIGITS = '0123456789abcdef';
-// \b \t \n \f \r: the control characters JSON.stringify escapes by letter.
-const SHORT_ESCAPES = new Uint8Array(32);
-SHORT_ESCAPES[0x08] = 0x62;
-SHORT_ESCAPES[0x09] = 0x74;
-SHORT_ESCAPES[0x0a] = 0x6e;
-SHORT_ESCAPES[0x0c] = 0x66;
-SHORT_ESCAPES[0x0d] = 0x72;
-let identityPos = 0;
-let identityHash = null;
-
-function flushIdentity() {
-  if (identityPos) identityHash.update(IDENTITY_SCRATCH.subarray(0, identityPos));
-  identityPos = 0;
-}
-
-function reserveIdentity(bytes) {
-  if (identityPos + bytes > IDENTITY_SCRATCH.length) flushIdentity();
-}
-
-function putUnicodeEscape(code) {
-  const s = IDENTITY_SCRATCH;
-  s[identityPos++] = 0x5c;
-  s[identityPos++] = 0x75;
-  s[identityPos++] = HEX_DIGITS.charCodeAt((code >> 12) & 15);
-  s[identityPos++] = HEX_DIGITS.charCodeAt((code >> 8) & 15);
-  s[identityPos++] = HEX_DIGITS.charCodeAt((code >> 4) & 15);
-  s[identityPos++] = HEX_DIGITS.charCodeAt(code & 15);
-}
-
-// Writes the code unit at `index` of `text` (a whole surrogate pair when one
-// starts there) as UTF-8, JSON-escaped when `escape`; returns the next index.
-function putCodeUnit(text, index, escape) {
-  reserveIdentity(6);
-  const s = IDENTITY_SCRATCH;
-  const c = text.charCodeAt(index);
-  if (c < 0x80) {
-    if (!escape || (c >= 0x20 && c !== 0x22 && c !== 0x5c)) {
-      s[identityPos++] = c;
-    } else if (c === 0x22 || c === 0x5c) {
-      s[identityPos++] = 0x5c;
-      s[identityPos++] = c;
-    } else if (SHORT_ESCAPES[c]) {
-      s[identityPos++] = 0x5c;
-      s[identityPos++] = SHORT_ESCAPES[c];
-    } else {
-      putUnicodeEscape(c);
-    }
-    return index + 1;
-  }
-  if (c < 0x800) {
-    s[identityPos++] = 0xc0 | (c >> 6);
-    s[identityPos++] = 0x80 | (c & 0x3f);
-    return index + 1;
-  }
-  if (c >= 0xd800 && c <= 0xdfff) {
-    const next = c <= 0xdbff && index + 1 < text.length ? text.charCodeAt(index + 1) : 0;
-    if (next >= 0xdc00 && next <= 0xdfff) {
-      const point = (c - 0xd800) * 0x400 + (next - 0xdc00) + 0x10000;
-      s[identityPos++] = 0xf0 | (point >> 18);
-      s[identityPos++] = 0x80 | ((point >> 12) & 0x3f);
-      s[identityPos++] = 0x80 | ((point >> 6) & 0x3f);
-      s[identityPos++] = 0x80 | (point & 0x3f);
-      return index + 2;
-    }
-    // A lone surrogate: JSON.stringify escapes it (raw JSON never has one).
-    putUnicodeEscape(c);
-    return index + 1;
-  }
-  s[identityPos++] = 0xe0 | (c >> 12);
-  s[identityPos++] = 0x80 | ((c >> 6) & 0x3f);
-  s[identityPos++] = 0x80 | (c & 0x3f);
-  return index + 1;
-}
-
-function putRaw(text) {
-  for (let index = 0; index < text.length; ) index = putCodeUnit(text, index, false);
-}
-
-function putJsonString(text) {
-  putRaw('"');
-  for (let index = 0; index < text.length; ) index = putCodeUnit(text, index, true);
-  putRaw('"');
-}
-
-// One element of an identity array (strings escaped here; the other values
-// are small plain data and serialize through JSON.stringify).
-function putJsonElement(value) {
-  if (typeof value === 'string') putJsonString(value);
-  else putRaw(JSON.stringify(value) ?? 'null');
-}
-
-const STORED_MEDIA_PLACEHOLDER_PREFIXES = ['[Image omitted from stored history', '[File omitted from stored history'];
-
-// JSON.stringify of
-//   text.replace(/\[(?:Image|File) omitted from stored history[^\]]*\]/g, ' ')
-//       .replace(/\s+/g, ' ').trim()
-// written in one pass; returns how many placeholders were replaced.
-function putShapeText(text) {
-  putRaw('"');
-  let placeholders = 0;
-  let emitted = false;
-  let pendingSpace = false;
-  let closable = true;
-  for (let index = 0; index < text.length; ) {
-    const c = text.charCodeAt(index);
-    if (c === 0x5b && closable) {
-      let prefix = null;
-      for (const candidate of STORED_MEDIA_PLACEHOLDER_PREFIXES) {
-        if (text.startsWith(candidate, index)) prefix = candidate;
-      }
-      if (prefix) {
-        const close = text.indexOf(']', index + prefix.length);
-        // No `]` after this one means no later placeholder can close either.
-        if (close < 0) {
-          closable = false;
-        } else {
-          placeholders += 1;
-          pendingSpace = emitted;
-          index = close + 1;
-          continue;
-        }
-      }
-    }
-    if (isWhitespace(c)) {
-      pendingSpace = emitted;
-      index += 1;
-      continue;
-    }
-    if (pendingSpace) {
-      putRaw(' ');
-      pendingSpace = false;
-    }
-    index = putCodeUnit(text, index, true);
-    emitted = true;
-  }
-  putRaw('"');
-  return placeholders;
-}
-
-function beginIdentity(hash) {
-  identityHash = hash;
-  identityPos = 0;
-}
-
-function endIdentity() {
-  putRaw('\0');
-  flushIdentity();
-  identityHash = null;
-}
-
 // JSON.stringify([role, toolCallId, estimateText, imageAllowance, images]).
 // Every value is taken before anything is written, so a throwing projection
 // leaves `hash` untouched.
@@ -1429,85 +1266,6 @@ export async function primeContextEstimates(messages, baseline = null) {
 // projection itself is hashShapeIdentity / putShapeText above.
 export function contextMessagesShapeSignature(messages, count = messages?.length) {
   return memoizedTranscriptSignature(messages, count, 'shape', hashShapeIdentity);
-}
-
-const toolSchemaAnalysisMemo = new WeakMap();
-
-function isDeferredToolSchema(tool) {
-  return tool?.deferLoading === true || tool?.defer_loading === true;
-}
-
-function serializeToolSchemas(tools, { excludeDeferred = false } = {}) {
-  const list = Array.isArray(tools) ? tools : [];
-  const nativePrefixCount = providerNativeToolPrefixCount(list);
-  try {
-    const wire = [];
-    list.forEach((tool, index) => {
-      const deferred = isDeferredToolSchema(tool);
-      if (excludeDeferred && deferred) return;
-      if (index < nativePrefixCount) {
-        wire.push(tool);
-        return;
-      }
-      const wireTool = {
-        name: tool?.name,
-        description: tool?.description,
-        input_schema: tool?.inputSchema ?? tool?.input_schema ?? tool?.parameters ?? tool?.schema,
-      };
-      if (deferred) wireTool.defer_loading = true;
-      wire.push(wireTool);
-    });
-    return JSON.stringify(wire);
-  } catch {
-    return list
-      .filter((tool) => !(excludeDeferred && isDeferredToolSchema(tool)))
-      .map((t) => String(t?.name ?? ''))
-      .join('');
-  }
-}
-
-export function toolSchemaSignature(tools) {
-  return analyzeToolSchemas(tools).signature;
-}
-
-function analyzeToolSchemas(tools) {
-  const list = Array.isArray(tools) ? tools : [];
-  const cached = Array.isArray(tools) ? toolSchemaAnalysisMemo.get(tools) : null;
-  if (cached && isFinalizedProviderRequestTools(tools)) return cached;
-  const text = serializeToolSchemas(list);
-  const signature = createHash('sha256').update(text).digest('hex');
-  if (cached && cached.signature === signature) return cached;
-  // defer_loading schemas ride the wire but the API excludes them from
-  // context-token calculation and prompt-cache keys, so metering them at
-  // full weight inflated the request reserve. The SIGNATURE keeps hashing
-  // the full serialization (a deferred tool joining/leaving must still
-  // re-fingerprint the surface); only the token cost drops deferred entries.
-  const meterText = list.some(isDeferredToolSchema) ? serializeToolSchemas(list, { excludeDeferred: true }) : text;
-  const analysis = { signature, tokens: estimateTokens(meterText) };
-  if (Array.isArray(tools)) toolSchemaAnalysisMemo.set(tools, analysis);
-  return analysis;
-}
-
-/**
- * Estimate the token cost of the tool/function schemas a provider appends to
- * the request body. These are NOT part of `messages` (they're a separate
- * argument to provider.send), so estimateMessagesTokens() ignores them
- * entirely — a transcript that "fits" by message tokens can still overflow
- * once N tool schemas are serialized into the same request. Best-effort
- * chars/4 over the JSON-serialized definitions.
- */
-export function estimateToolSchemaTokens(tools) {
-  if (!Array.isArray(tools) || tools.length === 0) return 0;
-  return analyzeToolSchemas(tools).tokens;
-}
-
-/**
- * Total request-side bytes the caller should reserve out of the context window
- * before compaction. Only serialized tool schemas are counted; providers do
- * not expose a stable framing cost, so no synthetic fixed allowance is added.
- */
-export function estimateRequestReserveTokens(tools) {
-  return estimateToolSchemaTokens(tools);
 }
 
 /**

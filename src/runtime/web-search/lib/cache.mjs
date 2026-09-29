@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
-import { CACHE_PATH, readJson, writeJson } from './config.mjs';
+import { CACHE_PATH, readJson } from './config.mjs';
+import { createDebouncedJsonWriter } from './debounced-json-writer.mjs';
 
 const DEFAULT_CACHE_STATE = {
   entries: {},
@@ -60,62 +61,15 @@ function enforceCacheSizeBounds(state) {
   }
 }
 
-const FLUSH_DELAY_MS = 5000;
-
-let cacheDirty = false;
-let cacheFlushTimer = null;
-let activeCacheState = null;
-let lastCacheFlushWarnAt = 0;
-
 function nowMs() {
   return Date.now();
 }
 
-// 5s debounce so a single web-search invocation that touches the cache multiple
-// times (lookup + insert + prune) coalesces into one writeJson roundtrip.
-// Without this, callers like crawl/batch that don't explicitly flush would
-// either spam fsync (immediate write per mutation) or silently drop dirty
-// state on crash (bare dirty flag).
-function scheduleCacheFlush(state) {
-  cacheDirty = true;
-  activeCacheState = state;
-  if (cacheFlushTimer) return;
-  cacheFlushTimer = setTimeout(() => {
-    cacheFlushTimer = null;
-    flushCacheState();
-  }, FLUSH_DELAY_MS);
-  if (cacheFlushTimer.unref) cacheFlushTimer.unref();
-}
-
-function flushCacheState() {
-  if (cacheFlushTimer) {
-    clearTimeout(cacheFlushTimer);
-    cacheFlushTimer = null;
-  }
-  if (cacheDirty && activeCacheState) {
-    try {
-      writeJson(CACHE_PATH, activeCacheState);
-      cacheDirty = false;
-    } catch (err) {
-      // Cache state is best-effort. Windows AV/indexer can hold the
-      // destination open. Keep the dirty state and retry quietly.
-      const now = Date.now();
-      if (now - lastCacheFlushWarnAt > 60000) {
-        lastCacheFlushWarnAt = now;
-        process.stderr.write(`[web-search-cache] flushCacheState delayed: ${err?.code || err?.message || err}\n`);
-      }
-      if (!cacheFlushTimer) {
-        cacheFlushTimer = setTimeout(() => {
-          cacheFlushTimer = null;
-          flushCacheState();
-        }, FLUSH_DELAY_MS * 2);
-        if (cacheFlushTimer.unref) cacheFlushTimer.unref();
-      }
-    }
-  }
-}
-
-process.on('exit', flushCacheState);
+// A single web-search invocation that touches the cache several times (lookup +
+// insert + prune) coalesces into one write.
+const cacheWriter = createDebouncedJsonWriter({ path: CACHE_PATH, label: 'web-search-cache' });
+const scheduleCacheFlush = cacheWriter.schedule;
+const flushCacheState = cacheWriter.flush;
 
 export { flushCacheState };
 
@@ -128,7 +82,7 @@ export function loadCacheState() {
     state.entries = {};
   }
   _instance = state;
-  activeCacheState = state;
+  cacheWriter.track(state);
   pruneExpiredEntries(state);
   cacheApproxBytes(state);
   enforceCacheSizeBounds(state);

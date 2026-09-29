@@ -1,11 +1,11 @@
-// session-pending-messages.json is SHARED between the TUI steering mirror and
-// the runtime/manager pending-message spool. Every TUI write passes the whole
-// store through normalizePendingStore, so these tests pin the invariant that a
-// TUI write is lossless for foreign rows — including the handoffAt/handoffPid
-// parking stamp that lets accepted user input survive an owner crash — and
-// that orphan cleanup only reaps TUI-owned (`tui_`) buckets.
+// The TUI steering mirror and the runtime/manager pending-message spool share
+// one per-session shard layout (session-pending/<key>.json). These tests pin
+// that the one-time migration of the legacy global file is lossless for
+// foreign rows — including the handoffAt/handoffPid parking stamp that lets
+// accepted user input survive an owner crash — that a TUI operation touches
+// only its own shard, and that sessions never contend on a shared lock.
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -18,7 +18,9 @@ const { appendTuiSteeringPersist, drainTuiSteeringPersist, flushTuiSteeringPersi
 );
 
 const spoolPath = join(dataDir, 'session-pending-messages.json');
-const readSpool = () => JSON.parse(readFileSync(spoolPath, 'utf8'));
+const legacyPath = spoolPath;
+const shardPath = (key) => join(dataDir, 'session-pending', `${key}.json`);
+const readShard = (key) => JSON.parse(readFileSync(shardPath(key), 'utf8'));
 
 // Older than the TUI restore TTL (30m) and than the runtime orphan window, so
 // the pre-fix orphan sweep would have reaped this whole bucket.
@@ -73,34 +75,56 @@ test.after(() => {
   }
 });
 
-test('a TUI steering append round-trips foreign runtime spool rows losslessly', async () => {
+test('a TUI steering append migrates the legacy spool and leaves foreign rows lossless', async () => {
   await appendTuiSteeringPersist('leadsessionone', { text: 'steer me' });
   await flushTuiSteeringPersist();
 
-  const store = readSpool();
-  // Every field of every foreign row survives the TUI write untouched.
-  assert.deepEqual(store.sessions.sess_runtime_owner, foreignRows);
-  // A foreign session's touch stamp is carried, never refreshed by our write.
-  assert.equal(store.sessionTouchedAt.sess_runtime_owner, OLD_AT);
+  // The legacy global file is kept as a renamed backup, never left in place.
+  assert.equal(existsSync(legacyPath), false);
+  assert.equal(
+    readdirSync(dataDir).some((name) => name.startsWith('session-pending-messages.json.migrated-')),
+    true
+  );
 
-  const steering = store.sessions.tui_leadsessionone;
+  // Every field of every foreign row survives migration and the TUI write untouched.
+  const foreign = readShard('sess_runtime_owner');
+  assert.deepEqual(foreign.sessions.sess_runtime_owner, foreignRows);
+  // A foreign session's touch stamp is carried, never refreshed by our write.
+  assert.equal(foreign.sessionTouchedAt.sess_runtime_owner, OLD_AT);
+
+  // The steering bucket lives in its own shard.
+  const steering = readShard('tui_leadsessionone').sessions.tui_leadsessionone;
   assert.equal(Array.isArray(steering), true);
   assert.equal(steering.length, 1);
   assert.equal(steering[0].text, 'steer me');
 });
 
-test('drain reaps only stale tui_ buckets and leaves foreign spool rows in place', async () => {
+test('drain touches only its own shard: the file is removed, other shards stay', async () => {
+  const foreignBefore = readFileSync(shardPath('sess_runtime_owner'), 'utf8');
   const drained = await drainTuiSteeringPersist('leadsessionone');
   assert.deepEqual(
     drained.map((row) => row.text),
     ['steer me']
   );
 
-  const store = readSpool();
-  assert.deepEqual(store.sessions.sess_runtime_owner, foreignRows);
-  assert.equal(store.sessionTouchedAt.sess_runtime_owner, OLD_AT);
-  // Own bucket drained, other TUI lead session's stale bucket pruned.
-  assert.equal(store.sessions.tui_leadsessionone, undefined);
-  assert.equal(store.sessions.tui_staleother, undefined);
-  assert.equal(store.sessionTouchedAt.tui_staleother, undefined);
+  assert.equal(existsSync(shardPath('tui_leadsessionone')), false);
+  assert.equal(readFileSync(shardPath('sess_runtime_owner'), 'utf8'), foreignBefore);
+  // Another lead session's stale bucket is the sweep's concern, not the drain's.
+  assert.equal(existsSync(shardPath('tui_staleother')), true);
+});
+
+test('steering operations of different sessions never contend on one lock', async () => {
+  const held = `${shardPath('tui_blockedlead')}.lock`;
+  mkdirSync(join(dataDir, 'session-pending'), { recursive: true });
+  // A live holder (our pid, foreign token) on one session's shard lock.
+  writeFileSync(held, `${process.pid} ${Date.now()} deadbeefdeadbeefdeadbeef\n`, 'utf8');
+  try {
+    const startedAt = Date.now();
+    await appendTuiSteeringPersist('freelead', { text: 'unblocked' });
+    await flushTuiSteeringPersist();
+    assert.ok(Date.now() - startedAt < 1500);
+    assert.equal(readShard('tui_freelead').sessions.tui_freelead[0].text, 'unblocked');
+  } finally {
+    rmSync(held, { force: true });
+  }
 });

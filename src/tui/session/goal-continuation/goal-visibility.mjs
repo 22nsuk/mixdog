@@ -3,7 +3,7 @@
 // archiveCompletedGoalOnUserInput), so both stay masked until that archive
 // write lands; the raw record still holds the finished Goal in that window.
 import { clean } from '../../../runtime/shared/clean.mjs';
-import { goalStateSnapshot } from '../../../session-runtime/goal-state.mjs';
+import { goalStateSnapshot } from '../../../runtime/agent/orchestrator/runtime-core/goal-state.mjs';
 
 const ARCHIVED_STATUSES = ['complete', 'stopped'];
 

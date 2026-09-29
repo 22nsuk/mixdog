@@ -7,6 +7,8 @@ const MAX_REGISTRY_BYTES = 1024 * 1024;
 const cache = new Map();
 const registryPath = (dataDir) => join(dataDir, 'local-provider', 'registered-models.json');
 
+export const HUGGING_FACE_REPOSITORY_ID = /^[\w.-]+\/[\w.-]+$/;
+
 /** Pinned Hugging Face download URL for one repository file at an exact revision. */
 export function huggingFaceFileUrl(repository, revision, remoteFilename) {
   return `https://huggingface.co/${repository}/resolve/${revision}/${remoteFilename.split('/').map(encodeURIComponent).join('/')}`;
@@ -27,7 +29,7 @@ function validateModel(entry) {
     entry.estimatedVramBytes < entry.size ||
     entry.minimumVramBytes !== entry.estimatedVramBytes ||
     !/^[a-f0-9]{40}$/.test(entry.revision || '') ||
-    !/^[\w.-]+\/[\w.-]+$/.test(entry.repository || '') ||
+    !HUGGING_FACE_REPOSITORY_ID.test(entry.repository || '') ||
     typeof entry.remoteFilename !== 'string' ||
     entry.remoteFilename.split('/').some((part) => !part || part === '.' || part === '..') ||
     // biome-ignore lint/suspicious/noControlCharactersInRegex: rejects control characters in an untrusted remote file name

@@ -1,4 +1,4 @@
-import { visibleWidth } from './ansi.mjs';
+import { visibleWidth } from '../runtime/shared/statusline/ansi.mjs';
 
 /**
  * Build a conservative in-place final-format patch for a streamed terminal

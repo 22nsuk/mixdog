@@ -66,8 +66,7 @@ export {
   enqueueRemotePendingMessage,
   drainForeignUserInjections,
   drainPendingMessages,
-  // Shutdown drain for runtime hosts (session-runtime-worker calls this
-  // before exit so buffered/in-flight spool writes are never abandoned).
+  // Shutdown drain so buffered/in-flight spool writes are never abandoned.
   settlePendingMessageWrites,
   markCompletionEntry,
   COMPLETION_NOTIFICATION_KIND,

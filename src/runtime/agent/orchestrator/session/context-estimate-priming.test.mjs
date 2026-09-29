@@ -10,7 +10,7 @@ import {
   primeContextEstimates,
   summarizeContextMessages,
 } from './context-utils.mjs';
-import { createContextStatus } from '../../../../session-runtime/context-status.mjs';
+import { createContextStatus } from '../runtime-core/context-status.mjs';
 import { createResumeAction } from '../../../../tui/session/session-api/lifecycle/resume.mjs';
 
 function transcript(count, bodyChars = 200) {

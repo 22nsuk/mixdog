@@ -9,6 +9,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { resolveAntigravityAuth } from '../auth.mjs';
+import { timeoutSignal } from '../bounded-signal.mjs';
 import { upstreamError } from '../upstream-error.mjs';
 import { geminiImageRequestBody, pickGeminiImagePart } from './gemini-image.mjs';
 import { CONTENT_ENDPOINTS, antigravityHeaders } from '../../agent/orchestrator/providers/antigravity-oauth-tokens.mjs';
@@ -54,7 +55,6 @@ export async function generateImage(
 ) {
   const auth = await resolveAuth();
   const body = antigravityImageRequestBody({ projectId: auth.projectId, model, prompt, options, references });
-  const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
   const res = await fetchFn(`${endpoint}/v1internal:streamGenerateContent?alt=sse`, {
     method: 'POST',
     headers: {
@@ -65,7 +65,7 @@ export async function generateImage(
     },
     body: JSON.stringify(body),
     redirect: 'error',
-    signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+    signal: timeoutSignal(signal, REQUEST_TIMEOUT_MS),
   });
   if (!res.ok) throw upstreamError('Antigravity image', res.status, await res.text().catch(() => ''));
   const { parts, failure } = antigravityImageParts(await res.text());

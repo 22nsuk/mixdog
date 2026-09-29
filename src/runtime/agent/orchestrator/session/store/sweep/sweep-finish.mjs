@@ -5,7 +5,7 @@ import { readdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { probePath, PROBE_PRESENT, PROBE_ABSENT } from '../fs-probe.mjs';
 import { _queueSummaryIndexPrune } from '../summary-cache.mjs';
-import { deleteSession } from '../../store.mjs';
+import { deleteSession } from '../session-delete.mjs';
 
 /** Retention cap: prune resumable open (non-tombstone) sessions newest-first
  *  — keep the most recent openMaxCount, prune anything older than openMaxAgeMs

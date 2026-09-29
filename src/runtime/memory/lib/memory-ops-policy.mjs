@@ -38,7 +38,7 @@ async function countUnclassified(db) {
   return Number(row?.c ?? 0);
 }
 
-function selectBackfillTranscripts({ sinceMs = null, limit = null, projectsRoot = null } = {}) {
+function selectBackfillTranscripts({ sinceMs = null, limit = null, projectsRoot = null, accept = null } = {}) {
   const root = projectsRoot || path.join(mixdogHome(), 'projects');
   if (!fs.existsSync(root)) return [];
   const files = [];
@@ -56,6 +56,7 @@ function selectBackfillTranscripts({ sinceMs = null, limit = null, projectsRoot 
           continue;
         }
         if (sinceMs != null && mtime < sinceMs) continue;
+        if (accept && !accept(fp)) continue;
         files.push({ path: fp, mtime });
       }
     } catch {}
@@ -82,6 +83,7 @@ export async function runFullBackfill(
     runCycle2,
     now = Date.now(),
     projectsRoot = null,
+    workspaceCwd = null,
     signal,
   } = {}
 ) {
@@ -96,7 +98,21 @@ export async function runFullBackfill(
   const normalizedWindow = normalizeBackfillWindow(window);
   const normalizedScope = normalizeBackfillScope(scope);
   const sinceMs = resolveBackfillSinceMs(normalizedWindow, now);
-  const selected = selectBackfillTranscripts({ sinceMs, limit, projectsRoot });
+  const normPath = (p) => {
+    const r = path.resolve(String(p));
+    return process.platform === 'win32' ? r.toLowerCase() : r;
+  };
+  const workspaceRoot = normPath(workspaceCwd || process.cwd());
+  const accept =
+    normalizedScope === 'workspace' && typeof cwdFromTranscriptPath === 'function'
+      ? (fp) => {
+          const c = cwdFromTranscriptPath(fp);
+          if (!c) return false;
+          const rel = path.relative(workspaceRoot, normPath(c));
+          return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+        }
+      : null;
+  const selected = selectBackfillTranscripts({ sinceMs, limit, projectsRoot, accept });
 
   let ingested = 0;
   const errors = [];

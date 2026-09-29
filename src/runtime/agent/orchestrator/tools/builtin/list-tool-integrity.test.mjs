@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
 
-import { recordRuntimeDirectoryReadSuccess } from '../../../../shared/session-runtime-health.mjs';
 import { executeListTool, executeTreeTool } from './list-tool.mjs';
 
 function readdirError(code, message = 'injected readdir failure') {
@@ -48,16 +47,8 @@ test('list defaults to a 100-entry page with an offset continuation', async () =
   }
 });
 
-test('root readdir failures are errors, stay uncached, and mark a repeatedly failing runtime worker unhealthy', async () => {
-  const originalRuntimeWorkerPid = process.env.MIXDOG_SESSION_RUNTIME_WORKER_PID;
+test('root readdir failures are errors and stay uncached', async () => {
   const roots = [];
-  let unhealthy = null;
-  const onUnhealthy = (detail) => {
-    unhealthy = detail;
-  };
-  process.env.MIXDOG_SESSION_RUNTIME_WORKER_PID = String(process.pid);
-  process.on('mixdog:session-runtime-worker-unhealthy', onUnhealthy);
-  recordRuntimeDirectoryReadSuccess();
   try {
     for (let index = 0; index < 3; index += 1) {
       const root = await mkdtemp(join(tmpdir(), `mixdog-list-root-fail-${index}-`));
@@ -70,13 +61,8 @@ test('root readdir failures are errors, stay uncached, and mark a repeatedly fai
       });
       assert.match(out, /^Error: readdir failed \(EIO\):/);
     }
-    assert.equal(unhealthy?.distinctRoots, 3);
     assert.match(await executeListTool({ path: roots[0], hidden: true }, process.cwd()), /entry-0\.txt\tfile/);
   } finally {
-    recordRuntimeDirectoryReadSuccess();
-    process.off('mixdog:session-runtime-worker-unhealthy', onUnhealthy);
-    if (originalRuntimeWorkerPid === undefined) delete process.env.MIXDOG_SESSION_RUNTIME_WORKER_PID;
-    else process.env.MIXDOG_SESSION_RUNTIME_WORKER_PID = originalRuntimeWorkerPid;
     await Promise.all(roots.map((root) => rm(root, { recursive: true, force: true })));
   }
 });
@@ -135,6 +121,21 @@ test('a successful empty walk is explicitly traceable as integrity-checked', asy
       entriesVisited: 0,
       warnings: 0,
     });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a glob-shaped list path forwards options to the find flow', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mixdog-list-glob-options-'));
+  try {
+    for (const name of ['a.txt', 'b.txt', 'c.txt']) await writeFile(join(root, name), 'ok');
+    const scopedCacheOutcome = { complete: true };
+    const out = await executeListTool({ path: join(root, '*.txt'), head_limit: 1 }, process.cwd(), {
+      scopedCacheOutcome,
+    });
+    assert.match(out, /pass offset:1 to continue/);
+    assert.equal(scopedCacheOutcome.complete, false);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

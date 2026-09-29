@@ -1,5 +1,5 @@
 // Statusline route serialization. Pure helpers.
-import { clean } from './session-text.mjs';
+import { clean } from '../runtime/agent/orchestrator/runtime-core/session-text.mjs';
 
 function routeForStatusline(route) {
   const out = {

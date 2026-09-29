@@ -7,7 +7,8 @@ import test from 'node:test';
 import { cleanupBackgroundTasks, getBackgroundTask, startBackgroundTask } from '../runtime/shared/background-tasks.mjs';
 import { _sessionSummary } from '../runtime/agent/orchestrator/session/store-summary-index.mjs';
 import { restoreTranscriptItems } from '../tui/session/session-api-ext.mjs';
-import { createStandaloneAgent } from './agent-tool.mjs';
+import { createStandaloneAgent } from '../session-runtime/services/agent-tool.mjs';
+import { flushAllIndexWrites } from '../session-runtime/services/agent-tool/index-write-queue.mjs';
 import { createSessionService } from './session-service.mjs';
 
 function persistedUserMessage(prompt, options = {}) {
@@ -703,6 +704,7 @@ test('live Agent cancel survives canonical close and a late cancelled turn rejec
   t.after(async () => {
     cleanupBackgroundTasks({ surface: 'agent', force: true });
     await service.stop('test complete');
+    await flushAllIndexWrites();
     await rm(dataDir, { recursive: true, force: true });
   });
 
@@ -742,6 +744,7 @@ test('live Agent cancel survives canonical close and a late cancelled turn rejec
 
   assert.equal(task.status, 'cancelled');
   assert.notEqual(task.status, 'failed');
+  await flushAllIndexWrites(); // the worker index persists through an async writer queue
   const stored = JSON.parse(await readFile(join(dataDir, 'agent-workers.json'), 'utf8'));
   const worker = Object.values(stored.workers || {}).find((row) => row.sessionId === sessionId);
   assert.ok(worker);
@@ -839,6 +842,7 @@ test('public Agent APIs rehydrate and reuse durable canonical ancestry after dae
   t.after(async () => {
     cleanupBackgroundTasks({ surface: 'agent', force: true });
     await service?.stop('test complete');
+    await flushAllIndexWrites();
     await rm(dataDir, { recursive: true, force: true });
   });
 
@@ -895,6 +899,9 @@ test('public Agent APIs rehydrate and reuse durable canonical ancestry after dae
 
   await service.stop('simulated daemon replacement');
   cleanupBackgroundTasks({ surface: 'agent', force: true });
+  // A replaced daemon's queued index writes land before it exits; settle them
+  // here so none recreates the index after the simulated crash removes it.
+  await flushAllIndexWrites();
   // A durable canonical session, not the auxiliary tag index, must be enough
   // to recover same-tag reuse after a crash between the two writes.
   await rm(join(dataDir, 'agent-workers.json'), { force: true });

@@ -4,7 +4,8 @@
  * and the log scrubbing that keeps credentials out of connection messages.
  */
 
-/** Known auto-detect targets: port file path relative to tmpdir.
+/** Known auto-detect targets: the discovery-advert service name and the MCP
+ *  endpoint path on its port.
  *  Note: `mixdog` used to self-loopback via active-instance.json's
  *  httpPort, but that path went through channels' owner HTTP server which
  *  only exposes a subset of tools. The plugin's own tools are now injected

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { pruneStaleChannelClientHeartbeats } from './channel-worker.mjs';
+import { pruneStaleChannelClientHeartbeats } from '../session-runtime/services/channel-worker.mjs';
 
 test('channel heartbeat sweep removes dead and expired rows only', () => {
   const root = mkdtempSync(join(tmpdir(), 'mixdog-channel-heartbeat-test-'));

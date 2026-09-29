@@ -14,7 +14,7 @@ const {
   changeProviderAccounts,
 } = await import('../runtime/shared/provider-accounts.mjs');
 const { writeJsonAtomicSync } = await import('../runtime/shared/atomic-file.mjs');
-const { forgetProviderAuth, beginOAuthProviderLogin, listProviderAccounts } = await import('./provider-admin.mjs');
+const { forgetProviderAuth, beginOAuthProviderLogin, listProviderAccounts } = await import('../session-runtime/services/provider-admin.mjs');
 after(() => rmSync(dir, { recursive: true, force: true }));
 
 function mockTokenExchange(t, response) {

@@ -3,7 +3,6 @@
 // an early answer (`result`), a delegation to the glob tool (`delegate`), or
 // the resolved `request` the search itself runs from.
 import { isAbsolute } from 'node:path';
-import { markScopedCacheIncomplete } from '../../../session/cache/scoped-cache-outcome.mjs';
 import { applyGrepContextLeadPolicy, GREP_CONTEXT_MAX, hasUnsupportedRipgrepRegex } from '../arg-guard.mjs';
 import { statReachable } from '../fs-reachability.mjs';
 import {
@@ -20,9 +19,9 @@ import { isUncOrSmbPath, resolveSearchScope, uncRefusalMessage } from '../search
 import { _grepDefaultHeadLimit } from './grep-context-expander.mjs';
 import { grepMissingPatternMessage } from './grep-output.mjs';
 import {
-  coerceNonNegInt,
+  capPatternList,
   isRedundantAllFilesGlob,
-  resolveHeadLimit,
+  resolveSearchWindow,
   stringList,
   uniqueStrings,
 } from './search-input-helpers.mjs';
@@ -137,19 +136,9 @@ function resolveGrepWindow(args) {
   // Filename-only and count searches are explicit: callers must opt into
   // `files_with_matches` or `count` when they only need existence/count data.
   const outputMode = rawOutputMode === 'content_with_context' ? 'content' : rawOutputMode || 'content';
-  const headLimitRaw = args.head_limit;
-  const headLimitCoerced = coerceNonNegInt(headLimitRaw);
-  if (Number.isNaN(headLimitCoerced)) {
-    return {
-      result: `Error: invalid limit ${JSON.stringify(headLimitRaw)}; expected a non-negative integer (0 = unlimited)`,
-    };
-  }
-  const headLimit = resolveHeadLimit(headLimitCoerced, _grepDefaultHeadLimit());
-  const offsetCoerced = coerceNonNegInt(args.offset);
-  if (Number.isNaN(offsetCoerced)) {
-    return { result: `Error: invalid offset ${JSON.stringify(args.offset)}; expected a non-negative integer` };
-  }
-  const offset = offsetCoerced || 0;
+  const window = resolveSearchWindow(args, _grepDefaultHeadLimit());
+  if (window.error) return { result: window.error };
+  const { headLimit, headLimitCoerced, offset } = window;
   const context = resolveGrepContextFlags(args, wantAutoContext);
   if (context.result !== undefined) return context;
   return { outputMode, headLimit, headLimitCoerced, offset, ...context };
@@ -215,15 +204,8 @@ function resolveGrepFileType(rawType) {
 // never cache it as complete. Applies to every downstream path (fan-out,
 // chunk-merge, single combined).
 function capGrepPatterns(requested, options) {
-  if (requested.length <= GREP_PATTERN_ARRAY_CAP) {
-    return { patterns: requested, patternCapNote: '', patternCapTotal: 0 };
-  }
-  if (options?.scopedCacheOutcome) markScopedCacheIncomplete(options.scopedCacheOutcome);
-  return {
-    patterns: requested.slice(0, GREP_PATTERN_ARRAY_CAP),
-    patternCapNote: `[capped at ${GREP_PATTERN_ARRAY_CAP} of ${requested.length} patterns]\n`,
-    patternCapTotal: requested.length,
-  };
+  const { patterns, note, total } = capPatternList(requested, GREP_PATTERN_ARRAY_CAP, options);
+  return { patterns, patternCapNote: note, patternCapTotal: total };
 }
 
 // A pattern-less grep with a glob or magic path is a file search in disguise.

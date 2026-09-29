@@ -10,7 +10,7 @@ import { atomicWrite } from '../builtin/atomic-write.mjs';
 import { assertPathReachable, assertPathsReachable } from '../builtin/fs-reachability.mjs';
 import { markCodeGraphDirtyPaths } from '../code-graph-state.mjs';
 import { isSpecialFileStat } from '../builtin/device-paths.mjs';
-import { pathKey, resolveV4AEntryPath } from './paths.mjs';
+import { pathKey, resolveV4AEntryPath, specialFilePatchMessage } from './paths.mjs';
 import { isV4AEndOfFileMarker } from './parsing.mjs';
 import {
   findLineSequence,
@@ -262,7 +262,7 @@ function recoverHunkWindow(sourceLines, hunk, stats, anchorLine, window, eof) {
   if (windowUnlocated(window)) {
     if (eof) window.eofSignalIgnored = true;
     const from = Math.max(0, anchorLine - 1);
-    const alt = findLineSequenceEscapeEquiv(sourceLines, window.oldLinesPattern, from, from);
+    const alt = findLineSequenceEscapeEquiv(sourceLines, window.oldLinesPattern, from);
     if (alt >= 0) adoptRemappedWindow(sourceLines, window, alt);
   }
   // Context-tolerance tier: see findContextTolerantWindow. Tolerated context
@@ -494,15 +494,9 @@ function renameTargetsSamePhysicalFile(srcFull, destFull) {
   }
 }
 
-function v4aSpecialFileStatMessage(displayPath) {
-  return `apply_patch: cannot patch special file (FIFO / character / block device / socket): ${normalizeOutputPath(displayPath)}`;
-}
-
 function lstatV4APatchTarget(fullPath, displayPath) {
   const st = lstatSync(fullPath);
-  if (isSpecialFileStat(st)) {
-    throw new Error(v4aSpecialFileStatMessage(displayPath));
-  }
+  if (isSpecialFileStat(st)) throw new Error(specialFilePatchMessage(displayPath));
   return st;
 }
 
@@ -537,7 +531,7 @@ export function validateV4ARenameSection(section, basePath, seenDestKeys) {
 function v4aRenameSourceIssue(srcFull, displayPath) {
   try {
     const st = lstatSync(srcFull);
-    if (isSpecialFileStat(st)) return v4aSpecialFileStatMessage(displayPath);
+    if (isSpecialFileStat(st)) return specialFilePatchMessage(displayPath);
     if (!st.isFile())
       return `apply_patch: V4A rename source is not a regular file: ${normalizeOutputPath(displayPath)}`;
   } catch (err) {
@@ -549,7 +543,7 @@ function v4aRenameSourceIssue(srcFull, displayPath) {
 function v4aRenameDestinationIssue(srcFull, destFull, displayPath, caseOnlyRename) {
   try {
     const destSt = lstatSync(destFull);
-    if (isSpecialFileStat(destSt)) return v4aSpecialFileStatMessage(displayPath);
+    if (isSpecialFileStat(destSt)) return specialFilePatchMessage(displayPath);
     if (destSt.isDirectory()) {
       return `apply_patch: V4A rename destination is a directory: ${normalizeOutputPath(displayPath)}`;
     }

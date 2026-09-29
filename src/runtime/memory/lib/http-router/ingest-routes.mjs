@@ -36,7 +36,7 @@ export function createIngestHandler({ getDb, log, ingestTranscriptFile, getTrans
       sendJson(res, { error: 'empty after clean' }, 400);
       return;
     }
-    const entryProjectId = resolveProjectScope(typeof body.cwd === 'string' && body.cwd ? body.cwd : null);
+    const entryProjectId = resolveProjectScope(body.cwd);
     try {
       const result = await db.query(INSERT_ENTRY, [tsMs, role, cleaned, sourceRef, sessionId, entryProjectId]);
       const insertedId = result.rows[0]?.id ?? null;

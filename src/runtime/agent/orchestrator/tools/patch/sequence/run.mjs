@@ -10,7 +10,6 @@ export async function runPatchUnits(units, basePath, { waveOpts, abortSignal, co
   const failures = [];
   let failed = null;
   let failedIndex = -1;
-  let executor = 'native-patch';
   const noteFailure = (unit, index, error) => {
     const row = { displayPath: unit.displayPath, error, index };
     failures.push(row);
@@ -59,12 +58,11 @@ export async function runPatchUnits(units, basePath, { waveOpts, abortSignal, co
       continue;
     }
     const res = await applyParsedWave(wave, basePath, waveOpts);
-    executor = res.executor;
     if (res.error) {
       noteFailure(unit, i, res.error);
       continue;
     }
     applied.push({ displayPath: unit.displayPath, text: res.text });
   }
-  return { applied, skipped, failures, failed, failedIndex, executor };
+  return { applied, skipped, failures, failed, failedIndex };
 }

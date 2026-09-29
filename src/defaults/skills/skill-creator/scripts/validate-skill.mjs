@@ -34,42 +34,59 @@ function referencedPaths(body) {
   return [...found];
 }
 
-export function validateSkillDirectory(inputPath) {
-  const errors = [];
-  const warnings = [];
-  if (!inputPath) {
-    return { ok: false, errors: ['A skill directory path is required.'], warnings };
-  }
+// Resolve, read and parse SKILL.md; a failure is returned as the finished
+// validation result.
+function loadSkillDocument(inputPath) {
+  const fail = (message) => ({ failure: { ok: false, errors: [message], warnings: [] } });
+  if (!inputPath) return fail('A skill directory path is required.');
   const skillDir = resolve(String(inputPath));
   const skillFile = resolve(skillDir, 'SKILL.md');
   if (!existsSync(skillDir) || !statSync(skillDir).isDirectory()) {
-    return { ok: false, errors: [`Skill directory not found: ${skillDir}`], warnings };
+    return fail(`Skill directory not found: ${skillDir}`);
   }
   if (!existsSync(skillFile) || !statSync(skillFile).isFile()) {
-    return { ok: false, errors: [`SKILL.md not found: ${skillFile}`], warnings };
+    return fail(`SKILL.md not found: ${skillFile}`);
   }
-
   let source = '';
   try {
     source = readFileSync(skillFile, 'utf8');
   } catch (error) {
-    return {
-      ok: false,
-      errors: [`Could not read SKILL.md: ${error instanceof Error ? error.message : String(error)}`],
-      warnings,
-    };
+    return fail(`Could not read SKILL.md: ${error instanceof Error ? error.message : String(error)}`);
   }
-
-  let parsed;
   try {
-    parsed = parseSkillDocument(source);
+    return { skillDir, parsed: parseSkillDocument(source) };
   } catch (error) {
-    return {
-      ok: false,
-      errors: [error instanceof Error ? error.message : String(error)],
-      warnings,
-    };
+    return fail(error instanceof Error ? error.message : String(error));
   }
+}
+
+function checkReferencedResources(skillDir, body, errors, warnings) {
+  for (const resource of referencedPaths(body)) {
+    const resourcePath = resolve(skillDir, resource);
+    const rel = relative(skillDir, resourcePath);
+    if (!rel || rel.startsWith('..') || isAbsolute(rel)) {
+      errors.push(`Referenced resource escapes the skill directory: ${resource}.`);
+    } else if (!existsSync(resourcePath)) {
+      // A skill that bundles no folder of that kind is usually naming a
+      // repository path (`scripts/build.js` of the target repo), which this
+      // validator cannot resolve; a missing file inside a bundled folder is
+      // a broken link.
+      const bundledKind = existsSync(resolve(skillDir, resource.split('/')[0]));
+      if (bundledKind) errors.push(`Referenced resource does not exist: ${resource}.`);
+      else
+        warnings.push(
+          `${resource} is not bundled with the skill; if it is a repository path, prefer a repo-relative form the reader can resolve, or bundle it.`
+        );
+    }
+  }
+}
+
+export function validateSkillDirectory(inputPath) {
+  const loaded = loadSkillDocument(inputPath);
+  if (loaded.failure) return loaded.failure;
+  const { skillDir, parsed } = loaded;
+  const errors = [];
+  const warnings = [];
 
   const { name, description, whenToUse, body, frontmatter } = parsed;
   for (const key of Object.keys(frontmatter)) {
@@ -133,24 +150,7 @@ export function validateSkillDirectory(inputPath) {
     warnings.push(`SKILL.md body has ${bodyLines} lines; progressive disclosure is recommended above 500.`);
   }
 
-  for (const resource of referencedPaths(body)) {
-    const resourcePath = resolve(skillDir, resource);
-    const rel = relative(skillDir, resourcePath);
-    if (!rel || rel.startsWith('..') || isAbsolute(rel)) {
-      errors.push(`Referenced resource escapes the skill directory: ${resource}.`);
-    } else if (!existsSync(resourcePath)) {
-      // A skill that bundles no folder of that kind is usually naming a
-      // repository path (`scripts/build.js` of the target repo), which this
-      // validator cannot resolve; a missing file inside a bundled folder is
-      // a broken link.
-      const bundledKind = existsSync(resolve(skillDir, resource.split('/')[0]));
-      if (bundledKind) errors.push(`Referenced resource does not exist: ${resource}.`);
-      else
-        warnings.push(
-          `${resource} is not bundled with the skill; if it is a repository path, prefer a repo-relative form the reader can resolve, or bundle it.`
-        );
-    }
-  }
+  checkReferencedResources(skillDir, body, errors, warnings);
 
   return {
     ok: errors.length === 0,

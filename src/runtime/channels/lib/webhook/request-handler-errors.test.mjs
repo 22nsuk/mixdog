@@ -4,7 +4,7 @@ import { mock, test } from 'node:test';
 
 const here = (path) => new URL(path, import.meta.url).href;
 const statuses = [];
-mock.module(here('../../../shared/webhooks-db.mjs'), {
+mock.module(here('../webhooks-db.mjs'), {
   namedExports: {
     loadEndpointConfig: async () => ({ enabled: true }),
     readEndpointSecret: async () => null,

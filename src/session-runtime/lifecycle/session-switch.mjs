@@ -5,7 +5,7 @@
  * (switch + new), resume.
  */
 import { getStoreDir } from '../../runtime/agent/orchestrator/session/store/paths-heartbeat.mjs';
-import { toolSpecForMode } from '../effort.mjs';
+import { toolSpecForMode } from '../../runtime/agent/orchestrator/runtime-core/effort.mjs';
 import { listLeadSessions } from './session-catalog.mjs';
 import { createSessionDelete } from './session-switch/session-delete.mjs';
 import { createContextSwitch } from './session-switch/context-switch.mjs';

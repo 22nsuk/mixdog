@@ -4,7 +4,7 @@
 // `caches` object (so invalidateProviderCaches still resets the same
 // references) and all config/registry reads flow through supplied accessors so
 // live-binding is preserved.
-import { clean } from './session-text.mjs';
+import { clean } from '../runtime/agent/orchestrator/runtime-core/session-text.mjs';
 
 // A post-redeem dashboard rebuild is best effort: past this budget the caller
 // gets its confirmed outcome and the surface revalidates on its own cadence.
@@ -57,7 +57,7 @@ export function createProviderUsage({
   function refreshStatuslineUsageSnapshot(routeLike = {}) {
     const providerId = clean(routeLike.provider);
     const modelId = clean(routeLike.model);
-    if (!providerId?.includes('oauth')) return;
+    if (!providerId.includes('oauth')) return;
     const providerObj = reg().getProvider(providerId);
     if (!providerObj) return;
     void fetchOAuthUsageSnapshot({ provider: providerId, model: modelId }, providerObj, (message) => {

@@ -738,8 +738,7 @@ class ProtoReader {
     throw new Error('Truncated Cursor protobuf varint');
   }
 
-  bytesValue() {
-    const length = Number(this.varint());
+  take(length) {
     const end = this.offset + length;
     if (end > this.bytes.length) throw new Error('Truncated Cursor protobuf field');
     const value = this.bytes.subarray(this.offset, end);
@@ -747,31 +746,16 @@ class ProtoReader {
     return value;
   }
 
+  bytesValue() {
+    return this.take(Number(this.varint()));
+  }
+
   skip(wireType) {
-    if (wireType === 0) {
-      this.varint();
-      return;
-    }
-    if (wireType === 1) {
-      const end = this.offset + 8;
-      if (end > this.bytes.length) throw new Error('Truncated Cursor protobuf field');
-      this.offset = end;
-      return;
-    }
-    if (wireType === 2) {
-      const length = Number(this.varint());
-      const end = this.offset + length;
-      if (end > this.bytes.length) throw new Error('Truncated Cursor protobuf field');
-      this.offset = end;
-      return;
-    }
-    if (wireType === 5) {
-      const end = this.offset + 4;
-      if (end > this.bytes.length) throw new Error('Truncated Cursor protobuf field');
-      this.offset = end;
-      return;
-    }
-    throw new Error(`Unsupported Cursor protobuf wire type: ${wireType}`);
+    if (wireType === 0) this.varint();
+    else if (wireType === 1) this.take(8);
+    else if (wireType === 2) this.bytesValue();
+    else if (wireType === 5) this.take(4);
+    else throw new Error(`Unsupported Cursor protobuf wire type: ${wireType}`);
   }
 }
 

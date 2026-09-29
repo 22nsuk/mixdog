@@ -25,7 +25,7 @@ after(async () => {
   process.once('exit', () => rmSync(root, { recursive: true, force: true }));
 });
 const { executeTool } = await import('./tool-exec.mjs');
-const { createStandaloneHookBus } = await import('../../../../../standalone/hook-bus.mjs');
+const { createStandaloneHookBus } = await import('../../../../../session-runtime/services/hook-bus.mjs');
 const { attachSessionHooks } = await import('../../../../../session-runtime/session-hooks.mjs');
 
 for (const phase of ['before execution', 'during policy hook']) {

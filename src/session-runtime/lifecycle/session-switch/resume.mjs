@@ -4,8 +4,8 @@
  * deferred tool surface, and finish route preparation in the background.
  */
 import { writeStatuslineRoute } from '../../statusline-route.mjs';
-import { clean, hasOwn } from '../../session-text.mjs';
-import { toolSpecForMode, deferredSurfaceModeForLead } from '../../effort.mjs';
+import { clean, hasOwn } from '../../../runtime/agent/orchestrator/runtime-core/session-text.mjs';
+import { toolSpecForMode, deferredSurfaceModeForLead } from '../../../runtime/agent/orchestrator/runtime-core/effort.mjs';
 import { isScratchConversation } from '../shared.mjs';
 
 export function resolveResumeCwd(session, currentCwd) {

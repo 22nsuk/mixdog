@@ -8,11 +8,12 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { isAgentOwner } from '../../../agent-owner.mjs';
 import { readTopLevelLifecycleRecord, isLifecycleUnreadable } from '../../lifecycle-scan.mjs';
-import { resolveAgentTerminalReapMs } from '../../../../../../session-runtime/config-helpers.mjs';
+import { resolveAgentTerminalReapMs } from '../../../runtime-core/config-helpers.mjs';
 import { sessionPath } from '../paths-heartbeat.mjs';
 import { probePath, PROBE_PRESENT, PROBE_ABSENT } from '../fs-probe.mjs';
 import { _queueSessionSummaryUpsert, _queueSessionSummaryRemoval } from '../summary-cache.mjs';
-import { deleteSession, markSessionClosed } from '../../store.mjs';
+import { deleteSession } from '../session-delete.mjs';
+import { markSessionClosed } from '../lifecycle-barriers.mjs';
 import {
   AGENT_TERMINAL_STATUSES,
   BLANK_SCRATCH_MAX_AGE_MS,

@@ -1,6 +1,7 @@
 // What a native apply reports: the io/patch trace lines and the human-readable
 // summary the model receives.
-import { ioTrace, nativePatchTraceEnabled, patchTraceEnabled } from '../native-server.mjs';
+import { ioTrace } from '../../io-trace.mjs';
+import { nativePatchTraceEnabled, patchTraceEnabled } from '../native-server.mjs';
 
 const ms = (value) => Number(value.toFixed(3));
 

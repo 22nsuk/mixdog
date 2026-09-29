@@ -12,7 +12,7 @@ import {
   _graphRel,
   _isExistingFile,
 } from './source-access.mjs';
-import { _unicodeBoundaryPattern, _lookupCandidateNodes, _symbolLine } from './symbol-index.mjs';
+import { _escapeRegExp, _unicodeBoundaryPattern, _lookupCandidateNodes, _symbolLine } from './symbol-index.mjs';
 import { CODE_GRAPH_MAX_FILES } from './constants.mjs';
 import { _symbolPathForSymbol } from './text-columns.mjs';
 import { _keywordSymbolSortKey, _tokenizeKeyword, _keywordMatchesSymbolName } from './keyword-match.mjs';
@@ -202,10 +202,9 @@ export async function _prewarmReferenceSourceText(graph, symbol, language, optio
 export function _cheapReferenceSearch(
   graph,
   symbol,
-  _cwd,
   { language = null, fileRel = null, scopeRelPrefix = null, nodes = null } = {}
 ) {
-  const escaped = String(symbol || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const escaped = _escapeRegExp(symbol);
   if (!escaped) return '(no references)';
   // No `limit` in the key: the raw hit set is limit-independent (see below),
   // so every limit shares one cached scan.
@@ -242,8 +241,7 @@ export function _cheapReferenceSearch(
       if (!line.trim()) continue;
       const boundaryLang = language || node.lang;
       const re = new RegExp(_unicodeBoundaryPattern(escaped, boundaryLang, symbol), 'gu');
-      let match = null;
-      while ((match = re.exec(line))) {
+      for (const match of line.matchAll(re)) {
         if (lines.length < REFERENCE_HIT_CAP) {
           const trimmed = (rawLines[i] ?? line).trim().slice(0, REFERENCE_LINE_CAP);
           lines.push(`${node.rel}:${i + 1}:${match.index + 1}    ${trimmed}`);
@@ -417,7 +415,7 @@ export function _findSymbolHits(graph, symbol, { language = null } = {}) {
 // it just declares nothing.
 function _findSymbolHitsOnNodes(graph, cleanSymbol, candidateNodes, { language = null } = {}) {
   if (!cleanSymbol) return [];
-  const escaped = cleanSymbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const escaped = _escapeRegExp(cleanSymbol);
   const hits = [];
   for (const node of candidateNodes) {
     const nativeSymbols = (Array.isArray(node.symbols) ? node.symbols : []).filter(
@@ -454,10 +452,8 @@ function _findSymbolHitsOnNodes(graph, cleanSymbol, candidateNodes, { language =
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
       if (!line.trim()) continue;
-      re.lastIndex = 0;
       let localHit = false;
-      let match = null;
-      while ((match = re.exec(line))) {
+      for (const match of line.matchAll(re)) {
         matchCount += 1;
         localHit = true;
         if (firstLine == null) {
@@ -621,7 +617,7 @@ const _IMPORT_SPECIFIER_PATTERNS = [
 ];
 
 function _importedSpecifierForSymbol(graph, node, symbol) {
-  const escaped = String(symbol || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const escaped = _escapeRegExp(symbol);
   if (!escaped) return null;
   const mention = new RegExp(_unicodeBoundaryPattern(escaped, node?.lang, symbol), 'u');
   for (const line of _getSourceLinesForNode(graph, node)) {

@@ -15,7 +15,7 @@ function toolArgPathOf(parsedArgs) {
 /** The completed detail of every non-shell tool, first match wins. */
 function nonShellDetail(base, surface, display, status, imageDetail) {
   const { pending, isError, elapsed } = base;
-  const { normalizedName, label, parsedArgs, isShellSurface } = surface;
+  const { normalizedName, label, isShellSurface } = surface;
   const { resultSummary, hasResult, firstResultLine } = display;
   const { agentDetail, agentCompletionDetail, backgroundElapsed, backgroundMetadataHeaderFailure } = status;
   const genericDetail =
@@ -24,7 +24,7 @@ function nonShellDetail(base, surface, display, status, imageDetail) {
       : '';
   const backgroundMetadataDetail =
     display.isBackgroundMetadataResult && !backgroundMetadataHeaderFailure
-      ? backgroundTaskDetail(display.backgroundMeta, backgroundElapsed, parsedArgs)
+      ? backgroundTaskDetail(display.backgroundMeta, backgroundElapsed)
       : '';
   const backgroundResponseDetail =
     display.isBackgroundResponse && resultSummary ? prefixElapsed(resultSummary, backgroundElapsed) : resultSummary;

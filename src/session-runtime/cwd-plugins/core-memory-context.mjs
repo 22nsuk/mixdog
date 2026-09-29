@@ -1,13 +1,13 @@
 // cwd-plugins/core-memory-context.mjs — the user-curated core-memory block
 // injected into new sessions, read from the memory runtime's atomic snapshot.
-import { featureEnvOverride, memoryToolsEnabled } from '../config-helpers.mjs';
+import { featureEnvOverride, memoryToolsEnabled } from '../../runtime/agent/orchestrator/runtime-core/config-helpers.mjs';
 import { readSessionCoreMemoryPayload } from '../../runtime/memory/lib/core-memory-file.mjs';
 
 export function createCoreMemoryContext({ getCurrentCwd, getConfig, bootProfile, clean, cfgMod, STANDALONE_DATA_DIR }) {
   function formatCoreMemoryLines(payload = {}) {
     const seen = new Set();
     const lines = [];
-    for (const value of [...(Array.isArray(payload.userLines) ? payload.userLines : [])]) {
+    for (const value of Array.isArray(payload.userLines) ? payload.userLines : []) {
       const text = clean(value).replace(/\s+/g, ' ');
       if (!text) continue;
       const key = text.toLowerCase();

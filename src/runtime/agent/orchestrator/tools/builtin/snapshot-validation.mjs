@@ -1,5 +1,5 @@
 import { hashText } from './hash-utils.mjs';
-import { normaliseRangeHashEntry, statMatchesSnapshot } from './snapshot-helpers.mjs';
+import { normaliseRangeHashEntry, rangeTextOf, statMatchesSnapshot } from './snapshot-helpers.mjs';
 
 function snapshotRangeHashRows(snapshot) {
   if (Array.isArray(snapshot?.rangeHashes)) return snapshot.rangeHashes;
@@ -54,10 +54,7 @@ export function isSnapshotStale(stat, snapshot, { fullPath = '', readCache = nul
     for (const row of rangeHashRows) {
       const r = normaliseRangeHashEntry(row);
       if (!r) continue;
-      const startIdx = Math.max(0, (r.startLine || 1) - 1);
-      const endIdx = r.endLine === Infinity ? lines.length : Math.min(lines.length, r.endLine);
-      const rangeText = lines.slice(startIdx, endIdx).join('\n');
-      if (hashText(rangeText) !== r.hash) return true;
+      if (hashText(rangeTextOf(lines, r)) !== r.hash) return true;
       verified++;
     }
     // Fail-closed: rangeHashes present but no row could be verified
@@ -87,10 +84,7 @@ export function readContentIfSnapshotHashMatches(
     for (const row of rangeHashRows) {
       const r = normaliseRangeHashEntry(row);
       if (!r) return null;
-      const startIdx = Math.max(0, (r.startLine || 1) - 1);
-      const endIdx = r.endLine === Infinity ? lines.length : Math.min(lines.length, r.endLine);
-      const rangeText = lines.slice(startIdx, endIdx).join('\n');
-      if (hashText(rangeText) !== r.hash) return null;
+      if (hashText(rangeTextOf(lines, r)) !== r.hash) return null;
     }
     return content;
   } catch {

@@ -4,7 +4,7 @@ import {
   readEndpointSecret,
   claimDelivery,
   updateDeliveryStatus,
-} from '../../../shared/webhooks-db.mjs';
+} from '../webhooks-db.mjs';
 import { contentDeliveryId, extractDeliveryId, buildHeadersSummary } from './deliveries.mjs';
 
 const MAX_BODY_BYTES = 5 * 1024 * 1024;
@@ -202,15 +202,14 @@ async function processWebhookBody(req, res, name, rawBody, { getConfig, verifyRe
     logWebhook(invalidJson ? `JSON parse error for ${name}: ${err}` : `${name}: request failed: ${err}`);
     // Terminal failed row: an error return must close out the `received` claim
     // so retries don't loop on dedup.
-    const _id = typeof deliveryId === 'string' && deliveryId ? deliveryId : null;
-    if (_id) {
+    if (typeof deliveryId === 'string' && deliveryId) {
       try {
-        await updateDeliveryStatus(name, _id, 'failed', {
+        await updateDeliveryStatus(name, deliveryId, 'failed', {
           error: invalidJson ? `invalid JSON: ${err?.message || err}` : String(err?.message || err),
         });
       } catch (e2) {
         process.stderr.write(
-          `mixdog webhook: failed to mark delivery ${name}/${_id} failed \u2014 ${e2?.message || e2}\n`
+          `mixdog webhook: failed to mark delivery ${name}/${deliveryId} failed \u2014 ${e2?.message || e2}\n`
         );
       }
     }

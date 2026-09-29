@@ -10,7 +10,7 @@ import { priceUsage } from './cost.mjs';
 import { rollupUsage } from './usage-ledger-rollup.mjs';
 import { accountProviderSend } from './usage-accounting.mjs';
 import { importUsageHistory, importTraceRow } from './usage-ledger-import.mjs';
-import { usageStatsSnapshot } from '../../../standalone/usage-stats-model.mjs';
+import { usageStatsSnapshot } from '../../../session-runtime/services/usage-stats-model.mjs';
 import { createUsageStatsApi } from '../../../session-runtime/usage-stats-api.mjs';
 
 const now = new Date(2026, 8, 12, 12).getTime();

@@ -1,4 +1,5 @@
 import { DEFAULT_ACTIVITY_HEARTBEAT_MS } from '../agent/orchestrator/stall-policy.mjs';
+import { createSerialChain } from './serial-chain.mjs';
 
 export const DEFAULT_LOCAL_IDLE_TTL_SECONDS = 3600;
 
@@ -19,7 +20,7 @@ export function createLocalRequestQueue({
   clearTimer = clearTimeout,
   now = Date.now,
 } = {}) {
-  let chain = Promise.resolve();
+  const serial = createSerialChain();
   let timer = null;
   let idleDeadline = null;
   let active = 0;
@@ -32,14 +33,6 @@ export function createLocalRequestQueue({
     timer = null;
     idleDeadline = null;
   }
-  function serialize(operation) {
-    const next = chain.then(operation, operation);
-    chain = next.then(
-      () => {},
-      () => {}
-    );
-    return next;
-  }
   function scheduleIdle() {
     clearIdle();
     if (requests.size || stopping || !ttl) return;
@@ -48,7 +41,7 @@ export function createLocalRequestQueue({
       timer = null;
       idleDeadline = null;
       if (requests.size) return;
-      void serialize(unload).then(
+      void serial.enqueue(unload).then(
         () => {
           lastUnloadError = null;
         },
@@ -92,25 +85,27 @@ export function createLocalRequestQueue({
         }
       };
       combined.addEventListener('abort', onAbort, { once: true });
-      const pending = serialize(async () => {
-        if (heartbeat) clearInterval(heartbeat);
-        combined.throwIfAborted();
-        request.started = true;
-        active++;
-        try {
+      const pending = serial
+        .enqueue(async () => {
+          if (heartbeat) clearInterval(heartbeat);
+          combined.throwIfAborted();
+          request.started = true;
+          active++;
           try {
-            onStageChange?.('requesting');
-          } catch {}
-          return await operation(combined);
-        } finally {
-          active--;
-        }
-      }).finally(() => {
-        combined.removeEventListener('abort', onAbort);
-        if (heartbeat) clearInterval(heartbeat);
-        requests.delete(request);
-        scheduleIdle();
-      });
+            try {
+              onStageChange?.('requesting');
+            } catch {}
+            return await operation(combined);
+          } finally {
+            active--;
+          }
+        })
+        .finally(() => {
+          combined.removeEventListener('abort', onAbort);
+          if (heartbeat) clearInterval(heartbeat);
+          requests.delete(request);
+          scheduleIdle();
+        });
       return Promise.race([pending, early]);
     },
     stop() {
@@ -120,7 +115,7 @@ export function createLocalRequestQueue({
       // Interrupt loading/inference now; do not wait behind the work being stopped.
       stopping = (async () => {
         await unload();
-        await chain;
+        await serial.idle();
         clearIdle();
       })().finally(() => {
         stopping = null;

@@ -1,6 +1,6 @@
-import { makeInvalidToolArgsMarker } from '../openai-compat-stream.mjs';
+import { makeInvalidToolArgsMarker } from '../lib/openai-tool-args.mjs';
 import { synthLeakedOpenAICall } from '../openai-compat-stream-common.mjs';
-import { createToolCallDedupe, dedupeToolCallList } from '../anthropic-leaked-toolcall.mjs';
+import { createToolCallDedupe, dedupeToolCallList } from '../lib/leaked-toolcall.mjs';
 import { customToolCallFromResponseItem, nativeToolSearchCallFromArguments } from '../custom-tool-wire.mjs';
 import { createActiveToolItemTracker } from '../tool-stream-state.mjs';
 

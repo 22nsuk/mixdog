@@ -2,7 +2,7 @@
 // keep-alive loop so the cachedAt stays "live-fresh" and the usage segment does
 // not vanish after LIVE_USAGE_SNAPSHOT_MAX_AGE_MS while the session is idle.
 // Turn-driven refreshes (recordStandaloneStatusTelemetry) cover active sessions.
-import { clean } from '../session-text.mjs';
+import { clean } from '../../runtime/agent/orchestrator/runtime-core/session-text.mjs';
 
 export function createStatuslineUsageWarmup({
   arm,
@@ -21,7 +21,7 @@ export function createStatuslineUsageWarmup({
   const { statuslineUsageWarmupDelayMs, statuslineUsageRefreshDelayMs, backgroundBusyRetryMs } = delays;
   const oauthProviderId = () => {
     const providerId = clean(getRoute()?.provider);
-    return providerId?.includes('oauth') ? providerId : null;
+    return providerId.includes('oauth') ? providerId : null;
   };
 
   async function refreshIdleStatuslineUsage() {

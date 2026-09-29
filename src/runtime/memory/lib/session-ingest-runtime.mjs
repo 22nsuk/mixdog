@@ -58,7 +58,7 @@ export function createSessionIngestRuntime({
     const limit =
       args.fullTranscript === true ? messages.length : Math.max(1, Math.min(5000, Number(args.limit) || 200));
     const start = Math.max(0, messages.length - limit);
-    const projectId = resolveProjectScope(typeof args.cwd === 'string' && args.cwd ? args.cwd : null);
+    const projectId = resolveProjectScope(args.cwd);
     const turnAllocator = createIngestTurnAllocator(await readMaxSourceTurn(db, sessionId));
     const ordinalState = ordinals.touch(sessionId);
     await ordinals.ensureDurableLoaded(ordinalState, sessionId);

@@ -131,7 +131,9 @@ for (const path of Object.keys(PATHS)) {
     assert.equal(result.changed, true);
     assert.ok(appended.length >= 4, `appends landed across yields (${appended.length})`);
     const kept = session.messages.length - appended.length;
-    appended.forEach((message, index) => assert.equal(session.messages[kept + index], message));
+    appended.forEach((message, index) => {
+      assert.equal(session.messages[kept + index], message);
+    });
     assert.deepEqual(session.messages.slice(0, kept), reference.messages);
   });
 }

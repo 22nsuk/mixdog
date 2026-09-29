@@ -3,7 +3,7 @@
 // glyph, the context percent, Fast, and the remaining parameters.
 import { theme } from '../../theme.mjs';
 import { effortDisplayLabel, fastDisplayLabel, formatContextWindow } from '../model-options.mjs';
-import { effortItemsFor } from './route-selection.mjs';
+import { effortItemsFor } from './route-selection/effort.mjs';
 
 const EFFORT_GLYPHS = new Map([
   ['none', '○'],

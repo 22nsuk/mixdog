@@ -3,11 +3,11 @@
 import { performance } from 'node:perf_hooks';
 import { existsSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { createStandaloneHookBus } from '../../standalone/hook-bus.mjs';
+import { createStandaloneHookBus } from '../services/hook-bus.mjs';
 import { updateCurrentCwdOverride, writeLastSessionCwd } from '../../runtime/shared/user-cwd.mjs';
-import { listRegisteredPlugins, pluginAdminStatus } from '../../standalone/plugin-admin.mjs';
-import { clean } from '../session-text.mjs';
-import { countSkillFiles, pluginManifest, pluginMcpServerName } from '../plugin-mcp.mjs';
+import { listRegisteredPlugins, pluginAdminStatus } from '../services/plugin-admin.mjs';
+import { clean } from '../../runtime/agent/orchestrator/runtime-core/session-text.mjs';
+import { countSkillFiles, pluginManifest, pluginMcpServerName } from '../../runtime/agent/orchestrator/runtime-core/plugin-mcp.mjs';
 import { bootProfile } from '../boot-profile.mjs';
 import { createMcpGlue } from '../mcp-glue.mjs';
 import { createSelfUpdateController } from '../self-update.mjs';

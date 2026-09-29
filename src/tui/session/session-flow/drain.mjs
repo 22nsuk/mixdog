@@ -33,6 +33,85 @@ function earliestSubmittedAt(batch) {
   return Number.isFinite(earliest) ? earliest : Date.now();
 }
 
+function renderBatchItems(batch, pushUserOrSyntheticItem) {
+  for (const entry of batch) {
+    // Async-completion twins (queued model-visible wrapper) used to be
+    // display-skipped here on the assumption the live notification push
+    // already rendered a card. That push is event-ephemeral and can be
+    // missed (listener race, dedupe state from another surface, daemon
+    // restart), which left completions with NO transcript card at all
+    // (2026-08-17 field report: bench shell output never appeared).
+    // Render the wrapper through the synthetic path instead — the
+    // task_id upsert in upsertSyntheticToolItem patches an
+    // already-rendered card, so the double-delivery case stays
+    // duplicate-free. Non-wrapper entries keep the old skip.
+    if (entry.mode === 'pending-resume' || entry.suppressDisplay) {
+      const twin = typeof entry.content === 'string' ? entry.content : String(entry.text || '');
+      if (parseModelVisibleCompletionWrapper(twin)) {
+        pushUserOrSyntheticItem(twin, entry.id, 'injected');
+      }
+      continue;
+    }
+    const sender = String(entry.transcriptMeta?.sender || '')
+      .trim()
+      .toLowerCase();
+    let itemExtras = sender ? { sender } : null;
+    if (Array.isArray(entry.images) && entry.images.length) {
+      itemExtras = { images: entry.images, ...(sender ? { sender } : {}) };
+    }
+    pushUserOrSyntheticItem(entry.text, entry.id, isQueuedEntryEditable(entry) ? 'user' : 'injected', itemExtras);
+  }
+}
+
+function turnOptionsForBatch(batch, steering) {
+  const nonEditable = batch.filter((entry) => !isQueuedEntryEditable(entry));
+  // A completion resume is owned by the completion that woke it. Esc
+  // consumes that ownership; unlike ordinary notifications it must never
+  // be requeued from an uncommitted turn. Keep normal task notifications
+  // recoverable exactly as before.
+  const discardOnAbort = nonEditable.filter(
+    (entry) => entry?.abortDiscardOnAbort === true || entry?.mode === 'pending-resume'
+  );
+  return {
+    promptSource: isGoalQueuedEntry(batch[0]) ? batch[0].mode : undefined,
+    retryFailedTurn: batch[0]?.retryFailedTurn === true,
+    displayText: batch
+      .map((entry) => entry.text)
+      .filter((text) => String(text || '').trim())
+      .join('\n'),
+    pastedImages: mergePastedImages(batch),
+    pastedTexts: mergePastedTexts(batch),
+    submittedAt: earliestSubmittedAt(batch),
+    onCommitted: () => steering.commitSteeringQueueEntries(batch),
+    submittedIds: [...new Set(batch.map((e) => e.id))],
+    restorable: nonEditable.length === 0,
+    requeueOnAbort: nonEditable.filter((entry) => !discardOnAbort.includes(entry)),
+    discardExecutionPendingResumeKeys: discardOnAbort.flatMap((entry) =>
+      Array.isArray(entry?.resumeCompletionKeys) ? entry.resumeCompletionKeys : []
+    ),
+    transcriptMeta: batch[0]?.transcriptMeta || null,
+    context:
+      batch
+        .map((entry) => String(entry.context || '').trim())
+        .filter(Boolean)
+        .join('\n\n') || null,
+    onToolResult: (message) => {
+      for (const entry of batch) {
+        try {
+          entry.onToolResult?.(message);
+        } catch {}
+      }
+    },
+    onSettled: (detail) => {
+      for (const entry of batch) {
+        try {
+          entry.onSettled?.(detail);
+        } catch {}
+      }
+    },
+  };
+}
+
 export function createDrainLoop(bag, { queue, steering, submissions, flushDeferredClearedSessionUi }) {
   const {
     tuiDebug,
@@ -79,85 +158,6 @@ export function createDrainLoop(bag, { queue, steering, submissions, flushDeferr
 
   function hasModelDrainablePending() {
     return pending.some((entry) => !isSlashQueuedEntry(entry));
-  }
-
-  function renderBatchItems(batch) {
-    for (const entry of batch) {
-      // Async-completion twins (queued model-visible wrapper) used to be
-      // display-skipped here on the assumption the live notification push
-      // already rendered a card. That push is event-ephemeral and can be
-      // missed (listener race, dedupe state from another surface, daemon
-      // restart), which left completions with NO transcript card at all
-      // (2026-08-17 field report: bench shell output never appeared).
-      // Render the wrapper through the synthetic path instead — the
-      // task_id upsert in upsertSyntheticToolItem patches an
-      // already-rendered card, so the double-delivery case stays
-      // duplicate-free. Non-wrapper entries keep the old skip.
-      if (entry.mode === 'pending-resume' || entry.suppressDisplay) {
-        const twin = typeof entry.content === 'string' ? entry.content : String(entry.text || '');
-        if (parseModelVisibleCompletionWrapper(twin)) {
-          pushUserOrSyntheticItem(twin, entry.id, 'injected');
-        }
-        continue;
-      }
-      const sender = String(entry.transcriptMeta?.sender || '')
-        .trim()
-        .toLowerCase();
-      let itemExtras = sender ? { sender } : null;
-      if (Array.isArray(entry.images) && entry.images.length) {
-        itemExtras = { images: entry.images, ...(sender ? { sender } : {}) };
-      }
-      pushUserOrSyntheticItem(entry.text, entry.id, isQueuedEntryEditable(entry) ? 'user' : 'injected', itemExtras);
-    }
-  }
-
-  function turnOptionsForBatch(batch) {
-    const nonEditable = batch.filter((entry) => !isQueuedEntryEditable(entry));
-    // A completion resume is owned by the completion that woke it. Esc
-    // consumes that ownership; unlike ordinary notifications it must never
-    // be requeued from an uncommitted turn. Keep normal task notifications
-    // recoverable exactly as before.
-    const discardOnAbort = nonEditable.filter(
-      (entry) => entry?.abortDiscardOnAbort === true || entry?.mode === 'pending-resume'
-    );
-    return {
-      promptSource: isGoalQueuedEntry(batch[0]) ? batch[0].mode : undefined,
-      retryFailedTurn: batch[0]?.retryFailedTurn === true,
-      displayText: batch
-        .map((entry) => entry.text)
-        .filter((text) => String(text || '').trim())
-        .join('\n'),
-      pastedImages: mergePastedImages(batch),
-      pastedTexts: mergePastedTexts(batch),
-      submittedAt: earliestSubmittedAt(batch),
-      onCommitted: () => steering.commitSteeringQueueEntries(batch),
-      submittedIds: [...new Set(batch.map((e) => e.id))],
-      restorable: nonEditable.length === 0,
-      requeueOnAbort: nonEditable.filter((entry) => !discardOnAbort.includes(entry)),
-      discardExecutionPendingResumeKeys: discardOnAbort.flatMap((entry) =>
-        Array.isArray(entry?.resumeCompletionKeys) ? entry.resumeCompletionKeys : []
-      ),
-      transcriptMeta: batch[0]?.transcriptMeta || null,
-      context:
-        batch
-          .map((entry) => String(entry.context || '').trim())
-          .filter(Boolean)
-          .join('\n\n') || null,
-      onToolResult: (message) => {
-        for (const entry of batch) {
-          try {
-            entry.onToolResult?.(message);
-          } catch {}
-        }
-      },
-      onSettled: (detail) => {
-        for (const entry of batch) {
-          try {
-            entry.onSettled?.(detail);
-          } catch {}
-        }
-      },
-    };
   }
 
   async function drain() {
@@ -214,8 +214,8 @@ export function createDrainLoop(bag, { queue, steering, submissions, flushDeferr
         tuiDebug(`busy-queue drain batch=${batch.length} remaining=${pending.length}`);
         const merged = mergePromptContents(batch);
         rewindFailedTurnRows(batch);
-        renderBatchItems(batch);
-        const turnStatus = await bag.runTurn(merged, turnOptionsForBatch(batch));
+        renderBatchItems(batch, pushUserOrSyntheticItem);
+        const turnStatus = await bag.runTurn(merged, turnOptionsForBatch(batch, steering));
         if (flags.drainEpoch !== drainEpoch) return;
         // A deferred cleared-session UI sync (from a late-settling abandoned
         // compacting clear) applies here now that this turn has settled.
@@ -269,7 +269,11 @@ export function createDrainLoop(bag, { queue, steering, submissions, flushDeferr
       return Promise.resolve(persistence).then((persisted) => {
         if (persisted !== false) return true;
         const index = pending.indexOf(entry);
-        if (index >= 0) pending.splice(index, 1);
+        // A turn already took the prompt while its durable mirror was being
+        // written: it was delivered, so rejecting it would hand the sender a
+        // copy of a message the model already has.
+        if (index < 0) return true;
+        pending.splice(index, 1);
         queue.removeQueuedEntries([entry]);
         if (submissionId) submissions.forget(submissionId);
         return false;

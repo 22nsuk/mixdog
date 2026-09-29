@@ -6,7 +6,7 @@ import { READ_MAX_LINE_COLLECT_BYTES } from './read-constants.mjs';
 import { renderReadLine } from './read-formatting.mjs';
 import { maybeRecordReadRangeAnchor } from './read-range-index.mjs';
 
-export function createReadLineCollector({ offset, limit, bodyOutputBytes, rangeIndex, startLine }) {
+export function createReadLineCollector({ offset, limit, bodyOutputBytes, rangeIndex, startLine, fileSize = 0 }) {
   const collected = [];
   let lineIdx = startLine;
   let currentLineBytes = 0;
@@ -148,7 +148,8 @@ export function createReadLineCollector({ offset, limit, bodyOutputBytes, rangeI
       let out = collected.join('\n');
       if (truncated) {
         const nextOffset = (lastEmitted || offset) + readOffsetBase;
-        out += `\n\n... [output truncated at ${Math.max(1, Math.round(maxOutputBytes / 1024))} KB; pass offset:${nextOffset} to continue] ...`;
+        const ofFile = fileSize > 0 ? ` of a ${Math.max(1, Math.round(fileSize / 1024))} KB file` : '';
+        out += `\n\n... [output truncated at ${Math.max(1, Math.round(maxOutputBytes / 1024))} KB${ofFile}; pass offset:${nextOffset} to continue] ...`;
       } else if (stoppedAtLimit) {
         out += `${out ? '\n' : ''}... [range limit reached; next offset: ${offset + collected.length + readOffsetBase}]`;
       } else if (!out && offset >= lineIdx) {

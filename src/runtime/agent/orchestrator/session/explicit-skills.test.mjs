@@ -7,8 +7,8 @@ import { skillSelectionHeader, selectedSkillName } from '../../../shared/skill-s
 import { invalidateSkillsCache } from '../context/collect.mjs';
 import { latestSkillBodies } from '../context/skill-state.mjs';
 import { prepareExplicitSkills } from './explicit-skills.mjs';
-import { SKILL_TOOL } from '../../../../session-runtime/tool-defs.mjs';
-import { applyDeferredToolSurface, snapshotProviderRequestTools } from '../../../../session-runtime/tool-catalog.mjs';
+import { SKILL_TOOL } from '../runtime-core/tool-defs.mjs';
+import { applyDeferredToolSurface, snapshotProviderRequestTools } from '../runtime-core/tool-catalog.mjs';
 import { buildRequestBody } from '../providers/openai-responses-payload.mjs';
 import { toAnthropicMessages } from '../providers/lib/anthropic-request-utils.mjs';
 import { prepareProviderPrefixGuard } from './provider-prefix-guard.mjs';

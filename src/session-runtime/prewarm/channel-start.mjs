@@ -80,6 +80,7 @@ export function createChannelStart({
       bootProfile('channels:start-skipped');
       return;
     }
+    clearTimeout(timers.channelStartTimer);
     timers.channelStartTimer = setTimeout(() => {
       timers.channelStartTimer = null;
       if (isCloseRequested()) return;

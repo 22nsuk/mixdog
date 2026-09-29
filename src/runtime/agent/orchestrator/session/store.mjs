@@ -707,13 +707,9 @@ export { loadSession } from './store/load-session.mjs';
 // re-exported here so prior importers of store.mjs stay unchanged.
 export { deleteSession, listOwnedAgentSessionIds } from './store/session-delete.mjs';
 
-// Listing / summaries / stale sweeping live in store/listing.mjs; re-exported
-// here so importers keep one session-store entry point.
-export {
-  listStoredSessions,
-  listStoredSessionSummaries,
-  getStoredSessionsRaw,
-  sweepStaleSessions,
-  sweepStaleSessionsCooperative,
-} from './store/listing.mjs';
+// Listing / summaries live in store/listing.mjs and the stale sweep in
+// store/sweep/stale-sweep.mjs; re-exported here so importers keep one
+// session-store entry point.
+export { listStoredSessions, listStoredSessionSummaries, getStoredSessionsRaw } from './store/listing.mjs';
+export { sweepStaleSessions, sweepStaleSessionsCooperative } from './store/sweep/stale-sweep.mjs';
 export { _savePending } from './store/pending-saves.mjs';

@@ -1,6 +1,6 @@
 // Effective MCP server set and its status projection: config entries folded
 // with plugin ownership, per-server config reads, and the live/failed rollup.
-import { clean } from '../session-text.mjs';
+import { clean } from '../../runtime/agent/orchestrator/runtime-core/session-text.mjs';
 import { envFlag } from '../../runtime/shared/env.mjs';
 
 function mcpServerStatus(cfg, live, fail) {

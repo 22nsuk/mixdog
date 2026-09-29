@@ -67,9 +67,9 @@ export function sanitizeToolPairs(messages) {
     const m = messages[idx];
     // Tool results are only ever placed by the assistant turn that called
     // them; a loose one (orphaned, duplicated or misplaced) is dropped.
-    if (m.role === 'tool') continue;
+    if (m?.role === 'tool') continue;
     result.push(m);
-    if (m.role !== 'assistant') continue;
+    if (m?.role !== 'assistant') continue;
     for (const callId of collectAssistantToolCallIds(m)) {
       if (placedToolIds.has(callId)) continue;
       const existing = pickToolResultForAssistant(messages, idx, callId);

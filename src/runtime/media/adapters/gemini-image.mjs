@@ -7,6 +7,7 @@
  * requested output setting or retry a paid request.
  */
 import { resolveGeminiKey } from '../auth.mjs';
+import { timeoutSignal } from '../bounded-signal.mjs';
 import { decodeBase64Media } from '../download.mjs';
 import { mediaError } from '../lanes.mjs';
 import { upstreamError } from '../upstream-error.mjs';
@@ -42,7 +43,7 @@ async function post(model, key, body, signal, fetchFn) {
     headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
     body: JSON.stringify(body),
     redirect: 'error',
-    signal: AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)].filter(Boolean)),
+    signal: timeoutSignal(signal, REQUEST_TIMEOUT_MS),
   });
 }
 

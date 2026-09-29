@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeProfilePoint } from './model-profile.mjs';
 import { createCompactVectorCache } from './compact-vector-cache.mjs';
+import { EMBED_KEEP_WARM_MS } from './embedding-idle-lease.mjs';
 import {
   getConfiguredEmbeddingModelId,
   getDefaultEmbeddingDtype,
@@ -202,6 +203,18 @@ function sendToWorker(action, extra = {}, timeoutMs = embeddingWorkerTimeout(act
       reject(postErr);
     }
   });
+}
+
+// Backlog is being worked: ask a live worker to skip idle-dispose. Never spawns
+// a worker, and the lease expires on its own once the backlog stops.
+export function holdEmbeddingWarm(ms = EMBED_KEEP_WARM_MS) {
+  if (!worker) return false;
+  try {
+    worker.postMessage({ type: 'keep-warm', ms });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function configureEmbedding(config = {}) {

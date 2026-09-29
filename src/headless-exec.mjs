@@ -6,10 +6,11 @@ import {
   createPristineExecutionBoundary,
   validateExplicitPristineRoute,
 } from './runtime/shared/pristine-execution.mjs';
+import { BUNDLED_PATCH_MANIFEST_PATH } from './runtime/agent/orchestrator/tools/patch-manifest-path.mjs';
 import { hasActiveBackgroundTasks } from './runtime/shared/background-tasks.mjs';
 import { installProcessSignalCleanup } from './runtime/shared/process-shutdown.mjs';
 import { closeUsageLedgers } from './runtime/shared/llm/usage-ledger.mjs';
-import { stopStandaloneMemoryRuntimesForProcess } from './standalone/memory-runtime-proxy.mjs';
+import { stopStandaloneMemoryRuntimesForProcess } from './session-runtime/services/memory-runtime-proxy.mjs';
 import { shutdownDaemonForRuntimeRoot } from './standalone/session-client.mjs';
 import { applyUsageDelta, createSessionStats } from './ui/session-stats.mjs';
 import { clean } from './runtime/shared/clean.mjs';
@@ -68,7 +69,8 @@ export async function runHeadlessExec({
   write = (text) => stdout.write(text),
   writeErr = (text) => stderr.write(text),
   usageLogPath = process.env.MIXDOG_USAGE_LOG,
-  boundaryFactory = createPristineExecutionBoundary,
+  boundaryFactory = (route) =>
+    createPristineExecutionBoundary({ ...route, patchManifestPath: BUNDLED_PATCH_MANIFEST_PATH }),
   runtimeFactory = null,
   memoryRuntimeCleanup = stopStandaloneMemoryRuntimesForProcess,
   daemonRuntimeCleanup = shutdownDaemonForRuntimeRoot,

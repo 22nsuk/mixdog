@@ -1,4 +1,5 @@
 import { stat } from 'node:fs/promises';
+import { isProcessAlive } from '../store/paths-heartbeat.mjs';
 import {
   isCompletionNotificationEntry,
   isStaleUserInjection,
@@ -12,18 +13,6 @@ import { lifecycleTokenClosed } from './pending-lifecycle-epoch.mjs';
 
 const HANDOFF_RETRY_MS = 1000;
 const HANDOFF_RELEASE_SLACK_MS = 50;
-
-function handoffOwnerIsLive(pid) {
-  const value = Number(pid) || 0;
-  if (value <= 0) return false;
-  if (value === process.pid) return true;
-  try {
-    process.kill(value, 0);
-    return true;
-  } catch (err) {
-    return err?.code !== 'ESRCH';
-  }
-}
 
 /**
  * One session's spool queue, split into what this process takes and what stays
@@ -56,7 +45,7 @@ function takeForeignMessagesFromQueue(queue, request, handoffReleaseMs) {
         kept.push(entry);
         continue;
       }
-      if (!expired || handoffOwnerIsLive(handoffPid)) {
+      if (!expired || isProcessAlive(handoffPid)) {
         kept.push(entry);
         continue;
       }
@@ -198,7 +187,7 @@ export class ForeignPendingMessageController {
     const operation = preceding
       .catch(() => {})
       .then(() =>
-        updateSpool((raw) => {
+        updateSpool(sessionId, (raw) => {
           released.length = 0;
           nextDueIn = 0;
           // A generation move transfers ownership; never clean the new queue.
@@ -284,6 +273,17 @@ export class ForeignPendingMessageController {
     this._drainRunning = true;
     const batch = [...this._drainRequests.values()];
     this._drainRequests.clear();
+    try {
+      // Each session drains against its own shard and lock, so one busy
+      // session never delays (or fails) another's intake.
+      await Promise.all(batch.map((request) => this._drainOne(request)));
+    } finally {
+      this._drainRunning = false;
+      this._scheduleDrainBatch();
+    }
+  }
+
+  async _drainOne(request) {
     const {
       addInDeliveryIds,
       lifecycleInvalidated,
@@ -295,76 +295,52 @@ export class ForeignPendingMessageController {
       updateSpool,
       warn,
     } = this._dependencies;
+    const { sessionId, epochToken } = request;
     try {
       let mtime = 0;
       try {
-        mtime = (await stat(spoolPath())).mtimeMs || 0;
+        mtime = (await stat(spoolPath(sessionId))).mtimeMs || 0;
       } catch {
-        for (const request of batch) this._settleDrain(request, []);
+        this._settleDrain(request, []);
         return;
       }
-      const scanAt = Date.now();
-      const candidates = batch.filter(
-        (request) =>
-          this._scanNeeded(request.sessionId, mtime, scanAt) &&
-          !lifecycleInvalidated(request.sessionId, request.epochToken)
-      );
-      const candidateSet = new Set(candidates);
-      for (const request of batch) {
-        if (!candidateSet.has(request)) this._settleDrain(request, []);
+      if (!this._scanNeeded(sessionId, mtime, Date.now()) || lifecycleInvalidated(sessionId, epochToken)) {
+        this._settleDrain(request, []);
+        return;
       }
-      if (candidates.length === 0) return;
-      for (const request of candidates) {
-        request.localIds = localIds(request.sessionId);
-        request.taken = [];
-        request.released = [];
-        request.rescanDueAt = 0;
-        request.lifecycleDecided = false;
-      }
+      request.localIds = localIds(sessionId);
+      request.taken = [];
+      request.released = [];
+      request.rescanDueAt = 0;
+      request.lifecycleDecided = false;
       await updateSpool(
+        sessionId,
         (raw) => {
           const next = normalizeStore(raw);
-          let changed = false;
-          for (const request of candidates) {
-            const { sessionId, epochToken } = request;
-            if (lifecycleInvalidated(sessionId, epochToken)) continue;
-            request.lifecycleDecided = true;
-            const queue = Array.isArray(next.sessions[sessionId]) ? next.sessions[sessionId] : [];
-            if (queue.length === 0) continue;
-            const kept = takeForeignMessagesFromQueue(queue, request, this._handoffReleaseMs);
-            if (request.taken.length === 0 && request.released.length === 0) continue;
-            changed = true;
-            setSpoolQueue(next, sessionId, kept);
-          }
-          if (!changed) return undefined;
+          if (lifecycleInvalidated(sessionId, epochToken)) return undefined;
+          request.lifecycleDecided = true;
+          const queue = Array.isArray(next.sessions[sessionId]) ? next.sessions[sessionId] : [];
+          if (queue.length === 0) return undefined;
+          const kept = takeForeignMessagesFromQueue(queue, request, this._handoffReleaseMs);
+          if (request.taken.length === 0 && request.released.length === 0) return undefined;
+          setSpoolQueue(next, sessionId, kept);
           next.updatedAt = Date.now();
           return next;
         },
         { timeoutMs: 0 }
       );
-      for (const request of candidates) {
-        if (request.lifecycleDecided) {
-          this._rememberScan(request.sessionId, mtime, request.rescanDueAt);
-        }
-        if (request.taken.length > 0) {
-          addInDeliveryIds(request.sessionId, request.taken.map((item) => item?.id).filter(Boolean));
-          this._scheduleHandoffRelease(request.sessionId, this._handoffReleaseMs + HANDOFF_RELEASE_SLACK_MS);
-        }
-        if (request.released.length > 0) {
-          removeInDeliveryIds(request.sessionId, request.released);
-        }
-        this._settleDrain(request, request.taken);
+      if (request.lifecycleDecided) this._rememberScan(sessionId, mtime, request.rescanDueAt);
+      if (request.taken.length > 0) {
+        addInDeliveryIds(sessionId, request.taken.map((item) => item?.id).filter(Boolean));
+        this._scheduleHandoffRelease(sessionId, this._handoffReleaseMs + HANDOFF_RELEASE_SLACK_MS);
       }
+      if (request.released.length > 0) removeInDeliveryIds(sessionId, request.released);
+      this._settleDrain(request, request.taken);
     } catch (err) {
       if (err?.code !== 'ELOCKCONTENDED') {
         warn(`[session] foreign-injection drain failed: ${err?.message || err}\n`);
       }
-      for (const request of batch) {
-        if (request.waiters.length > 0) this._settleDrain(request, []);
-      }
-    } finally {
-      this._drainRunning = false;
-      this._scheduleDrainBatch();
+      this._settleDrain(request, []);
     }
   }
 }

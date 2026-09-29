@@ -5,11 +5,12 @@
  * they bypass the save queue entirely — that is why they live apart from the
  * write pipeline — and both fence late saves through the generation counter.
  */
-import { appendFileSync, writeFileSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { getPluginData } from '../../config.mjs';
-import { rotateBoundedLog, PLUGIN_LOG_MAX_BYTES, PLUGIN_LOG_KEEP_BYTES } from '../../../../../lib/mixdog-debug.cjs';
+import { PLUGIN_LOG_MAX_BYTES, PLUGIN_LOG_KEEP_BYTES } from '../../../../../lib/mixdog-debug.cjs';
+import { createAsyncLogAppender } from '../../../../shared/async-log-appender.mjs';
 import { sessionPath, deleteHeartbeat } from './paths-heartbeat.mjs';
 import {
   readCanonicalSessionRecord as _readCanonicalRecord,
@@ -130,6 +131,13 @@ function _writeLifecycleRecord(id, record, existing, reason) {
 // funnels through markSessionClosed. lifeMs = updatedAt-createdAt straddles
 // the tombstone (updatedAt was just set to Date.now()), so it reflects the
 // session's full lifetime including the close turn.
+const closeMetricLog = createAsyncLogAppender({ maxBytes: PLUGIN_LOG_MAX_BYTES, keepBytes: PLUGIN_LOG_KEEP_BYTES });
+
+/** Resolves once every queued session-close metric line is written. */
+export function flushSessionCloseMetrics() {
+  return closeMetricLog.flush();
+}
+
 function _logSessionCloseMetric(id, existing, closedAt, reason) {
   try {
     const dataDir = getPluginData();
@@ -138,12 +146,11 @@ function _logSessionCloseMetric(id, existing, closedAt, reason) {
     const lifeMs = typeof existing.createdAt === 'number' && existing.createdAt > 0 ? closedAt - existing.createdAt : 0;
     const agent = existing.agent || '-';
     const owner = existing.owner || '-';
-    const toolEventsPath = join(dataDir, 'tool-events.log');
-    rotateBoundedLog(toolEventsPath, PLUGIN_LOG_MAX_BYTES, PLUGIN_LOG_KEEP_BYTES);
-    // Appended before the close returns: an untracked async append kept
-    // writing into the data dir after its caller was told the close was done.
-    appendFileSync(
-      toolEventsPath,
+    // Queued, not written inline: a close must not pay a stat + append (and
+    // an occasional rewrite) on the caller's thread. `flushSessionCloseMetrics`
+    // lets a caller that tears the data dir down wait for the write.
+    closeMetricLog.append(
+      join(dataDir, 'tool-events.log'),
       `[${ts}] [session-close] owner=${owner} agent=${agent} reason=${reason} lifeMs=${lifeMs} id=${id}\n`
     );
   } catch {

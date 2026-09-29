@@ -16,7 +16,7 @@ import {
   providerTimeoutError,
   resolveTimeoutMs,
 } from '../stall-policy.mjs';
-import { knownToolNameSet, scanLeakedToolCalls, toolCallFingerprint } from './anthropic-leaked-toolcall.mjs';
+import { knownToolNameSet, scanLeakedToolCalls, toolCallFingerprint } from './lib/leaked-toolcall.mjs';
 import { traceHash, stableTraceStringify } from './trace-utils.mjs';
 import { parseGeminiTextPartMetadata } from './gemini-schema.mjs';
 import { parseProviderJsonBatch } from './stream-json-pool.mjs';
@@ -388,11 +388,24 @@ export function createGeminiTextLeakGuard({ knownToolNames, onTextDelta, onToolC
       return kept.length ? kept : undefined;
     },
     getLeakedToolCalls() {
-      return leakedCalls.length ? [...leakedCalls] : [];
+      return [...leakedCalls];
     },
     getRelayedText() {
       return relayedText;
     },
+  };
+}
+
+// Finalizes the guard at most once; both stream consumers reach it from
+// their failure and cleanup paths.
+function createLeakGuardFinalizer(textLeakGuard) {
+  let finalized = false;
+  return () => {
+    if (finalized) return;
+    finalized = true;
+    try {
+      textLeakGuard?.finalize();
+    } catch {}
   };
 }
 
@@ -421,14 +434,7 @@ export async function consumeGeminiRestStreamResponse(
   const allChunks = [];
   let sawStreamChunk = false;
   let relayedText = '';
-  let leakGuardFinalized = false;
-  const finalizeLeakGuard = () => {
-    if (leakGuardFinalized) return;
-    leakGuardFinalized = true;
-    try {
-      textLeakGuard?.finalize();
-    } catch {}
-  };
+  const finalizeLeakGuard = createLeakGuardFinalizer(textLeakGuard);
   const watchdogs = createRestStreamWatchdogs({
     reader,
     label,
@@ -554,14 +560,7 @@ export async function consumeGeminiSdkStream(
   }
 ) {
   let relayedText = '';
-  let leakGuardFinalized = false;
-  const finalizeLeakGuard = () => {
-    if (leakGuardFinalized) return;
-    leakGuardFinalized = true;
-    try {
-      textLeakGuard?.finalize();
-    } catch {}
-  };
+  const finalizeLeakGuard = createLeakGuardFinalizer(textLeakGuard);
 
   const cancellation = createSdkStreamCancellation({ signal, label, cancelGeneration, cancellationGraceMs });
   const { abortError } = cancellation;
@@ -647,7 +646,7 @@ export async function consumeGeminiSdkStream(
     throw stampGeminiStreamFailure(failure, { relayedText, textLeakGuard, chunks: collectedChunks });
   } finally {
     reader?.stop();
-    if (signal && onSignalAbort) {
+    if (signal) {
       try {
         signal.removeEventListener('abort', onSignalAbort);
       } catch {}

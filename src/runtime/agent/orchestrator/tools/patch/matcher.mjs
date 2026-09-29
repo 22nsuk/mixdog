@@ -658,7 +658,7 @@ function escapeNonAsciiForPatch(line) {
   return out;
 }
 
-export function findLineSequenceEscapeEquiv(sourceLines, pattern, minStart, _preferred) {
+export function findLineSequenceEscapeEquiv(sourceLines, pattern, minStart) {
   if (!pattern || pattern.length === 0) return -1;
   const starts = [];
   const from = Math.max(0, Number.isFinite(minStart) ? minStart : 0);

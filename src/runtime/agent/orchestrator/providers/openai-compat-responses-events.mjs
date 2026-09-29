@@ -66,7 +66,7 @@ function pushToolSearchCall(state, item, ctx) {
   if (item?.type !== 'tool_search_call') return;
   const callId = item.call_id || item.id || '';
   if (!callId || state.toolCalls.some((call) => call.id === callId)) return;
-  const _tsArgs =
+  const searchArgs =
     item.arguments && typeof item.arguments === 'object' && !Array.isArray(item.arguments)
       ? item.arguments
       : parseCompletedToolCallArgumentsJson(item.arguments || '{}', ctx.label, {
@@ -78,7 +78,7 @@ function pushToolSearchCall(state, item, ctx) {
     callId,
     // Schema is a plain object ({query,select,limit}); an array must
     // never pass through as args.
-    _tsArgs && typeof _tsArgs === 'object' && !Array.isArray(_tsArgs) ? _tsArgs : {}
+    searchArgs && typeof searchArgs === 'object' && !Array.isArray(searchArgs) ? searchArgs : {}
   );
   state.toolCalls.push(call);
   emitCompatToolCallOnce(state, call, ctx.onToolCall);

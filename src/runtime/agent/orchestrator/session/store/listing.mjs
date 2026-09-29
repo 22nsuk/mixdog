@@ -1,8 +1,8 @@
-// Session listing, summary projection and stale-session sweeping; store.mjs
-// owns the persistence half (save/load/close/delete). The two halves share
-// the in-flight save map so an unpersisted session still shows up in
-// listings; the cycle is import-only (calls happen at runtime).
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+// Session listing and summary projection (the stale-session sweep is
+// sweep/stale-sweep.mjs); store.mjs owns the persistence half
+// (save/load/close/delete). Both read the in-flight save maps so an
+// unpersisted session still shows up in listings.
+import { readFileSync, readdirSync } from 'node:fs';
 import { Worker } from 'node:worker_threads';
 import { getPluginData } from '../../config.mjs';
 import { getStoreDir } from './paths-heartbeat.mjs';
@@ -17,6 +17,7 @@ import {
   _hasUnsettledSummaryOps,
   settleSummaryIndexWrites,
 } from '../store-summary-index.mjs';
+import { applySummaryLogText, readSummaryLogText, summaryIndexStampMs } from '../store-summary-log.mjs';
 import {
   _ensureSummaryCacheDataDir,
   _cachedSummaryRows,
@@ -27,7 +28,7 @@ import {
 } from './summary-cache.mjs';
 import { _saveAsyncQueued, _saveWorkerPending } from './save-worker.mjs';
 import { STORED_SESSION_UNREADABLE, _ensureLifecycleFields, _storedSessionFromFile } from './serialize.mjs';
-import { _savePending } from '../store.mjs';
+import { _savePending } from './pending-saves.mjs';
 import { isOrdinarySession } from '../store-summary-visibility.mjs';
 
 // Disk mtime of the summary index when the in-memory cache was last refreshed
@@ -35,10 +36,6 @@ import { isOrdinarySession } from '../store-summary-visibility.mjs';
 let _summaryIndexMtimeSeen = 0;
 let _summaryRebuildWorker = null;
 let _summaryRebuildDataDir = '';
-
-// The stale-session sweep lives in store/sweep/ and is re-exported below so
-// importers keep this module as the listing entry point.
-export { sweepStaleSessions, sweepStaleSessionsCooperative } from './sweep/stale-sweep.mjs';
 
 export function listStoredSessions(options = {}) {
   const dir = getStoreDir();
@@ -138,11 +135,7 @@ function scheduleSessionSummaryIndexRebuild() {
   };
   worker.on('message', (message) => {
     if (message?.ok !== true || message.dataDir !== getPluginData() || !Array.isArray(message.rows)) return;
-    try {
-      _summaryIndexMtimeSeen = statSync(summaryIndexPath()).mtimeMs || 0;
-    } catch {
-      /* stat only */
-    }
+    _summaryIndexMtimeSeen = summaryIndexStampMs(summaryIndexPath());
     _setSummaryRowsCache(message.rows);
   });
   worker.on('error', clear);
@@ -217,15 +210,13 @@ function _warmSummaryRows() {
   // never fired for terminal-owned growth). One stat per call; when the
   // index advanced, re-read the cheap index JSON as the new cache base
   // (local optimistic overlays stay applied on top).
-  let diskMtime = 0;
-  try {
-    diskMtime = statSync(summaryIndexPath()).mtimeMs || 0;
-  } catch {
-    /* no index yet */
-  }
+  // Stamp = newest mtime of base + delta log, taken BEFORE the reads so a
+  // change landing mid-read is seen again on the next call.
+  const diskMtime = summaryIndexStampMs(summaryIndexPath());
   if (diskMtime <= _summaryIndexMtimeSeen) return _cachedSummaryRows().slice();
   try {
-    const raw = JSON.parse(readFileSync(summaryIndexPath(), 'utf-8'));
+    const logText = readSummaryLogText(summaryIndexPath());
+    const raw = applySummaryLogText(JSON.parse(readFileSync(summaryIndexPath(), 'utf-8')), logText);
     if (Number(raw?.version) === SESSION_SUMMARY_INDEX_VERSION) {
       _summaryIndexMtimeSeen = diskMtime;
       return _setSummaryRowsCache(_normalizeSummaryIndex(raw).rows).slice();
@@ -247,6 +238,8 @@ function _coldSummaryRows() {
     hasIndex = probe.state === PROBE_PRESENT;
     if (probe.state !== PROBE_PRESENT && probe.state !== PROBE_ABSENT) indexUnreadable = true;
     if (hasIndex) {
+      const stampBeforeRead = summaryIndexStampMs(p);
+      const logText = readSummaryLogText(p);
       let text;
       try {
         text = readFileSync(p, 'utf-8');
@@ -259,15 +252,11 @@ function _coldSummaryRows() {
         if (code !== 'ENOENT' && code !== 'ENOTDIR') indexUnreadable = true;
         throw err;
       }
-      const raw = JSON.parse(text);
+      const raw = applySummaryLogText(JSON.parse(text), logText);
       hasIndex = Number(raw?.version) === SESSION_SUMMARY_INDEX_VERSION;
-      if (hasIndex) indexedRows = _normalizeSummaryIndex(raw).rows;
       if (hasIndex) {
-        try {
-          _summaryIndexMtimeSeen = statSync(p).mtimeMs || 0;
-        } catch {
-          /* stat only */
-        }
+        indexedRows = _normalizeSummaryIndex(raw).rows;
+        _summaryIndexMtimeSeen = stampBeforeRead;
       }
     }
   } catch {

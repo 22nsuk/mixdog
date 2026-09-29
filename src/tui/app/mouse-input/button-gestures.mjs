@@ -32,6 +32,11 @@ function pressRegion(g, y) {
   return null;
 }
 
+// A fresh drag record anchored at cell (x, y).
+function newDragState(x, y, { active, region, anchorScroll = 0, anchorSpan = null }) {
+  return { anchor: { x, y }, anchorScroll, last: { x, y }, active, rect: null, region, anchorSpan };
+}
+
 function clampToRegion(g, y, region) {
   return region === 'status' ? g.clampToStatusBand(y) : g.clampToTranscriptViewport(y);
 }
@@ -111,15 +116,7 @@ function onRightPress(g, x, y) {
       // Right-click extend is a one-shot: apply immediately and leave the
       // drag INACTIVE so the right-button release can't finalize (the
       // generic release branch is left-button-only anyway).
-      g.dragRef.current = {
-        anchor: { x, y },
-        anchorScroll: 0,
-        last: { x, y },
-        active: false,
-        rect: null,
-        region: 'prompt',
-        anchorSpan: null,
-      };
+      g.dragRef.current = newDragState(x, y, { active: false, region: 'prompt' });
       if (offset != null) ctl.extendTo?.(offset, true);
       g.lastClickRef.current = { x: -1, y: -1, t: 0 };
       g.finishWindowsMouseGesture();
@@ -138,15 +135,7 @@ function onPromptPress(g, x, y, extendHeld) {
   g.applySelectionRect(null);
   const offset = g.promptOffsetAt(x, y);
   g.stopSmoothScroll();
-  g.dragRef.current = {
-    anchor: { x, y },
-    anchorScroll: 0,
-    last: { x, y },
-    active: true,
-    rect: null,
-    region: 'prompt',
-    anchorSpan: null,
-  };
+  g.dragRef.current = newDragState(x, y, { active: true, region: 'prompt' });
   const ctl = g.promptMouseSelectionRef.current;
   // Shift+click extends the EXISTING prompt selection (anchor stays
   // put, cursor jumps to the click) instead of starting a fresh
@@ -232,15 +221,12 @@ function onLeftPress(g, x, y, extendHeld) {
       g.stopSmoothScroll();
       // Fresh word/line anchor: reset the stitch buffer (see char-drag).
       g.clearStitchBuffer?.();
-      g.dragRef.current = {
-        anchor: { x, y },
-        anchorScroll: region === 'transcript' ? g.scrollTargetRef.current : 0,
-        last: { x, y },
+      g.dragRef.current = newDragState(x, y, {
         active: true,
-        rect: null,
         region,
+        anchorScroll: region === 'transcript' ? g.scrollTargetRef.current : 0,
         anchorSpan: { lo, hi, kind },
-      };
+      });
       g.applySelectionRect(rect);
       g.lastClickRef.current = { x, y, t: now, count: clickCount };
       return;
@@ -258,15 +244,11 @@ function onLeftPress(g, x, y, extendHeld) {
   // Fresh char-drag anchor: drop any rows stitched from a prior
   // selection so the new drag reconstructs only its own content.
   g.clearStitchBuffer?.();
-  g.dragRef.current = {
-    anchor: { x, y },
-    anchorScroll: region === 'transcript' ? g.scrollTargetRef.current : 0,
-    last: { x, y },
+  g.dragRef.current = newDragState(x, y, {
     active: true,
-    rect: null,
     region,
-    anchorSpan: null,
-  };
+    anchorScroll: region === 'transcript' ? g.scrollTargetRef.current : 0,
+  });
 }
 
 function onDragMotion(g, x, y) {

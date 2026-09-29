@@ -4,6 +4,52 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
+// Keep the floor/learned tests offline; the live-version test opts back in.
+process.env.MIXDOG_DISABLE_LIVE_CLI_VERSIONS = '1';
+
+test('effective Claude CLI version is max(floor, learned, live npm)', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'mixdog-anthropic-cli-live-'));
+  const saved = { ...process.env };
+  const realFetch = globalThis.fetch;
+  try {
+    process.env.MIXDOG_DATA_DIR = dataDir;
+    delete process.env.MIXDOG_CLI_VERSION;
+    delete process.env.MIXDOG_DISABLE_LIVE_CLI_VERSIONS;
+    const calls = [];
+    let live = '2.1.900';
+    globalThis.fetch = async (url) => {
+      calls.push(String(url));
+      if (live === null) throw new Error('offline');
+      return { ok: true, json: async () => ({ version: live }) };
+    };
+    const nonce = `${process.pid}-${Date.now()}`;
+    let mod = await import(`./anthropic-oauth-client-version.mjs?live=${nonce}`);
+    await Promise.all([mod.warmCliVersion(), mod.warmCliVersion()]);
+    assert.equal(mod.resolveCliVersion(), '2.1.900');
+    assert.deepEqual(calls, ['https://registry.npmjs.org/@anthropic-ai/claude-code/latest']);
+    assert.match(mod.claudeCliUserAgent(), /^claude-cli\/2\.1\.900 /);
+
+    mod.learnRequiredCliVersion(
+      'Claude Code 2.1.251 does not support this model; version 2.1.950 or newer is required.'
+    );
+    assert.equal(mod.resolveCliVersion(), '2.1.950');
+
+    process.env.MIXDOG_CLI_VERSION = '7.7.7';
+    assert.equal(mod.resolveCliVersion(), '7.7.7');
+    delete process.env.MIXDOG_CLI_VERSION;
+
+    live = null;
+    mod = await import(`./anthropic-oauth-client-version.mjs?offline=${nonce}`);
+    await mod.warmCliVersion();
+    assert.equal(mod.resolveCliVersion(), '2.1.950');
+  } finally {
+    globalThis.fetch = realFetch;
+    for (const k of ['MIXDOG_DATA_DIR', 'MIXDOG_CLI_VERSION', 'MIXDOG_DISABLE_LIVE_CLI_VERSIONS'])
+      restoreEnv(k, saved[k]);
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 function restoreEnv(name, value) {
   if (value === undefined) delete process.env[name];
   else process.env[name] = value;

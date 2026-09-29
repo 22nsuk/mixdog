@@ -54,17 +54,9 @@ export function typedStatusFrom(...sources) {
   return 0;
 }
 
-/**
- * Classify an error for retry policy. Combines HTTP status (when set) and
- * message-text fallback so message-only errors (mid-stream WS error events)
- * route through the same logic as fetch responses.
- *
- *   'auth'      — 401/403 — invalid credentials / forbidden, fail fast.
- *   'permanent' — 4xx (non-auth) or quota — caller decision is final.
- *   'transient' — 5xx/408 or socket-level transient codes — retry with backoff.
- *   'unknown'   — neither; default to permanent in safety-critical paths,
- *                 or retry once in best-effort paths.
- */
+/** The typed HTTP status an error carries in any of its usual spots; 0 when none. */
+const statusOfError = (err) => Number(err?.httpStatus || err?.status || err?.response?.status || 0) || 0;
+
 // The verdict a typed HTTP status (or a typed stream shape) gives, in
 // precedence order; null when the status decides nothing.
 function classifyByStatus(err, status) {
@@ -87,6 +79,17 @@ function classifyByStatus(err, status) {
   return null;
 }
 
+/**
+ * Classify an error for retry policy. Combines HTTP status (when set) and
+ * message-text fallback so message-only errors (mid-stream WS error events)
+ * route through the same logic as fetch responses.
+ *
+ *   'auth'      — 401/403 — invalid credentials / forbidden, fail fast.
+ *   'permanent' — 4xx (non-auth) or quota — caller decision is final.
+ *   'transient' — 5xx/408 or socket-level transient codes — retry with backoff.
+ *   'unknown'   — neither; default to permanent in safety-critical paths,
+ *                 or retry once in best-effort paths.
+ */
 export function classifyError(err) {
   if (!err) return 'unknown';
   // Canonical stream-outcome contract owns replay safety: exposed
@@ -103,7 +106,7 @@ export function classifyError(err) {
   const chain = boundedCauseChain(err);
   if (chain.some(isExplicitUserAbortError)) return 'permanent';
   // Current typed HTTP status outranks stale stream/connection annotations.
-  const status = Number(err.httpStatus || err.status || err.response?.status || 0) || 0;
+  const status = statusOfError(err);
   return classifyByStatus(err, status) || classifyByTransport(err, chain, status) || 'unknown';
 }
 
@@ -295,7 +298,7 @@ export function isConnectionFailure(err) {
   if (!err || (typeof err !== 'object' && typeof err !== 'function')) return false;
   const chain = boundedCauseChain(err);
   if (chain.some(isExplicitUserAbortError)) return false;
-  if (Number(err.httpStatus || err.status || err.response?.status || 0) || 0) return false;
+  if (statusOfError(err)) return false;
   if (
     chain.some((item) => {
       const code = String(item?.code || '');
@@ -379,7 +382,7 @@ export function isServerUnavailable(err) {
   if (!err || (typeof err !== 'object' && typeof err !== 'function')) return false;
   const chain = boundedCauseChain(err);
   if (chain.some(isExplicitUserAbortError)) return false;
-  const status = Number(err.httpStatus || err.status || err.response?.status || 0) || 0;
+  const status = statusOfError(err);
   if (status) return status === 408 || (status >= 500 && status < 600 && !TERMINAL_EDGE_STATUSES.has(status));
   if (isRetryableWireErrorEvent(err)) return typedErrorCode(err) !== RATE_LIMIT_EXCEEDED;
   return chain.some((item) => {
@@ -447,8 +450,7 @@ export function isCursorTransientTransportError(err) {
   if (!err || (typeof err !== 'object' && typeof err !== 'function')) return false;
   const chain = boundedCauseChain(err);
   if (chain.some(isExplicitUserAbortError)) return false;
-  const status = Number(err.httpStatus || err.status || err.response?.status || 0) || 0;
-  if (status) return false;
+  if (statusOfError(err)) return false;
   return chain.some((item) => CURSOR_TRANSIENT_ERROR_CODES.has(String(item?.cursorCode || '')));
 }
 
@@ -480,8 +482,7 @@ const CONTEXT_OVERFLOW_PATTERNS = [
  */
 export function isContextOverflowError(err, _depth = 0) {
   if (!err || _depth > 2) return false;
-  const status = Number(err?.httpStatus || err?.status || err?.response?.status || 0) || 0;
-  if (status === 413) return true;
+  if (statusOfError(err) === 413) return true;
   const code = typedErrorCode(err);
   if (code && CONTEXT_OVERFLOW_CODES.has(code)) return true;
   const msg = (typeof err === 'string' ? err : err?.message) || '';
@@ -553,7 +554,7 @@ export function retryAfterMsFromError(err) {
 }
 
 export function isPermanentQuotaError(err) {
-  const status = Number(err?.httpStatus || err?.status || err?.response?.status || 0) || 0;
+  const status = statusOfError(err);
   // Gemini uses RESOURCE_EXHAUSTED for both daily quota and per-minute
   // rate limits. A 429 is request-local (Google/LiteLLM retry); without a
   // 429 the same code stays a deterministic quota refusal.
@@ -682,7 +683,7 @@ export function isRetryableWireErrorEvent(err) {
 export function isRetryableStreamErrorEvent(err) {
   if (classifyWireErrorEvent(err) === 'transient') return true;
   if (err?.providerWireError !== true) return false;
-  const status = Number(err.httpStatus || err.status || err.response?.status || 0) || 0;
+  const status = statusOfError(err);
   if (status && status >= 400 && status < 500 && !TRANSIENT_STATUSES.has(status)) return false;
   const code = typedErrorCode(err);
   if (code && WIRE_ERROR_FATAL_CODES.has(code) && code !== 'invalid_request' && code !== 'invalid_request_error') {

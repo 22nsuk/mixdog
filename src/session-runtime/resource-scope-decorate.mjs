@@ -2,13 +2,13 @@
 // entry's own root list (null = global); `inheritedScope` is the owning
 // plugin's; and `activeHere` says whether the CURRENT cwd sees the entry, so
 // panels can badge "not in this project" without redoing the path match.
-import { clean } from './session-text.mjs';
+import { clean } from '../runtime/agent/orchestrator/runtime-core/session-text.mjs';
 import {
   cwdWithinProjects,
   extensionScopeProjects,
   extensionScopesFromConfig,
   pluginIdForMcpServer,
-} from './extension-scopes.mjs';
+} from '../runtime/agent/orchestrator/runtime-core/extension-scopes.mjs';
 
 function listOf(status, key) {
   return Array.isArray(status?.[key]) ? status[key] : [];

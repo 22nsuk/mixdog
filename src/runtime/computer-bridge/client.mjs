@@ -122,7 +122,8 @@ function extraFieldTexts(rest) {
 
 function elementLine(element) {
   if (!element || typeof element !== 'object') return element;
-  const { mark, ref, role, name, value, state, source, enabled, has_keyboard_focus, bounds, actions, ...rest } = element;
+  const { mark, ref, role, name, value, state, source, enabled, has_keyboard_focus, bounds, actions, ...rest } =
+    element;
   return [
     isUnsetField(mark) ? null : `#${mark}`,
     isUnsetField(ref) ? null : `[${ref}]`,
@@ -229,11 +230,7 @@ function canonicalComputerResultIsError(text, args) {
 
 /** Sync gate for the session tool surface (featureDisallowedTools). */
 export function computerBridgeAvailableSync() {
-  return readDiscovery() !== null;
-}
-
-function readDiscovery() {
-  return readBridgeDiscovery(DISCOVERY_FILE);
+  return readBridgeDiscovery(DISCOVERY_FILE) !== null;
 }
 
 function computerCommandHeaders(bridge) {
@@ -342,7 +339,7 @@ async function postWithBridgeRecovery(discovery, command, encoded, sessionId, co
     try {
       const response = await postComputerCommand(bridge, encoded, { signal: context?.signal });
       if (response.status === 401 && attempt === 0 && isReplaySafeComputerCommand(command)) {
-        const replacement = readDiscovery();
+        const replacement = readBridgeDiscovery(DISCOVERY_FILE);
         if (bridgeDiscoveryChanged(bridge, replacement)) {
           await response.body?.cancel().catch(() => undefined);
           bridge = replacement;
@@ -355,7 +352,7 @@ async function postWithBridgeRecovery(discovery, command, encoded, sessionId, co
       const timedOut = error?.name === 'TimeoutError';
       const mutationMayHaveExecuted = computerMutationMayHaveExecuted(command);
       if (attempt === 0 && !externallyAborted && !timedOut) {
-        const replacement = readDiscovery();
+        const replacement = readBridgeDiscovery(DISCOVERY_FILE);
         if (bridgeDiscoveryChanged(bridge, replacement)) {
           if (isReplaySafeComputerCommand(command)) {
             bridge = replacement;
@@ -421,7 +418,7 @@ function computerToolResult(value, args) {
 /** Execute one `computer` tool call. Returns MCP-shaped content so the
  *  internal-tools normalizer forwards text and screenshot images as-is. */
 export async function executeComputerTool(rawArgs, context = {}) {
-  const discovery = readDiscovery();
+  const discovery = readBridgeDiscovery(DISCOVERY_FILE);
   if (!discovery) return computerErrorResult(`Error: ${BRIDGE_UNAVAILABLE_MESSAGE}`);
   // Resolve the argument shape once so validation, host translation, and the
   // canonical result text all read the same input.
@@ -513,7 +510,7 @@ async function settlePendingComputerWork(value, command, bridge, sessionId, cont
 }
 
 async function sendComputerSessionControl(sessionId, action, timeoutMs) {
-  const discovery = readDiscovery();
+  const discovery = readBridgeDiscovery(DISCOVERY_FILE);
   if (!discovery) return false;
   try {
     const response = await postComputerCommand(

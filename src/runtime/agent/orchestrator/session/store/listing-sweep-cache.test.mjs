@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { settleSessionSummaryIndex, sweepStaleSessions } from './listing.mjs';
+import { settleSessionSummaryIndex } from './listing.mjs';
+import { sweepStaleSessions } from './sweep/stale-sweep.mjs';
 import { sweepRecordCacheStats } from './sweep/sweep-record.mjs';
 
 const HOUR = 60 * 60 * 1000;

@@ -6,7 +6,7 @@ import { appendAgentTrace } from '../../agent-trace.mjs';
 import { _argShapeSig, _repeatFailureSig, _repeatFailurePatternWouldContinue } from '../loop/tool-classify.mjs';
 import { preDispatchDenyForSession } from '../loop/pre-dispatch-deny.mjs';
 import { crossTurnSignature, crossTurnDedupStub } from '../loop/completion-guards.mjs';
-import { getToolKind, isToolCallDedupEligible } from '../loop/tool-helpers.mjs';
+import { isToolCallDedupEligible } from '../loop/tool-helpers.mjs';
 
 export function preDispatchSkip(batch, call) {
   const { plan, sessionRef, tools } = batch;
@@ -17,7 +17,7 @@ export function preDispatchSkip(batch, call) {
   });
   // A cached or deduplicated result cannot bypass the current session's
   // tool surface, including after a profile change.
-  const denied = preDispatchDenyForSession(sessionRef, call, getToolKind(call.name, sessionRef?.mcpScopeId));
+  const denied = preDispatchDenyForSession(sessionRef, call);
   if (denied !== null) return skipped(denied, 'error');
   if (plan.singleCallBlockedIds.has(call.id)) {
     const firstId = plan.singleCallFirstIdByName.get(call.name);

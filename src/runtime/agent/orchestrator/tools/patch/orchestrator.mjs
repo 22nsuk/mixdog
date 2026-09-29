@@ -34,7 +34,7 @@ async function apply_patch(rawArgs, cwd, options = {}) {
   }
   const rejectedV4AHunks = [];
   const v4aConvertOpts = { rejectPartial, rejectedHunks: rejectedV4AHunks, fuzzy, dryRun, readStateScope };
-  const route = selectApplyPatchRoute({ args, patchStr, requestedFormat, basePath, readStateScope });
+  const route = selectApplyPatchRoute({ args, patchStr, requestedFormat, basePath });
   if (route.useSequence) {
     const seqOut = await applyPatchSequence(patchStr, requestedFormat, basePath, {
       v4aConvertOpts,
@@ -44,7 +44,6 @@ async function apply_patch(rawArgs, cwd, options = {}) {
       rejectPartial,
       readStateScope,
       abortSignal,
-      mutationPlan: request.mutationPlan,
       toolCallId: options?.toolCallId || null,
       sessionId: options?.sessionId || null,
       replayCapture: options?.replayCapture || null,
@@ -60,7 +59,6 @@ async function apply_patch(rawArgs, cwd, options = {}) {
     readStateScope,
     preParsedV4ASections: route.preParsedV4ASections,
     v4aConvertOpts,
-    mutationPlan: request.mutationPlan,
   });
   if (batch.error) return batch.error;
   return applyCodexBatchWithRollback({

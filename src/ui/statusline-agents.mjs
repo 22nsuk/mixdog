@@ -8,7 +8,7 @@
 import { forEachSessionRuntime } from '../runtime/agent/orchestrator/session/manager.mjs';
 import { listHiddenAgentNames } from '../runtime/agent/orchestrator/internal-agents.mjs';
 import { classifyToolCategory } from '../runtime/shared/tool-surface.mjs';
-import { num, timeMs, GRN, R, B } from './statusline-format.mjs';
+import { num, timeMs, GRN, R, B } from '../runtime/shared/statusline/statusline-format.mjs';
 import { positiveInt } from '../runtime/shared/numbers.mjs';
 
 // One table owns both halves of a maintenance agent: which agents are hidden
@@ -168,17 +168,11 @@ export function activeHiddenAgentWorkers({ sessionId = '', clientHostPid = 0 } =
   const rows = [];
   try {
     for (const [runtimeSessionId, entry] of forEachSessionRuntime() || []) {
-      if (!entry || entry.closed === true) continue;
-      const session = entry.session || null;
-      if (!session || session.closed === true) continue;
-      const agent = String(session?.agent || '').trim();
+      const owned = ownedSubSession(runtimeSessionId, entry, { ownerSessionId, ownerPid });
+      if (!owned) continue;
+      const { session, id } = owned;
+      const agent = String(session.agent || '').trim();
       if (!agent || !agents.has(agent)) continue;
-      const id = session?.id || runtimeSessionId || null;
-      if (ownerSessionId && id === ownerSessionId) continue;
-      const sessionOwnerId = String(session?.ownerSessionId || '').trim();
-      if (sessionOwnerId && ownerSessionId && sessionOwnerId !== ownerSessionId) continue;
-      const pid = positiveInt(session?.clientHostPid);
-      if (ownerPid && pid && pid !== ownerPid) continue;
       const stage = String(entry.stage || session?.stage || session?.status || '')
         .trim()
         .toLowerCase();
@@ -198,6 +192,21 @@ export function activeHiddenAgentWorkers({ sessionId = '', clientHostPid = 0 } =
     }
   } catch {}
   return rows;
+}
+
+// The live sub-session behind a runtime entry when it is open and belongs to
+// this lead (not the lead itself, matching owner session / host pid); else null.
+function ownedSubSession(runtimeSessionId, entry, { ownerSessionId, ownerPid }) {
+  if (!entry || entry.closed === true) return null;
+  const session = entry.session || null;
+  if (!session || session.closed === true) return null;
+  const id = session.id || runtimeSessionId || null;
+  if (ownerSessionId && id === ownerSessionId) return null;
+  const sessionOwnerId = String(session.ownerSessionId || '').trim();
+  if (sessionOwnerId && ownerSessionId && sessionOwnerId !== ownerSessionId) return null;
+  const pid = positiveInt(session.clientHostPid);
+  if (ownerPid && pid && pid !== ownerPid) return null;
+  return { session, id };
 }
 
 function agentStatusValues(value = {}) {
@@ -234,21 +243,13 @@ export function agentWebSearchStatus({ sessionId = '', clientHostPid = 0 } = {})
   let startedAt = 0;
   try {
     for (const [runtimeSessionId, entry] of forEachSessionRuntime() || []) {
-      if (!entry || entry.closed === true) continue;
       if (
-        String(entry.stage || '')
+        String(entry?.stage || '')
           .trim()
           .toLowerCase() !== 'tool_running'
       )
         continue;
-      const session = entry.session || null;
-      if (!session || session.closed === true) continue;
-      const id = session?.id || runtimeSessionId || null;
-      if (ownerSessionId && id === ownerSessionId) continue;
-      const sessionOwnerId = String(session?.ownerSessionId || '').trim();
-      if (sessionOwnerId && ownerSessionId && sessionOwnerId !== ownerSessionId) continue;
-      const pid = positiveInt(session?.clientHostPid);
-      if (ownerPid && pid && pid !== ownerPid) continue;
+      if (!ownedSubSession(runtimeSessionId, entry, { ownerSessionId, ownerPid })) continue;
       const tool = String(entry.lastToolCall || '').trim();
       if (!tool) continue;
       let category = null;

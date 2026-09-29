@@ -3,11 +3,12 @@
  * live cwd, coerced args, the scoped-cache outcome, the completion notifier
  * and the option bags handed to the tool.
  */
-import { enqueuePendingMessage, markCompletionEntry, markSessionToolOutputTail } from '../../manager.mjs';
+import { enqueuePendingMessage, markCompletionEntry } from '../../manager/pending-messages.mjs';
+import { markSessionToolOutputTail } from '../../manager/runtime-liveness.mjs';
 import { createScopedCacheOutcome } from '../../cache/scoped-cache-outcome.mjs';
 import { modelVisibleToolCompletionMessage } from '../../../../../shared/tool-execution-contract.mjs';
 import { _isScopedCacheableTool } from '../tool-classify.mjs';
-import { refreshDeferredMcpToolCatalog } from '../../../../../../session-runtime/tool-catalog.mjs';
+import { refreshDeferredMcpToolCatalog } from '../../../runtime-core/tool-catalog.mjs';
 import { coerceToolArgsForSession } from '../arg-schema-coerce.mjs';
 
 export function resolveToolCompletionSessionId({ callerSessionId } = {}) {

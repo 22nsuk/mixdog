@@ -3,7 +3,7 @@
  * (commandBusy guard held around one runtime call) and the route/stats
  * republish after a change that alters the tool surface.
  */
-export function createApiHelpers({ getState, set, resetStatsAndSyncContext, routeState }) {
+export function createApiHelpers({ getState, set, resetStatsAndSyncContext, routeState, syncContextStats }) {
   /**
    * Wrap a runtime call in the command lock: refused (→ `busyResult`) while
    * another command holds commandBusy, otherwise held for the call's duration.
@@ -30,5 +30,16 @@ export function createApiHelpers({ getState, set, resetStatsAndSyncContext, rout
     set({ ...routeState(), stats: { ...getState().stats } });
   };
 
-  return { withCommandLock, refreshRouteStats };
+  const publishRoute = () => set({ ...routeState(), stats: { ...getState().stats } });
+
+  // Context-stats recompute (transcript scan + per-message JSON stringify) is
+  // deferred off the caller's tick so Ink repaints the change first; stats
+  // become eventually consistent on the next tick/repaint.
+  const deferStatsRefresh = () =>
+    setTimeout(() => {
+      syncContextStats({ allowEstimated: true });
+      set({ stats: { ...getState().stats } });
+    }, 0);
+
+  return { withCommandLock, refreshRouteStats, publishRoute, deferStatsRefresh };
 }

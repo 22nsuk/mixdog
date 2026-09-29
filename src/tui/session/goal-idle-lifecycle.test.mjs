@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { createGoalRuntime } from '../../session-runtime/goal-runtime.mjs';
+import { createGoalRuntime } from '../../runtime/agent/orchestrator/runtime-core/goal-runtime.mjs';
 import { createGoalContinuation } from './goal-continuation.mjs';
 
 const tick = () => new Promise(setImmediate);

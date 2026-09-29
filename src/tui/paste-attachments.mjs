@@ -12,7 +12,7 @@ import {
   imageProfileForProvider,
   imageMetadataText,
   resizeImageBuffer,
-} from '../runtime/agent/orchestrator/tools/builtin/read-image-resize.mjs';
+} from '../runtime/shared/read-image-resize.mjs';
 
 const IMAGE_MIME = {
   '.png': 'image/png',

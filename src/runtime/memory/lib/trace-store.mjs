@@ -720,7 +720,7 @@ function _scheduleFlush(db, q) {
 
 // ---------------------------------------------------------------------------
 // Exit drain — flush pending trace events before process exit.
-// Issue 4: timer is unref()'d so it won't prevent exit; register drain handlers.
+// The flush timer is unref()'d so it won't prevent exit; register drain handlers.
 // ---------------------------------------------------------------------------
 
 const _registeredExitDbs = new WeakMap();
@@ -773,7 +773,11 @@ export function registerTraceExitDrain(db) {
   };
   const onSigterm = async () => {
     await drainOnExit();
-    process.exit(0);
+    // Registering a SIGTERM listener suppresses Node's default termination.
+    // Restore it only when this was the sole listener; otherwise leave the
+    // remaining handlers to finish their own graceful shutdown.
+    process.off('SIGTERM', onSigterm);
+    if (process.listenerCount('SIGTERM') === 0) process.kill(process.pid, 'SIGTERM');
   };
 
   process.on('exit', onExit);

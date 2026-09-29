@@ -24,9 +24,7 @@ import { readPluginVersion, readMemoryCodeFingerprint } from './lib/memory-finge
 const PLUGIN_VERSION = readPluginVersion(PLUGIN_ROOT);
 const BOOT_MEMORY_CODE_FINGERPRINT = readMemoryCodeFingerprint(PLUGIN_ROOT);
 
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
 import { TOOL_DEFS } from './tool-defs.mjs';
 
@@ -336,16 +334,10 @@ async function getCycleLastRun() {
     return {
       cycle1: Number(obj.cycle1) || 0,
       cycle2: Number(obj.cycle2) || 0,
-      // Phase B §2.4 auto-restart book-keeping — last time an overdue cycle1
-      // triggered an unscheduled run, rate-limited separately from the
-      // normal cycle timestamp so a long chain of failures cannot tight-loop.
-      cycle1_autoRestart: Number(obj.cycle1_autoRestart) || 0,
-      // #13/#14: heartbeat (every attempt, success or skip) and the auto-
-      // restart attempt timestamp (committed BEFORE the call) are tracked
-      // separately from the success timestamps above so a long string of
-      // failed/skipped runs cannot disguise itself as a healthy keeper.
+      // Heartbeat (every attempt, success or skip) is tracked separately from
+      // the success timestamps above so a long string of failed/skipped runs
+      // cannot disguise itself as a healthy keeper.
       cycle1_heartbeat: Number(obj.cycle1_heartbeat) || 0,
-      cycle1_autoRestart_attempt: Number(obj.cycle1_autoRestart_attempt) || 0,
       // Last cycle2 failure message; cleared to '' on success.
       cycle2_last_error: typeof obj.cycle2_last_error === 'string' ? obj.cycle2_last_error : '',
     };
@@ -353,9 +345,7 @@ async function getCycleLastRun() {
     return {
       cycle1: 0,
       cycle2: 0,
-      cycle1_autoRestart: 0,
       cycle1_heartbeat: 0,
-      cycle1_autoRestart_attempt: 0,
       cycle2_last_error: '',
     };
   }
@@ -528,13 +518,6 @@ const _actionHandlers = createMemoryActionHandlers({
 });
 const { handleMemoryAction, handleToolCall } = _actionHandlers;
 
-const mcp = new Server(
-  { name: 'mixdog-memory', version: PLUGIN_VERSION },
-  { capabilities: { tools: {} }, instructions: MEMORY_INSTRUCTIONS_TEXT }
-);
-mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOL_DEFS }));
-mcp.setRequestHandler(CallToolRequestSchema, (req) => handleToolCall(req.params.name, req.params.arguments ?? {}));
-
 // The facade owns the http.Server + listen/stop lifecycle; the router builds the request
 // handler and buildSessionCoreMemoryPayload from injected live state.
 const _httpRouter = createHttpRouter({
@@ -567,6 +550,8 @@ const _httpRouter = createHttpRouter({
   refreshCoreMemoryFile: refreshCoreMemorySnapshot,
 });
 const buildSessionCoreMemoryPayload = _httpRouter.buildSessionCoreMemoryPayload;
+// Standalone stdio MCP server: the same tool surface the /mcp route serves.
+const mcp = _httpRouter.createHttpMcpServer();
 const httpServer = http.createServer(_httpRouter.requestHandler);
 const _httpListener = createLoopbackListener({
   server: httpServer,
@@ -618,7 +603,7 @@ export async function appendEntry(data = {}) {
   const sourceRef = String(data.sourceRef ?? `manual:${Date.now()}-${process.pid}`);
   const sessionId = data.sessionId ?? null;
   const tsMs = parseTsToMs(data.ts ?? Date.now());
-  const projectId = resolveProjectScope(typeof data.cwd === 'string' && data.cwd ? data.cwd : null);
+  const projectId = resolveProjectScope(data.cwd);
   const result = await db.query(
     `
     INSERT INTO entries(ts, role, content, source_ref, session_id, project_id)

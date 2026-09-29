@@ -3,7 +3,7 @@
  *  reconnects, and the empty-session tool-policy refresh all apply exactly as
  *  they do for a UI click. The facade is read lazily because runtime-core
  *  registers the tool executor before it finishes assembling the API object. */
-import { builtinFeatureActive, builtinFirstUseApproval } from '../builtin-features.mjs';
+import { builtinFeatureActive, builtinFirstUseApproval } from '../../runtime/agent/orchestrator/runtime-core/builtin-features.mjs';
 import { ORCHESTRATION_MODES } from '../../runtime/shared/orchestration.mjs';
 import { SETUP_DESKTOP_DOMAINS, SETUP_HANDOFFS } from './settings-contract.mjs';
 import { executeExtendedSetupAction, publicAutomation, validateMcpInput } from './extended-actions.mjs';
@@ -17,7 +17,7 @@ import {
   SETUP_BUILTIN_TOGGLE_FEATURES,
 } from './tool-defs.mjs';
 import { schemaValueError } from '../../runtime/shared/schema-value-error.mjs';
-import { clean } from '../session-text.mjs';
+import { clean } from '../../runtime/agent/orchestrator/runtime-core/session-text.mjs';
 
 const ACTION_APPLIES_TO = {
   set_recap_enabled: 'background Memory cycles; no restart required',

@@ -1,10 +1,10 @@
 // session-create/materialize.mjs — adopting the provider session and
 // publishing it: initial tool surface, hooks, statusline, the session:create
 // event, and the optional WS transport prewarm.
-import { deferredSurfaceModeForLead } from '../effort.mjs';
-import { filterMcpToolsForSession } from '../extension-scopes.mjs';
+import { deferredSurfaceModeForLead } from '../../runtime/agent/orchestrator/runtime-core/effort.mjs';
+import { filterMcpToolsForSession } from '../../runtime/agent/orchestrator/runtime-core/extension-scopes.mjs';
 import { attachSessionHooks } from '../session-hooks.mjs';
-import { applyDeferredToolSurface } from '../tool-catalog.mjs';
+import { applyDeferredToolSurface } from '../../runtime/agent/orchestrator/runtime-core/tool-catalog.mjs';
 import { writeStatuslineRoute } from '../statusline-route.mjs';
 import { sessionOptions } from './session-options.mjs';
 

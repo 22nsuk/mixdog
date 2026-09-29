@@ -2,7 +2,7 @@
  * tool-shape.mjs — provider-specific shape of the hosted web-search tool,
  * the prompt that drives it and the flattening of its cited sources.
  */
-import { clean } from '../session-text.mjs';
+import { clean } from '../../runtime/agent/orchestrator/runtime-core/session-text.mjs';
 
 export function normalizeWebSearchAllowedDomain(site) {
   const raw = clean(site);
@@ -32,7 +32,7 @@ export function nativeWebSearchTool(args = {}, toolType = 'web_search', provider
   const type = clean(toolType) || 'web_search';
   const location = nativeWebSearchUserLocation(args.locale);
   if (providerName === 'gemini') {
-    return { type: type || 'google_search' };
+    return { type };
   }
   if (providerName === 'anthropic' || providerName === 'anthropic-oauth') {
     const tool = {

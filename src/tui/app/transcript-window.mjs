@@ -47,7 +47,6 @@ export const SELECTION_PAINT_INTERVAL_MS = positiveIntEnv('MIXDOG_TUI_SELECTION_
 // call per this interval, instead of firing the (expensive: anchor recompute +
 // selection repaint) scrollTranscriptRows on every mousemove/wheel tick.
 export const SCROLL_COALESCE_MS = positiveIntEnv('MIXDOG_TUI_SCROLL_COALESCE_MS', 16);
-export const PROMPT_HISTORY_LIMIT = 50;
 
 // Accumulate same-direction wheel/edge-drag deltas, but never retain movement
 // from the opposite direction. Without this reset a quick wheel reversal could
@@ -356,8 +355,6 @@ function measuredTranscriptRows(item, columns, toolOutputExpanded) {
   return entry.rows;
 }
 
-const STREAMING_ROW_QUANTUM = 1;
-
 function streamingEstimateRows(item, columns, toolOutputExpanded) {
   const id = item?.id;
   const exactText = String(item?.text ?? '');
@@ -376,8 +373,7 @@ function streamingEstimateRows(item, columns, toolOutputExpanded) {
   }
   const trimmedText = streamingLayoutText(item.text);
   const estimateItem = trimmedText === item.text ? item : { ...item, text: trimmedText };
-  const raw = Math.max(1, Math.ceil(estimateTranscriptItemRows(estimateItem, columns, toolOutputExpanded)));
-  const quantized = Math.ceil(raw / STREAMING_ROW_QUANTUM) * STREAMING_ROW_QUANTUM;
+  const quantized = Math.max(1, Math.ceil(estimateTranscriptItemRows(estimateItem, columns, toolOutputExpanded)));
   // High-water clamp: streaming text only grows, so never report fewer rows than
   // this id already reached this run — absorbs the childCount 1↔2 gap flip that
   // otherwise dips the estimate ±1 frame-to-frame. A columns/expanded change

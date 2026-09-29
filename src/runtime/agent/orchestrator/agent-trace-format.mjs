@@ -155,6 +155,12 @@ const SECRET_ASSIGNMENT_RE = /((?:PASSWORD|SECRET|TOKEN|API_KEY|APIKEY)\s*=\s*)\
 const BEARER_HEADER_RE = /(Authorization:\s*Bearer\s+)\S+/gi;
 // URL query params carrying tokens/keys.
 const SECRET_QUERY_PARAM_RE = /([?&](?:token|api[-_]?key|access[-_]?token|auth|password|secret)=)[^&\s#]+/gi;
+// Long flags: --password <v> / --password=<v> (also --token, --secret, --api-key).
+const SECRET_LONG_FLAG_RE = /(--(?:password|token|secret|api[-_]?key)(?:\s+|=))\S+/gi;
+// Short -p <v> flag (mysql/psql/curl style).
+const SECRET_SHORT_FLAG_RE = /((?:^|\s)-p(?:\s+|=))\S+/g;
+// URL userinfo: scheme://user:secret@host -> scheme://user:[redacted]@host.
+const URL_USERINFO_RE = /(:\/\/[^:/\s@]+:)[^@\s]+(@)/g;
 // Redact shell `command` values that look like they carry secrets. Covers
 // assignment forms, Authorization headers, --password / -p flags, URL
 // userinfo and token query params. The shapes shared with log text are the
@@ -164,12 +170,9 @@ function _redactShellCommand(cmd) {
   let out = cmd;
   out = out.replace(SECRET_ASSIGNMENT_RE, REDACTED);
   out = out.replace(BEARER_HEADER_RE, REDACTED);
-  // Long flags: --password <v> / --password=<v> (also --token, --secret, --api-key).
-  out = out.replace(/(--(?:password|token|secret|api[-_]?key)(?:\s+|=))\S+/gi, '$1[redacted]');
-  // Short -p <v> flag (mysql/psql/curl style).
-  out = out.replace(/((?:^|\s)-p(?:\s+|=))\S+/g, '$1[redacted]');
-  // URL userinfo: scheme://user:secret@host -> scheme://user:[redacted]@host.
-  out = out.replace(/(:\/\/[^:/\s@]+:)[^@\s]+(@)/g, '$1[redacted]$2');
+  out = out.replace(SECRET_LONG_FLAG_RE, REDACTED);
+  out = out.replace(SECRET_SHORT_FLAG_RE, REDACTED);
+  out = out.replace(URL_USERINFO_RE, '$1[redacted]$2');
   out = out.replace(SECRET_QUERY_PARAM_RE, REDACTED);
   return out;
 }
@@ -240,6 +243,9 @@ function _redactLogText(text) {
   out = out.replace(BEARER_HEADER_RE, REDACTED);
   out = out.replace(SECRET_QUERY_PARAM_RE, REDACTED);
   out = out.replace(SECRET_ASSIGNMENT_RE, REDACTED);
+  out = out.replace(SECRET_LONG_FLAG_RE, REDACTED);
+  out = out.replace(SECRET_SHORT_FLAG_RE, REDACTED);
+  out = out.replace(URL_USERINFO_RE, '$1[redacted]$2');
   return out;
 }
 
@@ -593,6 +599,8 @@ function traceAgentTool({
   // `category`) so trace-level aggregation can exclude expected command
   // exits (`command-exit`) without joining tool-failures.jsonl.
   const errorCategory = resultKind === 'error' ? classifyToolFailure(resultText, toolName) : null;
+  const localSearch =
+    localSearchTelemetry && Object.keys(localSearchTelemetry).length > 0 ? { ...localSearchTelemetry } : null;
   // Flat shape — fields named exactly as the agent_calls PG columns so
   // insertAgentCalls can pick them up by direct property access without
   // a payload-unwrap step. result_kind has no column and rides as plain
@@ -617,8 +625,7 @@ function traceAgentTool({
     result_bytes_est: resultBytesEst,
     result_lines_est: resultLinesEst,
     grep_coverage: grepCoverage,
-    local_search:
-      localSearchTelemetry && Object.keys(localSearchTelemetry).length > 0 ? { ...localSearchTelemetry } : null,
+    local_search: localSearch,
     payload: {
       ...(summarizedTiming ? { timing: summarizedTiming } : {}),
       ...(toolBatchId ? { batch: { batch_id: toolBatchId, tool_call_id: toolCallId } } : {}),
@@ -653,8 +660,7 @@ function traceAgentTool({
         result_next_call_count: nextCallCount,
         result_bytes_est: resultBytesEst,
         result_lines_est: resultLinesEst,
-        local_search:
-          localSearchTelemetry && Object.keys(localSearchTelemetry).length > 0 ? { ...localSearchTelemetry } : null,
+        local_search: localSearch,
         cwd: cwd || null,
       },
     });

@@ -21,7 +21,6 @@ import { createTimeoutSignal } from '../stall-policy.mjs';
 import { getLlmDispatcher, preconnect } from '../../../shared/llm/http-agent.mjs';
 import { normalizeGrokToolSchemas } from './lib/grok-tool-schema.mjs';
 
-// xAI's shared OAuth client. The consent screen renders this as "Grok Build".
 import {
   INFERENCE_BASE_URL,
   TOKEN_REFRESH_SKEW_MS,
@@ -39,6 +38,7 @@ import {
   _setRefreshInFlight,
   refreshTokens,
 } from './grok-oauth-tokens.mjs';
+import { learnGrokRequiredVersion, warmGrokCliVersion } from './grok-client-version.mjs';
 export {
   hasGrokOAuthCredentials,
   describeGrokOAuthCredentials,
@@ -223,12 +223,17 @@ function _isDatedGrokChatModel(m) {
   return Boolean(m?.id) && !NON_CHAT_MODEL_RE.test(m.id) && Number(m.created) > 0;
 }
 
-function _markLatestGrok(models) {
+function _newestDatedGrokChatModel(models) {
   let best = null;
   for (const m of models) {
     if (!_isDatedGrokChatModel(m)) continue;
     if (!best || Number(m.created) > Number(best.created)) best = m;
   }
+  return best;
+}
+
+function _markLatestGrok(models) {
+  const best = _newestDatedGrokChatModel(models);
   if (best) best.latest = true;
 }
 
@@ -239,12 +244,7 @@ function _markLatestGrok(models) {
 function resolveLatestGrokModel() {
   const cached = _modelCache.loadSync();
   if (!Array.isArray(cached)) return null;
-  let best = null;
-  for (const m of cached) {
-    if (!_isDatedGrokChatModel(m)) continue;
-    if (!best || Number(m.created) > Number(best.created)) best = m;
-  }
-  return best?.id || null;
+  return _newestDatedGrokChatModel(cached)?.id || null;
 }
 
 async function ensureLatestGrokModel(provider) {
@@ -384,6 +384,7 @@ export class GrokOAuthProvider {
     }
     const useModel = normalizeGrokModelId(model || (await ensureLatestGrokModel(this)));
     const tokens = await this.ensureAuth();
+    await warmGrokCliVersion();
     const requestHeaders = proxyHeaders({
       model: useModel,
       sendOpts,
@@ -413,6 +414,22 @@ export class GrokOAuthProvider {
       // TYPED status only: a rejection whose only evidence is message
       // text is never treated as an auth failure worth re-issuing.
       const rejectedStatus = Number(err?.httpStatus || err?.status);
+      // 426 = client version gate. Retry once only when the body stated a
+      // minimum we did not already satisfy; nothing was emitted before it.
+      if (
+        rejectedStatus === 426 &&
+        err.liveTextEmitted !== true &&
+        err.emittedToolCall !== true &&
+        learnGrokRequiredVersion(err?.message)
+      ) {
+        const upgraded = proxyHeaders({ model: useModel, sendOpts, userId: tokens.user_id });
+        return await this._ensureInner(tokens.access_token, useModel, upgraded)._doSend(
+          messages,
+          useModel,
+          grokTools,
+          sendOpts
+        );
+      }
       if (rejectedStatus === 401 || rejectedStatus === 403) {
         // A stream-level rejection after text/tool dispatch cannot be safely
         // replayed: the client has already observed output or may have
@@ -467,6 +484,7 @@ export class GrokOAuthProvider {
     }
     const timeout = createTimeoutSignal(null, 10_000, 'grok-oauth proxy model list');
     try {
+      await warmGrokCliVersion();
       const res = await fetch(`${PROXY_BASE_URL}/models`, {
         method: 'GET',
         headers: { Authorization: `Bearer ${tokens.access_token}`, ...proxyHeaders() },

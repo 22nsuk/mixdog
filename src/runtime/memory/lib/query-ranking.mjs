@@ -1,5 +1,6 @@
 import { sessionRecallTerms } from './recall-format.mjs';
 import { compareRecallNewestFirst } from './recall-order.mjs';
+import { isStructuralTimeToken } from './memory-text-utils.mjs';
 
 const LATEST_RECALL_CONTEXT_TERMS = new Set([
   'latest',
@@ -49,8 +50,7 @@ export function hasVagueLatestWorkIntent(text) {
 export function latestRecallTopicTerms(text) {
   return sessionRecallTerms(text)
     .filter((term) => !LATEST_RECALL_CONTEXT_TERMS.has(term))
-    .filter((term) => !/^\d{4}-\d{2}-\d{2}(?:~\d{4}-\d{2}-\d{2})?$/u.test(term))
-    .filter((term) => !/^\d{1,2}:\d{2}(?:~\d{1,2}:\d{2})?$/u.test(term))
+    .filter((term) => !isStructuralTimeToken(term))
     .filter((term) => !/^\d{1,4}(?:년|월|일|시|분)$/u.test(term));
 }
 

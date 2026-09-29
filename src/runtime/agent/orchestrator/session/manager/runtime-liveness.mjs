@@ -425,7 +425,7 @@ export function forEachSessionRuntime() {
 
 // Wire the usage-metrics runtime accessor to this module's _runtimeState so
 // persistIterationMetrics can read the live in-memory session and flag
-// usageMetricsTurnIncremental. (Moved with the map from manager.mjs.)
+// usageMetricsTurnIncremental.
 configureUsageMetricsRuntime({ getRuntimeEntry: (id) => _runtimeState.get(id) });
 
 /** Mark session hidden so listSessions() filters it out (runtime-only). */

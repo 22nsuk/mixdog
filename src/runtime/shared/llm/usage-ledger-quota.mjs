@@ -98,7 +98,9 @@ function sameWindow(previous, sample) {
 export function recordQuotaSamples(db, samples) {
   const latest = db.prepare(`SELECT ts,seen_until,used_pct,reset_at FROM quota_samples
       WHERE provider=? AND account=? AND label=? ORDER BY ts DESC LIMIT 1`);
-  const extend = db.prepare('UPDATE quota_samples SET seen_until=? WHERE provider=? AND account=? AND label=? AND ts=?');
+  const extend = db.prepare(
+    'UPDATE quota_samples SET seen_until=? WHERE provider=? AND account=? AND label=? AND ts=?'
+  );
   const insert = db.prepare('INSERT OR IGNORE INTO quota_samples VALUES (?,?,?,?,?,?,?)');
   let written = 0;
   db.exec('BEGIN IMMEDIATE');
@@ -326,20 +328,48 @@ function firstAfter(events, time) {
   return low;
 }
 
+// Records written before accounts were recorded carry none. They were made
+// through the account the provider was used through when recording began: the
+// one on its earliest record that names an account. Once set it never
+// changes, so it is read once per connection.
+const legacyAccountOwners = new WeakMap();
+
+function legacyAccountOwner(db, provider) {
+  let owners = legacyAccountOwners.get(db);
+  if (!owners) {
+    owners = new Map();
+    legacyAccountOwners.set(db, owners);
+  }
+  if (owners.has(provider)) return owners.get(provider);
+  const row = db
+    .prepare(`
+      SELECT json_extract(r.signature,'$[8]') AS account
+      FROM usage_events e JOIN usage_routes r ON r.id=e.route
+      WHERE json_extract(r.signature,'$[0]')=? AND COALESCE(json_extract(r.signature,'$[8]'),'')<>''
+      ORDER BY e.ts LIMIT 1`)
+    .get(provider);
+  if (!row) return null;
+  owners.set(provider, row.account);
+  return row.account;
+}
+
 /**
  * The provider account's token records in [fromMs, toMs], summed per minute
  * and model, keeping the best-ranked origin per day and model like the usage
  * rollups. The provider and account are read off the route table once — far
- * smaller than the records — so no record is decoded. Records written before
- * accounts were recorded carry none and count for every account.
+ * smaller than the records — so no record is decoded. Records without an
+ * account belong to the legacy owner only, or to every account while no
+ * record names one.
  */
 function readQuotaEvents(db, { provider, account, fromMs, toMs }) {
+  const owner = legacyAccountOwner(db, provider);
+  const unlabeled = owner === null || owner === account ? '' : account;
   const rows = db
     .prepare(`
       WITH routes AS (
           SELECT id,json_extract(signature,'$[1]') AS model,json_extract(signature,'$[7]') AS rank
           FROM usage_routes
-          WHERE json_extract(signature,'$[0]')=? AND COALESCE(json_extract(signature,'$[8]'),'') IN (?,'')
+          WHERE json_extract(signature,'$[0]')=? AND COALESCE(json_extract(signature,'$[8]'),'') IN (?,?)
       )
       SELECT (e.ts/60000)*60000 AS minute,e.day,r.model,r.rank,COUNT(*) AS turns,
           SUM(e.input) AS input,SUM(e.output) AS output,SUM(e.cache_read) AS cacheRead,
@@ -348,7 +378,7 @@ function readQuotaEvents(db, { provider, account, fromMs, toMs }) {
       WHERE e.ts>=? AND e.ts<=?
       GROUP BY minute,e.day,r.model,r.rank
       ORDER BY minute`)
-    .all(provider, account, fromMs, toMs);
+    .all(provider, account, unlabeled, fromMs, toMs);
   const best = new Map();
   const ranks = db.prepare(`SELECT day,model,MIN(rank) AS rank FROM daily
       WHERE provider=? AND day BETWEEN ? AND ? GROUP BY day,model`);
@@ -412,9 +442,14 @@ function allocateQuota(instances, events) {
           turns += events[index].turns;
         }
         let weight = 'turns';
-        if (cost > 0) weight = 'costUsd';
-        else if (tokens > 0) weight = 'tokens';
-        const total = cost > 0 ? cost : tokens > 0 ? tokens : turns;
+        let total = turns;
+        if (cost > 0) {
+          weight = 'costUsd';
+          total = cost;
+        } else if (tokens > 0) {
+          weight = 'tokens';
+          total = tokens;
+        }
         if (total > 0) {
           for (let index = start; index < end; index += 1) shares[index] += (delta * events[index][weight]) / total;
           instance.attributed += delta;
@@ -537,6 +572,30 @@ function modelSeries(slots, instances, keys, now) {
   return series;
 }
 
+/** Outside usage is spread over the time its interval covers; returns its total within the domain. */
+function spreadOutsideUsage(outside, slots, slotAt, domainFrom, domainTo) {
+  let total = 0;
+  for (const interval of outside) {
+    const from = Math.max(interval.fromMs, domainFrom);
+    const to = Math.min(interval.toMs, domainTo);
+    if (interval.toMs <= interval.fromMs) {
+      if (interval.toMs < domainFrom || interval.toMs > domainTo) continue;
+      slots[slotAt(interval.toMs)].outside += interval.points;
+      total += interval.points;
+      continue;
+    }
+    for (let index = slotAt(from); index < slots.length && slots[index].fromMs < to; index += 1) {
+      const slot = slots[index];
+      const overlap = Math.min(to, slot.toMs) - Math.max(from, slot.fromMs);
+      if (overlap <= 0) continue;
+      const part = (interval.points * overlap) / (interval.toMs - interval.fromMs);
+      slot.outside += part;
+      total += part;
+    }
+  }
+  return total;
+}
+
 function historyRow(instance, events) {
   const start = firstAfter(events, instance.startMs - 1);
   const end = firstAfter(events, instance.endMs);
@@ -617,7 +676,9 @@ export function readQuotaHistory(
   const { shares, outside } = allocateQuota(shown, events);
   const points = quotaPoints(shown);
 
-  const slotMs = SLOT_SIZES.find((size) => (domainTo - domainFrom) / size <= MAX_SLOTS) ?? Math.ceil((domainTo - domainFrom) / MAX_SLOTS);
+  const slotMs =
+    SLOT_SIZES.find((size) => (domainTo - domainFrom) / size <= MAX_SLOTS) ??
+    Math.ceil((domainTo - domainFrom) / MAX_SLOTS);
   const slots = [];
   for (let start = domainFrom; start < domainTo; start += slotMs) {
     slots.push({
@@ -647,26 +708,7 @@ export function readQuotaHistory(
     slot.models.set(event.model, slotModel);
     addUsage(slotModel, event, share);
   });
-  // Outside usage is spread over the time its interval covers.
-  let outsideTotal = 0;
-  for (const interval of outside) {
-    const from = Math.max(interval.fromMs, domainFrom);
-    const to = Math.min(interval.toMs, domainTo);
-    if (interval.toMs <= interval.fromMs) {
-      if (interval.toMs < domainFrom || interval.toMs > domainTo) continue;
-      slots[slotAt(interval.toMs)].outside += interval.points;
-      outsideTotal += interval.points;
-      continue;
-    }
-    for (let index = slotAt(from); index < slots.length && slots[index].fromMs < to; index += 1) {
-      const slot = slots[index];
-      const overlap = Math.min(to, slot.toMs) - Math.max(from, slot.fromMs);
-      if (overlap <= 0) continue;
-      const part = (interval.points * overlap) / (interval.toMs - interval.fromMs);
-      slot.outside += part;
-      outsideTotal += part;
-    }
-  }
+  const outsideTotal = spreadOutsideUsage(outside, slots, slotAt, domainFrom, domainTo);
 
   const exportedModels = [...models].map(([model, usage]) => ({ model, ...exportUsage(usage) })).sort(byConsumption);
   const seriesKeys = exportedModels
@@ -704,7 +746,8 @@ export function readQuotaHistory(
       costUsd: round(totals.costUsd, 6),
       costPerPercent: totals.consumed > 0.05 ? round(attributedCost / totals.consumed, 6) : null,
       maxedOut: peaks.filter(
-        (instance) => instance.exhaustedAt !== null && instance.exhaustedAt >= domainFrom && instance.exhaustedAt <= domainTo
+        (instance) =>
+          instance.exhaustedAt !== null && instance.exhaustedAt >= domainFrom && instance.exhaustedAt <= domainTo
       ).length,
     },
     totals: exportUsage(totals),

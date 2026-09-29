@@ -1,9 +1,7 @@
 import {
-  closeSync,
-  fstatSync,
   linkSync,
   mkdirSync,
-  openSync,
+  readdirSync,
   readFileSync,
   renameSync,
   statSync,
@@ -13,13 +11,12 @@ import {
 import {
   link as linkAsync,
   mkdir as mkdirAsync,
-  open as openAsync,
   readFile as readFileAsync,
   stat as statAsync,
   unlink as unlinkAsync,
   writeFile as writeFileAsync,
 } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { enforceOwnerOnlyAclWin32, enforceOwnerOnlyAclWin32Async } from './file-permissions.mjs';
@@ -45,7 +42,9 @@ const heldLockPaths = new AsyncLocalStorage();
 const RECLAIM_GUARD_STALE_MS = 30_000;
 const LOCK_WAIT_WARN_MS = 500;
 const LOCK_WAIT_WARN_INTERVAL_MS = 10_000;
+const LOCK_HELD_WARN_MS = 1000;
 const lockWaitWarnedAt = new Map();
+const lockHeldWarnedAt = new Map();
 
 function markOsHeld(lockPath) {
   osHeldPaths.set(lockPath, (osHeldPaths.get(lockPath) || 0) + 1);
@@ -67,10 +66,6 @@ const SYNC_IO = {
   rename: (from, to) => renameSync(from, to),
   read: (path) => readFileSync(path, 'utf8'),
   mkdirp: (path) => mkdirSync(path, { recursive: true }),
-  openExclusive: (path) => openSync(path, 'wx'),
-  fstat: (fd) => fstatSync(fd),
-  writeHandle: (fd, data) => writeFileSync(fd, data, 'utf8'),
-  close: (fd) => closeSync(fd),
   createExclusive: (path, data) => writeFileSync(path, data, { encoding: 'utf8', mode: 0o600, flag: 'wx' }),
   link: (from, to) => linkSync(from, to),
   unlink: (path) => unlinkSync(path),
@@ -81,10 +76,6 @@ const ASYNC_IO = {
   stat: (path) => statAsync(path),
   read: (path) => readFileAsync(path, 'utf8'),
   mkdirp: (path) => mkdirAsync(path, { recursive: true }),
-  openExclusive: (path) => openAsync(path, 'wx'),
-  fstat: (handle) => handle.stat(),
-  writeHandle: (handle, data) => writeFileAsync(handle, data, 'utf8'),
-  close: (handle) => handle.close(),
   createExclusive: (path, data) => writeFileAsync(path, data, { encoding: 'utf8', mode: 0o600, flag: 'wx' }),
   link: (from, to) => linkAsync(from, to),
   unlink: (path) => unlinkAsync(path),
@@ -169,21 +160,33 @@ function* describeLockHolder(lockPath) {
   }
 }
 
-function reportLockWait(lockPath, waitedMs, mode) {
-  if (waitedMs < LOCK_WAIT_WARN_MS) return;
+// Rate-limited (per lock path) stderr diagnostic shared by wait and hold reports.
+function warnLockRateLimited(warnedAt, lockPath, line) {
   const now = Date.now();
-  if (now - (lockWaitWarnedAt.get(lockPath) || 0) < LOCK_WAIT_WARN_INTERVAL_MS) return;
-  lockWaitWarnedAt.set(lockPath, now);
-  if (lockWaitWarnedAt.size > 64) {
-    for (const [path, at] of lockWaitWarnedAt) {
-      if (now - at >= LOCK_WAIT_WARN_INTERVAL_MS * 6) lockWaitWarnedAt.delete(path);
+  if (now - (warnedAt.get(lockPath) || 0) < LOCK_WAIT_WARN_INTERVAL_MS) return;
+  warnedAt.set(lockPath, now);
+  if (warnedAt.size > 64) {
+    for (const [path, at] of warnedAt) {
+      if (now - at >= LOCK_WAIT_WARN_INTERVAL_MS * 6) warnedAt.delete(path);
     }
   }
   try {
-    process.stderr.write(`[atomic-file] ${mode} lock wait ${waitedMs}ms: ${lockPath}\n`);
+    process.stderr.write(line);
   } catch {
     /* diagnostics only */
   }
+}
+
+function reportLockWait(lockPath, waitedMs, mode) {
+  if (waitedMs < LOCK_WAIT_WARN_MS) return;
+  warnLockRateLimited(lockWaitWarnedAt, lockPath, `[atomic-file] ${mode} lock wait ${waitedMs}ms: ${lockPath}\n`);
+}
+
+// A lock held this long starves every waiter (they time out at 2s), so the
+// holder's duration is reported once released.
+function reportLockHeld(lockPath, heldMs, mode) {
+  if (heldMs < LOCK_HELD_WARN_MS) return;
+  warnLockRateLimited(lockHeldWarnedAt, lockPath, `[atomic-file] ${mode} lock held ${heldMs}ms: ${lockPath}\n`);
 }
 
 function* tryAcquireReclaimGuard(lockPath) {
@@ -300,33 +303,27 @@ function lockRetryDelayMs(attempt, deadline) {
   return Math.min(Math.max(1, deadline - Date.now()), base + jitter);
 }
 
-function* releaseLock(lockPath, handle) {
-  try {
-    yield ['close', handle];
-  } catch {}
+function* releaseLock(lockPath) {
   try {
     if (yield* lockOwnedBySelf(lockPath)) yield ['unlink', lockPath];
   } catch {}
 }
 
-function* writeLockOwner(lockPath, handle) {
-  let created;
+// Publish the lock together with its owner record. The record is staged in a
+// private file and hard-linked to the lock path, so the lock never exists
+// without a readable owner: an `open(wx)` followed by a separate write left an
+// empty lock file for as long as that write waited behind other I/O (or forever
+// if the process died in between), and a waiter could only treat such a lock as
+// ownerless (pid=?) until the stale window passed.
+function* publishLock(lockPath) {
+  const stagedPath = `${lockPath}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`;
   try {
-    created = yield ['fstat', handle];
-    yield ['writeHandle', handle, `${process.pid} ${Date.now()} ${OWNER_TOKEN}\n`];
-  } catch (error) {
-    // An incomplete owner record cannot authorize a mutation or normal
-    // token-based release. Remove only the file opened by this attempt.
+    yield ['createExclusive', stagedPath, `${process.pid} ${Date.now()} ${OWNER_TOKEN}\n`];
+    yield ['link', stagedPath, lockPath];
+  } finally {
     try {
-      const current = yield ['stat', lockPath];
-      if (created && current.dev === created.dev && current.ino === created.ino) {
-        yield ['unlink', lockPath];
-      }
+      yield ['unlink', stagedPath];
     } catch {}
-    try {
-      yield ['close', handle];
-    } catch {}
-    throw error;
   }
 }
 
@@ -352,22 +349,57 @@ function lockStaleMs(opts) {
   return Number.isFinite(opts.staleMs) ? opts.staleMs : 30000;
 }
 
-// Acquire the OS lock; returns the open handle with the owner record written.
-// `markHeld` (async runs only) publishes each open/owner-write window in
+// Acquire the OS lock with its owner record already published.
+// `markHeld` (async runs only) publishes each publish window in
 // osHeldPaths; on success the mark stays until the caller has released.
+// A staged owner record lives for one link call; a process killed between its
+// create and unlink leaves `<lock>.<pid>.<hex>.tmp` behind. Each lock path is
+// swept once per process for staged files older than this whose pid is dead.
+const STAGED_LOCK_FILE_STALE_MS = 60_000;
+const sweptLockPaths = new Set();
+
+export function sweepStagedLockFiles(lockPath, now = Date.now()) {
+  if (sweptLockPaths.has(lockPath)) return 0;
+  sweptLockPaths.add(lockPath);
+  const dir = dirname(lockPath);
+  const prefix = `${basename(lockPath)}.`;
+  let removed = 0;
+  let names;
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return 0;
+  }
+  for (const name of names) {
+    if (!name.startsWith(prefix)) continue;
+    const match = /^(?:reclaim\.)?(\d+)\.[0-9a-f]{16}\.tmp$/.exec(name.slice(prefix.length));
+    if (!match) continue;
+    const path = join(dir, name);
+    try {
+      if (now - statSync(path).mtimeMs < STAGED_LOCK_FILE_STALE_MS) continue;
+      if (ownerIsLive({ pid: Number(match[1]), token: null })) continue;
+      unlinkSync(path);
+      removed += 1;
+    } catch {
+      // Another sweeper or a late unlink got there first.
+    }
+  }
+  return removed;
+}
+
 function* acquireLock(lockPath, opts, mode, markHeld) {
   const timeoutMs = lockTimeoutMs(opts);
   const staleMs = lockStaleMs(opts);
   const deadline = Date.now() + timeoutMs;
   yield ['mkdirp', dirname(lockPath)];
+  sweepStagedLockFiles(lockPath);
   const waitStartedAt = Date.now();
   let attempt = 0;
   let lastError = null;
   while (true) {
-    let handle;
     if (markHeld) markOsHeld(lockPath);
     try {
-      handle = yield ['openExclusive', lockPath];
+      yield* publishLock(lockPath);
     } catch (error) {
       if (markHeld) unmarkOsHeld(lockPath);
       lastError = error;
@@ -383,14 +415,8 @@ function* acquireLock(lockPath, opts, mode, markHeld) {
       attempt += 1;
       continue;
     }
-    try {
-      yield* writeLockOwner(lockPath, handle);
-    } catch (error) {
-      if (markHeld) unmarkOsHeld(lockPath);
-      throw error;
-    }
     reportLockWait(lockPath, Date.now() - waitStartedAt, mode);
-    return handle;
+    return;
   }
   throw timeoutError(lockPath, timeoutMs, lastError, yield* describeLockHolder(lockPath));
 }
@@ -404,12 +430,14 @@ export function withFileLockSync(lockPath, fn, opts = {}) {
     error.code = 'ELOCKCONTENDED';
     throw error;
   }
-  const fd = runSync(acquireLock(lockPath, opts, 'sync', false));
+  runSync(acquireLock(lockPath, opts, 'sync', false));
+  const heldSince = Date.now();
   try {
     if (opts.secret === true) enforceOwnerOnlyAclWin32(lockPath, { fresh: true });
     return fn();
   } finally {
-    runSync(releaseLock(lockPath, fd));
+    runSync(releaseLock(lockPath));
+    reportLockHeld(lockPath, Date.now() - heldSince, 'sync');
   }
 }
 
@@ -420,7 +448,8 @@ export async function withFileLock(lockPath, fn, opts = {}) {
 }
 
 async function withOsFileLock(lockPath, fn, opts = {}) {
-  const handle = await runAsync(acquireLock(lockPath, opts, 'async', true));
+  await runAsync(acquireLock(lockPath, opts, 'async', true));
+  const heldSince = Date.now();
   const lease = { active: false };
   try {
     if (opts.secret === true) await enforceOwnerOnlyAclWin32Async(lockPath, { fresh: true });
@@ -433,8 +462,9 @@ async function withOsFileLock(lockPath, fn, opts = {}) {
   } finally {
     lease.active = false;
     try {
-      await runAsync(releaseLock(lockPath, handle));
+      await runAsync(releaseLock(lockPath));
     } finally {
+      reportLockHeld(lockPath, Date.now() - heldSince, 'async');
       // Unmark only once the lock file is gone: a sync waiter arriving while
       // the release is still pending must fail fast, not block its completion.
       unmarkOsHeld(lockPath);

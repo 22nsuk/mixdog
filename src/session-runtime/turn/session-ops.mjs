@@ -2,9 +2,9 @@
  * src/session-runtime/turn/session-ops.mjs - between-turn session commands:
  * clear, rewind, manual compact, tool mode, cwd, and live transcript reads.
  */
-import { normalizeToolMode } from '../effort.mjs';
+import { normalizeToolMode } from '../../runtime/agent/orchestrator/runtime-core/effort.mjs';
 import { interruptTaskWaitForSession } from '../../runtime/agent/orchestrator/session/task-wait-control.mjs';
-import { markPendingGoalReminder } from '../goal-reminder.mjs';
+import { markPendingGoalReminder } from '../../runtime/agent/orchestrator/runtime-core/goal-reminder.mjs';
 
 export function createSessionOps(deps) {
   const {

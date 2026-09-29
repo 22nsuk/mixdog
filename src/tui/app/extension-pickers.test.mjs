@@ -99,6 +99,34 @@ test('MCP list: markers and scoped descriptions, a toggle reopens optimistically
   assert.equal(h.row('server:graph').marker, '○');
 });
 
+test('MCP toggle: a reopen that throws becomes a notice, not an unhandled rejection', async () => {
+  let broken = false;
+  const h = createHarness({
+    store: {
+      mcpStatus: async () => ({
+        servers: [
+          {
+            name: 'graph',
+            enabled: true,
+            get transport() {
+              if (broken) throw new Error('boom');
+              return 'stdio';
+            },
+          },
+        ],
+      }),
+      setMcpServerEnabled: async () => {},
+    },
+  });
+  await h.openMcpServersPicker();
+  await flush();
+
+  broken = true;
+  h.current().onRight(h.row('server:graph'));
+  await flush();
+  assert.ok(h.notices.some(([message, tone]) => message === 'mcp panel failed: boom' && tone === 'error'));
+});
+
 test('MCP toggle settle after Esc paints nothing', async () => {
   const gate = Promise.withResolvers();
   const h = createHarness({

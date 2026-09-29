@@ -28,6 +28,11 @@ function budget() {
   };
 }
 
+test('an omitted maxBytes still enforces a default cap', async () => {
+  const req = request({ 'content-length': String(64 * 1024 * 1024) });
+  await assert.rejects(readJsonRequestBody(req), (error) => error.statusCode === 413);
+});
+
 test('JSON body reservations are released once on successful parsing', async () => {
   const req = request();
   const tracking = budget();

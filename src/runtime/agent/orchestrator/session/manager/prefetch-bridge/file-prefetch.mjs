@@ -61,7 +61,7 @@ export async function prefetchFiles(session, { files, readOpts }, signal) {
         // Only cache default-window reads; custom-window results would poison
         // the shared cross-dispatch cache.
         if (!readOpts.has(file)) setPrefetchCached(abs, content, readStates.get(file));
-      } else if (content === undefined || classifyResultKind(content) === 'error') {
+      } else {
         failed.push(file);
       }
     }

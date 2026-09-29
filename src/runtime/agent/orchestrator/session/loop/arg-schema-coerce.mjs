@@ -5,8 +5,8 @@
 // parsed and kept only if the parsed value fits a declared type; anything else
 // stays untouched so real string arguments and malformed text still reach the
 // tool's own validation.
-import { clean } from '../../../../../session-runtime/session-text.mjs';
-import { deferredCatalogUnion } from '../../../../../session-runtime/tool-catalog.mjs';
+import { clean } from '../../runtime-core/session-text.mjs';
+import { deferredCatalogUnion } from '../../runtime-core/tool-catalog.mjs';
 import { getInternalTools } from '../../internal-tools.mjs';
 
 const STRUCTURAL_TYPES = new Set(['object', 'array', 'number', 'integer', 'boolean', 'null']);

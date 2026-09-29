@@ -2,9 +2,9 @@
 // Turning cached catalog rows into picker rows: the user's saved per-model
 // settings (alias, effort, fast, parameters, context budget) layered on top,
 // then the route-provider-first sort.
-import { effortItemsFor } from '../effort.mjs';
-import { fastCapableFor, fastPreferenceFor } from '../model-capabilities.mjs';
-import { modelSettingsFor } from '../config-helpers.mjs';
+import { effortItemsFor } from '../../runtime/agent/orchestrator/runtime-core/effort.mjs';
+import { fastCapableFor, fastPreferenceFor } from '../../runtime/agent/orchestrator/runtime-core/model-capabilities.mjs';
+import { modelSettingsFor } from '../../runtime/agent/orchestrator/runtime-core/config-helpers.mjs';
 
 export function hydrateProviderModelRow(cfg, row) {
   const saved = modelSettingsFor(cfg, row.provider, row.id);

@@ -1,7 +1,7 @@
 // Quick (offline) main-model picker rows: every enabled provider's cached
 // models plus the routes the profile already names (current, presets,
 // workflow and agent routes), deduplicated per provider:model.
-import { clean } from '../session-text.mjs';
+import { clean } from '../../runtime/agent/orchestrator/runtime-core/session-text.mjs';
 import { providerCachedModelsSync } from '../../runtime/agent/orchestrator/providers/provider-catalog-cache.mjs';
 import { metadataFor } from './model-meta.mjs';
 

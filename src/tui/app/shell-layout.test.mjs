@@ -1,15 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { computeShellLayout } from './shell-layout.mjs';
-// The same signature grammar App.jsx hands to computeShellLayout.
-import {
-  CORE_MULTILINE_TEXT_ENTRY_KINDS,
-  PANEL_LAYOUT_SIG,
-  isInstantPanelCloseTransition,
-  panelKindSignature,
-  panelSignatureFlags,
-} from './panel-signature.mjs';
-
 const ref = (current) => ({ current });
 
 function layoutInput(overrides = {}) {
@@ -53,11 +44,6 @@ function layoutInput(overrides = {}) {
     frameRowsRef: ref(0),
     promptBoxRectRef: ref({ x: 1 }),
     panelCloseInkMaskRowsRef: ref(0),
-    CORE_MULTILINE_TEXT_ENTRY_KINDS,
-    panelSignatureFlags,
-    panelKindSignature,
-    isInstantPanelCloseTransition,
-    PANEL_LAYOUT_SIG,
     ...overrides,
   };
 }

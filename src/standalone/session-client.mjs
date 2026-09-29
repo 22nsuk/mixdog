@@ -18,8 +18,8 @@ import { readSingletonOwner } from '../runtime/shared/singleton-owner.mjs';
 import { isPidAlive } from '../runtime/shared/pid-liveness.mjs';
 import { resolveRuntimeRoot } from '../runtime/shared/runtime-root.mjs';
 import { withHeapCap } from '../runtime/shared/heap-cap.mjs';
-import { daemonDataDir } from './daemon-crash-capture.mjs';
-import { forkDaemonCandidate } from './daemon-candidate.mjs';
+import { daemonDataDir } from '../session-runtime/services/daemon-crash-capture.mjs';
+import { forkDaemonCandidate } from '../session-runtime/services/daemon-candidate.mjs';
 import { createAttachmentCalls } from './session-client/attachment-calls.mjs';
 import {
   EVENT_STREAM_LIVENESS_TIMEOUT_MS,

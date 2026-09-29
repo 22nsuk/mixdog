@@ -3,6 +3,7 @@
 import { isInternalRuntimeNotificationText as contractIsInternalRuntimeNotificationText } from '../../../../shared/tool-execution-contract.mjs';
 import { formatLocalAndUtcTimestamp } from '../../../../shared/time-format.mjs';
 import { SUMMARY_PREFIX } from '../compact.mjs';
+import { isProtectedContextUserMessage } from '../compact/messages.mjs';
 import { attachmentTextForPart, isAttachmentReference } from '../../../../attachments/store.mjs';
 
 export function promptContentText(content) {
@@ -40,14 +41,6 @@ export function prefixUserTurnContent(content, contextBlock) {
     return [{ type: 'text', text: `${contextBlock}# Task\n` }, ...content];
   }
   return `${contextBlock}# Task\n${content}`;
-}
-
-export function prefixSessionStartContent(content, sessionBlock) {
-  if (!sessionBlock) return content;
-  if (Array.isArray(content)) {
-    return [{ type: 'text', text: `${sessionBlock}\n\n` }, ...content];
-  }
-  return `${sessionBlock}\n\n${content}`;
 }
 
 // Per-turn <system-reminder> blocks (current time, deferred-tool delta, Goal
@@ -99,7 +92,7 @@ function sessionModelDisplay(model) {
     .replace(/(?:^|-)([a-z])/g, (m) => m.toUpperCase());
 }
 
-export function buildSessionStartBlock(session, cwd) {
+function buildSessionStartBlock(session, cwd) {
   if (!session || session.owner === 'agent') return '';
   const lines = ['# Session'];
   const effectiveCwd = String(cwd || session.cwd || '').trim();
@@ -207,7 +200,7 @@ export function resetSessionBp3Environment(session) {
   return true;
 }
 
-export function isReferenceFilesMessage(message) {
+function isReferenceFilesMessage(message) {
   return (
     message?.role === 'user' &&
     typeof message.content === 'string' &&
@@ -215,14 +208,7 @@ export function isReferenceFilesMessage(message) {
   );
 }
 
-export function isProtectedContextUserMessage(message) {
-  if (message?.role !== 'user' || typeof message.content !== 'string') return false;
-  const content = message.content.trim();
-  if (!content.toLowerCase().startsWith('<system-reminder>')) return false;
-  const closingTag = '</system-reminder>';
-  const closingIndex = content.toLowerCase().indexOf(closingTag);
-  return closingIndex < 0 || content.slice(closingIndex + closingTag.length).trim() === '';
-}
+export { isProtectedContextUserMessage };
 
 // Compact summary messages (role:'user', content startsWith SUMMARY_PREFIX)
 // are synthetic anchors, not a real human turn — they must not count as

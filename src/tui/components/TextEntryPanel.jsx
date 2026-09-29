@@ -5,30 +5,14 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Box, Text, useInput, usePaste, useStdin } from 'ink';
 import stringWidth from 'string-width';
 import { theme, surfaceBackground } from '../theme.mjs';
-import {
-  clearSelection,
-  deleteBackwardWord,
-  deleteForwardWord,
-  deleteToLineEnd,
-  deleteToLineStart,
-  lineEnd,
-  lineStart,
-  moveCursor,
-  nextOffset,
-  nextWordOffset,
-  previousOffset,
-  previousWordOffset,
-  replaceSelection,
-  selectionRange,
-  verticalOffset,
-  caretPosition,
-} from '../input-editing.mjs';
-import { sliceVisualRowWindow, textEntryReservedRows, wrappedTextRows } from '../app/text-layout.mjs';
+import { clearSelection, lineEnd, lineStart, moveCursor, replaceSelection, selectionRange } from '../input-editing.mjs';
+import { textEntryReservedRows } from '../app/text-layout.mjs';
+import { createTextEntryCursorAnchor, singleLine } from './text-entry-layout.mjs';
+import { renderTextEntryValue } from './text-entry-value.jsx';
 import { canSubmitTextEntry } from '../app/text-entry-policy.mjs';
 import { truncatePanelText as truncateText } from './panel-cell-text.mjs';
+import { applyEditChord, createVerticalMover } from './prompt-input/edit-chords.mjs';
 import {
-  deleteBackwardChar,
-  deleteForwardChar,
   insertText,
   isAnyModifiedEnterSequence,
   isModifiedEnterSequence,
@@ -37,73 +21,7 @@ import {
   rightArrowOffset,
   singleTrailingLineBreakPrefix,
 } from './prompt-input/edit-helpers.mjs';
-import { renderSelectedText } from './prompt-input/selected-text.jsx';
 import { isCsiPrivateReply } from './prompt-input/key-signals.mjs';
-
-// Collapse newlines to a single visible glyph so multiline pasted input stays a
-// single visual row (the draft itself is unchanged for editing/submit).
-const NEWLINE_GLYPH = '⏎';
-function flattenForSingleLine(text) {
-  return String(text ?? '').replace(/\n/g, NEWLINE_GLYPH);
-}
-
-// Horizontal viewport over a single (flattened) line. Keeps the caret visible
-// inside `width` cells and returns the visible slice plus the caret column so
-// the content box can be hard-bounded to ONE row: long/multiline pasted input
-// scrolls horizontally instead of wrapping and growing the panel. Offsets are
-// code-unit offsets, which map 1:1 to the flattened string (newline → 1 glyph,
-// mask → 1 char), so selection/cursor offsets carry over unchanged.
-function windowSingleLine(flat, cursor, width) {
-  const w = Math.max(1, Math.floor(Number(width) || 1));
-  const chars = Array.from(flat);
-  const cells = chars.map((ch) => stringWidth(ch));
-  // Map the code-unit cursor to a char index.
-  let cuIndex = 0;
-  let cursorCharIdx = chars.length;
-  for (let i = 0; i < chars.length; i += 1) {
-    if (cuIndex >= cursor) {
-      cursorCharIdx = i;
-      break;
-    }
-    cuIndex += chars[i].length;
-  }
-  let cursorCell = 0;
-  for (let i = 0; i < cursorCharIdx; i += 1) cursorCell += cells[i];
-  const totalCell = cells.reduce((a, b) => a + b, 0);
-  let startCell = cursorCell > w - 1 ? cursorCell - (w - 1) : 0;
-  startCell = Math.min(startCell, Math.max(0, totalCell - w));
-  startCell = Math.max(0, startCell);
-  let acc = 0;
-  let a = 0;
-  while (a < chars.length && acc + cells[a] <= startCell) {
-    acc += cells[a];
-    a += 1;
-  }
-  const alignedStart = acc;
-  let b = a;
-  let bAcc = 0;
-  while (b < chars.length && bAcc + cells[b] <= w) {
-    bAcc += cells[b];
-    b += 1;
-  }
-  let cuStart = 0;
-  for (let i = 0; i < a; i += 1) cuStart += chars[i].length;
-  let cuEnd = cuStart;
-  for (let i = a; i < b; i += 1) cuEnd += chars[i].length;
-  return {
-    text: chars.slice(a, b).join(''),
-    cuStart,
-    cuEnd,
-    caretCol: Math.max(0, cursorCell - alignedStart),
-  };
-}
-
-// Collapse any whitespace/newlines so a hint is always a single visual line.
-function singleLine(text) {
-  return String(text ?? '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
 
 export function TextEntryPanel({
   title,
@@ -161,20 +79,7 @@ export function TextEntryPanel({
     commitDraft(fn(draftRef.current), options);
   };
 
-  const moveDraftVertically = (direction, { extend = false } = {}) => {
-    const current = draftRef.current;
-    const moved = verticalOffset(
-      current.value,
-      current.cursor,
-      contentWidthRef.current,
-      direction,
-      preferredColumnRef.current
-    );
-    preferredColumnRef.current = moved.preferredColumn;
-    if (moved.cursor === current.cursor) return false;
-    commitDraft(moveCursor(current, moved.cursor, { extend }), { keepPreferredColumn: true });
-    return true;
-  };
+  const moveDraftVertically = createVerticalMover({ draftRef, contentWidthRef, preferredColumnRef, commitDraft });
 
   useEffect(() => {
     const value = String(initialValue || '');
@@ -194,21 +99,6 @@ export function TextEntryPanel({
     const visible = mask ? draft.value.replace(/[^\n]/g, '*') : draft.value;
     onContentRowsChange?.(textEntryReservedRows(visible, contentCells, maxContentRows));
   }, [multiline, draft.value, mask, contentCells, maxContentRows, onContentRowsChange]);
-
-  const submit = () => {
-    if (submitGateRef.current) return;
-    if (!canSubmitTextEntry(draftRef.current.value, allowEmpty)) return;
-    submitGateRef.current = true;
-    const accepted = onSubmit?.(draftRef.current.value) !== false;
-    if (accepted) {
-      commitDraft({ value: '', cursor: 0, selectionAnchor: null });
-      queueMicrotask(() => {
-        submitGateRef.current = false;
-      });
-    } else {
-      submitGateRef.current = false;
-    }
-  };
 
   const submitEnterChunk = (prefix = '') => {
     if (submitGateRef.current) return;
@@ -304,7 +194,7 @@ export function TextEntryPanel({
           updateDraft((d) => replaceSelection(d, '\n'));
           return;
         }
-        submit();
+        submitEnterChunk();
         return;
       }
       if (key.leftArrow) {
@@ -340,46 +230,7 @@ export function TextEntryPanel({
         updateDraft((d) => moveCursor(d, lineEnd(d.value, d.cursor), { extend: key.shift }));
         return;
       }
-      if (key.ctrl && inputKey === 'b') {
-        updateDraft((d) => moveCursor(d, previousOffset(d.value, d.cursor), { extend: key.shift }));
-        return;
-      }
-      if (key.ctrl && inputKey === 'f') {
-        updateDraft((d) => moveCursor(d, nextOffset(d.value, d.cursor), { extend: key.shift }));
-        return;
-      }
-      if (key.meta && inputKey === 'b') {
-        updateDraft((d) => moveCursor(d, previousWordOffset(d.value, d.cursor), { extend: key.shift }));
-        return;
-      }
-      if (key.meta && inputKey === 'f') {
-        updateDraft((d) => moveCursor(d, nextWordOffset(d.value, d.cursor), { extend: key.shift }));
-        return;
-      }
-      if (key.ctrl && inputKey === 'u') {
-        updateDraft(deleteToLineStart);
-        return;
-      }
-      if (key.ctrl && inputKey === 'k') {
-        updateDraft(deleteToLineEnd);
-        return;
-      }
-      if ((key.ctrl && inputKey === 'w') || ((key.ctrl || key.meta) && key.backspace)) {
-        updateDraft(deleteBackwardWord);
-        return;
-      }
-      if ((key.meta && inputKey === 'd') || (key.ctrl && key.delete)) {
-        updateDraft(deleteForwardWord);
-        return;
-      }
-      if (key.backspace) {
-        updateDraft(deleteBackwardChar);
-        return;
-      }
-      if (key.delete) {
-        updateDraft(deleteForwardChar);
-        return;
-      }
+      if (applyEditChord(key, inputKey, updateDraft)) return;
       if (rawInput && !key.ctrl && !key.meta) {
         updateDraft((d) => insertText(d, rawInput));
       }
@@ -389,25 +240,16 @@ export function TextEntryPanel({
 
   const installCursorAnchor = () => {
     if (!boxRef.current || boxRef.current.internal_cursorAnchor) return false;
-    boxRef.current.internal_cursorAnchor = (yogaNode) => {
-      if (!cursorEnabledRef.current) return null;
-      const d = draftRef.current;
-      const w = Math.max(1, yogaNode?.getComputedWidth?.() ?? contentCells);
-      contentWidthRef.current = w;
-      const visible = mask ? d.value.replace(/[^\n]/g, '*') : d.value;
-      if (multiline) {
-        const trailing = d.cursor >= d.value.length;
-        const totalRows = wrappedTextRows(`${visible}${trailing ? ' ' : ''}`, w);
-        const visibleRows = Math.min(totalRows, Math.max(1, maxContentRows));
-        const caret = caretPosition(visible, d.cursor, w, trailing ? true : undefined);
-        const scrollRow =
-          totalRows > visibleRows ? Math.min(Math.max(0, caret.row - visibleRows + 1), totalRows - visibleRows) : 0;
-        return { row: Math.max(0, caret.row - scrollRow), col: caret.col };
-      }
-      const flat = flattenForSingleLine(visible);
-      const win = windowSingleLine(flat, d.cursor, w);
-      return { row: 0, col: stringWidth(String(promptLabel || '')) + win.caretCol };
-    };
+    boxRef.current.internal_cursorAnchor = createTextEntryCursorAnchor({
+      cursorEnabledRef,
+      draftRef,
+      contentWidthRef,
+      contentCells,
+      mask,
+      multiline,
+      maxContentRows,
+      promptLabel,
+    });
     return true;
   };
 
@@ -425,41 +267,13 @@ export function TextEntryPanel({
     queueMicrotask(flushImmediate);
   }, [isRawModeSupported, title, multiline, draft.value, draft.cursor]);
 
-  const visibleValue = mask ? draft.value.replace(/[^\n]/g, '*') : draft.value;
-  let renderedValue;
-  let contentHeight = 1;
-  if (multiline) {
-    const trailingCaret = draft.cursor === draft.value.length;
-    const layoutText = `${visibleValue}${trailingCaret ? ' ' : ''}`;
-    const totalRows = wrappedTextRows(layoutText, contentCells);
-    const visibleRows = Math.min(totalRows, Math.max(1, maxContentRows));
-    contentHeight = visibleRows;
-    const caret = caretPosition(visibleValue, draft.cursor, contentCells, trailingCaret ? true : undefined);
-    const scrollRow =
-      totalRows > visibleRows ? Math.min(Math.max(0, caret.row - visibleRows + 1), totalRows - visibleRows) : 0;
-    const window = sliceVisualRowWindow(visibleValue, contentCells, scrollRow, visibleRows);
-    const windowSelection = (() => {
-      const range = selectionRange(draft);
-      if (!range) return null;
-      const start = Math.max(window.sliceStart, Math.min(window.sliceEnd, range.start)) - window.sliceStart;
-      const end = Math.max(window.sliceStart, Math.min(window.sliceEnd, range.end)) - window.sliceStart;
-      return end > start ? { start, end } : null;
-    })();
-    const sliceTrailing = trailingCaret && draft.cursor >= window.sliceEnd;
-    renderedValue = renderSelectedText(window.slice, windowSelection, sliceTrailing);
-  } else {
-    const flatValue = flattenForSingleLine(visibleValue);
-    const win = windowSingleLine(flatValue, draft.cursor, contentCells);
-    const windowSelection = (() => {
-      const range = selectionRange(draft);
-      if (!range) return null;
-      const start = Math.max(win.cuStart, Math.min(win.cuEnd, range.start)) - win.cuStart;
-      const end = Math.max(win.cuStart, Math.min(win.cuEnd, range.end)) - win.cuStart;
-      return end > start ? { start, end } : null;
-    })();
-    const trailingCaret = draft.cursor === draft.value.length && win.cuEnd >= flatValue.length;
-    renderedValue = renderSelectedText(win.text, windowSelection, trailingCaret);
-  }
+  const { renderedValue, contentHeight } = renderTextEntryValue({
+    draft,
+    mask,
+    multiline,
+    contentCells,
+    maxContentRows,
+  });
   const action = String(actionLabel || 'save').trim() || 'save';
   const helpText = `Enter to ${action} · Esc to cancel`;
   // Standard panel rhythm: title row, blank, single-line hint, blank, content.

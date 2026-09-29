@@ -178,10 +178,34 @@ function history() {
 test('memoized digests keep verdicts identical for appended, edited and reordered histories', () => {
   const scenarios = [
     ['append', (m) => [...m, { role: 'user', content: 'three' }]],
-    ['in-place top-level edit', (m) => ((m[0].content = 'rules'), m)],
-    ['in-place nested edit', (m) => ((m[1].content[0].text = 'rewritten'), m)],
-    ['in-place nested append', (m) => (m[2].toolCalls.push({ id: 'c2', name: 'shell' }), m)],
-    ['in-place key added', (m) => ((m[3].meta = { source: 'x' }), m)],
+    [
+      'in-place top-level edit',
+      (m) => {
+        m[0].content = 'rules';
+        return m;
+      },
+    ],
+    [
+      'in-place nested edit',
+      (m) => {
+        m[1].content[0].text = 'rewritten';
+        return m;
+      },
+    ],
+    [
+      'in-place nested append',
+      (m) => {
+        m[2].toolCalls.push({ id: 'c2', name: 'shell' });
+        return m;
+      },
+    ],
+    [
+      'in-place key added',
+      (m) => {
+        m[3].meta = { source: 'x' };
+        return m;
+      },
+    ],
     [
       'in-place key reorder',
       (m) => {
@@ -191,7 +215,13 @@ test('memoized digests keep verdicts identical for appended, edited and reordere
         return m;
       },
     ],
-    ['in-place equal-content rewrite', (m) => ((m[3].content = ['file', 'body'].join(' ')), m)],
+    [
+      'in-place equal-content rewrite',
+      (m) => {
+        m[3].content = ['file', 'body'].join(' ');
+        return m;
+      },
+    ],
     ['replaced object', (m) => [m[0], { ...m[1], content: 'other' }, m[2], m[3]]],
     ['reordered', (m) => [m[0], m[2], m[1], m[3]]],
     ['shrink', (m) => m.slice(0, 2)],

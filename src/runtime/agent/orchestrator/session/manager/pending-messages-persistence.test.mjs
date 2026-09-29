@@ -81,7 +81,7 @@ process.stdout.write(JSON.stringify(count));
 
 function spoolRows(sessionId) {
   try {
-    const raw = JSON.parse(readFileSync(pendingMessagesSpoolPath(), 'utf8'));
+    const raw = JSON.parse(readFileSync(pendingMessagesSpoolPath(sessionId), 'utf8'));
     const rows = raw?.sessions?.[sessionId];
     return Array.isArray(rows) ? rows : [];
   } catch {
@@ -89,9 +89,9 @@ function spoolRows(sessionId) {
   }
 }
 
-function spoolText() {
+function spoolText(sessionId) {
   try {
-    return readFileSync(pendingMessagesSpoolPath(), 'utf8');
+    return readFileSync(pendingMessagesSpoolPath(sessionId), 'utf8');
   } catch (err) {
     if (err?.code === 'ENOENT') return null;
     throw err;
@@ -110,7 +110,7 @@ async function waitFor(predicate, timeoutMs = 6000) {
 test('a failed durable commit retries itself once the spool lock releases', async () => {
   const sessionId = `sess_persist_retry_${process.pid}`;
   const messageId = 'inj_persist_retry';
-  const lockPath = `${pendingMessagesSpoolPath()}.lock`;
+  const lockPath = `${pendingMessagesSpoolPath(sessionId)}.lock`;
   // Live-holder lock (our pid + a foreign token is never reclaimed): every
   // commit attempt fails with ELOCKTIMEOUT exactly like the reproduced
   // cross-process contention.
@@ -191,7 +191,7 @@ test('an expired handoff parked by a DEAD owner is taken over', async () => {
   try {
     const now = Date.now();
     writeFileSync(
-      pendingMessagesSpoolPath(),
+      pendingMessagesSpoolPath(sessionId),
       `${JSON.stringify({
         version: 1,
         updatedAt: now,
@@ -227,7 +227,7 @@ test("a dead owner's row observed BEFORE expiry is still recovered after the gra
   const messageId = 'inj_dead_owner_transition';
   const deadPid = spawnSync(process.execPath, ['-e', '0']).pid;
   assert.ok(deadPid > 0);
-  const spoolPath = pendingMessagesSpoolPath();
+  const spoolPath = pendingMessagesSpoolPath(sessionId);
   try {
     const now = Date.now();
     writeFileSync(
@@ -302,7 +302,7 @@ test('a parked handoff row is released on schedule, without any later spool writ
 
 test('a closed session never resurrects its persist retry', async () => {
   const sessionId = `sess_closed_retry_${process.pid}`;
-  const lockPath = `${pendingMessagesSpoolPath()}.lock`;
+  const lockPath = `${pendingMessagesSpoolPath(sessionId)}.lock`;
   writeFileSync(lockPath, `${process.pid} ${Date.now()} deadbeefdeadbeefdeadbeef\n`, 'utf8');
   let lockHeld = true;
   try {
@@ -316,7 +316,7 @@ test('a closed session never resurrects its persist retry', async () => {
     // batch sits behind its retry timer or is already retrying, after this
     // flush exactly one attempt is in flight.
     flushPendingMessagePersistsSync();
-    const spoolBeforeClose = spoolText();
+    const spoolBeforeClose = spoolText(sessionId);
 
     // Close tears the pending state down; the in-flight commit must not land
     // after it, and in-flight failures must not rebuild the buffer or re-arm
@@ -334,7 +334,7 @@ test('a closed session never resurrects its persist retry', async () => {
     // clear chained behind it; the settle also flushes any buffer a failure
     // rebuilt, so a resurrected retry would write here too.
     assert.equal(await settlePendingMessageWrites({ timeoutMs: 4000, throwOnTimeout: true }), true);
-    assert.equal(spoolText(), spoolBeforeClose, 'a pending-message write landed after the session closed');
+    assert.equal(spoolText(sessionId), spoolBeforeClose, 'a pending-message write landed after the session closed');
     assert.deepEqual(spoolRows(sessionId), []);
   } finally {
     if (lockHeld) {

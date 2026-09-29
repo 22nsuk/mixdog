@@ -30,6 +30,7 @@ import {
   antigravityHeaders,
   codeAssistMetadata,
   saveTokens,
+  withTimeoutSignal,
 } from './antigravity-oauth-tokens.mjs';
 
 const ONBOARD_INTERVAL_MS = 1_000;
@@ -58,7 +59,6 @@ function accountVerificationError(validationUrl, reason, email) {
 async function requestCodeAssist(action, body, context, timeoutMs = PROJECT_TIMEOUT_MS) {
   const { accessToken, fetchFn, signal } = context;
   signal?.throwIfAborted();
-  const timeout = AbortSignal.timeout(timeoutMs);
   const isPost = body !== undefined;
   const res = await fetchFn(`${PROJECT_ENDPOINT}/v1internal${isPost ? ':' : '/'}${action}`, {
     method: isPost ? 'POST' : 'GET',
@@ -69,7 +69,7 @@ async function requestCodeAssist(action, body, context, timeoutMs = PROJECT_TIME
     },
     ...(isPost ? { body: JSON.stringify(body) } : {}),
     redirect: 'error',
-    signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+    signal: withTimeoutSignal(signal, timeoutMs),
   });
   if (res.status !== 200) {
     const text = await res.text();
@@ -106,9 +106,7 @@ async function fetchAccountEmail(accessToken, { fetchFn = fetch, signal = null }
     const res = await fetchFn(USERINFO_URL, {
       headers: { Authorization: `Bearer ${accessToken}` },
       redirect: 'error',
-      signal: signal
-        ? AbortSignal.any([signal, AbortSignal.timeout(TOKEN_TIMEOUT_MS)])
-        : AbortSignal.timeout(TOKEN_TIMEOUT_MS),
+      signal: withTimeoutSignal(signal, TOKEN_TIMEOUT_MS),
     });
     if (!res.ok) return '';
     const json = await res.json();
@@ -256,9 +254,7 @@ export async function exchangeAuthorizationCode({ code, verifier, fetchFn = fetc
     // Secret-bearing (code + verifier): refuse redirects so neither can be
     // replayed against an untrusted host.
     redirect: 'error',
-    signal: signal
-      ? AbortSignal.any([signal, AbortSignal.timeout(TOKEN_TIMEOUT_MS)])
-      : AbortSignal.timeout(TOKEN_TIMEOUT_MS),
+    signal: withTimeoutSignal(signal, TOKEN_TIMEOUT_MS),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => '');

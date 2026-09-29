@@ -826,6 +826,20 @@ const SHELL_PATH_ARG_MUTATORS = new Set([
   'ln',
 ]);
 
+// find/awk are read-only by default but can delete, exec, or write files.
+// Conservative: any such action makes the stage a mutation.
+const FIND_MUTATING_FLAG_RE = /^-(?:delete|exec|execdir|ok|okdir|fprint\w*|fls)$/;
+const AWK_MUTATING_PROGRAM_RE = /\bsystem\s*\(|\b(?:print|printf)\b[^;}]*(?:>>?|\|)|\|\s*getline\b/;
+
+function isMutatingFindOrAwk(tokens) {
+  const cmd = String(tokens[0] || '').toLowerCase();
+  if (cmd === 'find') return tokens.some((tok) => FIND_MUTATING_FLAG_RE.test(String(tok)));
+  if (cmd === 'awk' || cmd === 'gawk' || cmd === 'mawk') {
+    return tokens.slice(1).some((tok) => AWK_MUTATING_PROGRAM_RE.test(String(tok)));
+  }
+  return false;
+}
+
 export async function analyzeShellCommandEffects(command, cwd) {
   const text = String(command || '').trim();
   let localCwd = resolve(cwd || process.cwd());
@@ -850,6 +864,7 @@ export async function analyzeShellCommandEffects(command, cwd) {
         if (resolved) localCwd = resolved;
         return true;
       }
+      if (isMutatingFindOrAwk(tokens)) return false;
       return SHELL_READ_ONLY_SEGMENT_RE.test(joined);
     });
     return { mutationMode: readOnly ? 'none' : 'global', paths: [], finalCwd: localCwd };
@@ -868,6 +883,10 @@ export async function analyzeShellCommandEffects(command, cwd) {
       const resolved = resolveShellPathToken(target, localCwd);
       if (resolved) localCwd = resolved;
       else global = true;
+      continue;
+    }
+    if (isMutatingFindOrAwk(tokens)) {
+      global = true;
       continue;
     }
     const segmentMutates = tokens.includes('tee') || tokens.includes('>') || tokens.includes('>>');
@@ -962,6 +981,35 @@ function _teeStageHead(tokens) {
     .replace(/\.exe$/, '');
 }
 
+// The segment/pipeline splitters are not grouping-aware, so a `;` or `|`
+// inside (), {} or [] (e.g. `(a | % { $_ }) -join ','`, `try { a | sls x }`)
+// would be cut mid-group and the rewrite would break the parse. Only rewrite
+// when the head, the last segment and every stage close their own groups.
+function _groupingBalanced(text) {
+  const pairs = { ')': '(', '}': '{', ']': '[' };
+  const stack = [];
+  let quote = null;
+  let escaped = false;
+  for (const ch of String(text || '')) {
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"') quote = ch;
+    else if (ch === '(' || ch === '{' || ch === '[') stack.push(ch);
+    else if (pairs[ch] && stack.pop() !== pairs[ch]) return false;
+  }
+  return stack.length === 0 && quote === null;
+}
+
 function _stageRedirectsToFile(tokens) {
   for (let i = 0; i < tokens.length; i++) {
     if (tokens[i] === '>' || tokens[i] === '>>') {
@@ -983,10 +1031,12 @@ export function buildPowerShellFilterTeePlan(command) {
   const last = segments[segments.length - 1];
   const trimmed = cmd.trimEnd();
   if (!trimmed.endsWith(last)) return null;
+  if (!_groupingBalanced(last) || !_groupingBalanced(trimmed.slice(0, trimmed.length - last.length))) return null;
   const stages = shellSplitPipelineSegments(last);
   if (stages.length < 2) return null;
   const tokenized = [];
   for (const stage of stages) {
+    if (!_groupingBalanced(stage)) return null;
     const tokens = shellTokenize(stage);
     if (!tokens || tokens.length === 0) return null;
     if (_stageRedirectsToFile(tokens)) return null;

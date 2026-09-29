@@ -1,19 +1,6 @@
-// Grok OAuth discovery, token storage/refresh, and proxy identity.
-/**
- * Grok CLI OAuth provider ("Grok Build").
- *
- * Authenticates against xAI's shared OAuth client via PKCE (discovery at
- * https://auth.x.ai/.well-known/openid-configuration). Credentials come from
- * Mixdog's own token store (grok-oauth.json).
- *
- * Every OAuth inference request routes through cli-chat-proxy.grok.com/v1,
- * matching Grok Build's session-auth contract. Model discovery still merges
- * api.x.ai and proxy catalogs because each publishes a different subset.
- *
- * Inference is delegated to an inner OpenAICompatProvider('xai') — the only
- * preset wired for the Responses API — with the proxy URL + CLI headers
- * injected via config.extraHeaders, bearer swapped for the OAuth access token.
- */
+// Grok OAuth discovery, token storage/refresh, and proxy identity. Discovery
+// is at https://auth.x.ai/.well-known/openid-configuration; credentials live
+// in Mixdog's own token store (grok-oauth.json).
 import { randomUUID } from 'node:crypto';
 import { readFileSync, existsSync, mkdirSync, statSync, unlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -22,10 +9,16 @@ import { writeJsonAtomicSync, withFileLock } from '../../../shared/atomic-file.m
 import { boundProviderAuthPath } from '../../../shared/provider-auth-binding.mjs';
 import { createTimeoutSignal } from '../stall-policy.mjs';
 import { getLlmDispatcher } from '../../../shared/llm/http-agent.mjs';
-import { decodeJwtPayload, expiryFromAccessToken, scrubOAuthSecrets } from './lib/oauth-token-utils.mjs';
+import { grokClientVersionHeaders } from './grok-client-version.mjs';
+import {
+  decodeJwtPayload,
+  expiryFromAccessToken,
+  normalizeExpiresAtMs as _normalizeExpiresAt,
+  oauthCredentialStatus,
+  scrubOAuthSecrets,
+} from './lib/oauth-token-utils.mjs';
 
 // xAI's shared OAuth client. The consent screen renders this as "Grok Build".
-
 export const CLIENT_ID = 'b1a00492-073a-47ea-816f-4c329264a828';
 const ISSUER = 'https://auth.x.ai';
 const DISCOVERY_URL = `${ISSUER}/.well-known/openid-configuration`;
@@ -47,25 +40,16 @@ export const TOKEN_REFRESH_SKEW_MS = 5 * 60_000;
 // OAuth models route here for inference, including api.x.ai-discovered ones.
 export const PROXY_BASE_URL = 'https://cli-chat-proxy.grok.com/v1';
 const GROK_CLIENT_IDENTIFIER = 'grok-shell';
-const GROK_CLI_VERSION_FALLBACK = '0.2.16';
-
-// Use a Mixdog-controlled client version for the proxy version gate.
-let _grokCliVersionCache = null;
-function grokCliVersion() {
-  if (_grokCliVersionCache) return _grokCliVersionCache;
-  _grokCliVersionCache = String(process.env.MIXDOG_GROK_CLIENT_VERSION || '').trim() || GROK_CLI_VERSION_FALLBACK;
-  return _grokCliVersionCache;
-}
 
 // Headers the Grok CLI sends to clear the proxy version gate — extracted from
 // the grok binary: x-grok-client-version (the actual 426 gate),
 // x-grok-client-identifier, and a matching User-Agent.
 export function proxyHeaders({ model, sendOpts, userId } = {}) {
-  const v = grokCliVersion();
+  const { 'x-grok-client-version': v, 'User-Agent': userAgent } = grokClientVersionHeaders();
   const headers = {
     'x-grok-client-version': v,
     'x-grok-client-identifier': GROK_CLIENT_IDENTIFIER,
-    'User-Agent': `xai-grok-build/${v}`,
+    'User-Agent': userAgent,
   };
   const sessionId = String(sendOpts?.sessionId || sendOpts?.session?.id || '').trim();
   const requestId = String(sendOpts?.requestId || '').trim() || (sendOpts ? randomUUID() : '');
@@ -93,7 +77,7 @@ export function resolveGrokOAuthResponsesTransport() {
 // catalog surfaces the coding model as grok-build-0.1; map the legacy ids to
 // it so a stale config selection doesn't hit a model-not-found. Exact table,
 // not a heuristic.
-export { normalizeGrokModelId } from './provider-model-identities.mjs';
+export { normalizeGrokModelId } from '../../../shared/llm/provider-model-identities.mjs';
 export const MODEL_CACHE_TTL_MS = 24 * 60 * 60_000;
 // Bump when the on-disk cache shape changes so stale-shape entries are
 // discarded instead of misread.
@@ -162,17 +146,7 @@ export function getRefreshLockPath() {
   return `${getOwnTokenPath()}.refresh.lock`;
 }
 
-// expires_at may arrive as a unix number or an ISO-8601 string. Normalize both
-// to epoch milliseconds; 0 means unknown.
-export function _normalizeExpiresAt(value) {
-  if (typeof value === 'string') {
-    const ms = Date.parse(value);
-    return Number.isFinite(ms) ? ms : 0;
-  }
-  const n = Number(value || 0);
-  if (!Number.isFinite(n) || n <= 0) return 0;
-  return n < 1e12 ? n * 1000 : n;
-}
+export { _normalizeExpiresAt };
 
 export function _identityFromAccessToken(token) {
   const payload = decodeJwtPayload(token);
@@ -276,49 +250,8 @@ export function describeGrokOAuthCredentials() {
     }
     const hasRefresh = Boolean(tokens.refresh_token);
     const expiresAt = _normalizeExpiresAt(tokens.expires_at);
-    const expiring = expiresAt > 0 && expiresAt < Date.now() + TOKEN_REFRESH_SKEW_MS;
-    const expired = expiresAt > 0 && expiresAt <= Date.now();
     const detail = tokens.source === 'own' ? 'Mixdog token store' : tokens.source || 'oauth';
-    if (!hasRefresh) {
-      return {
-        authenticated: expiresAt === 0 || !expired,
-        usable: expiresAt === 0 || !expired,
-        refreshable: false,
-        reauthRequired: expired,
-        status: expired ? 'Reauth Required' : 'Access Only',
-        detail: `${detail}; no refresh token`,
-        expiresAt,
-      };
-    }
-    if (expired)
-      return {
-        authenticated: true,
-        usable: false,
-        refreshable: true,
-        reauthRequired: false,
-        status: 'Refresh Required',
-        detail,
-        expiresAt,
-      };
-    if (expiring)
-      return {
-        authenticated: true,
-        usable: true,
-        refreshable: true,
-        reauthRequired: false,
-        status: 'Refresh Soon',
-        detail,
-        expiresAt,
-      };
-    return {
-      authenticated: true,
-      usable: true,
-      refreshable: true,
-      reauthRequired: false,
-      status: 'Valid',
-      detail,
-      expiresAt,
-    };
+    return oauthCredentialStatus({ hasRefresh, expiresAt, detail, refreshSkewMs: TOKEN_REFRESH_SKEW_MS });
   } catch (err) {
     return {
       authenticated: false,

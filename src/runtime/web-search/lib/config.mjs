@@ -15,12 +15,8 @@ export const DEFAULT_CONFIG = {
   requestTimeoutMs: 120000,
 };
 
-export function ensureDir(dirPath) {
-  fs.mkdirSync(dirPath, { recursive: true });
-}
-
 export function ensureDataDir() {
-  ensureDir(DATA_DIR);
+  fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
 export function readJson(filePath, fallback) {
@@ -42,7 +38,7 @@ export function readJson(filePath, fallback) {
 }
 
 export function writeJson(filePath, value) {
-  ensureDir(path.dirname(filePath));
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
   writeJsonAtomicSync(filePath, value, { lock: true, fsyncDir: true });
 }
 

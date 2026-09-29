@@ -48,7 +48,7 @@ export function persistPendingMessages(sessionId, messages) {
   // process contention on the shared spool never freezes the renderer.
   // Best-effort: the returned promise is fire-and-forget; depth is reported
   // optimistically from the buffered batch length.
-  const operation = updateSpool((raw) => {
+  const operation = updateSpool(sessionId, (raw) => {
     // Close fence, INSIDE the spool lock: a close/detach that tore this
     // session's pending state down while the write waited for the lock owns
     // the spool from here on — the superseded write may not land after it.

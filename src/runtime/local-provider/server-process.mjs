@@ -3,6 +3,7 @@ import { createServer } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
 import { redactedLog, spawnServerState } from './server-process/child-state.mjs';
 import { awaitServerReady } from './server-process/readiness.mjs';
+import { createSerialChain } from './serial-chain.mjs';
 
 async function freeLoopbackPort() {
   return new Promise((resolve, reject) => {
@@ -39,17 +40,8 @@ export function createLocalServerProcess({
 } = {}) {
   // The owner record: which child is current and what the last one reported.
   const owner = { current: null, lastExit: null, lastError: null };
-  let chain = Promise.resolve();
+  const { enqueue: serialize } = createSerialChain();
   const pendingStarts = new Set();
-
-  function serialize(operation) {
-    const next = chain.then(operation, operation);
-    chain = next.then(
-      () => {},
-      () => {}
-    );
-    return next;
-  }
 
   async function stopState(state) {
     if (!state || state.exited) return;

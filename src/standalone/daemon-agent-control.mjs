@@ -16,7 +16,7 @@ export function createCanonicalAgentControl({ getSessionService, getSessionRunti
       return Promise.reject(new Error('canonical session service is not ready'));
     }
     canonicalAgentToolPromise ??= Promise.all([
-      import('./agent-tool.mjs'),
+      import('../session-runtime/services/agent-tool.mjs'),
       import('../runtime/agent/orchestrator/config.mjs'),
       import('../runtime/agent/orchestrator/providers/registry.mjs'),
     ])

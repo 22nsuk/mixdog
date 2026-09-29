@@ -9,7 +9,7 @@ import { mkdirSync, mkdtempSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { resolvePluginData } from '../plugin-paths.mjs';
-import { usageRollupDayKey, isConversationUsageSource } from './usage-rollup.mjs';
+import { usageRollupDayKey, isConversationUsageSource, num } from './usage-rollup.mjs';
 import { priceUsage } from './cost.mjs';
 import { rollupUsage } from './usage-ledger-rollup.mjs';
 import { QUOTA_SCHEMA, readQuotaHistory, readQuotaWindows, recordQuotaSamples } from './usage-ledger-quota.mjs';
@@ -37,7 +37,6 @@ export function usageLedgerWorkerRunning() {
 }
 const stores = new Map();
 const ROLLUP_CACHE_LIMIT = 8;
-const number = (value) => (Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : 0);
 const text = (value) => (typeof value === 'string' ? value.slice(0, 300) : '');
 
 // Keep the full identifier, not a shortened hash. The tag also makes arbitrary
@@ -265,16 +264,16 @@ export function makeUsageRecord(args) {
     sessionId: ['no-session', '(none)'].includes(args.sessionId) ? '' : text(args.sessionId),
     sourceType: text(args.sourceType),
     input: priced.input,
-    output: number(args.outputTokens),
-    cacheRead: number(args.cacheReadTokens),
-    cacheWrite: number(args.cacheWriteTokens),
+    output: num(args.outputTokens),
+    cacheRead: num(args.cacheReadTokens),
+    cacheWrite: num(args.cacheWriteTokens),
     costUsd,
     costSource: usageCostSource({ kind, costUsd, subscription, reported }),
     rates,
     responseId: text(args.responseId),
     account: text(args.account),
     origin: args.origin || 'live',
-    durationMs: number(args.durationMs),
+    durationMs: num(args.durationMs),
   };
   row.id = args.id || (row.origin === 'live' && !row.responseId ? randomUUID() : usageRecordId(row));
   return row;

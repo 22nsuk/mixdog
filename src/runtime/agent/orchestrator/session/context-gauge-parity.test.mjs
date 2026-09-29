@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createContextStatus } from '../../../../session-runtime/context-status.mjs';
+import { createContextStatus } from '../runtime-core/context-status.mjs';
 import { sessionContextSnapshotProjection } from '../../../../tui/session/session-api-ext.mjs';
 import { estimateMessagesTokens } from './context-utils.mjs';
 import {

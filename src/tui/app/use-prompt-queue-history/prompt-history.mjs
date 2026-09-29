@@ -2,7 +2,7 @@
 // Local fallback for the prompt history: the engine publishes the list
 // incrementally, and only an older snapshot (no promptHistoryList) makes the
 // surface rescan the transcript itself.
-import { PROMPT_HISTORY_LIMIT } from '../transcript-window.mjs';
+import { PROMPT_HISTORY_LIMIT } from '../../prompt-history-store.mjs';
 import { promptHistoryKey } from '../app-format.mjs';
 
 /** Newest-first, de-duplicated user prompts, capped at PROMPT_HISTORY_LIMIT. */

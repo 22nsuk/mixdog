@@ -11,7 +11,6 @@ import { copyActiveSelection } from './use-global-key-input/copy-first.mjs';
 import { decodeSelectionMoveChord } from './use-global-key-input/shift-arrow.mjs';
 export function useGlobalKeyInput({
   store,
-  state: _state,
   toolApproval,
   picker,
   usagePanel,

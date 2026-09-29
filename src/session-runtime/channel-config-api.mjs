@@ -8,9 +8,9 @@ import {
   setScheduleEnabled,
   setWebhookEnabled,
   setWebhookConfigAsync,
-} from '../standalone/channel-admin.mjs';
-import { getSchedule } from '../runtime/shared/schedules-db.mjs';
-import { runScheduleSession } from '../runtime/shared/schedule-session-run.mjs';
+} from './services/channel-admin.mjs';
+import { getSchedule } from '../runtime/channels/lib/schedules-db.mjs';
+import { runScheduleSession } from './schedule-session-run.mjs';
 
 // Webhook/schedule config surface. The mutating admin helpers are imported
 // directly here and the runtime injects only the closure-owned callbacks

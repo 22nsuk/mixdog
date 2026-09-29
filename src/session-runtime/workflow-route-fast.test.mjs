@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { createModelRouteApi } from './model-route-api.mjs';
 import { createWorkflowAgentsApi } from './workflow-agents-api.mjs';
-import { createWorkflowRouteHelpers } from './workflow.mjs';
+import { createWorkflowRouteHelpers } from '../runtime/agent/orchestrator/runtime-core/workflow.mjs';
 
 test('Maintainer Fast off survives save and route reload', async () => {
   const route = {

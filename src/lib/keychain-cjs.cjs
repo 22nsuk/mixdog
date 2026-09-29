@@ -69,7 +69,7 @@ function invalidateSecretCache(account) {
   _cacheInvalidate(account);
 }
 
-// CommonJS module: cannot import the ESM src/shared/wsl.mjs, so inline an
+// CommonJS module: cannot import the ESM src/runtime/shared/wsl.mjs, so inline an
 // equivalent WSL check (process.platform reports 'linux' inside WSL).
 function isWSL() {
   if (process.platform !== 'linux') return false;
@@ -124,7 +124,7 @@ function powershellEnv() {
   return env;
 }
 
-function powershell(script) {
+function powershell(script, input = null) {
   // Bound DPAPI PowerShell calls with a timeout: a hung powershell.exe
   // (AV scan stall, profile loader, transient cert chain lookup) would
   // otherwise block hook/server callers synchronously. The default is long
@@ -137,7 +137,11 @@ function powershell(script) {
   const exe = resolvePowershellExe();
   const profiled = /^(1|true|yes|on)$/i.test(String(process.env.MIXDOG_BOOT_PROFILE || ''));
   const startedAt = profiled ? Date.now() : 0;
-  const r = run(exe, ['-NonInteractive', '-NoProfile', '-Command', script], { timeout: POWERSHELL_TIMEOUT_MS });
+  const r = run(exe, ['-NonInteractive', '-NoProfile', '-Command', script], {
+    timeout: POWERSHELL_TIMEOUT_MS,
+    env: powershellEnv(),
+    ...(input == null ? {} : { input, stdio: ['pipe', 'pipe', 'pipe'] }),
+  });
   if (profiled) {
     const caller = (new Error().stack || '')
       .split('\n')
@@ -370,8 +374,7 @@ function linuxDelete(account) {
 const PS_PROTECT = [
   'Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue;',
   '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8;',
-  '$value = $args[0];',
-  '$bytes = [System.Text.Encoding]::UTF8.GetBytes($value);',
+  '$bytes = [Convert]::FromBase64String(([Console]::In.ReadToEnd()).Trim());',
   '$scope = [System.Security.Cryptography.DataProtectionScope]::CurrentUser;',
   '$enc = [System.Security.Cryptography.ProtectedData]::Protect($bytes, $null, $scope);',
   '[Convert]::ToBase64String($enc)',
@@ -475,10 +478,9 @@ function prewarmSecrets() {
 function win32Set(account, value) {
   const dir = secretsDir();
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  // Pass value as a PS argument via -Command inline to avoid shell injection;
-  // value is embedded as a PS single-quoted string literal with ' escaped.
-  const escaped = value.replace(/'/g, "''");
-  const r = powershell(`& { ${PS_PROTECT} } '${escaped}'`);
+  // The secret travels via stdin (base64 of UTF-8) so it never appears in the
+  // process argv or needs script-level quoting.
+  const r = powershell(`& { ${PS_PROTECT} }`, Buffer.from(value, 'utf8').toString('base64'));
   if (r.status !== 0) throw new Error(`[keychain] DPAPI encrypt failed (exit ${r.status}): ${r.stderr || r.stdout}`);
   const out = (r.stdout || '').trim();
   if (!out) throw new Error(`[keychain] DPAPI encrypt returned empty output (stderr: ${(r.stderr || '').trim()})`);
@@ -495,23 +497,22 @@ function win32Delete(account) {
 // Public API
 // ---------------------------------------------------------------------------
 
+const BACKENDS = {
+  darwin: { get: darwinGet, set: darwinSet, delete: darwinDelete },
+  linux: { get: linuxGet, set: linuxSet, delete: linuxDelete },
+  win32: { get: win32Get, set: win32Set, delete: win32Delete },
+};
+
+function backend() {
+  const selected = BACKENDS[platform()];
+  if (!selected) throw new Error(`[keychain] unsupported platform: ${process.platform}`);
+  return selected;
+}
+
 function getSecret(account) {
   const cached = _cacheGet(account);
   if (cached !== undefined) return cached;
-  let value;
-  switch (platform()) {
-    case 'darwin':
-      value = darwinGet(account);
-      break;
-    case 'linux':
-      value = linuxGet(account);
-      break;
-    case 'win32':
-      value = win32Get(account);
-      break;
-    default:
-      throw new Error(`[keychain] unsupported platform: ${process.platform}`);
-  }
+  const value = backend().get(account);
   _cacheSet(account, value);
   return value;
 }
@@ -529,19 +530,7 @@ function hasSecret(account) {
 
 function setSecret(account, value) {
   try {
-    switch (platform()) {
-      case 'darwin':
-        darwinSet(account, value);
-        break;
-      case 'linux':
-        linuxSet(account, value);
-        break;
-      case 'win32':
-        win32Set(account, value);
-        break;
-      default:
-        throw new Error(`[keychain] unsupported platform: ${process.platform}`);
-    }
+    backend().set(account, value);
   } finally {
     _cacheInvalidate(account);
   }
@@ -549,19 +538,7 @@ function setSecret(account, value) {
 
 function deleteSecret(account) {
   try {
-    switch (platform()) {
-      case 'darwin':
-        darwinDelete(account);
-        break;
-      case 'linux':
-        linuxDelete(account);
-        break;
-      case 'win32':
-        win32Delete(account);
-        break;
-      default:
-        throw new Error(`[keychain] unsupported platform: ${process.platform}`);
-    }
+    backend().delete(account);
   } finally {
     _cacheInvalidate(account);
   }

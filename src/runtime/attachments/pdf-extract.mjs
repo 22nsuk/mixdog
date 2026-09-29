@@ -39,6 +39,37 @@ function runPlacement(item) {
   };
 }
 
+// One page's text. pdf.js marks where each text line ends; keeping that as a
+// newline preserves paragraphs and table rows instead of one long run.
+function pageBodyText(content) {
+  let body = '';
+  let cursor = null;
+  for (const item of content?.items || []) {
+    if (typeof item?.str !== 'string') continue;
+    if (item.str) {
+      const placement = runPlacement(item);
+      // A writer splits one word into several runs for kerning, and a
+      // Korean line into a run per token; joining those with a space
+      // invents "2026 년". Only a gap the page itself leaves is a space.
+      const separated =
+        placement && cursor && placement.line === cursor.line
+          ? placement.start - cursor.end > cursor.size * 0.22
+          : !placement || !cursor;
+      const glued = !body || body.endsWith('\n') || body.endsWith(' ') || item.str.startsWith(' ') || !separated;
+      body += (glued ? '' : ' ') + item.str;
+      cursor = placement;
+    }
+    if (item.hasEOL && !body.endsWith('\n')) {
+      body += '\n';
+      cursor = null;
+    }
+  }
+  return body
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 export async function inspectPdfBuffer(
   buffer,
   {
@@ -70,35 +101,7 @@ export async function inspectPdfBuffer(
     for (let pageNumber = from; pageNumber <= to; pageNumber += 1) {
       const page = await pdf.getPage(pageNumber);
       try {
-        const content = await page.getTextContent();
-        // pdf.js marks where each text line ends; keeping that as a newline
-        // preserves paragraphs and table rows instead of one long run.
-        let body = '';
-        let cursor = null;
-        for (const item of content?.items || []) {
-          if (typeof item?.str !== 'string') continue;
-          if (item.str) {
-            const placement = runPlacement(item);
-            // A writer splits one word into several runs for kerning, and a
-            // Korean line into a run per token; joining those with a space
-            // invents "2026 년". Only a gap the page itself leaves is a space.
-            const separated =
-              placement && cursor && placement.line === cursor.line
-                ? placement.start - cursor.end > cursor.size * 0.22
-                : !placement || !cursor;
-            const glued = !body || body.endsWith('\n') || body.endsWith(' ') || item.str.startsWith(' ') || !separated;
-            body += (glued ? '' : ' ') + item.str;
-            cursor = placement;
-          }
-          if (item.hasEOL && !body.endsWith('\n')) {
-            body += '\n';
-            cursor = null;
-          }
-        }
-        body = body
-          .replace(/[ \t]+\n/g, '\n')
-          .replace(/\n{3,}/g, '\n\n')
-          .trim();
+        const body = pageBodyText(await page.getTextContent());
         const block = `--- Page ${pageNumber} ---\n${body || '(no extractable text on this page)'}`;
         const separatorBytes = chunks.length ? 2 : 0;
         const remaining = byteLimit - bytes - separatorBytes;

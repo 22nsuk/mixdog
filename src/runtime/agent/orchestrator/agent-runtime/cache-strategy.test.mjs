@@ -32,11 +32,11 @@ test('cache tiers distinguish one-shot, other agents, and Lead idle policy', (t)
     messages: 'none',
   });
   for (const agent of ['hidden-tool', 'worker']) {
-    assert.deepEqual(resolveCacheStrategy(agent, { autoClear: { idleMs: 1 } }), {
+    assert.deepEqual(resolveCacheStrategy(agent, { autoClear: { idleMs: 3_600_000 } }), {
       tools: 'none',
       system: '1h',
       tier3: '1h',
-      messages: '1h',
+      messages: '5m',
     });
   }
   for (const agent of ['lead', '', null, undefined]) {
@@ -61,7 +61,7 @@ test('message TTL overrides apply to reusable sessions but never to one-shot rol
     assert.equal(resolveCacheStrategy('one-shot').messages, 'none');
   }
   process.env.MIXDOG_CACHE_MESSAGES_TTL = 'invalid';
-  assert.equal(resolveCacheStrategy('worker').messages, '1h');
+  assert.equal(resolveCacheStrategy('worker').messages, '5m');
   assert.equal(resolveCacheStrategy('lead').messages, '5m');
 });
 

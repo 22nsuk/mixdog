@@ -28,7 +28,7 @@ function collectMemoryFingerprintFiles(pluginRoot) {
       const rel = `${relDir}/${ent.name}`.replace(/\\/g, '/');
       if (ent.isDirectory()) {
         walk(rel);
-      } else if (ent.isFile() && rel.endsWith('.mjs')) {
+      } else if (ent.isFile() && rel.endsWith('.mjs') && !rel.endsWith('.test.mjs')) {
         out.push(rel);
       }
     }

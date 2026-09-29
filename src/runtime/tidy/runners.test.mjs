@@ -142,7 +142,7 @@ test('clang-format dry-run violations become positioned diagnostics', () => {
   assert.ok(parsed.diagnostics.every((entry) => entry.fixable));
 });
 
-test('shellcheck JSON maps levels and fix availability', () => {
+test('shellcheck JSON maps levels; findings are never fixable (fix is read-only)', () => {
   const parsed = parseShellcheckJson(
     JSON.stringify([
       {
@@ -160,7 +160,7 @@ test('shellcheck JSON maps levels and fix availability', () => {
   );
   assert.equal(parsed[0].code, 'SC2086');
   assert.equal(parsed[0].severity, 'warning');
-  assert.equal(parsed[0].fixable, true);
+  assert.equal(parsed[0].fixable, false);
   assert.equal(parsed[1].severity, 'info');
   assert.deepEqual(parseShellcheckJson('', CWD), []);
 });

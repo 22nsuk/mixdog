@@ -295,7 +295,11 @@ test('compaction keeps the newest observation of a page and archives the one it 
     { role: 'assistant', content: '', toolCalls: [{ id: 'old', name: 'browser', arguments: { action: 'snapshot' } }] },
     { role: 'tool', toolCallId: 'old', content: page('p1-s1') },
     { role: 'assistant', content: '', toolCalls: [{ id: 'new', name: 'browser', arguments: { action: 'click' } }] },
-    { role: 'tool', toolCallId: 'new', content: `Postcondition met after 5ms; action executed once.\n\n${page('p1-s2')}` },
+    {
+      role: 'tool',
+      toolCallId: 'new',
+      content: `Postcondition met after 5ms; action executed once.\n\n${page('p1-s2')}`,
+    },
   ];
   const before = structuredClone(messages);
   const result = buildExecutionTail(messages, { contextWindow: 100_000, sessionId: 'superseded-observations' });

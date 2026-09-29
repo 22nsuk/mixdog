@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import test from 'node:test';
-import { createGoalRuntime } from './goal-runtime.mjs';
+import { createGoalRuntime } from '../runtime/agent/orchestrator/runtime-core/goal-runtime.mjs';
 
 test('a title queued behind an accepted task write cannot commit after runtime close', async () => {
   const dataDir = mkdtempSync(join(tmpdir(), 'mixdog-goal-title-close-'));

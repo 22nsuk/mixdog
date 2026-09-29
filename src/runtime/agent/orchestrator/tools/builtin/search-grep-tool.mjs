@@ -8,18 +8,6 @@ import {
   trueCasePath,
 } from './path-utils.mjs';
 import { _suggestIndexedPaths, buildNotFoundHint, finalizeReadFamilyEnoentTail } from './search-path-diagnostics.mjs';
-// Facade re-export: path-diagnostic helpers moved to search-path-diagnostics.mjs;
-// keep prior importers of search-tool.mjs unchanged.
-export {
-  _suggestIndexedPaths,
-  basePathDiagnostic,
-  buildNotFoundHint,
-  isUncOrSmbPath,
-  relativePathPrefix,
-  relativeSearchResultPath,
-  resolveSearchScope,
-  uncRefusalMessage,
-} from './search-path-diagnostics.mjs';
 import { buildGrepCacheKey, buildGrepRgArgs } from './search-builders.mjs';
 import { runRg, runRgWindowedLines } from './native-search-runner.mjs';
 import { markScopedCacheIncomplete } from '../../session/cache/scoped-cache-outcome.mjs';

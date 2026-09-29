@@ -22,7 +22,7 @@ import {
   isWebSearchCapableProvider,
   normalizeWebSearchProviderId,
   normalizeWebSearchRouteConfig,
-} from './workflow.mjs';
+} from '../runtime/agent/orchestrator/runtime-core/workflow.mjs';
 import { createNativeWebSearch } from './native-web-search.mjs';
 import { resolveMaintenanceRoute } from '../runtime/agent/orchestrator/agent-runtime/maintenance-route.mjs';
 

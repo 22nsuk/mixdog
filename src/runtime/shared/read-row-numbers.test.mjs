@@ -38,7 +38,11 @@ test('display rebuilds the numbered rows, including blank and row-like content',
     'read 2',
     '',
     'a.js [ok]',
-    ...rows(5, 27, (n) => (n === 9 ? '' : n === 10 ? '12→not a row' : `  line ${n}`)),
+    ...rows(5, 27, (n) => {
+      if (n === 9) return '';
+      if (n === 10) return '12→not a row';
+      return `  line ${n}`;
+    }),
     '[lines 5-27 of 90; pass offset:28 to continue]',
     '',
     'b.go [ok]',

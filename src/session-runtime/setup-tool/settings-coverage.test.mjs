@@ -7,14 +7,14 @@ import { SETUP_EXTENDED_ACTION_FIELDS, SETUP_DESKTOP_ACTIONS } from './settings-
 import { EXTENDED_SETUP_HANDLERS } from './extended-actions.mjs';
 import { createModelRouteApi } from '../model-route-api.mjs';
 import { createWorkflowAgentsApi } from '../workflow-agents-api.mjs';
-import { createWorkflowRouteHelpers } from '../workflow.mjs';
+import { createWorkflowRouteHelpers } from '../../runtime/agent/orchestrator/runtime-core/workflow.mjs';
 import { createSettingsApi } from '../settings-api.mjs';
-import { normalizeAutoClearConfig, normalizeCompactionConfig } from '../config-helpers.mjs';
+import { normalizeAutoClearConfig, normalizeCompactionConfig } from '../../runtime/agent/orchestrator/runtime-core/config-helpers.mjs';
 import { createMcpGlue } from '../mcp-glue.mjs';
 import { createResourceApi } from '../resource-api.mjs';
 import { isAgentDisabled } from '../../runtime/shared/agent-route-config.mjs';
 import { ORCHESTRATION_MODES } from '../../runtime/shared/orchestration.mjs';
-import { setBuiltinFirstUseApprovalInConfig } from '../builtin-features.mjs';
+import { setBuiltinFirstUseApprovalInConfig } from '../../runtime/agent/orchestrator/runtime-core/builtin-features.mjs';
 import { schemaValueError } from '../../runtime/shared/schema-value-error.mjs';
 
 const run = async (api, args, options = {}) =>

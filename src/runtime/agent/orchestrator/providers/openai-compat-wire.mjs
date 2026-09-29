@@ -55,6 +55,14 @@ export function toOpenAIMessages(messages, providerName, options = {}) {
     const details = metadata?.reasoning_details ?? metadata?.reasoningDetails;
     return Array.isArray(details) && details.length ? details : null;
   };
+  const attachAssistantReasoning = (msg, message) => {
+    if (replaysReasoningContent && typeof message.reasoningContent === 'string') {
+      msg.reasoning_content = message.reasoningContent;
+    }
+    const reasoningDetails = openRouterReasoningDetails(message);
+    if (reasoningDetails) msg.reasoning_details = reasoningDetails;
+    return msg;
+  };
   const flushToolMedia = () => {
     if (!pendingToolMedia.length) return;
     out.push({ role: 'user', content: pendingToolMedia.splice(0) });
@@ -81,27 +89,11 @@ export function toOpenAIMessages(messages, providerName, options = {}) {
           function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
         })),
       };
-      if (replaysReasoningContent && typeof m.reasoningContent === 'string') msg.reasoning_content = m.reasoningContent;
-      const reasoningDetails = openRouterReasoningDetails(m);
-      if (reasoningDetails) msg.reasoning_details = reasoningDetails;
-      out.push(msg);
+      out.push(attachAssistantReasoning(msg, m));
       continue;
     }
-    const reasoningDetails = m.role === 'assistant' ? openRouterReasoningDetails(m) : null;
-    if (
-      m.role === 'assistant' &&
-      ((replaysReasoningContent && typeof m.reasoningContent === 'string') || reasoningDetails)
-    ) {
-      const msg = {
-        role: m.role,
-        content: normalizeContentForOpenAIChat(m.content, { role: 'assistant' }),
-      };
-      if (replaysReasoningContent && typeof m.reasoningContent === 'string') msg.reasoning_content = m.reasoningContent;
-      if (reasoningDetails) msg.reasoning_details = reasoningDetails;
-      out.push(msg);
-      continue;
-    }
-    out.push({ role: m.role, content: normalizeContentForOpenAIChat(m.content, { role: m.role }) });
+    const msg = { role: m.role, content: normalizeContentForOpenAIChat(m.content, { role: m.role }) };
+    out.push(m.role === 'assistant' ? attachAssistantReasoning(msg, m) : msg);
   }
   flushToolMedia();
   return out;
@@ -232,7 +224,7 @@ export function parseResponsesToolCalls(response, label) {
       const call = customToolCallFromResponseItem(item);
       if (call) out.push(call);
     } else if (item?.type === 'tool_search_call') {
-      const _tsArgs =
+      const searchArgs =
         item.arguments && typeof item.arguments === 'object' && !Array.isArray(item.arguments)
           ? item.arguments
           : parseCompletedToolCallArgumentsJson(item.arguments || '{}', label, {
@@ -245,7 +237,7 @@ export function parseResponsesToolCalls(response, label) {
           item.call_id || item.id,
           // Schema is a plain object ({query,select,limit}); an array
           // (parsed JSON or passthrough) must never pass through as args.
-          _tsArgs && typeof _tsArgs === 'object' && !Array.isArray(_tsArgs) ? _tsArgs : {}
+          searchArgs && typeof searchArgs === 'object' && !Array.isArray(searchArgs) ? searchArgs : {}
         )
       );
     }
@@ -325,7 +317,7 @@ function toResponsesInputMessage(m, pendingToolMedia = null) {
     const item = {
       type: 'function_call_output',
       call_id: m.toolCallId || '',
-      output: output,
+      output,
     };
     if (mediaContent && pendingToolMedia) pendingToolMedia.push(...mediaContent);
     return item;

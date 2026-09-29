@@ -1,11 +1,11 @@
 // session-create/session-options.mjs — the createSession option record for
 // the current runtime state: route, tool spec, ownership/lane, workflow pack,
 // memory context and compaction.
-import { normalizeCompactionConfig } from '../config-helpers.mjs';
-import { hasOwn } from '../session-text.mjs';
-import { toolSpecForMode } from '../effort.mjs';
-import { STANDALONE_DATA_DIR } from '../runtime-paths.mjs';
-import { LEAD_DISALLOWED_TOOLS } from '../tool-defs.mjs';
+import { normalizeCompactionConfig } from '../../runtime/agent/orchestrator/runtime-core/config-helpers.mjs';
+import { hasOwn } from '../../runtime/agent/orchestrator/runtime-core/session-text.mjs';
+import { toolSpecForMode } from '../../runtime/agent/orchestrator/runtime-core/effort.mjs';
+import { pluginDataDir } from '../runtime-paths.mjs';
+import { LEAD_DISALLOWED_TOOLS } from '../../runtime/agent/orchestrator/runtime-core/tool-defs.mjs';
 
 // Ownership and permission fields an agent-owned session inherits from its profile.
 function agentOwnedSessionFields(sessionProfile) {
@@ -25,11 +25,18 @@ function agentOwnedSessionFields(sessionProfile) {
 
 export function sessionOptions(deps, coreMemoryContext) {
   const { rt, cfgMod, activeWorkflowContext, schemaAllowedTools = null, featureDisallowedTools } = deps;
-  const dataDir = cfgMod.getPluginData?.() || STANDALONE_DATA_DIR;
+  const dataDir = pluginDataDir(cfgMod);
   // Load the active WORKFLOW.md pack once for both summary + context block.
-  const { summary: workflow, context: workflowContext, orchestrationMode } = activeWorkflowContext(rt.config, dataDir);
+  const {
+    summary: workflow,
+    context: leadWorkflowContext,
+    packContext,
+    orchestrationMode,
+  } = activeWorkflowContext(rt.config, dataDir);
   const sessionProfile = rt.sessionProfile && typeof rt.sessionProfile === 'object' ? rt.sessionProfile : null;
   const agentOwned = sessionProfile?.owner === 'agent' || sessionProfile?.visibility === 'agent-only';
+  // Agent-owned sessions keep the Active Workflow block only.
+  const workflowContext = agentOwned ? packContext : leadWorkflowContext;
   const sessionOpts = {
     ...(rt.reservedSessionId ? { id: rt.reservedSessionId } : {}),
     provider: rt.route.provider,

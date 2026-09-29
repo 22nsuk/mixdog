@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import { updateJsonAtomicSync } from '../../../shared/atomic-file.mjs';
 import { resolvePluginData } from '../../../shared/plugin-paths.mjs';
+import { getLlmDispatcher } from '../../../shared/llm/http-agent.mjs';
 import { getAgentApiKey, getOpenAIUsageSessionKey } from '../../../shared/config.mjs';
 import { num, round } from './lib/usage-primitives.mjs';
 import { JsonMemoryCache } from './lib/json-memory-cache.mjs';
@@ -80,7 +81,7 @@ async function fetchJson(url, { headers = {}, timeoutMs = 6500 } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(url, { headers, signal: controller.signal });
+    const res = await fetch(url, { headers, signal: controller.signal, dispatcher: getLlmDispatcher() });
     const text = await res.text();
     let data = null;
     try {
@@ -438,18 +439,19 @@ async function fetchGeminiUsageSnapshot() {
   }
 }
 
-function managementKey(provider) {
-  const id = cacheKey(provider)
+// Provider id as the env-var prefix (`xai` → `XAI`).
+function envPrefix(provider) {
+  return cacheKey(provider)
     .replace(/[^a-z0-9]/g, '_')
     .toUpperCase();
-  return process.env[`${id}_MANAGEMENT_API_KEY`] || process.env.XAI_MANAGEMENT_API_KEY || '';
+}
+
+function managementKey(provider) {
+  return process.env[`${envPrefix(provider)}_MANAGEMENT_API_KEY`] || process.env.XAI_MANAGEMENT_API_KEY || '';
 }
 
 function teamId(provider) {
-  const id = cacheKey(provider)
-    .replace(/[^a-z0-9]/g, '_')
-    .toUpperCase();
-  return process.env[`${id}_TEAM_ID`] || process.env.XAI_TEAM_ID || '';
+  return process.env[`${envPrefix(provider)}_TEAM_ID`] || process.env.XAI_TEAM_ID || '';
 }
 
 function moneyNumber(value) {

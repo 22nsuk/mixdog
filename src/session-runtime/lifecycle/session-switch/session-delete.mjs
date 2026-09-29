@@ -3,7 +3,7 @@
  * with its linked agent children, and releasing the work a closing session
  * owns (shared with the context switch).
  */
-import { clean } from '../../session-text.mjs';
+import { clean } from '../../../runtime/agent/orchestrator/runtime-core/session-text.mjs';
 import { listLeadSessions } from '../session-catalog.mjs';
 import { SESSION_ID_PATTERN } from '../shared.mjs';
 

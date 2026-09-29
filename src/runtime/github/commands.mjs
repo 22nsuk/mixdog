@@ -1,4 +1,5 @@
 import {
+  DEFAULT_GITHUB_HOSTNAME,
   GITHUB_ACTIONS,
   githubNumber,
   githubRepository,
@@ -19,6 +20,7 @@ export function buildGithubCommand(value) {
   const page = input.page ?? 1;
   const limit = input.limit ?? 30;
   const query = `per_page=${limit}&page=${page}`;
+  const hostname = input.hostname || DEFAULT_GITHUB_HOSTNAME;
   const number = () => githubNumber(input.number);
   const id = () => githubNumber(input.id, 'id');
   const text = (key) => githubText(input[key], key, key === 'body' ? 60000 : 1000);
@@ -27,7 +29,7 @@ export function buildGithubCommand(value) {
       'api',
       endpoint,
       '--hostname',
-      input.hostname || 'github.com',
+      hostname,
       '--method',
       method,
       ...(body === undefined ? [] : ['--input', '-']),
@@ -44,7 +46,7 @@ export function buildGithubCommand(value) {
     args,
     json,
     mutation: definition.write === true,
-    hostname: input.hostname || 'github.com',
+    hostname,
   });
   switch (action) {
     case 'repo.list':

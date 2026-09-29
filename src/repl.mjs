@@ -28,7 +28,7 @@ import { createInterface } from 'node:readline';
 import { stdin, stdout } from 'node:process';
 import { basename } from 'node:path';
 
-import { bold, dim, cyan, red, colorEnabled } from './ui/ansi.mjs';
+import { bold, dim, cyan, red, colorEnabled } from './runtime/shared/statusline/ansi.mjs';
 import { printHelp } from './help.mjs';
 import { createSessionStats, applyUsageDelta } from './ui/session-stats.mjs';
 import { createRuntimeHandle } from './repl/runtime-handle.mjs';

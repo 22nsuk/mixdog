@@ -1,12 +1,12 @@
 // Deferred catalog call-through: inactive catalog tool_use → discovery bookkeeping
 // then normal executeTool routing (runtime errors only; no pre-dispatch schema).
-import { clean } from '../../../../../session-runtime/session-text.mjs';
+import { clean } from '../../runtime-core/session-text.mjs';
 import {
   deferredCatalogUnion,
   isReadonlySelectable,
   selectDeferredTools,
-} from '../../../../../session-runtime/tool-catalog.mjs';
-import { isDeferredToolAvailable } from '../../../../../session-runtime/deferred-tool-availability.mjs';
+} from '../../runtime-core/tool-catalog.mjs';
+import { isDeferredToolAvailable } from '../../runtime-core/deferred-tool-availability.mjs';
 
 /** Skill-list plumbing only; mutation/MCP/builtins must use the catalog+mode gate. */
 const INACTIVE_INFRA_BYPASS = new Set(['skills_list', 'skill_view']);
@@ -80,7 +80,7 @@ function denyDeferredCallThrough(message) {
  * or deny. Native provider schema arrays are never mutated here.
  * Returns null when not applicable (not in catalog, already active, infra allowlist).
  */
-export function prepareDeferredToolCallThrough(sessionRef, name, _args) {
+export function prepareDeferredToolCallThrough(sessionRef, name) {
   if (!sessionRef) return null;
   if (!isDeferredToolAvailable(sessionRef, name)) {
     return denyDeferredCallThrough(

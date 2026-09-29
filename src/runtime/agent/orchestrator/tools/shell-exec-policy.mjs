@@ -1,5 +1,5 @@
 import { extractHeredocBodies, extractShellCInner, stripQuotedAndHeredoc } from './destructive-warning.mjs';
-import { extractPowerShellCommandInner } from './shell-command.mjs';
+import { extractPowerShellCommandInner } from './shell-powershell.mjs';
 import { decodePowerShellEncodedCommand, isBlockedCommand, WRAPPER_NAMES } from './shell-policy.mjs';
 
 /** @typedef {'allow'|'deny'} ExecPolicyDecision */

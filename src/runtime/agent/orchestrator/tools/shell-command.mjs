@@ -15,6 +15,7 @@
 // (lib/shell-run-settle.mjs) and the auto-background promotion
 // (lib/shell-run-background.mjs). This module owns admission, preflight and
 // the wiring between those phases.
+import { startBackgroundTask } from '../../../shared/background-tasks.mjs';
 import { resourceAdmission } from '../../../shared/resource-admission.mjs';
 import { ExecResult, treeKill } from './shell-exec-output.mjs';
 import {
@@ -70,6 +71,7 @@ function _admissionSaturationError(admission, waitMs) {
       'check task list, cancel stale tasks, kill lingering child processes, or restart the CLI.'
   );
   error.code = 'ERESOURCEPRESSURE';
+  error.admissionSaturated = true;
   return error;
 }
 
@@ -119,7 +121,7 @@ function _abortableDelay(ms, signal) {
  *  guess. (A union of "plausible" families was worse than the ambiguity: it
  *  rewrote a valid CMD `echo literal ^&` into `echo literal ^`.) */
 // Arguments are accepted for call-site convenience but never classify.
-export function _shellFamilyForSpawn({ shell = '', shellArg: _shellArg = '', shellArgs: _shellArgs = null } = {}) {
+export function _shellFamilyForSpawn({ shell = '' } = {}) {
   const name = String(shell || '')
     .toLowerCase()
     .replace(/\.exe$/, '')
@@ -139,9 +141,9 @@ export function _shellFamilyForSpawn({ shell = '', shellArg: _shellArg = '', she
 
 async function acquireShellLeaseBounded(
   admission,
-  { abortSignal, label, dependency = 'scoped', ownerKey = null } = {}
+  { abortSignal, label, dependency = 'scoped', ownerKey = null, waitMs = SHELL_ADMISSION_WAIT_MS } = {}
 ) {
-  if (!(SHELL_ADMISSION_WAIT_MS > 0)) {
+  if (!(waitMs > 0)) {
     return admission.acquire('shell', {
       signal: abortSignal || null,
       label,
@@ -163,12 +165,12 @@ async function acquireShellLeaseBounded(
     if (abortSignal.aborted) onAbort();
     else abortSignal.addEventListener('abort', onAbort, { once: true });
   }
-  const deadlineAt = Date.now() + SHELL_ADMISSION_WAIT_MS;
+  const deadlineAt = Date.now() + waitMs;
   const deadline = setTimeout(() => {
     try {
-      ctl.abort(_admissionSaturationError(admission, SHELL_ADMISSION_WAIT_MS));
+      ctl.abort(_admissionSaturationError(admission, waitMs));
     } catch {}
-  }, SHELL_ADMISSION_WAIT_MS);
+  }, waitMs);
   if (deadline.unref) deadline.unref();
   try {
     for (;;) {
@@ -215,11 +217,12 @@ const failedResult = (run, stderr, failureReason) =>
 
 // Admission lease, policy preflight, then the spawn. Resolves the run with a
 // tool-phase failure and returns false when the command never reaches a shell.
-async function admitAndSpawn(run, params) {
+async function admitAndSpawn(run, params, { admissionWaitMs, onSaturated }) {
   const { admission, command, ownerSessionId, abortSignal } = params;
   try {
     run.resourceLease = await acquireShellLeaseBounded(admission, {
       abortSignal,
+      waitMs: admissionWaitMs,
       label: String(command || '').slice(0, 120),
       ownerKey: ownerSessionId,
     });
@@ -232,6 +235,7 @@ async function admitAndSpawn(run, params) {
     await spawnShellChild({ run, ...params });
     return true;
   } catch (err) {
+    if (err?.admissionSaturated && !abortSignal?.aborted && onSaturated(err)) return false;
     const cleanupError = await releaseResourceLease(run);
     const spawnText = String(err?.message || err);
     const cleanupText = cleanupError
@@ -246,6 +250,61 @@ async function admitAndSpawn(run, params) {
     );
     return false;
   }
+}
+
+// A saturated shell lane must not fail the call: the command becomes a tracked
+// background task that waits (no admission ceiling) for a lease, runs, and
+// completes like any other task. The call returns its task_id immediately.
+function queueSaturatedAsTask(run, saturation, spec) {
+  const queuedAbort = new AbortController();
+  let task;
+  try {
+    task = startBackgroundTask({
+      taskId: run.taskId,
+      surface: 'shell',
+      operation: 'shell',
+      label: String(spec.command || '').replace(/\s+/g, ' ').slice(0, 120),
+      context: { callerSessionId: spec.ownerSessionId, clientHostPid: spec.clientHostPid },
+      input: { command: spec.command, cwd: spec.cwd },
+      meta: { task_id: run.taskId, stdout: null, stderr: null, cwd: spec.cwd, timeoutMs: spec.timeoutMs },
+      resultType: 'shell_task_result',
+      cancel: () => queuedAbort.abort(),
+      run: async () => {
+        const result = await execShellCommand({
+          ...spec,
+          abortSignal: queuedAbort.signal,
+          autoBackgroundMs: 0,
+          backgroundOnTimeout: false,
+          admissionWaitMs: 0,
+        });
+        const output = [result.stdout, result.stderr].filter(Boolean).join('\n');
+        if (result.exitCode !== 0) {
+          throw new Error(`exit code ${result.exitCode ?? result.signal ?? 'unknown'}${output ? `\n${output}` : ''}`);
+        }
+        return { task_id: run.taskId, status: 'completed', exit_code: 0, output };
+      },
+    });
+  } catch {
+    return false;
+  }
+  detachAbortHandler(run);
+  const reason = String(saturation.message || '').split(' —')[0];
+  run.resolveResult(
+    new ExecResult({
+      stdout: '',
+      stderr: '',
+      exitCode: null,
+      signal: null,
+      taskId: run.taskId,
+      backgrounded: true,
+      partialOutput: true,
+      settled: task.promise,
+      backgroundMessage:
+        `${reason}; queued as background task [task_id: ${task.taskId}] that starts when an execution slot frees. ` +
+        'Completion arrives automatically; call task wait (not task read polling) when the result is due.',
+    })
+  );
+  return true;
 }
 
 // A fault in the wiring BELOW admitAndSpawn (capture, settle, deadlines) has
@@ -413,11 +472,8 @@ function armDeadlines(run, { timeoutMs, autoBackgroundMs, backgroundOnTimeout, a
   }
 }
 
-// Windows Defender intermittently fails node→PowerShell spawns with EPERM
-// while it scans the child image (see shell-runtime.mjs Trojan false-positive
-// note). The failure is at spawn() time — before any stdio/side effect — so a
-// short bounded retry is safe and never re-runs a command that already ran
-// (lib/shell-spawn-retry.mjs).
+// Run one command to a terminal ExecResult. Spawn-time EPERM retries (Windows
+// Defender scanning the child image) live in lib/shell-spawn-retry.mjs.
 export function execShellCommand({
   shell,
   shellArg,
@@ -435,6 +491,7 @@ export function execShellCommand({
   backgroundOnTimeout,
   promotedTimeoutMs = 0,
   backgroundDeadlineMs = 0,
+  admissionWaitMs = SHELL_ADMISSION_WAIT_MS,
   admission = resourceAdmission,
   directArgv = null,
   // What the shell PARSES, when that must differ from what the caller shows.
@@ -464,6 +521,24 @@ export function execShellCommand({
         execScript,
         ownerSessionId,
         clientHostPid,
+      }, {
+        admissionWaitMs,
+        onSaturated: (err) =>
+          backgroundOnTimeout &&
+          queueSaturatedAsTask(run, err, {
+            shell,
+            shellArg,
+            shellArgs,
+            command,
+            env,
+            cwd,
+            timeoutMs: backgroundDeadlineMs,
+            clientHostPid,
+            ownerSessionId,
+            admission,
+            directArgv,
+            execScript,
+          }),
       });
       if (!spawned) return;
 

@@ -38,9 +38,9 @@ export { buildShellSpawnEnv } from './bash-tool/spawn-env.mjs';
 export { executeTaskTool } from './task-tool.mjs';
 
 // Reads cached after a mutating command must not serve pre-command state. A
-// promoted command has barely started when the tool returns, so the
-// invalidation repeats when the background job actually settles.
-function settleMutationCaches(shellEffects, backgroundJobId) {
+// promoted command has barely started when the tool returns and a queued one
+// has not started at all, so the invalidation repeats when it settles.
+function settleMutationCaches(shellEffects, backgroundJobId, queuedSettled = null) {
   const invalidate = () => {
     if (shellEffects.mutationMode === 'paths') {
       invalidateBuiltinResultCache(shellEffects.paths);
@@ -54,6 +54,7 @@ function settleMutationCaches(shellEffects, backgroundJobId) {
   if (backgroundJobId && shellEffects.mutationMode !== 'none') {
     subscribeShellJobSettled(backgroundJobId, invalidate);
   }
+  if (queuedSettled && shellEffects.mutationMode !== 'none') queuedSettled.then(invalidate).catch(() => {});
 }
 
 export async function executeBashTool(args, workDir, options = {}) {
@@ -83,6 +84,7 @@ export async function executeBashTool(args, workDir, options = {}) {
   let combinedAbort = null;
   let backgrounded = false;
   let backgroundJobId = null;
+  let queuedSettled = null;
   try {
     const invocation = await planShellInvocation({ command, resolvedSpec, cwd: bashWorkDir });
     if (invocation.failure) return invocation.failure;
@@ -117,6 +119,7 @@ export async function executeBashTool(args, workDir, options = {}) {
     });
     backgrounded = result.backgrounded === true;
     backgroundJobId = backgrounded ? result.jobId || null : null;
+    queuedSettled = backgrounded ? result.settled || null : null;
     const stdout = stripAnsi(result.stdout || '');
     const stderr = stripAnsi(result.stderr || '');
     recordShellCaptureTelemetry(options?.resultTelemetry, result, stdout, stderr);
@@ -140,11 +143,14 @@ export async function executeBashTool(args, workDir, options = {}) {
   } finally {
     combinedAbort?.cleanup?.();
     if (hoisted.hoistPath) {
-      // A promoted command still runs from the hoisted file; a foreground one
-      // is done with it now (an unconfirmed kill may keep it locked — retried).
-      if (backgrounded) cleanupArtifactOnTaskSettled(hoisted.hoistPath, backgroundJobId);
+      // A promoted or queued command still runs from the hoisted file; a
+      // foreground one is done with it now (an unconfirmed kill may keep it
+      // locked — retried).
+      if (queuedSettled) {
+        queuedSettled.then(() => removeTransportFileNow(hoisted.hoistPath)).catch(() => {});
+      } else if (backgrounded) cleanupArtifactOnTaskSettled(hoisted.hoistPath, backgroundJobId);
       else removeTransportFileNow(hoisted.hoistPath);
     }
-    settleMutationCaches(shellEffects, backgroundJobId);
+    settleMutationCaches(shellEffects, backgroundJobId, queuedSettled);
   }
 }

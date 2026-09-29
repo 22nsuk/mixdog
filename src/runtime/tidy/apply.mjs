@@ -13,8 +13,8 @@ import {
   isBlockedDevicePath,
   isUncPath,
   isWindowsDevicePath,
-} from '../agent/orchestrator/tools/builtin/device-paths.mjs';
-import { markCodeGraphDirtyPaths } from '../agent/orchestrator/tools/code-graph-state.mjs';
+} from '../shared/device-paths.mjs';
+import { markCodeGraphDirtyPaths } from '../shared/code-graph-state.mjs';
 
 /** Same write-target guards the builtin edit surfaces enforce. */
 export function guardTidyWritePath(fullPath) {

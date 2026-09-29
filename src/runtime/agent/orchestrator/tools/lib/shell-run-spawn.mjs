@@ -3,10 +3,15 @@
 // delayed live foreground record once the command has reached a shell.
 import { acquire as acquireChildSpawnSlot } from '../../../../shared/child-spawn-gate.mjs';
 import { publishForegroundShellRecord, trackForegroundShellJob } from '../builtin/shell-jobs.mjs';
-import { nativeSpawnFileCaptureReady, setNativeTaskStartedAt } from './native-spawn-client.mjs';
+import {
+  nativeSpawnFileCaptureReady,
+  nativeSpawnSupportsStdinPipe,
+  setNativeTaskStartedAt,
+  warmNativeSpawnServer,
+} from './native-spawn-client.mjs';
 import { _maybeEncodePowerShellCommand } from '../shell-powershell.mjs';
 import { spawnShellWithRetry as _spawnShellWithRetry } from './shell-spawn-retry.mjs';
-import { takeWarmShellStandby } from './shell-warm-standby.mjs';
+import { STANDBY_ARGS, takeWarmShellStandby } from './shell-warm-standby.mjs';
 import { SHELL_OUTPUT_DISK_CAP } from '../shell-exec-output.mjs';
 
 // Foreground visibility threshold. Every shell readout (CLI statusline,
@@ -40,7 +45,7 @@ async function takeStandby({ run, useDirectArgv, shell, shellArg, env, cwd, comm
   if (useDirectArgv || shellArg !== '-Command') return null;
   let standby = null;
   try {
-    standby = takeWarmShellStandby({ shell, env, cwd });
+    standby = takeWarmShellStandby({ shell, env });
   } catch {
     standby = null;
   }
@@ -74,6 +79,7 @@ async function takeStandby({ run, useDirectArgv, shell, shellArg, env, cwd, comm
 async function gatedSpawn({
   run,
   argv,
+  stdinPipe,
   shell,
   shellArg,
   env,
@@ -119,6 +125,7 @@ async function gatedSpawn({
         command,
         ownerSessionId,
         clientHostPid,
+        ...(stdinPipe ? { stdinPipe: true } : {}),
         ...(capture
           ? {
               stdoutPath: taskOutput.stdoutPath,
@@ -174,14 +181,40 @@ export async function spawnShellChild({
     ownerSessionId,
     clientHostPid,
   });
+  // Standby miss on pwsh: spawn a fresh pwsh with the standby bootstrap and
+  // feed the script through stdin, so a parse error is still reported in
+  // UTF-8 and both paths run the script identically. Spawn servers without
+  // stdin-pipe support keep the -Command argv delivery.
+  const stdinScript =
+    !standby &&
+    !useDirectArgv &&
+    shellArg === '-Command' &&
+    (await warmNativeSpawnServer()) &&
+    nativeSpawnSupportsStdinPipe()
+      ? spawnCommand
+      : null;
   const spawned =
     standby?.spawned ??
-    (await gatedSpawn({ run, argv, shell, shellArg, env, cwd, abortSignal, command, ownerSessionId, clientHostPid }));
+    (await gatedSpawn({
+      run,
+      argv: stdinScript === null ? argv : STANDBY_ARGS,
+      stdinPipe: stdinScript !== null,
+      shell,
+      shellArg,
+      env,
+      cwd,
+      abortSignal,
+      command,
+      ownerSessionId,
+      clientHostPid,
+    }));
   run.child = spawned.child;
   spawned.attachErrorHandler(onChildError);
-  // Feed the standby only after the error handler is attached; server
+  // Feed the script only after the error handler is attached; server
   // messages cannot be processed before this synchronous block yields.
+  // Single atomic write+EOF, as for the standby.
   if (standby) standby.feed(spawnCommand, cwd);
+  else if (stdinScript !== null) spawned.child.writeStdin(stdinScript, { close: true });
   // The command has now reached a shell. This is the start moment every
   // readout measures from, and the point from which a still-running
   // command deserves to be visible in the shell readouts.

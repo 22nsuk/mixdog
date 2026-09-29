@@ -30,7 +30,7 @@ const {
   shouldCompactForSession,
 } = await import('../loop/compact-policy.mjs');
 const { estimateMessagesTokens } = await import('../context-utils.mjs');
-const { sessionContextMeasurement } = await import('../../../../../ui/context-measurement.mjs');
+const { sessionContextMeasurement } = await import('../../../../shared/context-measurement.mjs');
 
 function createSession(sessionId, messages) {
   return {

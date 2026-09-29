@@ -1,7 +1,7 @@
 // Runs one call that passed the pre-dispatch guards: cache lookups,
 // eager-result consumption or serial execution, and the same-anchor edit
 // retry. Returns the execution record the outcome/finalize phases consume.
-import { markSessionToolCall } from '../manager.mjs';
+import { markSessionToolCall } from '../manager/runtime-liveness.mjs';
 import { classifyResultKind } from '../result-classification.mjs';
 import { normalizeToolEnvelope } from '../tool-envelope.mjs';
 import { captureReadCacheState, tryReadCached, tryScopedToolCached } from '../read-dedup.mjs';
@@ -11,6 +11,7 @@ import { preDispatchDenyForSession } from '../loop/pre-dispatch-deny.mjs';
 import { getToolKind, isEagerDispatchable, isParallelDispatchable } from '../loop/tool-helpers.mjs';
 import { scopedCacheGeneration } from '../cache/scoped-cache.mjs';
 import { editSeqGroupFor } from './plan.mjs';
+import { mutationAffectsRead, recordMutation } from '../eager-dispatch/mutation-paths.mjs';
 
 function classifyToolReturn(value, toolName = '') {
   const normalized = normalizeToolEnvelope(value);
@@ -119,12 +120,22 @@ async function executeLive(batch, call, callIndex, exec) {
   // that raced an apply_patch re-executes for fresh content. Non-read-only
   // parallel calls (shell/MCP/...) already ran — their side effects are
   // real, so their results are consumed as-is and NEVER re-executed.
+  // A read is discarded only when a later mutation may have touched its
+  // targets; its re-execution never answers with the unchanged stub because
+  // this session never received the discarded body.
+  let discardedRead = false;
   if (eager !== undefined && eager.mutationEpoch < epoch.mutation && isEagerDispatchable(call.name, tools)) {
-    pending.delete(call.id);
-    eager = undefined;
+    const stale = _isReadTool(call.name)
+      ? mutationAffectsRead(epoch, eager.mutationEpoch, call, batch.cwd)
+      : true;
+    if (stale) {
+      discardedRead = _isReadTool(call.name);
+      pending.delete(call.id);
+      eager = undefined;
+    }
   }
   if (eager !== undefined) await consumeEagerResult(call, eager, exec);
-  else await executeSerially(batch, call, exec);
+  else await executeSerially(batch, call, exec, discardedRead);
 }
 
 async function consumeEagerResult(call, eager, exec) {
@@ -147,14 +158,14 @@ async function consumeEagerResult(call, eager, exec) {
   }
 }
 
-async function executeSerially(batch, call, exec) {
+async function executeSerially(batch, call, exec, suppressReadUnchangedStub = false) {
   const { sessionId, sessionRef, cwd, opts, executeToolFn } = batch;
   exec.toolStartedAt = Date.now();
   // Runtime pre-dispatch deny: schema profiles may hide tools for routing
   // efficiency, but this remains the control-plane boundary for any
   // tool_use that still reaches the loop. Shared with the eager path
   // (startEagerTool) so both paths reject consistently.
-  const denyMsg = preDispatchDenyForSession(sessionRef, call, exec.toolKind);
+  const denyMsg = preDispatchDenyForSession(sessionRef, call);
   if (denyMsg !== null) {
     exec.executionStartedAt = exec.toolStartedAt;
     exec.result = denyMsg;
@@ -175,7 +186,7 @@ async function executeSerially(batch, call, exec) {
     cwd,
     sessionId,
     sessionRef,
-    invocationOptions(batch, call, exec)
+    { ...invocationOptions(batch, call, exec), ...(suppressReadUnchangedStub ? { suppressReadUnchangedStub: true } : {}) }
   );
   exec.toolEndedAt = Date.now();
   classifyExecuted(call, exec);
@@ -249,7 +260,7 @@ async function rerunAmbiguousEdit(batch, call, exec, remaining) {
     exec.toolEndedAt = Date.now();
     // Mirror the eager mutation epoch: later read-only eager results
     // computed against pre-edit content must re-execute.
-    batch.epoch.mutation += 1;
+    recordMutation(batch.epoch, call, batch.cwd);
   } catch {
     /* keep the original ambiguity error */
   } finally {

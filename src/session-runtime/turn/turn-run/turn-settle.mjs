@@ -2,10 +2,10 @@ import { throwIfAborted } from '../../../runtime/shared/abort-race.mjs';
 
 /** The StopFailure hook's error class, read from the failure message. */
 function stopFailureType(message) {
-  if (/rate.?limit|429|too many requests/.test(message)) return 'rate_limit';
-  if (/overloaded|529/.test(message)) return 'overloaded';
-  if (/authenticat|unauthorized|401|invalid.*api.?key/.test(message)) return 'authentication_failed';
-  if (/server.?error|5\d\d|internal error/.test(message)) return 'server_error';
+  if (/rate.?limit|\b429\b|too many requests/.test(message)) return 'rate_limit';
+  if (/overloaded|\b529\b/.test(message)) return 'overloaded';
+  if (/authenticat|unauthorized|\b401\b|invalid.*api.?key/.test(message)) return 'authentication_failed';
+  if (/server.?error|\b5\d\d\b|internal error/.test(message)) return 'server_error';
   return 'unknown';
 }
 

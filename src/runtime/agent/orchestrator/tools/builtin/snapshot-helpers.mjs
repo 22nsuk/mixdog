@@ -43,6 +43,13 @@ export function decodeRawBufferForSnapshotCheck(rawBuf) {
   return rawBuf.subarray(enc.bomLen).toString('utf-8');
 }
 
+/** Text of a 1-based inclusive line range (endLine may be Infinity) from pre-split lines. */
+export function rangeTextOf(lines, range) {
+  const startIdx = Math.max(0, (range.startLine || 1) - 1);
+  const endIdx = range.endLine === Infinity ? lines.length : Math.min(lines.length, range.endLine);
+  return lines.slice(startIdx, endIdx).join('\n');
+}
+
 export function rangeHashesForReadRanges(content, ranges) {
   const rows = Array.isArray(ranges) ? ranges : [];
   if (rows.length === 0) return [];
@@ -58,9 +65,7 @@ export function rangeHashesForReadRanges(content, ranges) {
     const endLine = range.endLine === Infinity ? Infinity : Number(range.endLine);
     if (!Number.isFinite(startLine) || (!Number.isFinite(endLine) && endLine !== Infinity)) continue;
     if (endLine !== Infinity && endLine < startLine) continue;
-    const startIdx = startLine - 1;
-    const endIdx = endLine === Infinity ? lines.length : Math.min(lines.length, endLine);
-    out.push({ startLine, endLine, hash: hashText(lines.slice(startIdx, endIdx).join('\n')) });
+    out.push({ startLine, endLine, hash: hashText(rangeTextOf(lines, { startLine, endLine })) });
   }
   return out;
 }

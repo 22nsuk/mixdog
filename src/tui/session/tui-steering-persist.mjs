@@ -1,12 +1,8 @@
 // Lead TUI busy-input steering queue — disk mirror of in-memory `pending`
 // (same store as manager pending-messages, lead-scoped session key).
 import { randomBytes } from 'node:crypto';
-import { updateJsonAtomic } from '../../runtime/shared/atomic-file.mjs';
-import {
-  PENDING_MESSAGES_MODE,
-  pendingMessagesPath,
-  touchPendingSessionEntry,
-} from '../../runtime/agent/orchestrator/session/manager/pending-spool-path.mjs';
+import { touchPendingSessionEntry } from '../../runtime/agent/orchestrator/session/manager/pending-spool-path.mjs';
+import { updatePendingShard } from '../../runtime/agent/orchestrator/session/manager/pending-spool-shard.mjs';
 import { promptContentText } from './queue-helpers.mjs';
 // Restore window for persisted busy-input steering rows. Rows older than this
 // are leftovers of a session that ended long ago — restoring them into a fresh
@@ -165,20 +161,16 @@ export function appendTuiSteeringPersist(leadSessionId, entry) {
   };
   return _serialize(async () => {
     try {
-      await updateJsonAtomic(
-        pendingMessagesPath(),
-        (raw) => {
-          const next = normalizePendingStore(raw);
-          const q = Array.isArray(next.sessions[key]) ? next.sessions[key] : [];
-          q.push(record);
-          next.sessions[key] = q;
-          const now = Date.now();
-          next.updatedAt = now;
-          touchPendingSessionEntry(next, key, now);
-          return next;
-        },
-        { compact: true, lock: true, mode: PENDING_MESSAGES_MODE, fsync: false }
-      );
+      await updatePendingShard(key, (raw) => {
+        const next = normalizePendingStore(raw);
+        const q = Array.isArray(next.sessions[key]) ? next.sessions[key] : [];
+        q.push(record);
+        next.sessions[key] = q;
+        const now = Date.now();
+        next.updatedAt = now;
+        touchPendingSessionEntry(next, key, now);
+        return next;
+      });
       return true;
     } catch (err) {
       writeSteeringDiagnostic(`steering-queue append failed sessionId=${leadSessionId}: ${err?.message || err}`);
@@ -194,25 +186,21 @@ export function dropTuiSteeringPersist(leadSessionId, entries) {
   if (batch.length === 0) return Promise.resolve();
   return _serialize(async () => {
     try {
-      await updateJsonAtomic(
-        pendingMessagesPath(),
-        (raw) => {
-          const next = normalizePendingStore(raw);
-          const q = Array.isArray(next.sessions[key]) ? next.sessions[key].slice() : [];
-          if (q.length === 0) return undefined;
-          for (const entry of batch) {
-            removePersistRow(q, entry);
-          }
-          if (q.length === 0) {
-            deleteSessionBucket(next, key);
-          } else {
-            next.sessions[key] = q;
-          }
-          next.updatedAt = Date.now();
-          return next;
-        },
-        { compact: true, lock: true, mode: PENDING_MESSAGES_MODE, fsync: false }
-      );
+      await updatePendingShard(key, (raw) => {
+        const next = normalizePendingStore(raw);
+        const q = Array.isArray(next.sessions[key]) ? next.sessions[key].slice() : [];
+        if (q.length === 0) return undefined;
+        for (const entry of batch) {
+          removePersistRow(q, entry);
+        }
+        if (q.length === 0) {
+          deleteSessionBucket(next, key);
+        } else {
+          next.sessions[key] = q;
+        }
+        next.updatedAt = Date.now();
+        return next;
+      });
     } catch (err) {
       writeSteeringDiagnostic(`steering-queue drop failed sessionId=${leadSessionId}: ${err?.message || err}`);
     }
@@ -238,27 +226,6 @@ function drainedRowToRestore(row) {
   return null;
 }
 
-// Orphan cleanup: TUI-owned buckets of OTHER lead sessions whose every row
-// already aged past the restore TTL can never be restored (restore is keyed
-// by the live session id), so they only grow the file forever (observed
-// live: queued rows from sessions closed days ago). Foreign (runtime/manager
-// spool) buckets are NEVER reaped here: their rows are owned by another
-// process, age on a different TTL, and may be parked handoff rows that are
-// the last copy of accepted user input. Returns the pruned row count.
-function pruneStaleOrphanBuckets(next, liveKey, now) {
-  let pruned = 0;
-  for (const otherKey of Object.keys(next.sessions)) {
-    if (otherKey === liveKey || !otherKey.startsWith('tui_')) continue;
-    const rows = Array.isArray(next.sessions[otherKey]) ? next.sessions[otherKey] : [];
-    const otherTouched = Number(next.sessionTouchedAt?.[otherKey]) || 0;
-    if (rows.length === 0 || rows.every((row) => isStaleSteeringRow(row, otherTouched, now))) {
-      deleteSessionBucket(next, otherKey);
-      pruned += rows.length;
-    }
-  }
-  return pruned;
-}
-
 // Consistency-required (restores queued messages after boot/command). Async
 // lock wait, serialized on _persistChain so it never reorders against a
 // pending append/drop and never blocks the render loop. Returns a promise of
@@ -269,38 +236,29 @@ export function drainTuiSteeringPersist(leadSessionId) {
   return _serialize(async () => {
     let drained = [];
     let droppedStale = 0;
-    let prunedOrphans = 0;
     try {
-      await updateJsonAtomic(
-        pendingMessagesPath(),
-        (raw) => {
-          const next = normalizePendingStore(raw);
-          const q = Array.isArray(next.sessions[key]) ? next.sessions[key] : [];
-          const now = Date.now();
-          const touchedAt = Number(next.sessionTouchedAt?.[key]) || 0;
-          const fresh = q.filter((row) => {
-            const stale = isStaleSteeringRow(row, touchedAt, now);
-            if (stale) droppedStale += 1;
-            return !stale;
-          });
-          drained = fresh.map(drainedRowToRestore).filter(Boolean);
-          // Pruned under the same lock/write as the drain.
-          prunedOrphans = pruneStaleOrphanBuckets(next, key, now);
-          if (drained.length === 0 && droppedStale === 0 && prunedOrphans === 0) return undefined;
-          deleteSessionBucket(next, key);
-          next.updatedAt = Date.now();
-          return next;
-        },
-        { compact: true, lock: true, mode: PENDING_MESSAGES_MODE, fsync: false }
-      );
+      await updatePendingShard(key, (raw) => {
+        const next = normalizePendingStore(raw);
+        const q = Array.isArray(next.sessions[key]) ? next.sessions[key] : [];
+        const now = Date.now();
+        const touchedAt = Number(next.sessionTouchedAt?.[key]) || 0;
+        droppedStale = 0;
+        const fresh = q.filter((row) => {
+          const stale = isStaleSteeringRow(row, touchedAt, now);
+          if (stale) droppedStale += 1;
+          return !stale;
+        });
+        drained = fresh.map(drainedRowToRestore).filter(Boolean);
+        if (drained.length === 0 && droppedStale === 0) return undefined;
+        deleteSessionBucket(next, key);
+        next.updatedAt = Date.now();
+        return next;
+      });
     } catch (err) {
       writeSteeringDiagnostic(`steering-queue drain failed sessionId=${leadSessionId}: ${err?.message || err}`);
     }
     if (droppedStale > 0) {
       writeSteeringDiagnostic(`dropped ${droppedStale} stale steering row(s) sessionId=${leadSessionId}`);
-    }
-    if (prunedOrphans > 0) {
-      writeSteeringDiagnostic(`pruned ${prunedOrphans} orphaned steering row(s) from stale sessions`);
     }
     return drained;
   });

@@ -1,5 +1,5 @@
 // Steering / pending-message queue with sync buffering and atomic persistence.
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { loadSession } from '../store.mjs';
 import { ForeignPendingMessageController } from './foreign-pending-messages.mjs';
 import {
@@ -29,6 +29,7 @@ import {
   pendingIdSet,
   pruneEmptyPendingIdSet,
 } from './pending-claim-ledger.mjs';
+import { legacyPendingMessagesPath, pendingShardDir } from './pending-spool-path.mjs';
 import { pruneCleanupConfirmedLedger } from './pending-delivered-ledger.mjs';
 // The durable delivered-id ledger on the session record lives in
 // pending-delivered-ledger.mjs; re-exported so prior importers stay unchanged.
@@ -82,10 +83,14 @@ const _sessionPendingMessages = new Map();
 const _hydratedPendingMessages = new Map();
 const _pendingHydrations = new Map();
 
-// Exposed for live-share owners: they fs.watch this file for instant pickup
-// of cross-surface submits (the 3s drain tick remains the safety net).
-export function pendingMessagesSpoolPath() {
-  return pendingMessagesPath();
+// Exposed for live-share owners: they fs.watch this session's shard file for
+// instant pickup of cross-surface submits (the 3s drain tick remains the
+// safety net). Without a valid session id there is nothing to watch.
+export function pendingMessagesSpoolPath(sessionId) {
+  if (!isValidPendingSessionId(sessionId)) return '';
+  // fs.watch needs the directory to exist before the first shard is written.
+  mkdirSync(pendingShardDir(), { recursive: true });
+  return pendingMessagesPath(sessionId);
 }
 
 function pendingIdStillQueued(sessionId, id) {
@@ -157,7 +162,7 @@ function acknowledgePendingMessages(sessionId, deliveredEntries, options = {}) {
       // Skipped once the epoch moved: those queue entries are the new
       // owner's (a hydrate can republish the very same durable ids).
       if (!pendingLifecycleEpochMoved(sessionId, expectedToken)) purgeMemory();
-      return updateSpool((raw) => {
+      return updateSpool(sessionId, (raw) => {
         // Atomic re-validation: we now hold the spool lock. A generation
         // movement while we waited means the rows are the reopened owner's —
         // delete nothing and report failure so no ledger prune follows.
@@ -315,7 +320,7 @@ export function hydratePendingMessages(sessionId) {
       // is an id to actually suppress.
       const inDelivery = _inDeliveryPendingIds.get(sessionId) || null;
       const acked = _ackedPendingIds.get(sessionId) || null;
-      await updateSpool((raw) => {
+      await updateSpool(sessionId, (raw) => {
         const next = normalizePendingStore(raw);
         const q = Array.isArray(next.sessions[sessionId]) ? next.sessions[sessionId] : [];
         const rows = partitionHydratableSpoolRows(q, { deliveredLedger, inDelivery, acked });
@@ -406,7 +411,7 @@ function clearPersistedPendingMessages(sessionId) {
   const operation = preceding
     .catch(() => {})
     .then(() =>
-      updateSpool((raw) => {
+      updateSpool(sessionId, (raw) => {
         if (pendingLifecycleEpochMoved(sessionId, epochToken)) return undefined;
         const next = normalizePendingStore(raw);
         if (!Object.hasOwn(next.sessions, sessionId)) return undefined;
@@ -660,15 +665,18 @@ export function drainPendingMessages(sessionId) {
 export function _getPendingMessagesForSession(sessionId) {
   if (!isValidPendingSessionId(sessionId)) return [];
   const queued = [...(_sessionPendingMessages.get(sessionId) || []), ...(_pendingPersistBuffers.get(sessionId) || [])];
-  let raw;
-  try {
-    raw = readFileSync(pendingMessagesPath(), 'utf8');
-  } catch (err) {
-    if (err?.code === 'ENOENT') return queued;
-    throw err;
+  // The not-yet-migrated global spool can still hold this session's rows.
+  for (const path of [pendingMessagesPath(sessionId), legacyPendingMessagesPath()]) {
+    let raw;
+    try {
+      raw = readFileSync(path, 'utf8');
+    } catch (err) {
+      if (err?.code === 'ENOENT') continue;
+      throw err;
+    }
+    const persisted = normalizePendingStore(JSON.parse(raw)).sessions[sessionId];
+    if (Array.isArray(persisted)) queued.push(...persisted);
   }
-  const persisted = normalizePendingStore(JSON.parse(raw)).sessions[sessionId];
-  if (Array.isArray(persisted)) queued.push(...persisted);
   return queued;
 }
 

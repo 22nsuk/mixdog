@@ -44,5 +44,4 @@ test('line delta tokens preserve punctuation and normalize only signed counts', 
   assert.deepEqual(splitLineDeltaTokens('[+ 2 Lines] (-3 lines)'), expected);
   assert.deepEqual(splitLineDeltaTokens('report-3.md +2 bytes'), [{ text: 'report-3.md +2 bytes' }]);
   assert.deepEqual(splitLineDeltaTokens(null), []);
-  assert.deepEqual(splitLineDeltaTokens('[+ 2 Lines] (-3 lines)'), expected);
 });

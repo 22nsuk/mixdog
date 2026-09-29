@@ -8,8 +8,7 @@
  *
  * Wire-format note: every field name here (`model`, `ttl`, `systemInstruction`,
  * `tools`, `toolConfig`, `contents`) is the v1beta cachedContents contract, and
- * every trace `kind` is a consumed log key — they are moved verbatim, never
- * renamed. The HTTP call itself stays on the provider, which owns `_fetch`,
+ * every trace `kind` is a consumed log key — never rename them. The HTTP call itself stays on the provider, which owns `_fetch`,
  * the API key and the retry budget.
  */
 import { appendAgentTrace } from '../agent-trace.mjs';

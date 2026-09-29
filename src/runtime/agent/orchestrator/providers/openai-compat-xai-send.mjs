@@ -24,6 +24,29 @@ import { applyCompatToolChoice, compatStreamRetryReporter } from './compat-reque
 import { envFlag as _envFlag } from '../../../shared/env.mjs';
 import { resolveResponsesTransportPolicy, RESPONSES_TRANSPORT_CAPABILITIES } from './openai-transport-policy.mjs';
 
+// Tool list, parallel tool calls, tool choice and reasoning effort shared by
+// the HTTP/SSE and WebSocket Responses bodies.
+function applyXaiResponsesToolsAndEffort(params, { provider, tools, opts, useModel }) {
+  const nativeTools = nativeResponsesTools(opts);
+  if (tools?.length || nativeTools.length) {
+    params.tools = [...nativeTools, ...toResponsesTools(tools || [], { provider: 'xai' })];
+  }
+  // Explicit parallel tool calls, matching the OpenAI Responses
+  // reference shape. Probe-verified accepted by api.x.ai (HTTP 200,
+  // 2026-08-16); absent, the service default decides per turn.
+  if (params.tools?.length) params.parallel_tool_calls = true;
+  applyCompatToolChoice(params, opts);
+  const reasoningEffort = normalizeXaiReasoningEffort(
+    opts.xaiReasoningEffort ??
+      opts.effort ??
+      provider.config?.reasoningEffort ??
+      process.env.MIXDOG_XAI_REASONING_EFFORT
+  );
+  if (reasoningEffort && xaiModelSupportsReasoningEffort(useModel)) {
+    params.reasoning = { effort: reasoningEffort };
+  }
+}
+
 export async function sendXaiResponses(provider, messages, useModel, tools, opts) {
   const signal = opts.signal || null;
   if (signal?.aborted) {
@@ -52,30 +75,13 @@ export async function sendXaiResponses(provider, messages, useModel, tools, opts
   // service's automatic prefix caching.
   if (cacheRouting.key) params.prompt_cache_key = cacheRouting.key;
   if (previousResponseId) params.previous_response_id = previousResponseId;
-  const nativeTools = nativeResponsesTools(opts);
-  if (tools?.length || nativeTools.length) {
-    params.tools = [...nativeTools, ...toResponsesTools(tools || [], { provider: 'xai' })];
-  }
-  // Explicit parallel tool calls, matching the OpenAI Responses
-  // reference shape. Probe-verified accepted by api.x.ai (HTTP 200,
-  // 2026-08-16); absent, the service default decides per turn.
-  if (params.tools?.length) params.parallel_tool_calls = true;
-  applyCompatToolChoice(params, opts);
+  applyXaiResponsesToolsAndEffort(params, { provider, tools, opts, useModel });
   // SSE transport: report 'requesting' until the stream opens, then
   // per-chunk onStreamDelta feeds the agent stall watchdog.
   try {
     opts.onStageChange?.('requesting');
   } catch {
     /* heartbeat best-effort */
-  }
-  const reasoningEffort = normalizeXaiReasoningEffort(
-    opts.xaiReasoningEffort ??
-      opts.effort ??
-      provider.config?.reasoningEffort ??
-      process.env.MIXDOG_XAI_REASONING_EFFORT
-  );
-  if (reasoningEffort && xaiModelSupportsReasoningEffort(useModel)) {
-    params.reasoning = { effort: reasoningEffort };
   }
   params.stream = true;
   const cacheLane = XAI_CACHE_LANE_META;
@@ -172,22 +178,7 @@ export async function sendXaiResponsesWebSocket(provider, messages, useModel, to
   // xAI rejects instructions together with previous_response_id; the
   // first response already anchors instructions for the continuation.
   else if (instructions) params.instructions = instructions;
-  const nativeTools = nativeResponsesTools(opts);
-  if (tools?.length || nativeTools.length) {
-    params.tools = [...nativeTools, ...toResponsesTools(tools || [], { provider: 'xai' })];
-  }
-  // Same explicit parallel-tool-calls contract as the HTTP/SSE path.
-  if (params.tools?.length) params.parallel_tool_calls = true;
-  applyCompatToolChoice(params, opts);
-  const reasoningEffort = normalizeXaiReasoningEffort(
-    opts.xaiReasoningEffort ??
-      opts.effort ??
-      provider.config?.reasoningEffort ??
-      process.env.MIXDOG_XAI_REASONING_EFFORT
-  );
-  if (reasoningEffort && xaiModelSupportsReasoningEffort(useModel)) {
-    params.reasoning = { effort: reasoningEffort };
-  }
+  applyXaiResponsesToolsAndEffort(params, { provider, tools, opts, useModel });
   const warmupBody = useXaiResponsesWebSocketWarmup(opts, provider.config, { previousResponseId })
     ? { ...params, generate: false, input: [] }
     : null;

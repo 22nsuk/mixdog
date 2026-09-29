@@ -5,8 +5,8 @@ import { UsageLedger, makeUsageRecord } from './usage-ledger.mjs';
 import { repairUsageLedger, usageLedgerIntegrity } from './usage-ledger-repair.mjs';
 import { accountProviderSend } from './usage-accounting.mjs';
 import { importTraceRow } from './usage-ledger-import.mjs';
-import { usageStatsSnapshot } from '../../../standalone/usage-stats-model.mjs';
-import { resolveUsageStatsPeriod } from '../../../standalone/usage-stats-period.mjs';
+import { usageStatsSnapshot } from '../../../session-runtime/services/usage-stats-model.mjs';
+import { resolveUsageStatsPeriod } from '../../../session-runtime/services/usage-stats-period.mjs';
 
 test('selected identity survives concurrent nested transport traces and does not leak', async (t) => {
   const rows = [];

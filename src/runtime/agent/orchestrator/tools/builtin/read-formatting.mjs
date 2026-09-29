@@ -18,7 +18,7 @@ const READ_MAX_RENDERED_LINE_CHARS = 2_000;
 // (runtime/shared/read-row-numbers.mjs).
 export const LINE_NO_SEP = READ_LINE_NO_SEP;
 
-export function buildSmartReadTruncationMarker(totalLines, fileBytes, _filePath = '') {
+export function buildSmartReadTruncationMarker(totalLines, fileBytes) {
   const kb = Math.max(1, Math.round((Number(fileBytes) || 0) / 1024));
   return `... [TRUNCATED - ${totalLines} lines / ${kb} KB; read located windows with {file_path, offset, limit}] ...`;
 }
@@ -39,7 +39,7 @@ function rangeFromRenderedReadRows(rows, fallbackStartLine = 1) {
   };
 }
 
-export function smartReadTruncate(renderedWithLineNos, totalLines, fileBytes, filePath = '') {
+export function smartReadTruncate(renderedWithLineNos, totalLines, fileBytes) {
   const overByBytes = fileBytes > SMART_READ_MAX_BYTES;
   const overByLines = totalLines > SMART_READ_MAX_LINES;
   if (!overByBytes && !overByLines) {
@@ -56,7 +56,7 @@ export function smartReadTruncate(renderedWithLineNos, totalLines, fileBytes, fi
   const tailRows = rows.slice(tailStart);
   const head = headRows.join('\n');
   const tail = tailRows.join('\n');
-  const marker = buildSmartReadTruncationMarker(totalLines, fileBytes, filePath);
+  const marker = buildSmartReadTruncationMarker(totalLines, fileBytes);
   return {
     text: `${head}\n${marker}\n${tail}`,
     truncated: true,

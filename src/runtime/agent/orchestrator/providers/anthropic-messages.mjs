@@ -10,24 +10,7 @@ import {
   toAnthropicMessages,
 } from './lib/anthropic-request-utils.mjs';
 import { _capabilitySupported, _defaultContextForModel, _prettyName, modelTier } from './anthropic-model-resolve.mjs';
-
-// System blocks carry their own cache tier; anything else is the default tier.
-const SYSTEM_CACHE_TIERS = new Set(['tier3', 'env']);
-const systemCacheTier = (cacheTier) => (SYSTEM_CACHE_TIERS.has(cacheTier) ? cacheTier : 'system');
-
-/** Non-empty system messages as `{ text, tier }` block items; a non-array yields none. */
-export function systemBlockItems(systemMsgs) {
-  const items = [];
-  for (const m of Array.isArray(systemMsgs) ? systemMsgs : []) {
-    const text = typeof m?.content === 'string' ? m.content.trim() : '';
-    if (text) items.push({ text, tier: systemCacheTier(m?.cacheTier) });
-  }
-  return items;
-}
-/** cacheTier:'env' (volatile session/project environment) is never marked —
- *  it rides the messages-tail breakpoint; a null TTL leaves the block uncached. */
-export const systemBlockTtl = (tier, { tier3Ttl, systemTtl }) =>
-  ({ tier3: tier3Ttl, env: null, system: systemTtl })[tier];
+import { systemBlockItems, systemBlockTtl } from './lib/anthropic-system-blocks.mjs';
 
 // Message lowering lives in the shared request-utils lib (one implementation
 // for both Anthropic providers); re-exported here for existing importers.
@@ -82,15 +65,6 @@ export function buildSystemBlocks(systemMsgs, systemTtl, tier3Ttl) {
   });
 }
 
-// Offline fallback for both Anthropic routes when /v1/models is unavailable:
-// the current generation only, one id per family.
-export const MODELS = [
-  { id: 'claude-opus-5-5', name: 'Claude Opus 5.5', provider: 'anthropic', family: 'opus', contextWindow: 1000000 },
-  { id: 'claude-fable-5-1', name: 'Claude Fable 5.1', provider: 'anthropic', family: 'fable', contextWindow: 1000000 },
-  { id: 'claude-sonnet-5', name: 'Claude Sonnet 5', provider: 'anthropic', family: 'sonnet', contextWindow: 1000000 },
-];
-export const ANTHROPIC_VERSION = '2023-06-01';
-
 export function _normalizeAnthropicModel(raw, provider = 'anthropic') {
   const id = raw?.id || raw?.name || raw?.model;
   if (!id) return null;
@@ -110,7 +84,7 @@ export function _normalizeAnthropicModel(raw, provider = 'anthropic') {
       raw?.max_input_tokens ||
       raw?.input_token_limit ||
       raw?.inputTokenLimit ||
-      _defaultContextForModel(id, family),
+      _defaultContextForModel(id),
     outputTokens: raw?.max_tokens || raw?.max_output_tokens || raw?.output_token_limit || raw?.outputTokenLimit || null,
     tier: modelTier(dated, versioned),
     latest: false,
@@ -118,8 +92,6 @@ export function _normalizeAnthropicModel(raw, provider = 'anthropic') {
     reasoningOptions: effortValues.length ? [{ type: 'effort', values: effortValues }] : [],
   };
 }
-// Family-based heuristic so new model ids (including custom user-configured
-// ones) resolve a sensible max_tokens without requiring a code change.
 // The API-key provider has no catalog cache of its own — it reads the same
 // anthropic-oauth-models.json disk cache (read-only) that the OAuth provider
 // maintains. Both providers hit the same Anthropic /v1/models catalog, so a
@@ -170,21 +142,6 @@ export const _test = {
   sanitizeInputSchema: (schema, toolName) => sanitizeAnthropicInputSchema(schema, toolName, 'anthropic'),
 };
 
-// Anthropic forbids oneOf / allOf / anyOf at the TOP level of input_schema.
-// Mirror the same sanitizer as anthropic-oauth.mjs so both providers are safe.
-// Map the orchestrator-level opts.toolChoice into Anthropic's tool_choice.
-// Only 'none' is activated: it lets the hard-cap final turn keep the tool
-// DEFINITIONS in-request (so the tools->system->messages prefix — and its
-// prompt-cache prefix — stay byte-identical to prior turns) while forbidding
-// tool USE, so the model can only emit text. Forced values
-// ('required'->{type:'any'}, {name}->{type:'tool'}) are deliberately NOT
-// mapped: Anthropic returns a 400 for any forced tool_choice while
-// extended/adaptive thinking is enabled, and the only caller that sets
-// opts.toolChoice='required' (the forced-first-tool turn) runs with
-// effort/thinking active on reasoning models — activating it would convert a
-// previously-harmless no-op into a hard 400 on exactly that turn. Attached
-// only when the request actually carries tools (see _doSend). Mirrors
-// anthropic-oauth.mjs.
 function deferredAnthropicTools(activeTools, messages, opts) {
   return sharedDeferredAnthropicTools(activeTools, messages, opts, 'anthropic');
 }
@@ -197,17 +154,3 @@ export function requestAnthropicTools(tools, messages, opts) {
 export function _toAnthropicMessagesForTest(messages, availableTools) {
   return toAnthropicMessages(messages, availableTools);
 }
-
-// Applies cache_control markers to the FINAL, already-sanitized Anthropic
-// message array — by INVARIANT, never by pre-sanitize index. Because
-// sanitizeAnthropicContentPairs has already run (and must NOT run again
-// after this), the blocks we mark here are exactly the blocks the provider
-// sees, so the cache breakpoint is stable across turns.
-//   message-anchor: prefer a safe tool_result tail, then a previous real user
-//                   text turn if another slot remains. Synthetic
-//                   synthetic reminder messages and current pure-text prompts
-//                   are excluded so per-call prompt content never becomes a
-//                   1h prefix key.
-// messageTtl === null disables the tail. BP3 (tier3) now rides a system block,
-// so it is no longer marked here.
-// ANTHROPIC_MSG_SLOTS=0 is honoured upstream by passing messageTtl = null.

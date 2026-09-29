@@ -51,3 +51,31 @@ test('read-only commands and cd leave nothing mutated', async (t) => {
   const effects = await analyzeShellCommandEffects('cat a.txt', dir);
   assert.deepEqual(effects, { mutationMode: 'none', paths: [], finalCwd: dir });
 });
+
+test('find with -delete/-exec*/-ok*/-fprint* and mutating awk programs are not read-only', async (t) => {
+  const dir = workDir(t);
+  for (const command of [
+    'find . -name "*.tmp" -delete',
+    'find . -name x -exec rm {} \\;',
+    'find . -name x -execdir rm {} +',
+    'find . -name x -ok rm {} \\;',
+    'find . -fprint out.txt',
+    'awk \'BEGIN { system("rm a.txt") }\' a.txt',
+    'awk \'{ print > "out.txt" }\' a.txt',
+    'awk \'{ print | "sh" }\' a.txt',
+    'gawk \'{ print >> "out.txt" }\' a.txt',
+    'powershell -Command "find . -delete"',
+    'bash -c "awk \'{ print > \\"o\\" }\' a.txt"',
+  ]) {
+    const effects = await analyzeShellCommandEffects(command, dir);
+    assert.notEqual(effects.mutationMode, 'none', command);
+  }
+});
+
+test('plain find and awk stay read-only', async (t) => {
+  const dir = workDir(t);
+  for (const command of ['find . -name "*.js"', "awk '{ print $1 }' a.txt", "awk -F, '{ print $2 }' a.txt"]) {
+    const effects = await analyzeShellCommandEffects(command, dir);
+    assert.equal(effects.mutationMode, 'none', command);
+  }
+});

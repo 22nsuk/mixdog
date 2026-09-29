@@ -18,6 +18,9 @@ export function destroyQuietly(socket) {
 
 export function attachLineReader(socket, onFrame, onOverflow) {
   let buffer = '';
+  // Decode as a stream: a multibyte character split across chunks must not
+  // turn into U+FFFD when the raw Buffers are concatenated as strings.
+  socket.setEncoding?.('utf8');
   socket.on('data', (chunk) => {
     buffer += chunk;
     if (buffer.length > MAX_BUFFER_BYTES) {

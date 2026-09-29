@@ -14,7 +14,7 @@ import {
   _repeatFailureSig,
   _stripMcpPrefix,
 } from '../loop/tool-classify.mjs';
-import { getToolKind, isSingleCallPerTurnTool, isToolCallDedupEligible } from '../loop/tool-helpers.mjs';
+import { isSingleCallPerTurnTool, isToolCallDedupEligible } from '../loop/tool-helpers.mjs';
 import { tryReadCached, tryScopedToolCached } from '../read-dedup.mjs';
 
 export function createEagerAdmission({
@@ -98,8 +98,7 @@ export function createEagerAdmission({
     // body handles it via the invalid-args feedback path.
     if (isInvalidToolArgsMarker(call.arguments)) return null;
     // Authorization precedes cache lookup and dedup, not just IO.
-    const toolKind = getToolKind(call.name, sessionRef?.mcpScopeId);
-    if (preDispatchDenyForSession(sessionRef, call, toolKind) !== null) return null;
+    if (preDispatchDenyForSession(sessionRef, call) !== null) return null;
     const sig = _intraTurnSig(call.name, call.arguments);
     const dedupEligible = isToolCallDedupEligible(call.name, tools);
     if (dedupEligible && _eagerInFlightSigs.has(sig)) return null;

@@ -1,11 +1,13 @@
 import { finished } from 'node:stream/promises';
 
+const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
+
 // Read bounded JSON while accounting for an optional process-wide byte budget.
 // The caller chooses whether a rejected body is drained or its socket closed.
 export function readJsonRequestBody(
   req,
   {
-    maxBytes,
+    maxBytes = DEFAULT_MAX_BODY_BYTES,
     reserve,
     release,
     tooLargeMessage = `request body exceeds the ${maxBytes} byte limit`,

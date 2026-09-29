@@ -7,8 +7,8 @@
 //
 //   config-lifecycle/config-writers.mjs     — debounced disk channels + flush barriers
 //   config-lifecycle/output-style-cache.mjs — short-TTL output-style status cache
-import { withGrandfatheredBuiltins } from './builtin-features.mjs';
-import { webSearchRouteOrDefault } from './workflow.mjs';
+import { withGrandfatheredBuiltins } from '../runtime/agent/orchestrator/runtime-core/builtin-features.mjs';
+import { webSearchRouteOrDefault } from '../runtime/agent/orchestrator/runtime-core/workflow.mjs';
 import { applyConfigPatch } from '../runtime/shared/config-patch.mjs';
 import { createConfigWriters } from './config-lifecycle/config-writers.mjs';
 import { createOutputStyleStatusCache } from './config-lifecycle/output-style-cache.mjs';

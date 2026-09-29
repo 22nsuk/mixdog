@@ -20,8 +20,6 @@ import {
   resolveTimeoutMs,
 } from '../stall-policy.mjs';
 
-// Human-readable transport label for handshake/acquire error messages. Shared
-// with openai-oauth-ws.mjs (stream-side errors use the same labels).
 import {
   _envOn,
   _codexBetaFeatures,
@@ -30,6 +28,9 @@ import {
   _cfCookieHeader,
 } from './openai-ws-headers.mjs';
 import { clearAllCodexTurnStates, clearCodexTurnStateScope, retireCodexTurnStateOwner } from './openai-turn-state.mjs';
+
+// Human-readable transport label for handshake/acquire error messages. Shared
+// with openai-oauth-ws.mjs (stream-side errors use the same labels).
 export function _wsErrLabel(p) {
   if (p === 'xai') return 'xAI WS';
   if (p === 'openai-direct' || p === 'openai') return 'OpenAI WS';

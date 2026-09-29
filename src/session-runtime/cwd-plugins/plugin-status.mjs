@@ -1,7 +1,7 @@
 // cwd-plugins/plugin-status.mjs — the registered-plugin status list with its
 // per-root caches (manifest keyed on mtime, MCP discovery and skill-file count
 // on a short TTL).
-import { discoverPluginMcp } from '../plugin-mcp.mjs';
+import { discoverPluginMcp } from '../../runtime/agent/orchestrator/runtime-core/plugin-mcp.mjs';
 import { pluginMetadata } from '../../runtime/shared/plugin-metadata.mjs';
 
 export function createPluginStatus({

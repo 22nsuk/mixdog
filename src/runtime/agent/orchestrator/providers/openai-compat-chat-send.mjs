@@ -1,7 +1,7 @@
 import { canFallbackNonStreaming, markProviderRecoveryExhausted, withRetry } from './retry-classifier.mjs';
 import { consumeCompatChatCompletionStream } from './openai-compat-stream.mjs';
 import { getModelMetadataSync } from './model-catalog.mjs';
-import { appendAgentTrace } from '../agent-trace.mjs';
+import { traceNonStreamingFallback } from './lib/transport-fallback-trace.mjs';
 import {
   PROVIDER_FIRST_BYTE_TIMEOUT_MS,
   PROVIDER_GENERATE_TOTAL_TIMEOUT_MS,
@@ -186,26 +186,7 @@ export async function recoverCompatNonStreaming(provider, { streamErr, params, o
   } catch {
     /* best-effort */
   }
-  try {
-    appendAgentTrace({
-      sessionId: opts?.sessionId || opts?.session?.id || null,
-      iteration: Number.isFinite(Number(opts?.iteration)) ? Number(opts.iteration) : null,
-      kind: 'transport_fallback',
-      provider: provider.name,
-      model: useModel,
-      transport: 'non-streaming',
-      payload: {
-        from: 'stream',
-        to: 'non-streaming',
-        reason: streamErr?.retryClassifier || streamErr?.code || streamErr?.message || 'stream_failed',
-        error_code: streamErr?.code || null,
-        error_http_status: Number(streamErr?.httpStatus || streamErr?.status || 0) || null,
-        error_classifier: streamErr?.retryClassifier || streamErr?.midstreamClassifier || null,
-      },
-    });
-  } catch {
-    /* best-effort */
-  }
+  traceNonStreamingFallback({ provider: provider.name, model: useModel, opts, streamErr });
   return {
     response,
     model: response.model || useModel,

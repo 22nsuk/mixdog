@@ -1,7 +1,7 @@
 // MCP connection orchestration: the serialized full connect/reset, the
 // non-superseding single-server toggle, and the turn gate on the initial
 // connect. All mutable progress lives on the caller-owned `state`.
-import { clean } from '../session-text.mjs';
+import { clean } from '../../runtime/agent/orchestrator/runtime-core/session-text.mjs';
 import { envFlag } from '../../runtime/shared/env.mjs';
 
 export function createMcpConnect({ mcpClient, getMcpScopeId, state, resolveEffectiveMcpServers, mcpStatus }) {

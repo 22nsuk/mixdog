@@ -18,9 +18,9 @@ import { join, resolve } from 'node:path';
 import { getPluginData } from '../config.mjs';
 import { writeJsonAtomicSync } from '../../../shared/atomic-file.mjs';
 import { boundProviderAuthPath } from '../../../shared/provider-auth-binding.mjs';
-import { scrubOAuthSecrets } from './lib/oauth-token-utils.mjs';
-import { ANTIGRAVITY_MODELS } from './provider-model-identities.mjs';
-export { ANTIGRAVITY_MODELS } from './provider-model-identities.mjs';
+import { normalizeExpiresAtMs as _normalizeExpiresAt, scrubOAuthSecrets } from './lib/oauth-token-utils.mjs';
+import { ANTIGRAVITY_MODELS } from '../../../shared/llm/provider-model-identities.mjs';
+export { ANTIGRAVITY_MODELS } from '../../../shared/llm/provider-model-identities.mjs';
 
 // The Antigravity IDE's installed-app OAuth client, which every copy of that
 // IDE ships (a native-app client is not a confidential credential). It is
@@ -140,6 +140,12 @@ export function antigravityHeaders() {
   };
 }
 
+/** Request signal bounded by `timeoutMs`, and by the caller's `signal` when given. */
+export function withTimeoutSignal(signal, timeoutMs) {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
 /** `loadCodeAssist` / `onboardUser` metadata block. */
 export function codeAssistMetadata() {
   return { ideType: 'ANTIGRAVITY' };
@@ -164,15 +170,7 @@ function mtimeMs(path) {
   }
 }
 
-export function _normalizeExpiresAt(value) {
-  if (typeof value === 'string') {
-    const ms = Date.parse(value);
-    return Number.isFinite(ms) ? ms : 0;
-  }
-  const n = Number(value || 0);
-  if (!Number.isFinite(n) || n <= 0) return 0;
-  return n < 1e12 ? n * 1000 : n;
-}
+export { _normalizeExpiresAt };
 
 export function loadTokens() {
   const path = getOwnTokenPath();
@@ -221,19 +219,19 @@ export function hasAntigravityOAuthCredentials() {
   }
 }
 
+const credentialsNotSet = () => ({
+  authenticated: false,
+  usable: false,
+  refreshable: false,
+  reauthRequired: false,
+  status: 'Not Set',
+  detail: 'Mixdog token store',
+});
+
 export function describeAntigravityOAuthCredentials() {
   try {
     const tokens = loadTokens();
-    if (!tokens?.access_token) {
-      return {
-        authenticated: false,
-        usable: false,
-        refreshable: false,
-        reauthRequired: false,
-        status: 'Not Set',
-        detail: 'Mixdog token store',
-      };
-    }
+    if (!tokens?.access_token) return credentialsNotSet();
     const hasRefresh = Boolean(tokens.refresh_token);
     const expiresAt = Number(tokens.expires_at || 0);
     const expired = expiresAt > 0 && expiresAt <= Date.now();
@@ -254,14 +252,7 @@ export function describeAntigravityOAuthCredentials() {
       projectId: tokens.project_id || '',
     };
   } catch {
-    return {
-      authenticated: false,
-      usable: false,
-      refreshable: false,
-      reauthRequired: false,
-      status: 'Not Set',
-      detail: 'Mixdog token store',
-    };
+    return credentialsNotSet();
   }
 }
 

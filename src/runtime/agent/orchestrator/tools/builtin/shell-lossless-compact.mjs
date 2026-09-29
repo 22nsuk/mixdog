@@ -1,4 +1,5 @@
 import { persistToolResultArtifactSync } from '../../session/tool-result-offload.mjs';
+import { envFlag } from '../../../../shared/env.mjs';
 import { normalizeOutputPath } from './path-utils.mjs';
 
 const MIN_RAW_BYTES = 512;
@@ -6,7 +7,7 @@ const MIN_SAVED_BYTES = 384;
 const MIN_SAVED_RATIO = 0.2;
 
 function enabled() {
-  return !/^(?:0|false|no|off)$/i.test(String(process.env.MIXDOG_SHELL_LOSSLESS_COMPACT ?? '1').trim());
+  return envFlag('MIXDOG_SHELL_LOSSLESS_COMPACT', true);
 }
 
 function byteLength(value) {

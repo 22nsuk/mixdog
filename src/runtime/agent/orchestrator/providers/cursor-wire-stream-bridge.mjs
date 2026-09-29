@@ -118,10 +118,9 @@ export function createBridgeController(ctx) {
     else sink.finish();
   };
 
-  const attach = (nextBridge, nextHeartbeat) => {
-    live.bridge = nextBridge;
+  const attach = (ownedBridge, nextHeartbeat) => {
+    live.bridge = ownedBridge;
     live.heartbeat = nextHeartbeat;
-    const ownedBridge = nextBridge;
     const messageCtx = {
       state,
       filter,

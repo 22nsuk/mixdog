@@ -11,12 +11,9 @@
  * call will pick up the cache.
  */
 
-import {
-  getModelMetadataSync,
-  resolveModelPricingIdentity,
-} from '../../agent/orchestrator/providers/model-catalog.mjs';
-import { PRICING_RATE_KEYS, ratesForPrompt } from '../../agent/orchestrator/providers/model-pricing-rates.mjs';
-import { supportsAnthropicFastMode } from '../../agent/orchestrator/providers/anthropic-betas.mjs';
+import { getModelMetadataSync, resolveModelPricingIdentity } from './model-catalog.mjs';
+import { PRICING_RATE_KEYS, ratesForPrompt } from './model-pricing-rates.mjs';
+import { supportsAnthropicFastMode } from './anthropic-betas.mjs';
 
 // OpenAI OAuth / OpenAI API / Gemini report `input_tokens` as the total prompt token
 // count *including* the cached portion (inclusive). Anthropic reports the

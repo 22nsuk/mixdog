@@ -1,5 +1,5 @@
 import { mkdir, open, readFile, readdir, stat, unlink } from 'node:fs/promises';
-import { createHash } from 'node:crypto';
+import { hashText as sha256Hex } from './hash-utils.mjs';
 import { join, normalize, resolve } from 'node:path';
 import { getPluginData } from '../../config.mjs';
 import { writeJsonAtomicAsync, writeJsonAtomicSync } from '../../../../shared/atomic-file.mjs';
@@ -16,10 +16,7 @@ const READ_RANGE_INDEX_PERSIST_PENDING = new Map();
 let readRangeIndexDiskSwept = false;
 
 let traceReadRangeIndex = () => {};
-let hashTextForTrace = (value) =>
-  createHash('sha256')
-    .update(String(value ?? ''))
-    .digest('hex');
+let hashTextForTrace = sha256Hex;
 
 export function configureReadRangeIndexTelemetry({ trace, hashText } = {}) {
   if (typeof trace === 'function') traceReadRangeIndex = trace;
@@ -41,7 +38,7 @@ const READ_RANGE_INDEX_DISK_DIR = (() => {
 
 function readRangeIndexFilePath(fullPath) {
   if (!READ_RANGE_INDEX_DISK_DIR || !fullPath) return null;
-  const key = createHash('sha256').update(canonicalCachePath(fullPath)).digest('hex');
+  const key = sha256Hex(canonicalCachePath(fullPath));
   return join(READ_RANGE_INDEX_DISK_DIR, `${key}.json`);
 }
 
@@ -87,14 +84,14 @@ async function computePrefixHashForIndex(fullPath, st, handle = null, prefixBuff
     const cap = Math.min(Number(st?.size) || 0, 65536);
     if (cap <= 0) return '';
     if (Buffer.isBuffer(prefixBuffer) && prefixBuffer.length === cap) {
-      return createHash('sha256').update(prefixBuffer).digest('hex');
+      return sha256Hex(prefixBuffer);
     }
     const fh = handle || (await open(fullPath, 'r'));
     try {
       const buf = Buffer.allocUnsafe(cap);
       const { bytesRead } = await fh.read(buf, 0, cap, 0);
       if (bytesRead <= 0) return '';
-      return createHash('sha256').update(buf.subarray(0, bytesRead)).digest('hex');
+      return sha256Hex(buf.subarray(0, bytesRead));
     } finally {
       if (!handle) {
         try {

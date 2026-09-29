@@ -3,7 +3,7 @@
  * chat-completions stream: the no-event / no-finish_reason rejections, the
  * reconstructed response, tool-call parsing and dispatch, and the result.
  */
-import { dedupeToolCallList } from '../anthropic-leaked-toolcall.mjs';
+import { dedupeToolCallList } from '../lib/leaked-toolcall.mjs';
 import { truncatedCompatStreamError } from '../lib/openai-tool-args.mjs';
 import {
   emitCompatToolCallOnce,

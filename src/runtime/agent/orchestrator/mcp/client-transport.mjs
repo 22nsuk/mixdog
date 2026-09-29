@@ -3,11 +3,7 @@
  * for: autoDetect (port discovered from a live service), streamable HTTP, SSE,
  * WebSocket, or a stdio child.
  */
-import { readFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
 import { readServicePort } from '../../../shared/service-discovery.mjs';
-import { resolveRuntimeRoot } from '../../../shared/runtime-root.mjs';
 import {
   AUTO_DETECT_PORTS,
   expandEnvVars,
@@ -19,46 +15,21 @@ import {
   scrubMcpConnectionMessage,
 } from './client-config.mjs';
 
-function readPortFile(name, spec) {
-  const portFile = spec.dir === 'mixdog' ? join(resolveRuntimeRoot(), spec.file) : join(tmpdir(), spec.dir, spec.file);
-  if (!existsSync(portFile)) {
-    throw new Error(`autoDetect server "${name}": port file missing (${portFile})`);
-  }
-  const raw = readFileSync(portFile, 'utf-8').trim();
-  if (!spec.portField) return { port: parseInt(raw, 10), portFile };
-  try {
-    const json = JSON.parse(raw);
-    const v = json[spec.portField];
-    const port = typeof v === 'number' && Number.isFinite(v) ? v : Number(v);
-    if (!Number.isFinite(port)) {
-      throw new Error(`autoDetect server "${name}": portField "${spec.portField}" is not numeric in ${portFile}`);
-    }
-    return { port, portFile };
-  } catch (jsonErr) {
-    if (jsonErr instanceof Error && jsonErr.message.startsWith('autoDetect server')) throw jsonErr;
-    throw new Error(`autoDetect server "${name}": invalid JSON in port file ${portFile}`);
-  }
-}
-
 /**
- * Auto-detect: the port of a running service, from its pid-validated
- * discovery advert first, else the legacy port file. When the port came from
- * an advert, `advert` names it so a connect failure can distrust it — a
- * pid-live advert can point at a recycled-pid corpse port, and this transport
- * has no other health probe of its own.
+ * Auto-detect: the port of a running service from its pid-validated discovery
+ * advert. `advert` names it so a connect failure can distrust it — a pid-live
+ * advert can point at a recycled-pid corpse port, and this transport has no
+ * other health probe of its own.
  */
 function resolveAutoDetectUrl(name, cfg) {
   const spec = AUTO_DETECT_PORTS[cfg.autoDetect];
   if (!spec) throw new Error(`Unknown autoDetect target: "${cfg.autoDetect}"`);
-  let port = spec.discovery ? readServicePort(spec.discovery, { requirePid: false }) : null;
-  const advert = port && spec.discovery ? { service: spec.discovery, port } : null;
-  let portFile = null;
-  if (!port && spec.file) ({ port, portFile } = readPortFile(name, spec));
+  const port = readServicePort(spec.discovery, { requirePid: false });
   if (!port) throw new Error(`autoDetect server "${name}": live service advert missing`);
   if (!Number.isFinite(port) || port < 1 || port > 65535) {
-    throw new Error(`autoDetect server "${name}": invalid port value${portFile ? ` in ${portFile}` : ''}`);
+    throw new Error(`autoDetect server "${name}": invalid port value`);
   }
-  return { url: `http://127.0.0.1:${port}${spec.endpoint}`, advert };
+  return { url: `http://127.0.0.1:${port}${spec.endpoint}`, advert: { service: spec.discovery, port } };
 }
 
 function requestInitFor(cfg) {

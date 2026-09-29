@@ -9,13 +9,19 @@ import { nativeSpawnSupportsStdinPipe, setNativeSpawnRequestIdle, tryNativeSpawn
 import { SHELL_OUTPUT_DISK_CAP } from '../shell-exec-output.mjs';
 
 // Bootstrap: pre-warm scriptblock compilation while parked, re-decode stdin
-// as UTF-8 (console input encoding would mangle non-ASCII), then dot-source
-// the fed script. Dot-sourcing itself can reset $? after a failed external
+// as UTF-8 (console input encoding would mangle non-ASCII), set UTF-8 output
+// before the fed script compiles (a parse error is reported before the
+// script's own encoding prefix runs, and would otherwise surface in the OEM
+// code page), then dot-source the fed script. A parse failure surfaces as
+// Create()'s MethodInvocation wrapper; report the underlying parse error
+// instead, with -Command's exit 1. Dot-sourcing itself can reset $? after a failed external
 // script (including npm.ps1), so preserve the final status inside the block.
 // Explicit exit codes still exit immediately; ordinary failure maps to 1,
 // matching -Command rather than leaking an earlier $LASTEXITCODE.
+// Fresh (non-standby) pwsh spawns use the same bootstrap with the script fed
+// through stdin, so both paths share one delivery and one set of semantics.
 const STANDBY_BOOTSTRAP =
-  '$null = . ([scriptblock]::Create(\'$null\')); [Console]::InputEncoding=[System.Text.UTF8Encoding]::new($false); . ([scriptblock]::Create([Console]::In.ReadToEnd() + "`nif (-not `$?) { exit 1 }"))';
+  "$null = . ([scriptblock]::Create('$null')); [Console]::InputEncoding=[System.Text.UTF8Encoding]::new($false); [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); try { $__mixdogScript = [scriptblock]::Create([Console]::In.ReadToEnd() + \"`nif (-not `$?) { exit 1 }\") } catch { [Console]::Error.WriteLine('ParserError: ' + $_.Exception.GetBaseException().Message); exit 1 }; . $__mixdogScript";
 export const STANDBY_ARGS = ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', STANDBY_BOOTSTRAP];
 const _configuredIdleMs = Number(process.env.MIXDOG_SHELL_WARM_STANDBY_IDLE_MS);
 const STANDBY_TTL_MS =
@@ -113,7 +119,7 @@ function ensureWarmShellStandby({ shell, env }) {
 
 /** Take the parked standby for immediate use, or null on any mismatch.
  *  Always refills so the NEXT call finds a warm one. */
-export function takeWarmShellStandby({ shell, env, cwd: _cwd }) {
+export function takeWarmShellStandby({ shell, env }) {
   if (_disabled() || !shell) return null;
   const slot = _slot;
   const refill = () => {

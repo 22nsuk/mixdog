@@ -126,12 +126,22 @@ export const GREP_AUTO_CONTEXT_BEFORE = 8;
 export const GREP_AUTO_CONTEXT_AFTER = 12;
 export const GREP_AUTO_CONTEXT_LINES = GREP_AUTO_CONTEXT_AFTER;
 
-export function normalizeGrepArgs(args) {
-  if (!args || typeof args !== 'object') return args;
+// The aliases grep and glob share: `limit` → `head_limit`, and the root/dir
+// spellings of `path`.
+function promoteSharedSearchAliases(args) {
   if ((args.head_limit === undefined || args.head_limit === null) && args.limit !== undefined) {
     args.head_limit = args.limit;
     delete args.limit;
   }
+  if (args.path === undefined || args.path === null || args.path === '') {
+    const alias = firstPresentArg(args, ['root', 'directory', 'dir']);
+    if (alias !== undefined) args.path = alias;
+  }
+}
+
+export function normalizeGrepArgs(args) {
+  if (!args || typeof args !== 'object') return args;
+  promoteSharedSearchAliases(args);
   if (args.pattern === undefined || args.pattern === null || args.pattern === '') {
     const alias = firstPresentArg(args, ['query', 'regex', 'regexp', 'needle', 'search', 'literal']);
     if (alias !== undefined) args.pattern = alias;
@@ -139,10 +149,6 @@ export function normalizeGrepArgs(args) {
   if (args.glob === undefined || args.glob === null || args.glob === '') {
     const alias = firstPresentArg(args, ['file_pattern', 'filePattern', 'include', 'includes', 'files']);
     if (alias !== undefined) args.glob = alias;
-  }
-  if (args.path === undefined || args.path === null || args.path === '') {
-    const alias = firstPresentArg(args, ['root', 'directory', 'dir']);
-    if (alias !== undefined) args.path = alias;
   }
   if (
     (args.output_mode === undefined || args.output_mode === null || args.output_mode === '') &&
@@ -163,10 +169,7 @@ export function normalizeGrepArgs(args) {
 
 export function normalizeGlobArgs(args) {
   if (!args || typeof args !== 'object') return args;
-  if ((args.head_limit === undefined || args.head_limit === null) && args.limit !== undefined) {
-    args.head_limit = args.limit;
-    delete args.limit;
-  }
+  promoteSharedSearchAliases(args);
   if (args.pattern === undefined || args.pattern === null || args.pattern === '') {
     const alias = firstPresentArg(args, [
       'glob',
@@ -178,10 +181,6 @@ export function normalizeGlobArgs(args) {
       'files',
     ]);
     if (alias !== undefined) args.pattern = alias;
-  }
-  if (args.path === undefined || args.path === null || args.path === '') {
-    const alias = firstPresentArg(args, ['root', 'directory', 'dir']);
-    if (alias !== undefined) args.path = alias;
   }
   // Internal-only passthrough: `_extraIgnoreDirs` is an array of basenames
   // appended as `!**/<name>/**` ignore globs by executeGlobTool for the
@@ -308,9 +307,8 @@ export function coerceShapeFlex(value) {
   return value;
 }
 
-// JSON-stringified path arrays (path:"[]") and empty arrays mean "search cwd".
-// Bracket-shaped strings that exist on disk (e.g. a literal `[x]` directory) are
-// left untouched — JSON reinterpretation only runs after a stat miss.
+// A compact `[path, offset, limit?]` range tuple as a region object, or null
+// when the value is not one.
 function compactReadRangeTuple(value) {
   if (!Array.isArray(value) || value.length < 2 || value.length > 3 || typeof value[0] !== 'string') return null;
   const numeric = value

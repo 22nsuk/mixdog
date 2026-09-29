@@ -26,7 +26,7 @@ test('OpenAI OAuth catalog Fast capability survives caching and agrees with requ
     import('../runtime/agent/orchestrator/providers/openai-oauth.mjs'),
     import('./provider-models.mjs'),
     import('./model-recency.mjs'),
-    import('./model-capabilities.mjs'),
+    import('../runtime/agent/orchestrator/runtime-core/model-capabilities.mjs'),
   ]);
   const advertised = {
     service_tiers: [{ id: 'priority', name: 'Fast', description: 'Increased usage' }],

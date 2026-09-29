@@ -10,12 +10,12 @@ import { resolveCursorOAuthAccessToken } from './runtime/agent/orchestrator/prov
 import { createPristineExecutionBoundary } from './runtime/shared/pristine-execution.mjs';
 import { boundProviderAuthPath } from './runtime/shared/provider-auth-binding.mjs';
 import { newProviderAccountId } from './runtime/shared/provider-accounts.mjs';
-import { withGrandfatheredBuiltins, featureDisallowedToolsFor } from './session-runtime/builtin-features.mjs';
+import { withGrandfatheredBuiltins, featureDisallowedToolsFor } from './runtime/agent/orchestrator/runtime-core/builtin-features.mjs';
 import {
   applyDeferredToolSurface,
   deferredCatalogUnion,
   selectDeferredTools,
-} from './session-runtime/tool-catalog.mjs';
+} from './runtime/agent/orchestrator/runtime-core/tool-catalog.mjs';
 
 test('headless search prewarm starts only the canonical native server', async () => {
   const calls = [];

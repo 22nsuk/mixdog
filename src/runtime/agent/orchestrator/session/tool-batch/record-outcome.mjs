@@ -19,6 +19,7 @@ import {
   _isShellTool,
   _isToolArgShapeFailure,
 } from '../loop/tool-classify.mjs';
+import { recordMutation } from '../eager-dispatch/mutation-paths.mjs';
 import { restoreToolCallBodyForId } from '../loop/stored-tool-args.mjs';
 
 export async function recordCallOutcome(batch, call, exec, sigs, ctSig) {
@@ -53,7 +54,7 @@ export async function recordCallOutcome(batch, call, exec, sigs, ctSig) {
     // failure as an Error: result string rather than throwing.
     if (failed) invalidateAfterFailedPatch(sessionId, call, cwd);
   }
-  if (_isMutationTool(call.name, call.arguments)) epoch.mutation += 1;
+  if (_isMutationTool(call.name, call.arguments)) recordMutation(epoch, call, cwd);
   // Shell clears the scoped cache UNCONDITIONALLY — a mutating bash that
   // throws or fails partway can still leave stale find_symbol/grep entries.
   if (sessionId && executed && _isShellTool(call.name)) clearScopedToolsForSession(sessionId);

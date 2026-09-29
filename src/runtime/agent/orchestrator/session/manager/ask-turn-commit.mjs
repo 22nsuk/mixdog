@@ -3,7 +3,7 @@
 // its empty-final forensic record), the usage/cost ledger row, and the
 // opaque provider continuation state.
 import { cloneProviderReplay } from '../../providers/lib/provider-replay.mjs';
-import { logLlmCall } from '../../../../shared/llm/usage-log.mjs';
+import { logLlmCall } from '../../usage-log.mjs';
 import { runAbortable } from '../../../../shared/abort-race.mjs';
 import { getAgentRuntimeSync } from './agent-runtime-singleton.mjs';
 import { recordStandaloneStatusTelemetry } from './status-telemetry.mjs';

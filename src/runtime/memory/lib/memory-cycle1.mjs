@@ -86,7 +86,28 @@ export function packCycle1Windows(
   return windows;
 }
 
-function mergeCycle1Results(a, b) {
+function sumNumericFields(a, b) {
+  const out = {};
+  for (const key of new Set([...Object.keys(a || {}), ...Object.keys(b || {})])) {
+    out[key] = Number(a?.[key] || 0) + Number(b?.[key] || 0);
+  }
+  return out;
+}
+
+function mergeEmbeddingDirty(a, b) {
+  if (!a) return b;
+  if (!b) return a;
+  return {
+    ...b,
+    deferred: Boolean(a.deferred && b.deferred),
+    attempted: Number(a.attempted || 0) + Number(b.attempted || 0),
+    succeeded: Number(a.succeeded || 0) + Number(b.succeeded || 0),
+    failed: Number(a.failed || 0) + Number(b.failed || 0),
+    failed_ids: [...(a.failed_ids || []), ...(b.failed_ids || [])],
+  };
+}
+
+export function mergeCycle1Results(a, b) {
   if (!a) return b;
   if (!b) return a;
   const sum = (key) => Number(a?.[key] || 0) + Number(b?.[key] || 0);
@@ -102,6 +123,8 @@ function mergeCycle1Results(a, b) {
     skipped: sum('skipped'),
     sessions: sum('sessions'),
     skippedInFlight: false,
+    embedding_dirty: mergeEmbeddingDirty(a.embedding_dirty, b.embedding_dirty),
+    timing: sumNumericFields(a.timing, b.timing),
     pendingRows: b.pendingRows ?? a.pendingRows,
     failed_row_ids: uniqueNumbers([...(a.failed_row_ids || []), ...(b.failed_row_ids || [])]),
     omitted_row_ids: uniqueNumbers([...(a.omitted_row_ids || []), ...(b.omitted_row_ids || [])]),

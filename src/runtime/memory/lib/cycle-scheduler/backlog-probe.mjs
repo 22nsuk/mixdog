@@ -1,4 +1,5 @@
-const CYCLE1_OMITTED_COOLDOWN_MS = 60 * 60 * 1000;
+import { CYCLE1_OMITTED_COOLDOWN_MS } from '../cycle1/cycle1-plan.mjs';
+
 const BACKLOG_WARN_PENDING = 500;
 
 async function countRows(db, sql, params) {

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { EventEmitter } from 'node:events';
-import { SKILL_TOOL, TOOL_SEARCH_TOOL } from '../../../../session-runtime/tool-defs.mjs';
+import { SKILL_TOOL, TOOL_SEARCH_TOOL } from '../runtime-core/tool-defs.mjs';
 import { buildRequestBody } from './openai-responses-payload.mjs';
 import { toResponsesTools, parseResponsesToolCalls, responseOutputText } from './openai-compat-wire.mjs';
 import { nativeToolSearchCallFromArguments } from './custom-tool-wire.mjs';
@@ -149,7 +149,10 @@ test('a Skill result from another native family keeps the load hint without a pa
     input.some((item) => item.type === 'tool_search_call' || item.type === 'tool_search_output'),
     false
   );
-  assert.match(input.find((item) => item.type === 'function_call_output').output, /tool_search with names:\["office"\]/);
+  assert.match(
+    input.find((item) => item.type === 'function_call_output').output,
+    /tool_search with names:\["office"\]/
+  );
 });
 
 test('a Skill load pair keeps the next request a delta continuation', () => {

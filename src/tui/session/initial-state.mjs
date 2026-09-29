@@ -3,7 +3,7 @@
  */
 import { buildMergedPromptHistory, loadPromptHistory } from '../prompt-history-store.mjs';
 import { createSessionStats } from './session-stats.mjs';
-import { goalStateSnapshot } from '../../session-runtime/goal-state.mjs';
+import { goalStateSnapshot } from '../../runtime/agent/orchestrator/runtime-core/goal-state.mjs';
 
 export function createInitialSessionState({ runtime, runtimeCwd, baseRouteState }) {
   return {

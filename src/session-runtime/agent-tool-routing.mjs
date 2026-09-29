@@ -1,27 +1,21 @@
 /**
  * src/session-runtime/agent-tool-routing.mjs - routes the lead's agent tool
- * through an injected or remote agent-control executor and reads worker/job
+ * through an injected agent-control executor and reads worker/job
  * status for the facade.
  */
-import {
-  executeRemoteAgentControl,
-  remoteAgentControlEnabled,
-} from '../standalone/session-runtime-agent-control-client.mjs';
 
 export function createRoutedAgentTool({ rt, agentTool, executeAgentControl = null }) {
   const routedAgentTool = {
     ...agentTool,
     execute(args, context = {}) {
       if (typeof executeAgentControl === 'function') return executeAgentControl(args, context);
-      if (remoteAgentControlEnabled()) return executeRemoteAgentControl(args, context);
       return agentTool.execute(args, context);
     },
     closeAll(reason, scope = {}) {
-      if (typeof executeAgentControl !== 'function' && !remoteAgentControlEnabled()) {
+      if (typeof executeAgentControl !== 'function') {
         return agentTool.closeAll(reason, scope);
       }
-      const execute = typeof executeAgentControl === 'function' ? executeAgentControl : executeRemoteAgentControl;
-      void execute(
+      void executeAgentControl(
         {
           type: '__close_all',
           reason: String(reason || 'agent owner closed'),

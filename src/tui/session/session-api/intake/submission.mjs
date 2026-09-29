@@ -61,9 +61,14 @@ export function createSubmissionIntake(bag) {
     // If autoClearBeforeSubmit rejects (e.g. compaction timeout throws), the
     // prompt must still be queued — swallow the rejection so enqueue always
     // runs and the submit is never silently lost.
-    void autoClearBeforeSubmit()
-      .catch(() => {})
-      .then(() => enqueueSubmission(intake));
+    // A synchronous throw is the same failure as a rejection.
+    let autoClear;
+    try {
+      autoClear = Promise.resolve(autoClearBeforeSubmit());
+    } catch {
+      autoClear = Promise.resolve();
+    }
+    void autoClear.catch(() => {}).then(() => enqueueSubmission(intake));
     return true;
   };
 

@@ -1,5 +1,7 @@
 import { buildNotFoundHint, finalizeReadFamilyEnoentTail } from '../search-path-diagnostics.mjs';
+import { open } from 'node:fs/promises';
 import { normalizeErrorMessage } from '../path-diagnostics.mjs';
+import { isBinaryBuffer } from '../binary-file.mjs';
 import { isUncPath, isWindowsDevicePath, hasUnsafeWin32Component } from '../device-paths.mjs';
 import { normalizeOutputPath, resolveAgainstCwd } from '../path-utils.mjs';
 
@@ -29,7 +31,7 @@ export function normalizeListHeadLimit(raw, defaultCap) {
 // remote host (NTLM hash leak); a raw-device / reserved-name path can
 // hang or grant raw access. Mirrors the read path's string-based checks.
 // Returns an Error string when the path is blocked, else null.
-export function listGuardPath(p) {
+function listGuardPath(p) {
   if (isUncPath(p))
     return `Error: cannot walk UNC / SMB path (network credential leak risk): ${normalizeOutputPath(p)}`;
   if (isWindowsDevicePath(p))
@@ -52,4 +54,28 @@ export function guardedWalkRoot(inputPath, workDir) {
 
 export function pageContinuationLine(offset, shown, total) {
   return `... [entries ${offset + 1}-${offset + shown} of ${total}; pass offset:${offset + shown} to continue]`;
+}
+
+const LINE_COUNT_MAX_BYTES = 2 * 1024 * 1024;
+
+/** Line count of a text file for list meta rows; null for binaries, files over
+ *  the size cap, and anything unreadable. */
+export async function countTextFileLines(fullPath, size) {
+  if (!(size <= LINE_COUNT_MAX_BYTES)) return null;
+  let handle;
+  try {
+    handle = await open(fullPath, 'r');
+    const buf = Buffer.alloc(size);
+    const { bytesRead } = await handle.read(buf, 0, size, 0);
+    const data = buf.subarray(0, bytesRead);
+    if (bytesRead === 0) return 0;
+    if (isBinaryBuffer(data, bytesRead)) return null;
+    let lines = 0;
+    for (let i = data.indexOf(10); i !== -1; i = data.indexOf(10, i + 1)) lines += 1;
+    return data[bytesRead - 1] === 10 ? lines : lines + 1;
+  } catch {
+    return null;
+  } finally {
+    await handle?.close().catch(() => {});
+  }
 }

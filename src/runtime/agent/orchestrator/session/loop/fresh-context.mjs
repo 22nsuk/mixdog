@@ -5,7 +5,7 @@ import { getProvider, initProviders } from '../../providers/registry.mjs';
 import { resolveMaintenanceRoute } from '../../agent-runtime/maintenance-route.mjs';
 import { resolveSessionContextMeta } from '../manager/context-meta.mjs';
 import { isAccountQuotaError } from '../../providers/account-pool.mjs';
-import { builtinFeatureActive } from '../../../../../session-runtime/builtin-features.mjs';
+import { builtinFeatureActive } from '../../runtime-core/builtin-features.mjs';
 import { positiveInt } from '../../../../shared/numbers.mjs';
 import { estimateMessagesTokens, providerTokenCalibration } from '../context-utils.mjs';
 import {

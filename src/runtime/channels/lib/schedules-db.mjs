@@ -1,0 +1,265 @@
+/**
+ * PG-backed schedules store — the single source of truth for registered
+ * schedules (schema `scheduler`, table `scheduler.schedules`).
+ *
+ * All schedule readers/writers (scheduler.mjs, config.mjs, channel-admin.mjs)
+ * go through this module. It is the sole store for schedules; the old
+ * file-based schedules-store.mjs has been retired.
+ *
+ * DDL is idempotent and runs once on the first call per process. All queries
+ * fully-qualify `scheduler.schedules` so they are correct regardless of the
+ * connection search_path.
+ */
+
+import { ensurePgInstance, withSchemaBootstrapLock } from '../../memory/lib/pg/adapter.mjs';
+import { createPgSchemaDb } from '../../shared/pg-schema-db.mjs';
+import { resolvePluginData } from '../../shared/plugin-paths.mjs';
+
+const SCHEMA = 'scheduler';
+
+const DDL = `
+CREATE TABLE IF NOT EXISTS scheduler.schedules (
+  name           text PRIMARY KEY,
+  description    text NOT NULL DEFAULT '',
+  when_at        timestamptz,
+  when_cron      text,
+  timezone       text,
+  target         text NOT NULL CHECK (target IN ('channel','session')),
+  channel_id     text,
+  model          text,
+  cwd            text,
+  workflow       text,
+  attachments    jsonb,
+  delivery       text,
+  prompt         text NOT NULL,
+  enabled        boolean NOT NULL DEFAULT true,
+  status         text NOT NULL DEFAULT 'active' CHECK (status IN ('active','done')),
+  last_fired_at  timestamptz,
+  last_scheduled_at timestamptz,
+  last_started_at   timestamptz,
+  last_success_at   timestamptz,
+  last_failed_at    timestamptz,
+  next_fire_at   timestamptz,
+  deferred_until timestamptz,
+  skipped_until  timestamptz,
+  created_at     timestamptz NOT NULL DEFAULT now(),
+  updated_at     timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT schedules_when_xor CHECK ((when_at IS NOT NULL) <> (when_cron IS NOT NULL))
+);
+ALTER TABLE scheduler.schedules ADD COLUMN IF NOT EXISTS cwd text;
+ALTER TABLE scheduler.schedules ADD COLUMN IF NOT EXISTS workflow text;
+ALTER TABLE scheduler.schedules ADD COLUMN IF NOT EXISTS attachments jsonb;
+ALTER TABLE scheduler.schedules ADD COLUMN IF NOT EXISTS delivery text;
+ALTER TABLE scheduler.schedules ADD COLUMN IF NOT EXISTS last_scheduled_at timestamptz;
+ALTER TABLE scheduler.schedules ADD COLUMN IF NOT EXISTS last_started_at timestamptz;
+ALTER TABLE scheduler.schedules ADD COLUMN IF NOT EXISTS last_success_at timestamptz;
+ALTER TABLE scheduler.schedules ADD COLUMN IF NOT EXISTS last_failed_at timestamptz;
+`;
+
+const getDb = createPgSchemaDb({
+  schema: SCHEMA,
+  ddl: DDL,
+  defaultDataDir: resolvePluginData,
+  ensurePg: ensurePgInstance,
+  withLock: withSchemaBootstrapLock,
+});
+
+// ---------------------------------------------------------------------------
+// Row <-> def mapping
+// ---------------------------------------------------------------------------
+
+function rowToDef(row) {
+  if (!row) return null;
+  return {
+    name: row.name,
+    description: row.description,
+    whenAt: row.when_at,
+    whenCron: row.when_cron,
+    timezone: row.timezone,
+    target: row.target,
+    channelId: row.channel_id,
+    model: row.model,
+    cwd: row.cwd,
+    workflow: row.workflow,
+    attachments: row.attachments || null,
+    delivery: row.delivery || null,
+    prompt: row.prompt,
+    enabled: row.enabled,
+    status: row.status,
+    lastFiredAt: row.last_fired_at,
+    lastScheduledAt: row.last_scheduled_at,
+    lastStartedAt: row.last_started_at,
+    lastSuccessAt: row.last_success_at,
+    lastFailedAt: row.last_failed_at,
+    nextFireAt: row.next_fire_at,
+    deferredUntil: row.deferred_until,
+    skippedUntil: row.skipped_until,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+const COLS =
+  'name, description, when_at, when_cron, timezone, target, channel_id, model, cwd, workflow, attachments, delivery, prompt, enabled, status, last_fired_at, last_scheduled_at, last_started_at, last_success_at, last_failed_at, next_fire_at, deferred_until, skipped_until, created_at, updated_at';
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+export async function listSchedules({ dataDir } = {}) {
+  const db = await getDb(dataDir);
+  const { rows } = await db.query(`SELECT ${COLS} FROM scheduler.schedules ORDER BY name`);
+  return rows.map(rowToDef);
+}
+
+export async function getSchedule(name, { dataDir } = {}) {
+  const db = await getDb(dataDir);
+  const { rows } = await db.query(`SELECT ${COLS} FROM scheduler.schedules WHERE name = $1`, [name]);
+  return rowToDef(rows[0]);
+}
+
+/**
+ * Insert-or-replace a schedule by name. Exactly one of `whenAt`/`whenCron`
+ * must be provided (enforced by the table's XOR CHECK constraint).
+ */
+export async function upsertSchedule(def, { dataDir } = {}) {
+  if (!def?.name) throw new Error('upsertSchedule: def.name is required');
+  if (!def.prompt) throw new Error('upsertSchedule: def.prompt is required');
+  const db = await getDb(dataDir);
+  const params = [
+    def.name,
+    def.description ?? '',
+    def.whenAt ?? null,
+    def.whenCron ?? null,
+    def.timezone ?? null,
+    def.target,
+    def.channelId ?? null,
+    def.model ?? null,
+    def.cwd ?? null,
+    def.workflow ?? null,
+    def.attachments ? JSON.stringify(def.attachments) : null,
+    def.delivery ?? null,
+    def.prompt,
+    def.enabled ?? true,
+    def.status ?? 'active',
+    def.nextFireAt ?? null,
+  ];
+  const { rows } = await db.query(
+    `INSERT INTO scheduler.schedules
+       (name, description, when_at, when_cron, timezone, target, channel_id, model, cwd, workflow, attachments, delivery, prompt, enabled, status, next_fire_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+     ON CONFLICT (name) DO UPDATE SET
+       description  = EXCLUDED.description,
+       when_at      = EXCLUDED.when_at,
+       when_cron    = EXCLUDED.when_cron,
+       timezone     = EXCLUDED.timezone,
+       target       = EXCLUDED.target,
+       channel_id   = EXCLUDED.channel_id,
+       model        = EXCLUDED.model,
+       cwd          = EXCLUDED.cwd,
+       workflow     = EXCLUDED.workflow,
+       attachments  = EXCLUDED.attachments,
+       delivery     = EXCLUDED.delivery,
+       prompt       = EXCLUDED.prompt,
+       enabled      = EXCLUDED.enabled,
+       next_fire_at = EXCLUDED.next_fire_at,
+       -- Redefinition clears stale runtime state and reactivates so the
+       -- re-registered schedule is due again in listDue.
+       status         = 'active',
+       deferred_until = NULL,
+       skipped_until  = NULL,
+       last_fired_at  = NULL,
+       last_scheduled_at = NULL,
+       last_started_at = NULL,
+       last_success_at = NULL,
+       last_failed_at = NULL,
+       updated_at   = now()
+     RETURNING ${COLS}`,
+    params
+  );
+  return rowToDef(rows[0]);
+}
+
+export async function deleteSchedule(name, { dataDir } = {}) {
+  const db = await getDb(dataDir);
+  const { rowCount } = await db.query(`DELETE FROM scheduler.schedules WHERE name = $1`, [name]);
+  return rowCount > 0;
+}
+
+// Set one column by schedule name. `column` is always a literal from this
+// module — never caller input — so interpolating it carries no external value
+// into the statement; the name and the value stay bound parameters.
+async function updateScheduleColumn(name, column, value, dataDir) {
+  const db = await getDb(dataDir);
+  const { rows } = await db.query(
+    `UPDATE scheduler.schedules SET ${column} = $2, updated_at = now() WHERE name = $1 RETURNING ${COLS}`,
+    [name, value]
+  );
+  return rowToDef(rows[0]);
+}
+
+export async function setEnabled(name, enabled, { dataDir } = {}) {
+  return updateScheduleColumn(name, 'enabled', !!enabled, dataDir);
+}
+
+export async function markFired(name, ts = new Date(), { dataDir } = {}) {
+  return updateScheduleColumn(name, 'last_fired_at', ts, dataDir);
+}
+
+export async function setNextFire(name, ts, { dataDir } = {}) {
+  return updateScheduleColumn(name, 'next_fire_at', ts ?? null, dataDir);
+}
+
+export async function advanceScheduleCursor(name, scheduledAt, nextFireAt, { dataDir } = {}) {
+  const db = await getDb(dataDir);
+  const { rows } = await db.query(
+    `UPDATE scheduler.schedules
+       SET last_scheduled_at = $2, next_fire_at = $3, updated_at = now()
+     WHERE name = $1
+       AND status = 'active' AND enabled = true
+       AND (last_scheduled_at IS NULL OR last_scheduled_at < $2)
+     RETURNING ${COLS}`,
+    [name, scheduledAt, nextFireAt ?? null]
+  );
+  return rowToDef(rows[0]);
+}
+
+export async function claimScheduleRun(name, scheduledAt, startedAt, nextFireAt, { dataDir } = {}) {
+  const db = await getDb(dataDir);
+  const { rows } = await db.query(
+    `UPDATE scheduler.schedules
+       SET last_scheduled_at = $2, last_started_at = $3, last_fired_at = $3,
+           next_fire_at = $4, updated_at = now()
+     WHERE name = $1
+       AND status = 'active' AND enabled = true
+       AND (last_scheduled_at IS NULL OR last_scheduled_at < $2)
+     RETURNING ${COLS}`,
+    [name, scheduledAt, startedAt, nextFireAt ?? null]
+  );
+  return rowToDef(rows[0]);
+}
+
+export async function markScheduleSuccess(name, ts = new Date(), { dataDir } = {}) {
+  return updateScheduleColumn(name, 'last_success_at', ts, dataDir);
+}
+
+export async function markScheduleFailure(name, ts = new Date(), { dataDir } = {}) {
+  return updateScheduleColumn(name, 'last_failed_at', ts, dataDir);
+}
+
+export async function markDone(name, { dataDir } = {}) {
+  const db = await getDb(dataDir);
+  const { rows } = await db.query(
+    `UPDATE scheduler.schedules SET status = 'done', next_fire_at = NULL, updated_at = now() WHERE name = $1 RETURNING ${COLS}`,
+    [name]
+  );
+  return rowToDef(rows[0]);
+}
+
+export async function setDeferred(name, untilTs, { dataDir } = {}) {
+  return updateScheduleColumn(name, 'deferred_until', untilTs ?? null, dataDir);
+}
+
+export async function setSkippedUntil(name, ts, { dataDir } = {}) {
+  return updateScheduleColumn(name, 'skipped_until', ts ?? null, dataDir);
+}

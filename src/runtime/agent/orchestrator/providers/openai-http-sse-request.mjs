@@ -109,6 +109,8 @@ async function postWithRetries({
       bodyForSend = { bytes: rawBytes, encoding: null };
       await response.arrayBuffer().catch(() => {});
       response = undefined;
+      // The uncompressed replay is not a retry: it must not consume an attempt.
+      attempt--;
       continue;
     }
     const retryableStatus = response && response.status >= 500 && response.status <= 599;
@@ -122,7 +124,7 @@ async function postWithRetries({
       !externalSignal?.aborted &&
       !totalTimeout.signal?.aborted;
     if (attempt < CODEX_REQUEST_MAX_RETRIES && (retryableStatus || retryableTransport)) {
-      if (retryableTransport && requestError) {
+      if (retryableTransport) {
         const code = String(requestError.code || requestError.cause?.code || '');
         if (code === 'ECONNRESET' || code === 'EPIPE' || code === 'UND_ERR_SOCKET') {
           try {

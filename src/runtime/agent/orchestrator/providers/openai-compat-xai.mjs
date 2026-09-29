@@ -343,6 +343,18 @@ function compatCacheTraceEnabled(provider) {
   );
 }
 
+function traceSessionMeta(opts) {
+  return {
+    owner: opts?.session?.owner || null,
+    role: opts?.session?.role || opts?.role || null,
+    permission: opts?.session?.permission || null,
+    toolPermission: opts?.session?.toolPermission || null,
+    profileId: opts?.session?.profileId || null,
+    sourceType: opts?.session?.sourceType || null,
+    sourceName: opts?.session?.sourceName || null,
+  };
+}
+
 export function writeCompatCacheTrace({
   provider,
   model,
@@ -365,13 +377,7 @@ export function writeCompatCacheTrace({
       provider,
       model,
       responseModel: response?.model || null,
-      owner: opts?.session?.owner || null,
-      role: opts?.session?.role || opts?.role || null,
-      permission: opts?.session?.permission || null,
-      toolPermission: opts?.session?.toolPermission || null,
-      profileId: opts?.session?.profileId || null,
-      sourceType: opts?.session?.sourceType || null,
-      sourceName: opts?.session?.sourceName || null,
+      ...traceSessionMeta(opts),
       sessionIdHash: opts?.sessionId ? traceHash(opts.sessionId) : null,
       providerCacheKeyHash: opts?.providerCacheKey ? traceHash(opts.providerCacheKey) : null,
       promptCacheKeyHash: opts?.promptCacheKey ? traceHash(opts.promptCacheKey) : null,
@@ -606,13 +612,7 @@ export function writeXaiResponsesCacheTrace({
       responseModel: response?.model || null,
       responseIdHash: response?.id ? traceHash(response.id) : null,
       previousResponseIdHash: previousResponseId ? traceHash(previousResponseId) : null,
-      owner: opts?.session?.owner || null,
-      role: opts?.session?.role || opts?.role || null,
-      permission: opts?.session?.permission || null,
-      toolPermission: opts?.session?.toolPermission || null,
-      profileId: opts?.session?.profileId || null,
-      sourceType: opts?.session?.sourceType || null,
-      sourceName: opts?.session?.sourceName || null,
+      ...traceSessionMeta(opts),
       sessionIdHash: opts?.sessionId ? traceHash(opts.sessionId) : null,
       promptCacheKeyHash: params?.prompt_cache_key ? traceHash(params.prompt_cache_key) : null,
       xGrokPromptPrefixHash: cacheRouting?.prefixHash || null,

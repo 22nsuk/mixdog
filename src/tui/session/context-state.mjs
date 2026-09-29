@@ -5,8 +5,8 @@
  * snapshot. The two sync helpers stage immutable draft patches through
  * updateState; callers still follow with set(...) to schedule publication.
  */
-import { contextMeasurementStats } from '../../ui/context-measurement.mjs';
-import { goalStateSnapshot } from '../../session-runtime/goal-state.mjs';
+import { contextMeasurementStats } from '../../runtime/shared/context-measurement.mjs';
+import { goalStateSnapshot } from '../../runtime/agent/orchestrator/runtime-core/goal-state.mjs';
 
 export function createContextState({ runtime, getState, updateState, getPendingSessionReset, getVisibleGoal }) {
   const autoClearState = () =>

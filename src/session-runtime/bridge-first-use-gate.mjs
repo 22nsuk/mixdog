@@ -6,7 +6,7 @@
 // an approval UI (headless runs, agent-owned sessions) nobody can answer, so
 // the gate stands aside and the workflow's own policies govern.
 import { approvalGranted, approvalReason } from '../runtime/agent/orchestrator/session/loop/tool-helpers.mjs';
-import { builtinFirstUseApproval } from './builtin-features.mjs';
+import { builtinFirstUseApproval } from '../runtime/agent/orchestrator/runtime-core/builtin-features.mjs';
 
 const FAMILY_BY_TOOL = Object.freeze({
   browser: 'browser',

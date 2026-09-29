@@ -9,7 +9,7 @@ import {
   setMemoryToolsEnabledInConfig,
   setModuleEnabledInConfig,
   setRecapEnabledInConfig,
-} from './config-helpers.mjs';
+} from '../runtime/agent/orchestrator/runtime-core/config-helpers.mjs';
 import { createSettingsApi } from './settings-api.mjs';
 import {
   TIDY_CORE_ENGINE_IDS,

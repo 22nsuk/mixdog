@@ -9,6 +9,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { resolvePluginData } from '../../shared/plugin-paths.mjs';
 import { compressEmbeddingModelCache } from './embedding-model-cache-compression.mjs';
+import { createIdleLease } from './embedding-idle-lease.mjs';
 import {
   getConfiguredEmbeddingModelId,
   getDefaultEmbeddingDevice,
@@ -108,6 +109,7 @@ let extractorPromise = null;
 let configuredDtype = normalizeEmbeddingDtype(MODEL_ID, workerData?.dtype ?? DEFAULT_DTYPE);
 let _device = 'cpu';
 let _idleTimer = null;
+const _idleLease = createIdleLease();
 let _embedInFlight = false;
 let _reclaiming = false;
 const _msgQueue = [];
@@ -234,8 +236,13 @@ function resetIdleTimer() {
   if (_idleTimer) clearTimeout(_idleTimer);
   if (IDLE_TIMEOUT_MS <= 0) return;
   _idleTimer = setTimeout(() => {
-    if (!_embedInFlight) void disposeLoadedExtractor('idle timeout');
     _idleTimer = null;
+    // Backlog is being worked: keep the model resident and look again later.
+    if (_idleLease.active()) {
+      resetIdleTimer();
+      return;
+    }
+    if (!_embedInFlight) void disposeLoadedExtractor('idle timeout');
   }, IDLE_TIMEOUT_MS);
   _idleTimer.unref?.();
 }
@@ -568,6 +575,10 @@ async function drainQueue() {
 }
 
 parentPort.on('message', async (msg) => {
+  if (msg?.type === 'keep-warm') {
+    _idleLease.hold(msg.ms);
+    return;
+  }
   // All guarded actions (embed/embed-batch/warmup/configure/dispose) wait
   // behind any in-flight guarded action. Without queueing configure/dispose
   // here, a new embed arriving mid-dispose would bypass the queue and race

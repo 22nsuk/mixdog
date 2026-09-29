@@ -1,4 +1,4 @@
-import { renderProviderStatus } from '../standalone/provider-admin.mjs';
+import { renderProviderStatus } from './services/provider-admin.mjs';
 import { createAuthRefresh } from './provider-auth/refresh.mjs';
 import { createAccountApi } from './provider-auth/accounts.mjs';
 import { createSetupApi } from './provider-auth/setup.mjs';

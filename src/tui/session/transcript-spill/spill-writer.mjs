@@ -12,7 +12,7 @@
 import { randomUUID } from 'node:crypto';
 
 const MAX_ATTEMPTS = 2;
-export const SPILL_WRITER_IDLE_MS = 10_000;
+const SPILL_WRITER_IDLE_MS = 10_000;
 
 const WORKER_SOURCE = `
     const { parentPort } = require('node:worker_threads');

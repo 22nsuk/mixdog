@@ -60,7 +60,7 @@ export async function retrieveEntries(db, filters = {}) {
     }
   }
 
-  // R11 reviewer H2: exclude archived leakage in temporal augment paths.
+  // Exclude archived leakage in temporal augment paths.
   if (Array.isArray(filters.excludeStatuses) && filters.excludeStatuses.length > 0) {
     const exc = filters.excludeStatuses
       .map((s) => String(s).trim().toLowerCase())
@@ -72,7 +72,7 @@ export async function retrieveEntries(db, filters = {}) {
     }
   }
 
-  // R11 reviewer M3: orphan raw chunks (chunk_root IS NULL) for narrow-window
+  // Orphan raw chunks (chunk_root IS NULL) for narrow-window
   // raw merging — prevents classified-member chunks from duplicating their root.
   if (filters.chunkRootNull === true) {
     where.push(`chunk_root IS NULL`);

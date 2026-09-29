@@ -14,7 +14,7 @@ import {
   createWorkflowHelpers,
   createWorkflowRouteHelpers,
   workflowIdFromName,
-} from './workflow.mjs';
+} from '../runtime/agent/orchestrator/runtime-core/workflow.mjs';
 import { readMarkdownDocument, normalizeAgentPermissionOrNone } from '../runtime/shared/markdown-frontmatter.mjs';
 
 const MAIN = { provider: 'openai', model: 'main-model' };

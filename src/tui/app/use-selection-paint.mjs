@@ -45,11 +45,15 @@ export function useSelectionPaint({
     // the maxFps throttle. Read selectedText only after that frame's post-write
     // acknowledgement; a 0ms timer could beat a trailing render and capture the
     // previous rect. The generation guard makes the newest selection win.
-    void yieldToRenderer().then(() => {
-      if (capture !== selectionTextCaptureRef.current) return;
-      const text = store.getRenderSelectionText?.();
-      if (text?.trim()) selectionTextRef.current = text;
-    });
+    void yieldToRenderer()
+      .then(() => {
+        if (capture !== selectionTextCaptureRef.current) return;
+        const text = store.getRenderSelectionText?.();
+        if (text?.trim()) selectionTextRef.current = text;
+      })
+      .catch(() => {
+        /* best-effort capture: Ctrl+C falls back to the render-time text */
+      });
   }, [store]);
 
   // Clip band + theming: use-selection-paint/selection-clip.mjs.

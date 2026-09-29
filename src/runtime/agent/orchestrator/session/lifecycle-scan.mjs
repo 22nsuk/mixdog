@@ -62,7 +62,7 @@
 // Single authoritative rejection marker: ambiguous OR malformed OR
 // wrong-typed. Frozen and deliberately carrying no `id`/`closed`/`generation`
 // so a lenient consumer that forgets the check still reads nothing usable.
-export const LIFECYCLE_SCAN_CONFLICT = Object.freeze({ conflict: 'unreadable' });
+const LIFECYCLE_SCAN_CONFLICT = Object.freeze({ conflict: 'unreadable' });
 
 /** True for the rejection marker (and for anything that isn't a record). */
 export function isLifecycleUnreadable(result) {
@@ -206,19 +206,4 @@ export function readTopLevelLifecycleRecord(raw) {
     record.generation = doc.generation;
   }
   return record;
-}
-
-/**
- * Lifecycle fields only (no parsed document) for callers that consult nothing
- * else. Same two outcomes: the fields present at top level, or
- * LIFECYCLE_SCAN_CONFLICT.
- */
-export function scanTopLevelLifecycle(raw) {
-  const record = readTopLevelLifecycleRecord(raw);
-  if (isLifecycleUnreadable(record)) return LIFECYCLE_SCAN_CONFLICT;
-  const out = {};
-  if (record.id !== undefined) out.id = record.id;
-  if (record.closed !== undefined) out.closed = record.closed;
-  if (record.generation !== undefined) out.generation = record.generation;
-  return out;
 }

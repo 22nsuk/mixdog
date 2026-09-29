@@ -1,9 +1,9 @@
 /**
  * route-tuning.mjs — fast and effort changes on the current main route.
  */
-import { normalizeEffortInput } from '../effort.mjs';
-import { fastCapableFor } from '../model-capabilities.mjs';
-import { workflowPresetId } from '../workflow.mjs';
+import { normalizeEffortInput } from '../../runtime/agent/orchestrator/runtime-core/effort.mjs';
+import { fastCapableFor } from '../../runtime/agent/orchestrator/runtime-core/model-capabilities.mjs';
+import { workflowPresetId } from '../../runtime/agent/orchestrator/runtime-core/workflow.mjs';
 
 export function createRouteTuning(deps, persist) {
   const { getConfig, getRoute, setRouteState, resolveRoute, lookupModelMeta, refreshRouteEffort } = deps;

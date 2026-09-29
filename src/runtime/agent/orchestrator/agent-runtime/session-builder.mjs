@@ -130,9 +130,6 @@ export function prepareAgentSession({
       model: runtimeSpec?.model || preset?.model || null,
       provider: runtimeSpec?.provider || preset?.provider || null,
       parentSessionId: parentSessionId || null,
-      permission: effectivePermission || null,
-      sourceName: sourceName || null,
-      cacheKeyOverride: cacheKeyOverride || null,
     });
   } catch {
     /* telemetry best-effort */

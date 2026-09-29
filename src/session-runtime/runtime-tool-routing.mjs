@@ -1,6 +1,6 @@
 import { shouldPersistModelVisibleToolCompletion } from '../runtime/shared/tool-execution-contract.mjs';
-import { saveModelSettings } from './model-capabilities.mjs';
-import { renderToolSearch } from './tool-catalog.mjs';
+import { saveModelSettings } from '../runtime/agent/orchestrator/runtime-core/model-capabilities.mjs';
+import { renderToolSearch } from '../runtime/agent/orchestrator/runtime-core/tool-catalog.mjs';
 
 export function __renderToolSearchForTest(args = {}, session = {}, mode = 'full', options = {}) {
   return renderToolSearch(args, session, mode, options);

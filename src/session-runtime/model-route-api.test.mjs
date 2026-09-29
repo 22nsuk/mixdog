@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createModelRouteApi } from './model-route-api.mjs';
-import { WEB_SEARCH_DEFAULT_MODEL, WEB_SEARCH_DEFAULT_PROVIDER } from './workflow.mjs';
+import { WEB_SEARCH_DEFAULT_MODEL, WEB_SEARCH_DEFAULT_PROVIDER } from '../runtime/agent/orchestrator/runtime-core/workflow.mjs';
 
 const sourceRoute = { provider: 'openai', model: 'gpt-5.4', effort: 'high', fast: false };
 

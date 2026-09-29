@@ -8,8 +8,10 @@
 import { traceAgentSse, traceAgentUsage } from '../agent-trace.mjs';
 import { boundProviderAuthPath } from '../../../shared/provider-auth-binding.mjs';
 import { resolveAnthropicMaxTokens } from './anthropic-max-tokens.mjs';
-import { MODELS, systemBlockItems, systemBlockTtl } from './anthropic-messages.mjs';
+import { MODELS } from './lib/anthropic-models.mjs';
+import { systemBlockItems, systemBlockTtl } from './lib/anthropic-system-blocks.mjs';
 import { prepareAnthropicImages } from './lib/anthropic-image-input.mjs';
+import { streamCallbacks } from './lib/send-callbacks.mjs';
 import {
   _loadModelCache,
   _setInMemoryCatalog,
@@ -34,7 +36,7 @@ import {
   beginOAuthLogin,
   loginOAuth,
 } from './anthropic-oauth-credentials.mjs';
-import { claudeCliUserAgent, learnRequiredCliVersion } from './anthropic-oauth-client-version.mjs';
+import { claudeCliUserAgent, learnRequiredCliVersion, warmCliVersion } from './anthropic-oauth-client-version.mjs';
 import { createPassthroughSignal } from '../stall-policy.mjs';
 import { AnthropicFallbackTriggeredError } from './retry-classifier.mjs';
 import { ANTHROPIC_MAX_MIDSTREAM_RETRIES, parseSSEStream, _classifyMidstreamError } from './anthropic-sse.mjs';
@@ -58,6 +60,13 @@ import {
   toAnthropicMessages,
   toAnthropicToolChoice,
 } from './lib/anthropic-request-utils.mjs';
+import {
+  EFFORT_CONFIGURATION_BETA,
+  projectEffortConfiguration,
+  lowerAnthropicEffortHistory,
+  markAnthropicEffortBody,
+  usesAnthropicEffortBody,
+} from './effort-configuration.mjs';
 
 // SSE progress emits (per-request "Response …" and "Done:" lines). Off by default.
 const SSE_VERBOSE = process.env.MIXDOG_SSE_VERBOSE === '1';
@@ -75,13 +84,10 @@ const _oauthRefreshes = new Map();
 const CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude.";
 const OAUTH_BETA_HEADERS =
   'oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,extended-cache-ttl-2025-04-11';
-import {
-  EFFORT_CONFIGURATION_BETA,
-  projectEffortConfiguration,
-  lowerAnthropicEffortHistory,
-  markAnthropicEffortBody,
-  usesAnthropicEffortBody,
-} from './effort-configuration.mjs';
+
+function logQuiet(line) {
+  if (!process.env.MIXDOG_QUIET_PROVIDER_LOG) process.stderr.write(`[anthropic-oauth] ${line}\n`);
+}
 
 function requiresSystemPrefix(model) {
   // High-tier Claude OAuth models require the first-party system prefix for
@@ -172,22 +178,6 @@ function resolveMaxTokens(model) {
 
 // --- Message conversion ---
 
-// Anthropic's tool spec forbids oneOf / allOf / anyOf at the TOP level of
-// input_schema (nested usage inside properties is allowed). External MCP
-// servers sometimes emit such schemas.
-// Convert them to a flat object schema so the API never sees a 400.
-// Map the orchestrator-level opts.toolChoice into Anthropic's tool_choice.
-// Only 'none' is activated: it lets the hard-cap final turn keep the tool
-// DEFINITIONS in-request (so the tools->system->messages prefix — and its
-// prompt-cache prefix — stay byte-identical to prior turns) while forbidding
-// tool USE, so the model can only emit text. Forced values
-// ('required'->{type:'any'}, {name}->{type:'tool'}) are deliberately NOT
-// mapped: Anthropic returns a 400 for any forced tool_choice while
-// extended/adaptive thinking is enabled, and the only caller that sets
-// opts.toolChoice='required' (the forced-first-tool turn) runs with
-// effort/thinking active on reasoning models — activating it would convert a
-// previously-harmless no-op into a hard 400 on exactly that turn. Attached
-// only when the request actually carries tools (see buildRequestBody).
 function deferredAnthropicTools(activeTools, messages, opts) {
   return sharedDeferredAnthropicTools(activeTools, messages, opts, 'anthropic-oauth');
 }
@@ -195,19 +185,6 @@ function requestAnthropicTools(tools, messages, opts) {
   return sharedRequestAnthropicTools(tools, messages, opts, 'anthropic-oauth');
 }
 
-// Applies cache_control markers to the FINAL, already-sanitized Anthropic
-// message array — by INVARIANT, never by pre-sanitize index. Because
-// sanitizeAnthropicContentPairs has already run (and must NOT run again
-// after this), the blocks we mark here are exactly the blocks the provider
-// sees, so the cache breakpoint is stable across turns.
-//   message-anchor: prefer a safe tool_result tail, then a previous real user
-//                   text turn if another slot remains. Synthetic
-//                   <system-reminder> messages and current pure-text prompts
-//                   are excluded so first-turn prompts do not create a fresh
-//                   BP4 write on every new session.
-// messageTtl === null disables the tail. BP3 (tier3) now rides a system block,
-// so it is no longer marked here.
-// ANTHROPIC_MSG_SLOTS=0 is honoured upstream by passing messageTtl = null.
 // --- Build request body ---
 
 // BP3 (tier3) is injected by session/manager as its own `system` role block —
@@ -312,6 +289,7 @@ export class AnthropicOAuthProvider {
   }
 
   async ensureAuth({ forceRefresh = false, reason = 'preemptive' } = {}) {
+    await warmCliVersion();
     if (!this.credentials) {
       this.credentials = loadCredentials();
     }
@@ -327,8 +305,7 @@ export class AnthropicOAuthProvider {
       const fresh = loadCredentials();
       if (fresh?.accessToken) {
         this.credentials = fresh;
-        if (!process.env.MIXDOG_QUIET_PROVIDER_LOG)
-          process.stderr.write(`[anthropic-oauth] Credentials reloaded from disk (mtime change)\n`);
+        logQuiet('Credentials reloaded from disk (mtime change)');
       }
     }
 
@@ -358,8 +335,7 @@ export class AnthropicOAuthProvider {
     const validAfter = Date.now() + (force ? 0 : TOKEN_REFRESH_SKEW_MS);
     if (disk?.accessToken && disk.accessToken !== currentToken && (!disk.expiresAt || disk.expiresAt >= validAfter)) {
       this.credentials = disk;
-      if (!process.env.MIXDOG_QUIET_PROVIDER_LOG)
-        process.stderr.write(`[anthropic-oauth] Credentials reloaded from disk\n`);
+      logQuiet('Credentials reloaded from disk');
       return disk;
     }
     if (!this.credentials && disk) this.credentials = disk;
@@ -380,36 +356,29 @@ export class AnthropicOAuthProvider {
         latest.accessToken !== currentToken &&
         (!latest.expiresAt || latest.expiresAt >= latestValidAfter)
       ) {
-        if (!process.env.MIXDOG_QUIET_PROVIDER_LOG)
-          process.stderr.write(`[anthropic-oauth] Credentials reloaded from disk\n`);
+        logQuiet('Credentials reloaded from disk');
         return latest;
       }
 
       if (!latest?.refreshToken) {
         if (!force && latest?.accessToken && (!latest.expiresAt || latest.expiresAt > Date.now())) {
-          if (!process.env.MIXDOG_QUIET_PROVIDER_LOG)
-            process.stderr.write(
-              `[anthropic-oauth] WARNING: token expiring but no refresh token; using current token until expiry\n`
-            );
+          logQuiet('WARNING: token expiring but no refresh token; using current token until expiry');
           return latest;
         }
         throw new Error('Anthropic OAuth refresh token not available. Open /providers in mixdog to sign in again.');
       }
 
       try {
-        if (!process.env.MIXDOG_QUIET_PROVIDER_LOG)
-          process.stderr.write(`[anthropic-oauth] Token ${reason}, refreshing...\n`);
+        logQuiet(`Token ${reason}, refreshing...`);
         const refreshed = await refreshOAuthCredentials(latest);
-        if (!process.env.MIXDOG_QUIET_PROVIDER_LOG)
-          process.stderr.write(
-            `[anthropic-oauth] Token refreshed, expires in ${Math.round(((refreshed.expiresAt || Date.now()) - Date.now()) / 1000)}s\n`
-          );
+        logQuiet(
+          `Token refreshed, expires in ${Math.round(((refreshed.expiresAt || Date.now()) - Date.now()) / 1000)}s`
+        );
         return refreshed;
       } catch (err) {
         if (!force && latest?.accessToken && (!latest.expiresAt || latest.expiresAt > Date.now())) {
           const msg = err instanceof Error ? err.message : String(err);
-          if (!process.env.MIXDOG_QUIET_PROVIDER_LOG)
-            process.stderr.write(`[anthropic-oauth] Refresh failed (${msg}); using still-valid current token\n`);
+          logQuiet(`Refresh failed (${msg}); using still-valid current token`);
           return latest;
         }
         throw err;
@@ -428,6 +397,7 @@ export class AnthropicOAuthProvider {
   }
 
   async send(messages, model, tools, sendOpts) {
+    await warmCliVersion();
     // Re-warm the kept-alive socket before the turn. preconnect() is a
     // best-effort no-op while a socket is still hot (TTL gate), but after an
     // idle gap longer than the keep-alive window it re-opens one in parallel
@@ -441,11 +411,7 @@ export class AnthropicOAuthProvider {
     // a hard 400. Pairing here closes the gap regardless of caller.
     messages = sanitizeToolPairs(messages);
     const opts = sendOpts || {};
-    const onStageChange = typeof opts.onStageChange === 'function' ? opts.onStageChange : null;
-    const onStreamDelta = typeof opts.onStreamDelta === 'function' ? opts.onStreamDelta : null;
-    const onToolCall = typeof opts.onToolCall === 'function' ? opts.onToolCall : null;
-    const onTextDelta = typeof opts.onTextDelta === 'function' ? opts.onTextDelta : null;
-    const onTextReset = typeof opts.onTextReset === 'function' ? opts.onTextReset : null;
+    const { onStageChange, onStreamDelta, onToolCall, onTextDelta, onTextReset } = streamCallbacks(opts);
     const externalSignal = opts.signal || null;
     // Test seam: lets the retry harness drive stream outcomes without a
     // live OAuth session.
@@ -772,8 +738,7 @@ export class AnthropicOAuthProvider {
     try {
       return await this._fetchModelCatalog();
     } catch (err) {
-      if (!process.env.MIXDOG_QUIET_PROVIDER_LOG)
-        process.stderr.write(`[anthropic-oauth] listModels fetch failed (${err.message})\n`);
+      logQuiet(`listModels fetch failed (${err.message})`);
       // Fallback with full API model IDs (the shared offline list). Short
       // family tokens leaked through here would be accepted by setup and
       // reintroduce the legacy shape. ANTHROPIC_DEFAULT_<FAMILY>_MODEL
@@ -797,12 +762,10 @@ export class AnthropicOAuthProvider {
     _modelRefreshInFlight = (async () => {
       try {
         const enriched = await this._fetchModelCatalog();
-        if (!process.env.MIXDOG_QUIET_PROVIDER_LOG)
-          process.stderr.write(`[anthropic-oauth] catalog refreshed (${enriched.length} models)\n`);
+        logQuiet(`catalog refreshed (${enriched.length} models)`);
         return enriched;
       } catch (err) {
-        if (!process.env.MIXDOG_QUIET_PROVIDER_LOG)
-          process.stderr.write(`[anthropic-oauth] catalog refresh failed (${err.message})\n`);
+        logQuiet(`catalog refresh failed (${err.message})`);
         return null;
       } finally {
         _modelRefreshInFlight = null;

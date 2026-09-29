@@ -1,4 +1,4 @@
-import { stripAnsi } from '../../shell-command.mjs';
+import { stripAnsi } from '../../shell-exec-output.mjs';
 
 export const SHELL_JOB_OUTPUT_DISK_CAP = 100 * 1024 * 1024;
 

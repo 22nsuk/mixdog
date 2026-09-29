@@ -16,6 +16,10 @@ import { CODE_GRAPH_FILE_MODES, CODE_GRAPH_MODES } from '../code-graph-tool-defs
 const MAX_INT = 100000;
 export const PUBLIC_PATH_BATCH_LIMIT = 10;
 export const PUBLIC_READ_WINDOW_MAX = MAX_INT;
+// A start line only positions the window (streaming reads seek through byte
+// anchors), so it is not capped like the output-sized limit.
+const READ_OFFSET_MAX = Number.MAX_SAFE_INTEGER;
+const READ_WINDOW_RANGE_TEXT = `offset must be an integer >= 1 and limit an integer from 1 to ${MAX_INT}`;
 // Explicit grep context should be large enough to frame a function/block without
 // letting one match explode into a huge tool result. `content_with_context` still
 // defaults to 25 lines; this is only the upper bound for caller-supplied -A/-B/-C.
@@ -596,15 +600,16 @@ function normalizePublicReadTargets(a) {
     return 'Error: read arg "file_path" must be a path string or an array of targets';
   }
   const targets = batch ? a.file_path : [a.file_path];
-  if (targets.length === 0 || targets.length > PUBLIC_PATH_BATCH_LIMIT) {
-    return `Error: read arg "file_path" must contain 1-${PUBLIC_PATH_BATCH_LIMIT} targets`;
+  if (targets.length === 0) {
+    return 'Error: read arg "file_path" must contain at least 1 target';
   }
   const windowValue = (value, fallback) => (value === undefined ? fallback : value);
-  const validWindow = (value) => Number.isInteger(value) && value >= 1 && value <= MAX_INT;
+  const validOffset = (value) => Number.isSafeInteger(value) && value >= 1;
+  const validLimit = (value) => Number.isInteger(value) && value >= 1 && value <= MAX_INT;
   const defaultOffset = windowValue(a.offset, 1);
   const defaultLimit = windowValue(a.limit, READ_GUARD_DEFAULT_LIMIT);
-  if (!validWindow(defaultOffset) || !validWindow(defaultLimit)) {
-    return `Error: read offset and limit must be integers from 1 to ${MAX_INT}`;
+  if (!validOffset(defaultOffset) || !validLimit(defaultLimit)) {
+    return `Error: read ${READ_WINDOW_RANGE_TEXT}`;
   }
   const entries = [];
   for (let index = 0; index < targets.length; index++) {
@@ -621,10 +626,23 @@ function normalizePublicReadTargets(a) {
     }
     const offset = windowValue(record.offset, defaultOffset);
     const limit = windowValue(record.limit, defaultLimit);
-    if (!validWindow(offset) || !validWindow(limit)) {
-      return `Error: read target ${index + 1} offset and limit must be integers from 1 to ${MAX_INT}`;
+    if (!validOffset(offset) || !validLimit(limit)) {
+      return `Error: read target ${index + 1} ${READ_WINDOW_RANGE_TEXT}`;
     }
     entries.push({ path: record.file_path, offset: offset - 1, limit });
+  }
+  // The batch cap counts distinct files, not windows (several windows of one
+  // file coalesce into one read). Files past the cap are dropped from this
+  // call and named to the caller by the read tool.
+  const keptPaths = new Set();
+  const skippedPaths = new Set();
+  for (const entry of entries) {
+    if (keptPaths.size < PUBLIC_PATH_BATCH_LIMIT || keptPaths.has(entry.path)) keptPaths.add(entry.path);
+    else skippedPaths.add(entry.path);
+  }
+  if (skippedPaths.size > 0) {
+    entries.splice(0, entries.length, ...entries.filter((entry) => keptPaths.has(entry.path)));
+    a.skipped_files = [...skippedPaths];
   }
   // Canonical public windows are one-based. Legacy executor windows are
   // zero-based; convert once here before any legacy shape handling.
@@ -695,7 +713,7 @@ function guardRead(a) {
       const err = applyLineContextWindow(entry, `path[${i}].`);
       if (err) return err;
       for (const ek of ['offset', 'limit']) {
-        const eErr = checkIntInRange(entry, ek, 0, MAX_INT);
+        const eErr = checkIntInRange(entry, ek, 0, ek === 'offset' ? READ_OFFSET_MAX : MAX_INT);
         if (eErr) return eErr.replace(`"${ek}"`, `"path[${i}].${ek}"`);
       }
     }
@@ -713,7 +731,7 @@ function guardRead(a) {
   }
   // offset >=0
   {
-    const err = checkIntInRange(a, 'offset', 0, MAX_INT);
+    const err = checkIntInRange(a, 'offset', 0, READ_OFFSET_MAX);
     if (err) return err;
   }
   // limit: >=1 = explicit cap; 0 = unlimited sentinel (read-formatting maps 0 to
@@ -738,10 +756,13 @@ function guardRead(a) {
 }
 
 function guardShell(a) {
-  const allowed = new Set(['command', 'timeout_ms']);
+  const allowed = new Set(['command', 'timeout_ms', 'wait_ms']);
   const unsupported = Object.keys(a).find((key) => !allowed.has(key));
   if (unsupported) {
-    return `Error: shell arg "${unsupported}" is unsupported; use only command and timeout_ms`;
+    return `Error: shell arg "${unsupported}" is unsupported; use only command, timeout_ms, and wait_ms`;
+  }
+  if (hasOwn(a, 'wait_ms') && (!Number.isInteger(a.wait_ms) || a.wait_ms < 1000 || a.wait_ms > 120000)) {
+    return `Error: shell arg "wait_ms" must be an integer from 1000 to 120000 (got ${describeType(a.wait_ms)})`;
   }
   if (!hasOwn(a, 'command')) {
     return 'Error: shell requires "command"';

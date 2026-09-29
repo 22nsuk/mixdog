@@ -26,6 +26,7 @@ import {
   openCursorStream,
   parseEndStream,
   textEncoder,
+  warmCursorClientVersion,
 } from './cursor-wire-transport.mjs';
 import {
   buildRequestContext,
@@ -61,9 +62,7 @@ function storeActiveRun(key, active) {
   if (prior && prior !== active) forgetActiveRun(key, prior);
   if (active.expiryTimer) clearTimeout(active.expiryTimer);
   active.expiryTimer = setTimeout(() => {
-    if (!forgetActiveRun(key, active)) return;
-    clearInterval(active.heartbeat);
-    active.bridge.close(new Error('Cursor pending tool batch expired'));
+    closeActiveRun(key, active, new Error('Cursor pending tool batch expired'));
   }, MEMORY_TTL_MS);
   active.expiryTimer.unref?.();
   activeRuns.set(key, active);
@@ -286,8 +285,10 @@ function thinkingFilter() {
   };
 }
 
+const newCompletionId = () => `chatcmpl-${crypto.randomUUID().replaceAll('-', '').slice(0, 28)}`;
+
 function createPendingToolBatchResponse(active, model, key) {
-  const id = `chatcmpl-${crypto.randomUUID().replaceAll('-', '').slice(0, 28)}`;
+  const id = newCompletionId();
   const stream = new ReadableStream({
     start(controller) {
       for (let index = 0; index < active.pending.length; index += 1) {
@@ -316,9 +317,7 @@ function createPendingToolBatchResponse(active, model, key) {
       controller.close();
     },
     cancel(reason) {
-      if (!forgetActiveRun(key, active)) return;
-      clearInterval(active.heartbeat);
-      active.bridge.close(reason instanceof Error ? reason : new Error('Cursor pending tool batch cancelled'));
+      closeActiveRun(key, active, reason instanceof Error ? reason : new Error('Cursor pending tool batch cancelled'));
     },
   });
   return new Response(stream, { headers: SSE_HEADERS });
@@ -360,7 +359,7 @@ function createStreamResponse({
   sawTurnEnded = false,
   restart = null,
 }) {
-  const id = `chatcmpl-${crypto.randomUUID().replaceAll('-', '').slice(0, 28)}`;
+  const id = newCompletionId();
   // The bridge currently feeding the stream; a restart swaps it in place.
   const live = { bridge, heartbeat };
   let watchdog = null;
@@ -460,13 +459,8 @@ function noUserMessageResponse() {
   });
 }
 
-function supersedeActiveRun(key, active) {
-  forgetActiveRun(key, active);
-  clearInterval(active.heartbeat);
-  active.bridge.close(new Error('Cursor run superseded'));
-}
-
 export async function handleChatCompletion(body, accessToken) {
+  await warmCursorClientVersion();
   const parsed = parseMessages(body.messages);
   if (
     !parsed.userText &&
@@ -494,7 +488,7 @@ export async function handleChatCompletion(body, accessToken) {
     forgetActiveRun(key, active);
     return resumeRun(active, parsed.toolResults, parsed.userText, model, key);
   }
-  if (active) supersedeActiveRun(key, active);
+  if (active) closeActiveRun(key, active, new Error('Cursor run superseded'));
   const convKey = conversationKey(body.messages, sessionId);
   const conversation = getConversation(convKey);
   const runInput = {

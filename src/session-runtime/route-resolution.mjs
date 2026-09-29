@@ -1,9 +1,9 @@
 // Route resolution against the live runtime record: pick a model for a
 // model-less first turn and refresh the route's effort / Fast / context
 // fields from provider metadata.
-import { ensureProviderEnabled } from './config-helpers.mjs';
-import { clean } from './session-text.mjs';
-import { effortItemsFor } from './effort.mjs';
+import { ensureProviderEnabled } from '../runtime/agent/orchestrator/runtime-core/config-helpers.mjs';
+import { clean } from '../runtime/agent/orchestrator/runtime-core/session-text.mjs';
+import { effortItemsFor } from '../runtime/agent/orchestrator/runtime-core/effort.mjs';
 import { runAbortable, throwIfAborted } from '../runtime/shared/abort-race.mjs';
 import { resolveRouteContextState, resolveRouteEffortState, routeModelDisplay } from './route-state.mjs';
 

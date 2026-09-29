@@ -8,7 +8,7 @@ import { createMaintenancePickers } from './maintenance-pickers.mjs';
 // Update / Auto-clear / Profile / Developer panels against a fake store: rows from the
 // daemon reads, what each key writes, and where Esc returns.
 
-function createHarness(storeOverrides = {}) {
+function createHarness(storeOverrides = {}, depOverrides = {}) {
   supersedePanelEpoch();
   let live = null;
   const notices = [];
@@ -32,6 +32,7 @@ function createHarness(storeOverrides = {}) {
     setSettingsPrompt: (prompt) => prompts.push(prompt),
     closeUsagePanel: () => {},
     clearModelCaches: (scope) => cleared.push(scope),
+    ...depOverrides,
   });
   const current = () => live;
   const row = (value) => current().items.find((item) => item.value === value);
@@ -143,6 +144,42 @@ test('Auto-clear: rows follow the current setting, ←/→ write, Advanced lists
   assert.equal(prompt.kind, 'autoclear-provider');
   assert.equal(prompt.initialValue, '30m');
   assert.match(prompt.hint, /built-in 1h\./);
+});
+
+test('Auto-clear: a failing Advanced open or Esc-back render becomes a notice, not an unhandled rejection', async () => {
+  let broken = false;
+  const current = {
+    enabled: true,
+    idleMs: 30 * 60_000,
+    provider: 'openai',
+    providerDefaults: [{ provider: 'openai', idleMs: 30 * 60_000, builtInMs: 60 * 60_000 }],
+  };
+  const h = createHarness(
+    { getAutoClear: async () => current },
+    {
+      formatDuration: (ms) => {
+        if (broken) throw new Error('boom');
+        return `${Math.round(ms / 60_000)}m`;
+      },
+    }
+  );
+  await h.openAutoClearPicker({});
+  await flush();
+
+  broken = true;
+  h.current().onSelect('advanced', h.row('advanced'));
+  await flush();
+  assert.deepEqual(h.notices.at(-1), ['auto-clear panel failed: boom', 'error']);
+
+  broken = false;
+  h.current().onSelect('advanced', h.row('advanced'));
+  await flush();
+  assert.equal(h.current().title, 'Auto-clear · Advanced');
+  h.notices.length = 0;
+  broken = true;
+  h.current().onCancel();
+  await flush();
+  assert.deepEqual(h.notices.at(-1), ['auto-clear panel failed: boom', 'error']);
 });
 
 test('Profile: rows from the profile read, ←/→ cycle language and experience, Enter on Title prompts', async () => {

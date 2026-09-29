@@ -8,8 +8,8 @@ import {
 } from './session-lifecycle.mjs';
 import { _buildSharedRules } from './rules-cache.mjs';
 import { contextMessagesSignature, toolSchemaSignature } from '../context-utils.mjs';
-import { createContextStatus } from '../../../../../session-runtime/context-status.mjs';
-import { modelToolSchemaAllowlist } from '../../../../../session-runtime/tool-profile.mjs';
+import { createContextStatus } from '../../runtime-core/context-status.mjs';
+import { modelToolSchemaAllowlist } from '../../runtime-core/tool-profile.mjs';
 
 test('a cold Cursor route uses 200k instead of inheriting another model window', () => {
   const seed = contextSeedForRouteUpdate(

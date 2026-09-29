@@ -8,7 +8,7 @@ import {
   isRootLeadSession,
 } from '../../runtime/agent/orchestrator/session/store-summary-visibility.mjs';
 import { listSessionHeartbeatMtimes } from '../../runtime/agent/orchestrator/session/store/paths-heartbeat.mjs';
-import { sessionMessageText, isSessionPreviewNoise, cleanSessionPreview, clean } from '../session-text.mjs';
+import { sessionMessageText, isSessionPreviewNoise, cleanSessionPreview, clean } from '../../runtime/agent/orchestrator/runtime-core/session-text.mjs';
 
 const VISIBLE_OWNERS = ['cli', 'user', 'mixdog'];
 
@@ -35,7 +35,7 @@ function previewOf(s) {
   let preview = isSessionPreviewNoise(rawPreview) ? '' : cleanSessionPreview(rawPreview);
   let messageCount = Math.max(0, Number(s.messageCount) || 0);
   if (!preview && Array.isArray(s.messages)) {
-    const msgs = s.messages || [];
+    const msgs = s.messages;
     const userPreviews = msgs
       .filter((m) => m && m.role === 'user')
       .map((m) => sessionMessageText(m.content))
@@ -48,7 +48,7 @@ function previewOf(s) {
   return { preview, messageCount };
 }
 
-export function leadSessionRow(s, heartbeatMtimes) {
+function leadSessionRow(s, heartbeatMtimes) {
   // Durable visibility is the catalog boundary. Apply it before the legacy
   // lead-shape heuristics so an explicitly agent-only child cannot leak just
   // because its owner field looks ordinary.

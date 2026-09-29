@@ -181,7 +181,9 @@ next step needs.
      reported, never auto-applied. Within a tier: comments → dead code →
      defensive code → duplication → complexity → abstraction → performance.
      Use targeted checks at meaningful behavior boundaries and run the
-     documented final tests/typecheck once after the round. Do not rerun
+     documented final tests/typecheck once after the round. Targeted checks
+     include the tests that import each edited module (found with `code_graph`
+     dependents or grep). Do not rerun
      unaffected checks after every comment or mechanical edit.
    - Structural items from the table below are CAREFUL unless their row says
      otherwise; dead code follows
@@ -264,7 +266,8 @@ An unperformed confirmed split stays unfinished.
 ## 7. Round close and final report
 Close each round in the conversation with a few lines: the partition, its test
 lane, what landed, the verification result including every check that could not
-run, the round's function counts over 50, 100 and 150 lines, and whether the
+run, the round's function counts over 50, 100 and 150 lines (taken from the
+function-length summary in the `tidy` check/fix result), and whether the
 round is complete or unfinished. Report all three counts: decomposition moves
 mass downward, so functions over 100 falling while functions over 50 rise is
 progress, and a single threshold hides it. Keep the inventory in `references/cleanup-report.md` form as you go;

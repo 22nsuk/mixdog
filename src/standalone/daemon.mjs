@@ -54,16 +54,18 @@ import {
 } from '../runtime/agent/orchestrator/providers/stream-json-pool.mjs';
 import { createAgentDispatchBroker } from './agent-dispatch-broker.mjs';
 import { createChannelTransport } from './channel-transport.mjs';
-import { createChannelSessionRouter } from './channel-session-router.mjs';
+import { createChannelSessionRouter } from '../session-runtime/services/channel-session-router.mjs';
 import { createSessionTransport } from './session-transport.mjs';
 import { createSessionService } from './session-service.mjs';
 import { createLocalSessionBridge } from './daemon-local-session-bridge.mjs';
 import { createStoredSessionViews } from './daemon-stored-session-views.mjs';
-import { createDaemonSessionRuntimeHost } from './session-runtime-host-factory.mjs';
-import { getStandaloneMemoryRuntime } from './memory-runtime-proxy.mjs';
+import { createInlineSessionRuntimeHost } from './session-runtime-inline-host.mjs';
+import { getStandaloneMemoryRuntime } from '../session-runtime/services/memory-runtime-proxy.mjs';
 import { createBootPhaseProfiler } from './boot-phase-profiler.mjs';
 import { createDaemonBootCoordinator } from './daemon-boot-coordinator.mjs';
 import { createDaemonLog } from './daemon-log.mjs';
+import { daemonCrashCaptureDir } from '../session-runtime/services/daemon-crash-capture/paths.mjs';
+import { installDaemonExitRecorder, reconcileLostDaemonCaptures } from '../session-runtime/services/daemon-crash-capture/daemon-exit-record.mjs';
 import { createDaemonTelemetry } from './daemon-telemetry.mjs';
 import { createLagProfiler } from './daemon-lag-profiler.mjs';
 import { createChannelsRuntimeLoader } from './daemon-channels-loader.mjs';
@@ -101,6 +103,10 @@ const {
   enableFileLogging,
   installRedirect: installDaemonLogRedirect,
 } = createDaemonLog({ logPath: LOG_PATH });
+
+// Every way this process ends leaves a reason + exit code in its crash-capture
+// sidecar (the launcher usually cannot: it is often gone before the daemon).
+const exitRecorder = installDaemonExitRecorder({ dataDir: DATA_DIR });
 
 let channels = null;
 let transport = null;
@@ -167,6 +173,7 @@ const SHUTDOWN_BUDGET_MS = 15_000;
 async function shutdown(reason, code = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
+  exitRecorder.setReason(`shutdown: ${reason}`, code);
   if (shutdownRecheckTimer) {
     clearTimeout(shutdownRecheckTimer);
     shutdownRecheckTimer = null;
@@ -177,6 +184,7 @@ async function shutdown(reason, code = 0) {
   // clean path still exits the moment teardown finishes.
   const forcedExit = setTimeout(() => {
     log('shutdown budget exceeded, forcing exit');
+    exitRecorder.setReason(`shutdown: ${reason} (budget exceeded, forced exit)`, code);
     process.exit(code);
   }, SHUTDOWN_BUDGET_MS);
   forcedExit.unref?.();
@@ -410,6 +418,7 @@ function claimDaemonOwnership(bootPhases) {
   });
   if (!claim.owned) {
     log(`live peer holds owner lock (pid=${claim.owner?.pid}) — exiting for attach`);
+    exitRecorder.setReason(`lost singleton claim to live peer pid=${claim.owner?.pid}`, 0);
     process.exit(0);
   }
   bootPhases.mark('owner-claimed');
@@ -525,6 +534,15 @@ function announceDaemonReady({ port, token, startedAt, bootPhases }) {
   // memory-pressure file is too sparse to be that record.
   daemonTelemetry.emit('boot');
   daemonTelemetry.start();
+  // Off the ready path: settle earlier boots that ended with no recorded exit
+  // (killed together with their launcher's process tree).
+  setImmediate(() => {
+    try {
+      const marked = reconcileLostDaemonCaptures({ dir: daemonCrashCaptureDir({ dataDir: DATA_DIR }) });
+      if (marked > 0)
+        log(`previous daemon boot(s) ended without an exit record: ${marked} marked unrecorded-termination`);
+    } catch {}
+  });
 }
 
 /** The channels front door: pointer-routed calls over HTTP+SSE. Creating the
@@ -593,7 +611,7 @@ async function main() {
   // projects (a small JSON list, most recently selected first) are the cwds
   // sessions open; prewarm their probes on the git worker, off the boot path.
   void Promise.all([
-    import('./projects.mjs'),
+    import('../runtime/shared/projects.mjs'),
     import('../runtime/agent/orchestrator/tools/builtin/runtime-capabilities.mjs'),
   ])
     .then(([projects, capabilities]) =>
@@ -648,7 +666,15 @@ async function main() {
     getSessionRuntimeHost: () => sessionRuntimeHost,
     cwd: CWD,
   });
-  sessionRuntimeHost = createDaemonSessionRuntimeHost({
+  const requestedRuntimeMode = String(process.env.MIXDOG_SESSION_RUNTIME_MODE || '')
+    .trim()
+    .toLowerCase();
+  if (requestedRuntimeMode && requestedRuntimeMode !== 'inline') {
+    log(
+      `MIXDOG_SESSION_RUNTIME_MODE=${requestedRuntimeMode} is no longer supported; using the inline session runtime host`
+    );
+  }
+  sessionRuntimeHost = createInlineSessionRuntimeHost({
     cwd: CWD,
     log,
     measureBootPhase: bootPhases.measure,
@@ -739,6 +765,13 @@ process.on('SIGTERM', () => {
 });
 process.on('SIGINT', () => {
   void shutdown('SIGINT');
+});
+// Console close / Ctrl+Break: the default action ends the process with no hook.
+process.on('SIGHUP', () => {
+  void shutdown('SIGHUP');
+});
+process.on('SIGBREAK', () => {
+  void shutdown('SIGBREAK');
 });
 process.on('message', (msg) => {
   if (msg && msg.type === 'shutdown') void shutdown('IPC shutdown');

@@ -11,7 +11,7 @@ import {
   isMaxOutputIncompleteReason,
 } from '../../lib/responses-terminal-fields.mjs';
 import { LABEL, toolInputPending } from '../response-state.mjs';
-import { usageFromResponse } from '../response-outcome.mjs';
+import { normalizeWsUsage } from '../../openai-ws-response-state/usage.mjs';
 
 // Typed status only — nothing is synthesized from text. The frame itself is
 // preserved so the wire-error default-retry classification applies (fatal
@@ -58,7 +58,7 @@ export function createTerminalFrameEvents({ state, items, text, outcome, meaning
     state.serviceTier = resp.service_tier || resp.serviceTier || state.serviceTier;
     if (!state.model && resp.model) state.model = resp.model;
     if (!state.responseId && resp.id) state.responseId = resp.id;
-    if (resp.usage) state.usage = usageFromResponse(resp.usage, state.serviceTier);
+    if (resp.usage) state.usage = normalizeWsUsage(resp.usage, state.serviceTier);
     if (!absorbCompletedOutput(resp.output || [])) meaningful('semantic');
     state.completed = true;
     setEndTurn(event);

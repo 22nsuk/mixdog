@@ -2,10 +2,10 @@
 // layers after workflow or search/memory settings change. Conversation
 // sessions keep their frozen schema; the next new session picks up the
 // updated policy.
-import { sessionHasConversationMessages } from './session-text.mjs';
-import { toSessionWorkflowMeta } from './workflow.mjs';
-import { applyDeferredToolSurface, filterDisallowedTools } from './tool-catalog.mjs';
-import { deferredSurfaceModeForLead } from './effort.mjs';
+import { sessionHasConversationMessages } from '../runtime/agent/orchestrator/runtime-core/session-text.mjs';
+import { toSessionWorkflowMeta } from '../runtime/agent/orchestrator/runtime-core/workflow.mjs';
+import { applyDeferredToolSurface, filterDisallowedTools } from '../runtime/agent/orchestrator/runtime-core/tool-catalog.mjs';
+import { deferredSurfaceModeForLead } from '../runtime/agent/orchestrator/runtime-core/effort.mjs';
 import {
   applyInitialDeferredToolManifestToBp2,
   composeSystemPrompt,
@@ -115,9 +115,11 @@ export function createToolPolicyRefresh({
 
     const {
       summary: workflow,
-      context: workflowContext,
+      context: leadWorkflowContext,
+      packContext,
       orchestrationMode,
     } = activeWorkflowContext(getConfig(), getDataDir());
+    const workflowContext = session.owner === 'agent' ? packContext : leadWorkflowContext;
     const denied = [...featureDisallowedTools(), ...(workflow?.delegatesAgents === false ? ['agent'] : [])]
       .map((name) => String(name || ''))
       .filter(Boolean);

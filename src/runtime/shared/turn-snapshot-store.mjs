@@ -18,7 +18,6 @@ import { join } from 'node:path';
 import { cleanString as clean } from './clean.mjs';
 import { resolvePluginData } from './plugin-paths.mjs';
 
-const DATA_DIR = resolvePluginData();
 const RECORD_VERSION = 1;
 // Matches the shadow repository's own `gc --prune` window: once the tree object
 // is collected the record cannot restore anything anyway.
@@ -32,7 +31,12 @@ const MAX_SESSION_SCOPES = 8;
 // A bounded directory: one file per session, oldest swept first.
 const MAX_RECORD_FILES = 512;
 
-let recordRoot = join(DATA_DIR, 'turn-snapshots');
+// Test override; otherwise resolved per call because the pristine-execution
+// boundary retargets MIXDOG_DATA_DIR at runtime.
+let recordRootOverride = '';
+function recordRoot() {
+  return recordRootOverride || join(resolvePluginData(), 'turn-snapshots');
+}
 // Per-session write chain. Two turns of one session never race their own file,
 // and a read never observes a partially written record (writes land by rename).
 const writeChains = new Map();
@@ -41,6 +45,16 @@ let sweepDone = false;
 function rootKey(value) {
   const root = clean(value).replace(/[\\/]+$/, '');
   return process.platform === 'win32' ? root.toLowerCase() : root;
+}
+
+// Fold a turn's files into an existing scope: session-owned paths keep the
+// baseline they first recorded, and every tool-mutated path joins the owned set.
+function mergeScopeFiles(scope, baselineFiles, toolFiles) {
+  const owned = new Set([...scope.toolFiles].map(rootKey));
+  for (const file of baselineFiles) {
+    if (!owned.has(rootKey(file.path))) scope.baselineFiles.set(rootKey(file.path), file);
+  }
+  for (const file of toolFiles) scope.toolFiles.add(file);
 }
 
 function sessionScopes(record) {
@@ -54,11 +68,7 @@ function sessionScopes(record) {
     const files = (Array.isArray(entry?.toolFiles) ? entry.toolFiles : []).map((value) => clean(value)).filter(Boolean);
     const baselineFiles = Array.isArray(entry?.baselineFiles) ? entry.baselineFiles : [];
     if (existing) {
-      const owned = new Set([...existing.toolFiles].map(rootKey));
-      for (const file of baselineFiles) {
-        if (!owned.has(rootKey(file.path))) existing.baselineFiles.set(rootKey(file.path), file);
-      }
-      for (const file of files) existing.toolFiles.add(file);
+      mergeScopeFiles(existing, baselineFiles, files);
       existing.updatedAt = Math.max(existing.updatedAt, Number(entry?.updatedAt) || 0);
       return;
     }
@@ -94,7 +104,7 @@ function serializeScope(entry) {
 
 function recordPath(sessionId) {
   const hash = createHash('sha256').update(sessionId).digest('hex').slice(0, 24);
-  return join(recordRoot, `${hash}.json`);
+  return join(recordRoot(), `${hash}.json`);
 }
 
 function chain(sessionId, task) {
@@ -126,12 +136,12 @@ async function sweepRecords() {
   if (sweepDone) return;
   sweepDone = true;
   try {
-    const names = await readdir(recordRoot);
+    const names = await readdir(recordRoot());
     const now = Date.now();
     const kept = [];
     for (const name of names) {
       if (!name.endsWith('.json')) continue;
-      const path = join(recordRoot, name);
+      const path = join(recordRoot(), name);
       try {
         const info = await stat(path);
         if (now - info.mtimeMs > RECORD_TTL_MS) {
@@ -163,7 +173,7 @@ export async function saveTurnSnapshotRecord(sessionId, turn) {
   if (!id || !baselineTree || !root) return false;
   return await chain(id, async () => {
     try {
-      await mkdir(recordRoot, { recursive: true });
+      await mkdir(recordRoot(), { recursive: true });
       void sweepRecords();
       const path = recordPath(id);
       const existing = await readRecordFile(path);
@@ -189,11 +199,7 @@ export async function saveTurnSnapshotRecord(sessionId, turn) {
       const scopes = sessionScopes(existing);
       const scope = scopes.find((entry) => rootKey(entry.root) === rootKey(root));
       if (scope) {
-        const owned = new Set([...scope.toolFiles].map(rootKey));
-        for (const file of nextTurn.baselineFiles) {
-          if (!owned.has(rootKey(file.path))) scope.baselineFiles.set(rootKey(file.path), file);
-        }
-        for (const file of nextTurn.toolFiles) scope.toolFiles.add(file);
+        mergeScopeFiles(scope, nextTurn.baselineFiles, nextTurn.toolFiles);
         scope.updatedAt = nextTurn.updatedAt;
       } else {
         scopes.push({
@@ -254,7 +260,7 @@ export async function loadSessionSnapshotRecords(sessionId) {
 }
 
 export function _setTurnSnapshotStoreRootForTest(directory) {
-  recordRoot = clean(directory) || join(DATA_DIR, 'turn-snapshots');
+  recordRootOverride = clean(directory);
   writeChains.clear();
   sweepDone = false;
 }

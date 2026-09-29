@@ -4,7 +4,7 @@
  */
 import { hasUserConversationMessage } from '../../runtime/agent/orchestrator/session/manager/prompt-utils.mjs';
 
-export const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+export { SESSION_ID_PATTERN } from '../../runtime/agent/orchestrator/runtime-core/session-id.mjs';
 
 // Only truly-empty scratch sessions are tombstoned on close; non-empty
 // sessions must survive exit resumable. liveTurnMessages holds the in-flight

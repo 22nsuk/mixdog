@@ -91,23 +91,26 @@ export function csiBody(text) {
   return text.startsWith('[') ? text.slice(1) : '';
 }
 
-export function isModifiedEnterSequence(input) {
+const KITTY_ENTER_RE = /^13;(\d+)(?::\d+)?(?:;[\d:]+)?u$/;
+const MODIFY_OTHER_KEYS_ENTER_RE = /^27;(\d+);13~$/;
+
+/** The modifier bitmask (xterm param - 1) of an Enter sequence; null for anything else. */
+function enterModifierBits(input) {
   const body = csiBody(String(input ?? ''));
-  if (!body) return false;
-  const kitty = /^13;(\d+)(?::\d+)?(?:;[\d:]+)?u$/.exec(body);
-  if (kitty) return ((Number(kitty[1]) - 1) & MODIFIED_ENTER_NEWLINE) !== 0;
-  const modifyOtherKeys = /^27;(\d+);13~$/.exec(body);
-  return Boolean(modifyOtherKeys && ((Number(modifyOtherKeys[1]) - 1) & MODIFIED_ENTER_NEWLINE) !== 0);
+  if (!body) return null;
+  const match = KITTY_ENTER_RE.exec(body) || MODIFY_OTHER_KEYS_ENTER_RE.exec(body);
+  return match ? Number(match[1]) - 1 : null;
+}
+
+export function isModifiedEnterSequence(input) {
+  const bits = enterModifierBits(input);
+  return bits !== null && (bits & MODIFIED_ENTER_NEWLINE) !== 0;
 }
 
 // Recognize ANY modified Enter. Used to consume uncommon modifier combinations
 // outside the Shift/Alt/Ctrl newline set so raw CSI bytes never reach the draft.
 // Plain Enter (mod param = 1, bitmask 0) intentionally remains a submit.
 export function isAnyModifiedEnterSequence(input) {
-  const body = csiBody(String(input ?? ''));
-  if (!body) return false;
-  const kitty = /^13;(\d+)(?::\d+)?(?:;[\d:]+)?u$/.exec(body);
-  if (kitty) return Number(kitty[1]) - 1 !== 0;
-  const modifyOtherKeys = /^27;(\d+);13~$/.exec(body);
-  return Boolean(modifyOtherKeys && Number(modifyOtherKeys[1]) - 1 !== 0);
+  const bits = enterModifierBits(input);
+  return bits !== null && bits !== 0;
 }

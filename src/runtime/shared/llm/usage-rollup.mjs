@@ -193,7 +193,6 @@ export function knownCostTurns(usage, amount = num) {
 
 function readTurnTotals(raw, target) {
   readRouteTotals(raw, target);
-  target.costBilled = round6(num(raw?.costBilled));
   target.costEstimated = round6(num(raw?.costEstimated));
   target.costKnownTurns = num(raw?.costKnownTurns);
   target.durationMs = num(raw?.durationMs);

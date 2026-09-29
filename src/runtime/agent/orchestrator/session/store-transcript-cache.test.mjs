@@ -457,3 +457,71 @@ test('old projections cannot replace a newer completed projection', async () => 
   });
   assert.equal(again.value, current.value);
 });
+
+test('loadText may resolve asynchronously; concurrent identical reads still share one parse', async () => {
+  const cache = createStoredTranscriptCache();
+  let produced = 0;
+  const read = () =>
+    cache.read({
+      key: 'async',
+      fingerprint: '',
+      loadText: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return 'body';
+      },
+      produce: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        produced += 1;
+        return { items: [produced] };
+      },
+    });
+  const [first, second] = await Promise.all([read(), read()]);
+  assert.equal(second.value, first.value);
+  assert.equal(produced, 1);
+});
+
+test('a large record is parsed and projected on a worker thread with an identical projection', async (t) => {
+  const previous = process.env.MIXDOG_DATA_DIR;
+  const dataDir = mkdtempSync(join(tmpdir(), 'stored-worker-'));
+  process.env.MIXDOG_DATA_DIR = dataDir;
+  const { readStoredSessionTranscript, clearStoredTranscriptCache } = await import('./store-summary-reader.mjs');
+  const { OFFLOAD_MIN_CHARS } = await import('./store-transcript-worker.mjs');
+  const { readTopLevelLifecycleRecord } = await import('./lifecycle-scan.mjs');
+  const { projectStoredTranscript } = await import('./store-transcript-projection.mjs');
+  t.after(() => {
+    clearStoredTranscriptCache();
+    if (previous === undefined) delete process.env.MIXDOG_DATA_DIR;
+    else process.env.MIXDOG_DATA_DIR = previous;
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+  mkdirSync(join(dataDir, 'sessions'));
+  const id = `sess_offload_${process.pid}`;
+  const filler = 'x'.repeat(4000);
+  const messages = Array.from({ length: Math.ceil(OFFLOAD_MIN_CHARS / 4000) + 20 }, (_, index) => ({
+    role: index % 2 === 0 ? 'user' : 'assistant',
+    content: `${index} ${filler}`,
+  }));
+  const raw = JSON.stringify({ id, closed: true, generation: 3, messages });
+  assert.ok(raw.length >= OFFLOAD_MIN_CHARS);
+  const file = join(dataDir, 'sessions', `${id}.json`);
+  writeFileSync(file, raw);
+  const old = new Date(Date.now() - 60_000);
+  utimesSync(file, old, old);
+  clearStoredTranscriptCache();
+  const expected = await projectStoredTranscript(id, readTopLevelLifecycleRecord(raw).doc, {
+    itemLimit: 16,
+    includeMessages: false,
+    checkpointAbsent: true,
+  });
+  const loopTicks = [];
+  const ticker = setInterval(() => loopTicks.push(Date.now()), 2);
+  const got = await readStoredSessionTranscript(id, { transcriptItemLimit: 16 });
+  clearInterval(ticker);
+  const { projectionStamp: gotStamp, ...gotRest } = got;
+  const { projectionStamp: expectedStamp, ...expectedRest } = expected;
+  assert.deepEqual(gotRest, expectedRest);
+  assert.match(String(gotStamp), /^\d+:[a-z0-9]+:\d+$/);
+  assert.notEqual(gotStamp, expectedStamp);
+  assert.ok(loopTicks.length > 0, 'event loop kept running while the worker projected');
+  assert.equal((await readStoredSessionTranscript(id, { transcriptItemLimit: 16 })), got);
+});

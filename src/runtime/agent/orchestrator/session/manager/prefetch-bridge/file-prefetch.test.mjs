@@ -4,6 +4,27 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
+test('prefetch counts an empty read result as failed instead of dropping it silently', async (t) => {
+  t.mock.module(new URL('../../../internal-tools.mjs', import.meta.url).href, {
+    namedExports: { executeInternalTool: async () => '' },
+  });
+  t.mock.module(new URL('../../read-dedup.mjs', import.meta.url).href, {
+    namedExports: {
+      tryPrefetchCached: () => null,
+      capturePrefetchCacheState: () => ({}),
+      setPrefetchCached: () => {},
+    },
+  });
+  const { prefetchFiles } = await import('./file-prefetch.mjs?empty');
+  const result = await prefetchFiles(
+    { id: 'synthetic-prefetch', cwd: process.cwd() },
+    { files: ['empty.txt'], readOpts: new Map() }
+  );
+  assert.deepEqual(result.readParts, []);
+  assert.deepEqual(result.failed, ['empty.txt']);
+  assert.equal(result.stats.failed, 1);
+});
+
 test('prefetch preserves default, custom and full read windows and caches only defaults', async (t) => {
   const root = mkdtempSync(join(tmpdir(), 'mixdog-prefetch-windows-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
