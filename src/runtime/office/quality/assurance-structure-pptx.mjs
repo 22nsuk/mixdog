@@ -697,6 +697,10 @@ function reviewPptxTextOcclusion(slide, textShapes, issues) {
 // wholly outside are its neighbour, and a deep crossing is a deliberate overlay; only a shallow crossing of one
 // edge (more than 2 pt, less than half the text) is reported.
 const TEXT_EDGE_SLACK_PT = 2;
+// Only a surface drawn to its frame has the frame's edges. A disc, an arc or a chevron fills part of its box, so
+// text over a corner of that box sits beside the drawn shape: a loop's stage names by its quarter arcs, a Venn set's
+// name by the neighbouring disc.
+const FRAME_EDGED_GEOMETRY = new Set(['rect', 'roundRect']);
 
 function reviewPptxTextEdgeCrossing(slide, textShapes, issues) {
   for (const textShape of textShapes) {
@@ -706,6 +710,7 @@ function reviewPptxTextEdgeCrossing(slide, textShapes, issues) {
     for (const surface of slide.shapes || []) {
       if (surface === textShape || isMotifShape(surface) || String(surface.text || '').trim()) continue;
       if (!isPptxPicture(surface) && !solidShapeFill(surface)) continue;
+      if (surface.geometry && !FRAME_EDGED_GEOMETRY.has(surface.geometry)) continue;
       if (!hasFrame(surface)) continue;
       const s = { l: Number(surface.left), t: Number(surface.top), w: Number(surface.width), h: Number(surface.height) };
       const across = Math.min(t.l + t.w, s.l + s.w) - Math.max(t.l, s.l);

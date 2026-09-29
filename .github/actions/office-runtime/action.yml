@@ -1,13 +1,14 @@
 name: Office runtime
 description: >-
   Fonts and the LibreOffice release the Office suites render and recalculate
-  with on an Ubuntu runner.
+  with on an Ubuntu or macOS runner.
 runs:
   using: composite
   steps:
-    # Office audits measure text in the deck's own faces and Ubuntu ships none
-    # of the Microsoft families; the metric-compatible Liberation faces stand in
-    # for Arial, Times New Roman, and Courier New
+    # Office audits measure text in the deck's own faces and neither runner
+    # ships the Microsoft families; the metric-compatible Liberation faces
+    # stand in for Arial, Times New Roman, and Courier New, and Carlito for
+    # Calibri, the workbook default whose digit sizes a column
     # (src/runtime/office/portable/text-metrics.mjs). The PDF suites write
     # Hangul through NanumGothic.ttf, which heads the Linux list in
     # pdf-fonts.mjs (a .ttc collection such as Noto CJK cannot be embedded).
@@ -20,6 +21,11 @@ runs:
     # add-apt-repository spent ~25s resolving it through the Launchpad API on
     # every run, then refreshed the package lists a second time.
     - name: Install fonts and LibreOffice
+      if: runner.os == 'macOS'
+      shell: bash
+      run: brew install --cask libreoffice font-carlito
+    - name: Install fonts and LibreOffice
+      if: runner.os == 'Linux'
       shell: bash
       run: |
         set -euo pipefail
@@ -30,4 +36,19 @@ runs:
         # nothing on a CI runner reads them.
         sudo rm -f /var/lib/man-db/auto-update
         sudo apt-get update -qq
-        sudo apt-get install -y -qq --no-install-recommends fonts-liberation fonts-nanum libreoffice-writer libreoffice-impress libreoffice-calc
+        sudo apt-get install -y -qq --no-install-recommends fonts-liberation fonts-crosextra-carlito fonts-nanum libreoffice-writer libreoffice-impress libreoffice-calc
+    # Decks author in Noto Sans, Noto Sans KR and Noto Sans JP, and a Latin
+    # face's Hangul measures in Noto Sans KR where Malgun Gothic is missing.
+    # The runtime's own provisioner installs them into the user font directory,
+    # as it does for a user, so audits and the rendered review see the faces a
+    # document declares.
+    - name: Provision the Office Noto fonts
+      shell: bash
+      run: |
+        node --input-type=module <<'NODE'
+        import { NOTO_FONT_DEFINITIONS, prepareOfficeFonts } from './src/runtime/office/portable/font-provisioner.mjs';
+        const ids = new Set(['noto-sans-latin', 'noto-sans-kr', 'noto-sans-jp']);
+        const results = await prepareOfficeFonts({ targets: NOTO_FONT_DEFINITIONS.filter((font) => ids.has(font.id)) });
+        console.log(JSON.stringify(results, null, 2));
+        if (!Object.values(results).every((font) => font.installed)) process.exit(1);
+        NODE

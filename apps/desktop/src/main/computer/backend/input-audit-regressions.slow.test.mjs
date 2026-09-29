@@ -832,7 +832,7 @@ public sealed class ElementFixture {
   }
 }
 '@
-foreach ($name in @('Do-Invoke','Do-ClickFamily','New-ActionResult','Background-Unavailable')) {
+foreach ($name in @('Do-Invoke','Do-ClickFamily','New-ActionResult','Get-VerifiedEffect','Background-Unavailable')) {
   . (Import-InputFunction $name)
 }
 function Invoke-BackgroundSemantic($ref,$body) { & $body }

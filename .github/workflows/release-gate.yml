@@ -169,17 +169,6 @@ jobs:
         run: npm ci --prefer-offline --no-audit --no-fund
       - name: Install fonts and LibreOffice for the Office suites
         uses: ./.github/actions/office-runtime
-      # The kit decks author in Noto Sans / Noto Sans KR. The runtime's own
-      # provisioner installs them into the user font directory, as it does for a
-      # user, so the rendered review sees the faces the deck declares.
-      - name: Provision the Office Noto core fonts
-        run: |
-          node --input-type=module <<'NODE'
-          import { prepareOfficeFonts } from './src/runtime/office/portable/font-provisioner.mjs';
-          const results = await prepareOfficeFonts({ coreOnly: true });
-          console.log(JSON.stringify(results, null, 2));
-          if (!Object.values(results).every((font) => font.installed)) process.exit(1);
-          NODE
       - name: Cache the native spawn test build
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -210,8 +199,8 @@ jobs:
           cache-dependency-path: package-lock.json
       - name: Install
         run: npm ci --prefer-offline --no-audit --no-fund
-      - name: Install LibreOffice for the Office suites
-        run: brew install --cask libreoffice
+      - name: Install fonts and LibreOffice for the Office suites
+        uses: ./.github/actions/office-runtime
       - name: Cache the native spawn test build
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:

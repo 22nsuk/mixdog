@@ -1,3 +1,4 @@
+import './usage-test-support.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';

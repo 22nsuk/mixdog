@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { appendFile, mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises';
+import { appendFile, mkdtemp, readdir, readFile, realpath, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FAILURE_RECORDS_ENV } from './test-failure-records.mjs';
@@ -107,7 +107,10 @@ export async function runNodeTests(
   // Test processes get a private temp root that is removed after the run, so
   // every fixture directory a test forgets to delete goes with it instead of
   // piling up in the system temp directory.
-  const scratchDir = await mkdtemp(join(tmpdir(), 'mixdog-test-scratch-'));
+  // Resolved, because macOS's temp directory sits behind the /var → /private/var
+  // link: a child's cwd and its file-watch events report the real path, and
+  // fixture paths built on the linked one no longer matched them.
+  const scratchDir = await realpath(await mkdtemp(join(tmpdir(), 'mixdog-test-scratch-')));
   const runArgs = [
     ...nodeArgs,
     `--test-reporter=${SUMMARY_REPORTER}`,
