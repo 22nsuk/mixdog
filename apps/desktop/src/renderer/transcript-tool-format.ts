@@ -37,6 +37,9 @@ export const TOOL_DETAIL_LABELS = {
   get failed() {
     return t('Failed');
   },
+  get targets() {
+    return t('Targets');
+  },
 };
 
 const TOOL_ACTIVITY_RESULT_COUNT_KEYS = new Map([
@@ -236,12 +239,79 @@ function toolActivityQuoted(value: unknown): string {
 export function toolActivityCommand(args: Record<string, unknown>): string {
   const direct = toolActivityFirstText(args, 'command', 'cmd', 'description');
   if (direct) return direct;
-  const commands = toolActivityStringList(args.commands);
+  const commands = toolActivityStringList(args.commands ?? args.command);
   return commands.join('\n');
 }
 
 function toolActivityPath(args: Record<string, unknown>): string {
   return toolActivityFirstText(args, 'file_path', 'filePath', 'path', 'file', 'target');
+}
+
+/** A batch argument as its entries: a string is one entry, an array each. */
+function toolActivityValues(value: unknown): string[] {
+  if (typeof value === 'string') return value.trim() ? [value.trim()] : [];
+  return toolActivityStringList(value);
+}
+
+type ToolActivityTargetNoun = 'file' | 'pattern' | 'query' | 'command' | 'URL' | 'path' | 'symbol';
+
+function toolActivityTargetCount(noun: ToolActivityTargetNoun, count: number): string {
+  switch (noun) {
+    case 'file':
+      return t('{{count}} files', { count });
+    case 'pattern':
+      return t('{{count}} patterns', { count });
+    case 'query':
+      return t('{{count}} queries', { count });
+    case 'command':
+      return t('{{count}} commands', { count });
+    case 'URL':
+      return t('{{count}} URLs', { count });
+    case 'path':
+      return t('{{count}} paths', { count });
+    default:
+      return t('{{count}} symbols', { count });
+  }
+}
+
+/** One target reads as itself, several as a count ("3 files"). */
+function toolActivityOneOrCount(
+  values: string[],
+  noun: ToolActivityTargetNoun,
+  format: (value: string) => string = (value) => toolActivityInline(value)
+): string {
+  if (values.length > 1) return toolActivityTargetCount(noun, values.length);
+  return values.length ? format(values[0]) : '';
+}
+
+/** `path:start-end`: the line window in the reference form paths already use. */
+function readTarget(path: string, offsetValue: unknown, limitValue: unknown): string {
+  const offset = Number(offsetValue);
+  const limit = Number(limitValue);
+  const hasOffset = Number.isFinite(offset) && offset > 0;
+  const hasLimit = Number.isFinite(limit) && limit > 0;
+  const start = hasOffset ? Math.floor(offset) : 1;
+  let window = '';
+  if (hasLimit) window = `:${start}-${start + Math.floor(limit) - 1}`;
+  else if (hasOffset) window = `:${start}+`;
+  return path ? `${path}${window}` : '';
+}
+
+function readTargets(args: Record<string, unknown>): string[] {
+  const value = args.file_path ?? args.path;
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => {
+      if (typeof entry === 'string') return entry.trim();
+      if (!entry || typeof entry !== 'object') return '';
+      const record = entry as Record<string, unknown>;
+      return readTarget(
+        toolActivityFirstText(record, 'file_path', 'filePath', 'path'),
+        record.offset ?? args.offset,
+        record.limit ?? args.limit
+      );
+    })
+    .filter(Boolean);
 }
 
 // One entry per normalized tool name, shared by every name in a group.
@@ -256,39 +326,48 @@ function byToolName<T>(groups: Array<[names: string[], value: T]>): Record<strin
 type ToolSubjectFormatter = (args: Record<string, unknown>, path: string, fallback: string) => string;
 
 function readSubject(args: Record<string, unknown>, path: string): string {
-  const paths = toolActivityStringList(args.file_path ?? args.path);
-  const target = paths.length > 1 ? `${paths.length} files` : paths[0] || path;
-  const offset = Number(args.offset);
-  const limit = Number(args.limit);
-  const hasOffset = Number.isFinite(offset) && offset > 0;
-  const hasLimit = Number.isFinite(limit) && limit > 0;
-  let window = '';
-  if (hasOffset && hasLimit) window = `lines ${offset}-${offset + limit - 1}`;
-  else if (hasOffset) window = `from line ${offset}`;
-  else if (hasLimit) window = `${limit} lines`;
-  return toolActivityCompact([target, window]);
+  const paths = readTargets(args);
+  if (paths.length > 1) return toolActivityTargetCount('file', paths.length);
+  return readTarget(paths[0] || path, args.offset, args.limit);
 }
 
 function grepSubject(args: Record<string, unknown>): string {
-  const patterns = toolActivityStringList(args.pattern ?? args.query);
-  const pattern = patterns.length > 1 ? `${patterns.length} patterns` : toolActivityQuoted(args.pattern ?? args.query);
   return toolActivityCompact([
-    pattern,
-    args.path ? `in ${toolActivityInline(args.path)}` : '',
+    toolActivityOneOrCount(toolActivityValues(args.pattern ?? args.query), 'pattern', toolActivityQuoted),
+    toolActivityOneOrCount(toolActivityValues(args.path), 'path'),
     args.glob ? toolActivityInline(args.glob) : '',
   ]);
 }
 
 function globSubject(args: Record<string, unknown>): string {
-  const patterns = toolActivityStringList(args.pattern ?? args.glob);
-  const pattern = patterns.length > 1 ? `${patterns.length} globs` : toolActivityInline(args.pattern ?? args.glob);
-  return toolActivityCompact([pattern, args.path ? `in ${toolActivityInline(args.path)}` : '']);
+  return toolActivityCompact([
+    toolActivityOneOrCount(toolActivityValues(args.pattern ?? args.glob), 'pattern'),
+    toolActivityOneOrCount(toolActivityValues(args.path), 'path'),
+  ]);
 }
 
 function findSubject(args: Record<string, unknown>): string {
-  const queries = toolActivityStringList(args.query ?? args.fuzzy);
-  const query = queries.length > 1 ? `${queries.length} queries` : toolActivityQuoted(args.query ?? args.fuzzy);
-  return toolActivityCompact([query, args.path ? `in ${toolActivityInline(args.path)}` : '']);
+  return toolActivityCompact([
+    toolActivityOneOrCount(toolActivityValues(args.query ?? args.fuzzy), 'query', toolActivityQuoted),
+    toolActivityOneOrCount(toolActivityValues(args.path), 'path'),
+  ]);
+}
+
+function codeGraphSubject(args: Record<string, unknown>): string {
+  return (
+    toolActivityCompact([
+      toolActivityOneOrCount(toolActivityValues(args.symbols ?? args.symbol), 'symbol'),
+      toolActivityOneOrCount(toolActivityValues(args.files ?? args.file ?? args.path), 'file'),
+    ]) ||
+    toolActivityQuoted(args.query) ||
+    toolActivityInline(args.mode ?? args.action ?? '')
+  );
+}
+
+function commandSubject(args: Record<string, unknown>): string {
+  const commands = toolActivityValues(args.commands ?? args.command);
+  if (commands.length > 1) return toolActivityTargetCount('command', commands.length);
+  return toolActivityInline(toolActivityCommand(args), 1_000);
 }
 
 function questionsSubject(args: Record<string, unknown>): string {
@@ -303,29 +382,36 @@ const TOOL_SUBJECTS = byToolName<ToolSubjectFormatter>([
   [['view_image', 'read_mcp_resource'], (args, path) => path || toolActivityFirstText(args, 'uri')],
   [['edit', 'strreplace', 'str_replace', 'str_replace_editor', 'search_replace'], (_args, path) => path],
   [['apply_patch'], (_args, _path, fallback) => fallback],
-  [
-    ['shell', 'bash', 'bash_session', 'shell_command', 'job_wait', 'git'],
-    (args) => toolActivityInline(toolActivityCommand(args), 1_000),
-  ],
-  [
-    ['git_stage'],
-    (args) => {
-      const files = toolActivityStringList(args.files ?? args.paths);
-      return files.length > 2 ? `${files.length} files` : files.join(', ');
-    },
-  ],
+  [['shell', 'bash', 'bash_session', 'shell_command', 'job_wait', 'git'], commandSubject],
+  [['git_stage'], (args) => toolActivityOneOrCount(toolActivityValues(args.files ?? args.paths), 'file')],
   [['grep'], grepSubject],
   [['glob'], globSubject],
   [['find'], findSubject],
+  [['code_graph'], codeGraphSubject],
   [
     ['list', 'ls'],
-    (args, path) => toolActivityCompact([path, args.limit ? `${toolActivityInline(args.limit)} entries` : '']),
+    (args) =>
+      toolActivityCompact([
+        toolActivityOneOrCount(toolActivityValues(args.path ?? args.dir ?? args.cwd), 'path'),
+        Number(args.limit) > 0 ? t('{{count}} entries', { count: Number(args.limit) }) : '',
+      ]),
   ],
   [
     ['web_search', 'web_search_call', 'search_query', 'image_query'],
-    (args) => toolActivityQuoted(args.query ?? args.keywords),
+    (args) =>
+      toolActivityOneOrCount(
+        toolActivityValues(args.query ?? args.queries ?? args.keywords),
+        'query',
+        toolActivityQuoted
+      ),
   ],
-  [['web_fetch', 'fetch'], (args, _path, fallback) => toolActivityInline(args.url ?? args.uri ?? fallback, 1_000)],
+  [
+    ['web_fetch', 'fetch'],
+    (args, _path, fallback) =>
+      toolActivityOneOrCount(toolActivityValues(args.url ?? args.urls ?? args.uri), 'URL', (value) =>
+        toolActivityInline(value, 1_000)
+      ) || fallback,
+  ],
   [
     ['load_tool'],
     (args, _path, fallback) => {
@@ -351,81 +437,42 @@ export function toolActivitySubject(normalizedName: string, args: Record<string,
   return format ? format(args, toolActivityPath(args), fallback) : fallback;
 }
 
-export function toolActivityTitle(
-  normalizedName: string,
-  originalName: string,
-  surfaceLabel: string,
-  args: Record<string, unknown>
-): string {
-  if (originalName === 'write') return t('Write');
-  if (originalName === 'question') return t('Questions');
-  if (originalName === 'todowrite' || Array.isArray(args.todos)) return t('Todos');
-  switch (normalizedName) {
-    case 'read':
-      return t('Read');
-    case 'view_image':
-      return t('Image');
-    case 'read_mcp_resource':
-      return t('Resource');
-    case 'edit':
-    case 'strreplace':
-    case 'str_replace':
-    case 'str_replace_editor':
-    case 'search_replace':
-      return t('Edit');
-    case 'git':
-    case 'git_stage':
-      return t('Git');
-    case 'shell':
-    case 'bash':
-    case 'bash_session':
-    case 'shell_command':
-    case 'job_wait':
-      return t('Run');
-    case 'grep':
-    case 'glob':
-    case 'find':
-      return t('Search');
-    case 'list':
-    case 'ls':
-      return t('List');
-    case 'web_search':
-    case 'web_search_call':
-    case 'search_query':
-    case 'image_query':
-      return t('Web Search');
-    case 'web_fetch':
-    case 'fetch':
-      return t('Fetch');
-    case 'load_tool':
-      return t('Load');
-    case 'task':
-      return t('Task');
-    case 'browser':
-    case 'browser_devtools':
-      return t('Browser Use');
-    case 'computer':
-      return t('Computer Use');
-    case 'office':
-      return t('Document work');
-    case 'tidy':
-      return t('Code Tidy');
-    case 'agent':
-    case 'bridge':
-      return t('Agent');
-    case 'request_user_input':
-      return t('Questions');
-    case 'update_plan':
-      return t('Plan');
-    case 'skill':
-    case 'skill_execute':
-    case 'skill_view':
-    case 'skills_list':
-    case 'use_skill':
-      return toolActivityFirstText(args, 'name', 'skill', 'skill_name', 'query') || t('Skill');
-    default:
-      return surfaceLabel || originalName || t('Tool');
-  }
+/** A call's batchable arguments, one list per argument (patterns, paths…). */
+type ToolTargetsFormatter = (args: Record<string, unknown>) => string[][];
+
+// Each entry of a batch call, listed in the detail view only when one call
+// carried several targets (the row itself then reads "3 files").
+const TOOL_TARGETS = byToolName<ToolTargetsFormatter>([
+  [['read'], (args) => [readTargets(args)]],
+  [
+    ['grep'],
+    (args) => [toolActivityValues(args.pattern ?? args.query).map(toolActivityQuoted), toolActivityValues(args.path)],
+  ],
+  [['glob'], (args) => [toolActivityValues(args.pattern ?? args.glob), toolActivityValues(args.path)]],
+  [
+    ['find'],
+    (args) => [toolActivityValues(args.query ?? args.fuzzy).map(toolActivityQuoted), toolActivityValues(args.path)],
+  ],
+  [
+    ['code_graph'],
+    (args) => [toolActivityValues(args.symbols ?? args.symbol), toolActivityValues(args.files ?? args.file ?? args.path)],
+  ],
+  [['list', 'ls'], (args) => [toolActivityValues(args.path ?? args.dir ?? args.cwd)]],
+  [
+    ['shell', 'bash', 'bash_session', 'shell_command', 'job_wait', 'git'],
+    (args) => [toolActivityValues(args.commands ?? args.command)],
+  ],
+  [['git_stage'], (args) => [toolActivityValues(args.files ?? args.paths)]],
+  [
+    ['web_search', 'web_search_call', 'search_query', 'image_query'],
+    (args) => [toolActivityValues(args.query ?? args.queries ?? args.keywords).map(toolActivityQuoted)],
+  ],
+  [['web_fetch', 'fetch'], (args) => [toolActivityValues(args.url ?? args.urls ?? args.uri)]],
+]);
+
+/** Every entry of each argument that carried more than one; empty when none did. */
+export function toolActivityTargets(normalizedName: string, args: Record<string, unknown>): string[] {
+  return (TOOL_TARGETS[normalizedName]?.(args) ?? []).filter((values) => values.length > 1).flat();
 }
 
 export function toolActivityFieldLabel(key: string): string {
@@ -498,11 +545,11 @@ const TOOL_REPRESENTED_KEYS = byToolName<readonly string[]>([
   ],
   [
     ['web_search', 'web_search_call', 'search_query', 'image_query'],
-    ['query', 'keywords'],
+    ['query', 'queries', 'keywords'],
   ],
   [
     ['web_fetch', 'fetch'],
-    ['url', 'uri'],
+    ['url', 'urls', 'uri'],
   ],
   [['load_tool'], ['names', 'select', 'query', 'q', 'text']],
   [

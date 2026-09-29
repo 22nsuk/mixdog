@@ -417,8 +417,123 @@ test('desktop activity uses concrete control, MCP server, and skill names', () =
       args: { name: 'gamerscroll-article' },
       result: 'ok',
     }).title,
-    'gamerscroll-article'
+    'Skill gamerscroll-article'
   );
+});
+
+test('desktop activity lists every call as one row under the summary, without category folders', async () => {
+  const dom = installToolActivityDom('Mozilla/5.0 Electron/41.0.0');
+  try {
+    await act(async () => {
+      dom.root.render(
+        React.createElement(ToolActivityGroup, {
+          items: [
+            { kind: 'tool', id: 'grep-1', name: 'grep', args: { pattern: 'first' }, result: 'ok', completedAt: 1 },
+            { kind: 'tool', id: 'grep-2', name: 'grep', args: { pattern: 'second' }, result: 'ok', completedAt: 1 },
+            {
+              kind: 'tool',
+              id: 'shell',
+              name: 'shell',
+              args: { command: 'npm test' },
+              result: 'Error: tests failed',
+              isError: true,
+              completedAt: 1,
+            },
+          ],
+        })
+      );
+    });
+    const group = document.querySelector('.tool-activity');
+    assert.equal(group?.querySelector('.tool-activity-title')?.textContent?.trim(), 'Content search 2 · Command execution');
+    assert.equal(group?.querySelector('.tool-activity-failed')?.textContent, '1 failed');
+
+    await act(async () => {
+      group
+        ?.querySelector('.tool-activity-header')
+        ?.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+    });
+    assert.equal(group?.querySelectorAll('.tool-activity-category').length, 0);
+    assert.deepEqual(
+      [...(group?.querySelectorAll('.tool-activity-item-title b') ?? [])].map((node) => node.textContent),
+      ['Content search', 'Content search', 'Command execution']
+    );
+  } finally {
+    await act(async () => dom.root.unmount());
+    dom.close();
+  }
+});
+
+test('desktop activity counts batch targets on the row and lists them in the detail', () => {
+  const read = desktopToolActivityItemPresentation({
+    kind: 'tool',
+    id: 'read-batch',
+    name: 'read',
+    args: { file_path: ['src/a.ts', { file_path: 'src/b.ts', offset: 10, limit: 5 }] },
+    result: 'ok',
+    completedAt: 1,
+  });
+  assert.equal(read.title, 'File reading');
+  assert.equal(read.subject, '2 files');
+  assert.deepEqual(read.targets, ['src/a.ts', 'src/b.ts:10-14']);
+  assert.equal(read.hasDetails, true);
+
+  const window = desktopToolActivityItemPresentation({
+    kind: 'tool',
+    id: 'read-window',
+    name: 'read',
+    args: { file_path: 'src/a.ts', offset: 3 },
+    result: 'ok',
+    completedAt: 1,
+  });
+  assert.equal(window.subject, 'src/a.ts:3+');
+  assert.deepEqual(window.targets, []);
+
+  const grep = desktopToolActivityItemPresentation({
+    kind: 'tool',
+    id: 'grep-batch',
+    name: 'grep',
+    args: { pattern: ['foo', 'bar'], path: 'src' },
+    result: 'ok',
+    completedAt: 1,
+  });
+  assert.equal(grep.subject, '2 patterns · src');
+  assert.deepEqual(grep.targets, ['"foo"', '"bar"']);
+
+  const single = desktopToolActivityItemPresentation({
+    kind: 'tool',
+    id: 'grep-single',
+    name: 'grep',
+    args: { pattern: 'foo', path: 'src' },
+    result: 'ok',
+    completedAt: 1,
+  });
+  assert.equal(single.subject, '"foo" · src');
+  assert.deepEqual(single.targets, []);
+
+  const git = desktopToolActivityItemPresentation({
+    kind: 'tool',
+    id: 'git-batch',
+    name: 'git',
+    args: { command: ['git status', 'git diff'] },
+    result: '## git status\nclean\n## git diff\n',
+    completedAt: 1,
+  });
+  assert.equal(git.title, 'Git commands');
+  assert.equal(git.subject, '2 commands');
+  assert.deepEqual(git.targets, ['git status', 'git diff']);
+  assert.equal(git.command, '');
+
+  const graph = desktopToolActivityItemPresentation({
+    kind: 'tool',
+    id: 'graph',
+    name: 'code_graph',
+    args: { mode: 'symbols', files: ['a.ts', 'b.ts'] },
+    result: 'ok',
+    completedAt: 1,
+  });
+  assert.equal(graph.title, 'Code structure');
+  assert.equal(graph.subject, '2 files');
+  assert.deepEqual(graph.targets, ['a.ts', 'b.ts']);
 });
 
 test('desktop activity normalizes common provider tool aliases', () => {
@@ -463,7 +578,7 @@ test('desktop activity item headers remove atomic counts and represented argumen
     rawResult: 'clean',
     completedAt: 1,
   });
-  assert.equal(git.title, 'Git');
+  assert.equal(git.title, 'Git commands');
   assert.equal(git.subject, 'git status --short');
   assert.equal(git.resultLabel, 'clean');
   assert.deepEqual(git.fields, []);
@@ -482,7 +597,7 @@ test('desktop activity item headers remove atomic counts and represented argumen
     result: 'updated',
     completedAt: 1,
   });
-  assert.equal(edit.title, 'Edit');
+  assert.equal(edit.title, 'File editing');
   assert.equal(edit.subject, 'src/a.ts');
   assert.equal(edit.beforeText, 'old');
   assert.equal(edit.afterText, 'new');
@@ -546,7 +661,7 @@ test('desktop activity masks secret fields and keeps routine load results collap
     result: 'Loaded skill',
     completedAt: 1,
   });
-  assert.equal(skill.title, 'setup');
+  assert.equal(skill.title, 'Skill setup');
   assert.equal(skill.subject, '');
   assert.equal(skill.resultLabel, '');
   assert.equal(skill.hasDetails, false);
@@ -575,7 +690,7 @@ test('desktop activity keeps failures visible and suppresses image marker bodies
     result: '[image: shot.png]',
     completedAt: 1,
   });
-  assert.equal(image.title, 'Image');
+  assert.equal(image.title, 'Image viewing');
   assert.equal(image.resultLabel, 'Image');
   assert.equal(image.hasDetails, false);
 });
@@ -595,7 +710,7 @@ test('desktop activity prefers display results and hides successful mutation env
   assert.equal(patch.diffPatch.includes('src/a.ts'), true);
 });
 
-test('desktop activity keeps agent action and response titles specific', () => {
+test('desktop activity keeps agent action and response subjects specific', () => {
   const spawn = desktopToolActivityItemPresentation({
     kind: 'tool',
     id: 'agent-spawn',
@@ -603,7 +718,8 @@ test('desktop activity keeps agent action and response titles specific', () => {
     args: { type: 'spawn', agent: 'worker', model: 'gpt-6', tag: 'review' },
     completedAt: 1,
   });
-  assert.match(spawn.title, /^Spawn Worker/);
+  assert.equal(spawn.title, 'Agent calls');
+  assert.match(spawn.subject, /^Spawn Worker/);
 
   const response = desktopToolActivityItemPresentation({
     kind: 'tool',
@@ -613,7 +729,7 @@ test('desktop activity keeps agent action and response titles specific', () => {
     result: 'Reviewed the change.',
     completedAt: 1,
   });
-  assert.equal(response.title, 'Response Worker');
+  assert.equal(response.subject, 'Response Worker');
 });
 
 test('expanded tool detail stays in the runtime English while chips localize', () => {
@@ -625,7 +741,7 @@ test('expanded tool detail stays in the runtime English while chips localize', (
     result: 'written',
     completedAt: 1,
   });
-  assert.equal(write.title, 'Write');
+  assert.equal(write.title, 'File editing');
   // Detail labels are literals, never catalog keys: the body must read as the
   // tool reported it even when the collapsed row is localized.
   assert.equal(write.previewLabel, 'Content');

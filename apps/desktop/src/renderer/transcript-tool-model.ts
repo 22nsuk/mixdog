@@ -4,6 +4,7 @@ import { asRecord, oneLine } from './text-format';
 import {
   desktopToolActivityCategory,
   desktopToolActivityModeledName,
+  desktopToolActivityUnitLabel,
   toolActivityItemTone,
   toolItemDone,
   type ToolCardModel,
@@ -23,7 +24,7 @@ import {
   toolActivityRedactInlineSecrets,
   toolActivityRepresentedKeys,
   toolActivitySubject,
-  toolActivityTitle,
+  toolActivityTargets,
 } from './transcript-tool-format';
 import {
   toolActivityBackgroundTask,
@@ -69,6 +70,8 @@ interface DesktopToolActivityItemPresentation {
   category: string;
   title: string;
   subject: string;
+  /** Each target of a call that carried several (files, patterns, commands…). */
+  targets: string[];
   resultLabel: string;
   pending: boolean;
   tone: string;
@@ -136,21 +139,22 @@ export function desktopToolActivityItemPresentation(
   if (baseTone === 'neutral' && failed) tone = 'error';
   const resultValue = toolActivityResultValue(item);
   const structured = toolActivityStructuredRows(normalizedName, args, resultValue);
-  let title: string;
-  if (normalizedName !== 'agent') {
-    title = toolActivityTitle(normalizedName, originalName, surface.label, args);
-  } else if (model.isAgentResponse) {
-    title = agentResponseTitle(args, 1);
-  } else {
-    title = agentActionTitle(args) || toolActivityTitle(normalizedName, originalName, surface.label, args);
-  }
+  const title = desktopToolActivityUnitLabel(name, item.args);
+  let agentTitle = '';
+  if (normalizedName === 'agent') agentTitle = model.isAgentResponse ? agentResponseTitle(args, 1) : agentActionTitle(args);
   const subject = toolActivityRedactInlineSecrets(
-    toolActivitySubject(normalizedName, args, oneLine(String(model.summaryText || ''))),
+    agentTitle || toolActivitySubject(normalizedName, args, oneLine(String(model.summaryText || ''))),
     args
   );
-  const command = /^(?:shell|bash|bash_session|shell_command|job_wait|git)$/.test(normalizedName)
-    ? toolActivityCommand(args)
-    : '';
+  const targets = toolActivityTargets(normalizedName, args).map((target) =>
+    toolActivityRedactInlineSecrets(target, args)
+  );
+  // A batch of commands lists them as targets; its output keeps the per-command
+  // sections the tool already wrote.
+  const command =
+    /^(?:shell|bash|bash_session|shell_command|job_wait|git)$/.test(normalizedName) && !targets.length
+      ? toolActivityCommand(args)
+      : '';
   const represented = toolActivityRepresentedKeys(normalizedName);
   const category = desktopToolActivityCategory(name, item.args);
   if (category === 'MCP') {
@@ -253,6 +257,7 @@ export function desktopToolActivityItemPresentation(
   const outputLanguage = outputText && !command && /^[{[]/.test(outputText.trimStart()) ? 'json' : '';
   const hasDetails = Boolean(
     command ||
+      targets.length ||
       fields.length ||
       diffPatch ||
       outputText ||
@@ -266,6 +271,7 @@ export function desktopToolActivityItemPresentation(
     category,
     title,
     subject,
+    targets,
     resultLabel,
     pending: model.pending,
     tone,

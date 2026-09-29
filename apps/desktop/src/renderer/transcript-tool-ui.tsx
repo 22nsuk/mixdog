@@ -11,6 +11,7 @@ import { TranscriptArtifacts } from './transcript-artifacts-ui';
 import {
   desktopToolActivityCategoryGroups,
   desktopToolActivityItemPresentation,
+  flattenedToolActivityItems,
   isHookApprovalDenialToolItem,
   TOOL_DETAIL_LABELS,
   toolActivityIsCompleted,
@@ -101,6 +102,14 @@ export const ToolActivityGroup = React.memo(function ToolActivityGroup({
   const contentId = useId();
   const pending = items.some((item) => !toolItemDone(item));
   const categoryGroups = useMemo(() => desktopToolActivityCategoryGroups(items), [items]);
+  const calls = useMemo(() => flattenedToolActivityItems(items), [items]);
+  // Counted with the same tone the call rows paint red, so a collapsed group
+  // still says that something inside it failed.
+  const failedCount = useMemo(
+    () =>
+      calls.filter((item) => toolItemDone(item) && desktopToolActivityItemPresentation(item).tone === 'error').length,
+    [calls]
+  );
   // A single call carries no count: "Skill mixdog-refs" not "Skill mixdog-refs 1".
   const categorySummary = (() => {
     const summary = new Map<string, number>();
@@ -123,8 +132,13 @@ export const ToolActivityGroup = React.memo(function ToolActivityGroup({
           <ListTree size={16} />
         </span>
         <span className="tool-title tool-activity-title" title={label}>
-          <b>{label}</b>
+          <b>
+            <TextShimmer text={label} active={pending} />
+          </b>
         </span>
+        {failedCount > 0 && (
+          <span className="tool-state failed tool-activity-failed">{t('{{count}} failed', { count: failedCount })}</span>
+        )}
         {pending && (
           <span className="sr-only" role="status">
             {t('Running')}
@@ -136,7 +150,7 @@ export const ToolActivityGroup = React.memo(function ToolActivityGroup({
       </button>
       {open && (
         <div className="tool-activity-content" id={contentId}>
-          <ToolActivityDetails groups={categoryGroups} disclosureKey={disclosureKey} />
+          <ToolActivityDetails items={calls} disclosureKey={disclosureKey} />
         </div>
       )}
       <TranscriptArtifacts items={items} />
@@ -148,126 +162,45 @@ function activityItemKey(item: TranscriptItem, index: number): string {
   return String(item.id ?? `${String(item.name || 'tool')}:${index}`);
 }
 
-function disclosureChildKey(parent: string, kind: 'category' | 'item', id: string): string {
-  return parent ? `${parent}:${kind}:${id}` : '';
+function disclosureChildKey(parent: string, id: string): string {
+  return parent ? `${parent}:item:${id}` : '';
 }
 
-function ToolActivityDetails({
-  groups,
-  disclosureKey,
-}: {
-  groups: ReturnType<typeof desktopToolActivityCategoryGroups>;
-  disclosureKey: string;
-}) {
+/** One row per call, in call order: the group summary above is the only
+ *  roll-up, so every row below it is the same kind of thing. */
+function ToolActivityDetails({ items, disclosureKey }: { items: readonly TranscriptItem[]; disclosureKey: string }) {
   const contentId = useId();
-  const allItems = groups.flatMap((group) => group.items);
-  const rememberedCategory = () =>
-    groups.find(
-      (group) => toolDisclosureStates.get(disclosureChildKey(disclosureKey, 'category', group.unitKey)) === true
-    )?.unitKey ?? null;
-  const rememberedItem = () =>
-    allItems.find(
-      (item, index) =>
-        toolDisclosureStates.get(disclosureChildKey(disclosureKey, 'item', activityItemKey(item, index))) === true
+  const rememberedItem = () => {
+    const index = items.findIndex(
+      (item, itemIndex) =>
+        toolDisclosureStates.get(disclosureChildKey(disclosureKey, activityItemKey(item, itemIndex))) === true
     );
-  const [openCategory, setOpenCategory] = useState<string | null>(rememberedCategory);
-  const [openItem, setOpenItem] = useState<string | null>(() => {
-    const item = rememberedItem();
-    return item ? activityItemKey(item, allItems.indexOf(item)) : null;
-  });
+    return index >= 0 ? activityItemKey(items[index], index) : null;
+  };
+  const [openItem, setOpenItem] = useState<string | null>(rememberedItem);
   useLayoutEffect(() => {
-    setOpenCategory(rememberedCategory());
-    const item = rememberedItem();
-    setOpenItem(item ? activityItemKey(item, allItems.indexOf(item)) : null);
-  }, [disclosureKey, groups]);
-
-  const rememberToggledDisclosure = (kind: 'category' | 'item', id: string, open: string | null): string | null => {
-    const next = open === id ? null : id;
-    if (open) {
-      rememberToolDisclosure(disclosureChildKey(disclosureKey, kind, open), false);
-    }
-    rememberToolDisclosure(disclosureChildKey(disclosureKey, kind, id), next !== null);
-    return next;
-  };
-
-  const toggleCategory = (category: string) => {
-    const next = rememberToggledDisclosure('category', category, openCategory);
-    if (openItem) {
-      rememberToolDisclosure(disclosureChildKey(disclosureKey, 'item', openItem), false);
-      setOpenItem(null);
-    }
-    setOpenCategory(next);
-  };
+    setOpenItem(rememberedItem());
+  }, [disclosureKey, items]);
 
   const toggleItem = (key: string) => {
-    setOpenItem(rememberToggledDisclosure('item', key, openItem));
+    const next = openItem === key ? null : key;
+    if (openItem) rememberToolDisclosure(disclosureChildKey(disclosureKey, openItem), false);
+    rememberToolDisclosure(disclosureChildKey(disclosureKey, key), next !== null);
+    setOpenItem(next);
   };
 
-  let itemIndex = 0;
   return (
     <div className="tool-activity-details">
-      {groups.map((group, groupIndex) => {
-        const groupItems = group.items.map((item) => ({
-          item,
-          index: itemIndex++,
-        }));
-        const singleItem = groupItems.length === 1 && group.count === 1 ? groupItems[0] : null;
-        if (singleItem) {
-          const key = activityItemKey(singleItem.item, singleItem.index);
-          return (
-            <ToolActivityItem
-              key={key}
-              item={singleItem.item}
-              open={openItem === key}
-              onToggle={() => toggleItem(key)}
-              contentId={`${contentId}-item-${singleItem.index}`}
-            />
-          );
-        }
-        const categoryOpen = openCategory === group.unitKey;
-        const categoryPending = group.items.some((item) => !toolItemDone(item));
-        const categoryContentId = `${contentId}-category-${groupIndex}`;
+      {items.map((item, index) => {
+        const key = activityItemKey(item, index);
         return (
-          <section className="tool-activity-category" data-open={categoryOpen ? 'true' : 'false'} key={group.unitKey}>
-            <button
-              type="button"
-              className="tool-header tool-activity-category-header"
-              onPointerDown={(event) => event.stopPropagation()}
-              onClick={() => toggleCategory(group.unitKey)}
-              aria-expanded={categoryOpen}
-              aria-controls={categoryContentId}
-            >
-              <span className="tool-icon">{toolIcon(group.category)}</span>
-              <span className="tool-title tool-activity-category-title">
-                <b>{group.label}</b>
-                <small>{group.count}</small>
-              </span>
-              {categoryPending && (
-                <span className="sr-only" role="status">
-                  {t('Running')}
-                </span>
-              )}
-              <span className="tool-chevron" aria-hidden="true">
-                <ChevronRight size={16} />
-              </span>
-            </button>
-            {categoryOpen && (
-              <div className="tool-activity-category-items" id={categoryContentId}>
-                {groupItems.map(({ item, index }) => {
-                  const key = activityItemKey(item, index);
-                  return (
-                    <ToolActivityItem
-                      key={key}
-                      item={item}
-                      open={openItem === key}
-                      onToggle={() => toggleItem(key)}
-                      contentId={`${contentId}-item-${index}`}
-                    />
-                  );
-                })}
-              </div>
-            )}
-          </section>
+          <ToolActivityItem
+            key={key}
+            item={item}
+            open={openItem === key}
+            onToggle={() => toggleItem(key)}
+            contentId={`${contentId}-item-${index}`}
+          />
         );
       })}
     </div>
@@ -483,6 +416,16 @@ function renderToolActivityDetails(presentation: ToolActivityPresentation, conte
   return (
     <div className="tool-activity-item-body" id={contentId}>
       {presentation.metaText && <p className="tool-activity-item-meta">{presentation.metaText}</p>}
+      {presentation.targets.length > 0 && (
+        <section className="tool-activity-item-section">
+          <span>{TOOL_DETAIL_LABELS.targets}</span>
+          <ul className="tool-activity-targets">
+            {presentation.targets.map((target, index) => (
+              <li key={`${target}:${index}`}>{target}</li>
+            ))}
+          </ul>
+        </section>
+      )}
       {presentation.command && renderToolActivityTerminal(presentation)}
       {presentation.structuredRows.length > 0 && renderToolActivityStructured(presentation)}
       {presentation.previewText && (

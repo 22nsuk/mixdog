@@ -317,6 +317,12 @@ function desktopToolActivityUnit(
   return { category, done, noun, unitKey: named.unitKey, label: named.label };
 }
 
+/** The work-unit name a call is counted under in the group summary; its own
+ *  row carries the same name so the two levels read as one vocabulary. */
+export function desktopToolActivityUnitLabel(name: unknown, args: unknown): string {
+  return desktopToolActivityUnit(name, args).label;
+}
+
 interface ToolActivityCategoryGroup {
   unitKey: string;
   category: string;

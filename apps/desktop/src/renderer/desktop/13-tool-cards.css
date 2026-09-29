@@ -186,16 +186,21 @@
   gap: 6px;
 }
 .tool-activity[data-surface="desktop"] .tool-activity-title b,
-.tool-activity[data-surface="desktop"] .tool-activity-title small,
-.tool-activity[data-surface="desktop"] .tool-activity-category-title b,
-.tool-activity[data-surface="desktop"] .tool-activity-category-title small {
+.tool-activity[data-surface="desktop"] .tool-activity-title small {
   font-family: var(--mx-font-sans);
   font-size: var(--mx-font-ui);
   line-height: var(--mx-line-ui);
 }
+/* Level 1 of three (summary → call rows → call detail): the one roll-up line
+   carries full ink and the heavier label weight, so the muted call rows
+   beneath it never read as more summaries (user: 최상위 / 한 번 / 상세가
+   명확하게). */
 .tool-activity[data-surface="desktop"] .tool-activity-title b {
-  color: var(--mx-text-muted);
-  font-weight: var(--mx-weight-medium);
+  color: var(--mx-text);
+  font-weight: var(--mx-weight-semibold);
+}
+.tool-activity-failed {
+  line-height: var(--mx-line-meta);
 }
 .tool-activity[data-surface="desktop"] .tool-activity-title small {
   flex: 0 0 auto;
@@ -211,15 +216,17 @@
 .tool-activity-content > .tool-card {
   padding: 2px 0;
 }
+/* Level 2: every call row hangs off one rail. Rail at 8px (the 16px icon's
+   centre) + 1px hairline + 14px = 23px, exactly the summary's title column. */
 .tool-activity[data-surface="desktop"] > .tool-activity-content {
   gap: 4px;
-  padding: 6px 0 2px 23px;
+  margin: 4px 0 2px 8px;
+  padding: 2px 0 2px 14px;
+  border-left: 1px solid var(--mx-border-muted);
 }
-.tool-activity-category,
 .tool-activity-item {
   min-width: 0;
 }
-.tool-activity-category-header,
 .tool-activity-item-header {
   min-height: 24px;
   gap: 7px;
@@ -228,7 +235,6 @@
      proportional figures made the whole row twitch. */
   font-variant-numeric: tabular-nums;
 }
-.tool-activity-category-header > .tool-icon,
 .tool-activity-item-header > .tool-icon {
   width: 16px;
   height: 20px;
@@ -236,32 +242,12 @@
   color: var(--mx-text-faint);
   transform: none;
 }
-.tool-activity-category-title,
 .tool-activity-item-title {
   min-width: 0;
   display: inline-flex;
   align-items: center;
   gap: 6px;
   overflow: hidden;
-}
-/* Category labels share the outer activity header's typography. */
-.tool-activity-category-title b {
-  color: var(--mx-text-muted);
-  font-weight: var(--mx-weight-medium);
-}
-.tool-activity-category-title small {
-  flex: 0 0 auto;
-  color: var(--mx-text-faint);
-  font-weight: var(--mx-weight-regular);
-}
-/* Nested rows land on ONE rung: rail at 8px (the 16px icon's centre) + 1px
-   hairline + 14px = 23px, exactly the icon+gap title column every activity
-   header uses. The old 15px pushed these rows a pixel off that column. */
-.tool-activity-category-items {
-  min-width: 0;
-  margin: 2px 0 4px 8px;
-  padding: 2px 0 2px 14px;
-  border-left: 1px solid var(--mx-border-muted);
 }
 .tool-activity-item-title b,
 .tool-activity-item-title small {
@@ -336,18 +322,31 @@
     transition: none;
   }
 }
-/* Same 8 + 1 + 14 = 23px rung as the category rail above. The old
-   23 + 1 + 10 hung the detail 11px right of its own title column and put its
-   rail on a different vertical than every other rail in the group (user: 도구
-   상세 줄들만 레이아웃 통일성을 벗어난다). */
+/* Level 3: a call's detail is a framed box starting at its row's title column
+   (16px icon + 7px gap), never a second rail that would read as another list
+   level. */
 .tool-activity-item-body {
   min-width: 0;
   min-height: 0;
-  margin: 0 0 0 8px;
+  margin: 0 0 0 23px;
   overflow: hidden;
-  padding: 7px 0 7px 14px;
-  border-left: 1px solid var(--mx-border-muted);
+  padding: 8px 10px;
+  border-radius: var(--mx-radius-sm);
+  box-shadow: inset 0 0 0 1px var(--mx-border-muted);
   color: var(--mx-text-muted);
+}
+.tool-activity-targets {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--mx-text);
+  font-family: var(--mx-font-mono);
+  font-size: var(--mx-font-code);
+  line-height: var(--mx-line-ui);
+  overflow-wrap: anywhere;
 }
 .tool-activity-item-command {
   max-height: 180px;
@@ -758,7 +757,6 @@
 .tool-header:focus-visible .tool-chevron,
 .tool-card[data-open="true"] > .tool-header .tool-chevron,
 .tool-activity[data-open="true"] > .tool-activity-header .tool-chevron,
-.tool-activity-category[data-open="true"] > .tool-activity-category-header .tool-chevron,
 .tool-activity-item[data-open="true"] > .tool-activity-item-header .tool-chevron {
   opacity: 1;
 }
@@ -775,7 +773,6 @@
 }
 .tool-card[data-open="true"] > .tool-header .tool-chevron svg,
 .tool-activity[data-open="true"] > .tool-activity-header .tool-chevron svg,
-.tool-activity-category[data-open="true"] > .tool-activity-category-header .tool-chevron svg,
 .tool-activity-item[data-open="true"] > .tool-activity-item-header .tool-chevron svg {
   transform: rotate(90deg);
 }
