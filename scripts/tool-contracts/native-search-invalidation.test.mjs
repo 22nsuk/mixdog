@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, execFile as execFileCallback } from 'node:child_process';
-import { mkdtemp, mkdir, writeFile, rm, rename } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, realpath, rm, rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -93,7 +93,9 @@ function session(root, data) {
 }
 
 async function fixture(run) {
-  const base = await mkdtemp(join(tmpdir(), 'mg-native-invalidation-'));
+  // The resolved path: macOS's temp directory sits behind /var → /private/var, and the
+  // watcher reports the real one, so a root on the link never matched its own events.
+  const base = await realpath(await mkdtemp(join(tmpdir(), 'mg-native-invalidation-')));
   const root = join(base, 'repo');
   await mkdir(join(root, '.git', 'info'), { recursive: true });
   const sessions = [];

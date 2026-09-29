@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import JSZip from 'jszip';
 import { executeOfficeTool } from './index.mjs';
 import { officeSnapshotContractViolations } from './core/snapshot-contract.mjs';
-import { parts, value, workspace } from './office-test-support.mjs';
+import { MALGUN_GOTHIC_INSTALLED, parts, value, workspace } from './office-test-support.mjs';
 import { sessions } from './core/office-core.mjs';
 import { recalculateForReview } from './core/office-recalculation.mjs';
 import { cellRecords, sheetFormulaTotals } from './portable/portable-cells.mjs';
@@ -1413,7 +1413,7 @@ test('fitting columns keeps a withheld column withheld', async (t) => {
 test('a column width is stored as Excel stores it: the characters asked for and its padding, in the default digit', async (t) => {
   const fonts = (name) => `<styleSheet><fonts count="1"><font><sz val="11"/><name val="${name}"/></font></fonts></styleSheet>`;
   assert.equal(maximumDigitWidth(fonts('Calibri')), 7);
-  assert.equal(maximumDigitWidth(fonts('맑은 고딕')), 8);
+  if (MALGUN_GOTHIC_INSTALLED) assert.equal(maximumDigitWidth(fonts('맑은 고딕')), 8);
   // The values Excel itself wrote for ColumnWidth 9 and 5.2 in 맑은 고딕 11 (a column snaps to whole pixels).
   assert.equal(columnFileWidth(9, 8), 9.625);
   assert.equal(columnFileWidth(5.2, 8), 5.875);

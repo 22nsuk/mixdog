@@ -9,7 +9,7 @@ import { executeOfficeTool } from './index.mjs';
 import { applyPortableOoxmlBatch } from './portable/portable-ooxml.mjs';
 import { createPortableOoxmlDocument } from './portable/portable-package.mjs';
 import { describeOfficeSnapshotViolations, officeSnapshotContractViolations } from './core/snapshot-contract.mjs';
-import { PNG_PIXEL, parts, value, workspace, writeZip } from './office-test-support.mjs';
+import { MALGUN_GOTHIC_INSTALLED, PNG_PIXEL, parts, value, workspace, writeZip } from './office-test-support.mjs';
 import { contrastRatio } from './portable/text-metrics.mjs';
 import { validateXlsxOperations } from './portable/xlsx-contract.mjs';
 
@@ -5072,11 +5072,15 @@ test('text boxes are measured inside PowerPoint default insets, and an unfittabl
       { cwd }
     )
   );
-  // Seven lines at 8 pt need 67 pt of the 53: PowerPoint's own measure of this box.
+  // Seven lines at 8 pt need 67 pt of the 53: PowerPoint's own measure of this box, whose Hangul it sets in
+  // Malgun Gothic. A host without that face measures the Hangul in a stand-in; the box overflows all the same.
   assert.equal(fitted.results[0].fits, false);
   assert.equal(fitted.results[0].fontSize, 8);
   const after = value(await executeOfficeTool({ action: 'issues', session: created.session }, { cwd }));
-  assert.match(overflow(after.issues).message, /needs about 67pt but the shape allows 53pt/);
+  const message = overflow(after.issues).message;
+  const needs = Number(/needs about (\d+)pt but the shape allows 53pt/.exec(message)?.[1]);
+  if (MALGUN_GOTHIC_INSTALLED) assert.equal(needs, 67, message);
+  else assert.ok(needs > 53, message);
 });
 
 test('portable set_table_data rewrites an existing table in place', async (t) => {

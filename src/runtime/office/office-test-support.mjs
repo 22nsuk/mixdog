@@ -3,7 +3,14 @@ import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import JSZip from 'jszip';
+import { GlobalFonts } from '@napi-rs/canvas';
 import { resetOfficeSessionsForTest } from './index.mjs';
+
+// Office measures Hangul in Malgun Gothic, so its own figures for a Korean box hold only on a host with that face;
+// elsewhere a stand-in (Noto Sans KR, or the canvas's fallback) measures it.
+export const MALGUN_GOTHIC_INSTALLED = (GlobalFonts.families || []).some((entry) =>
+  /^malgun gothic$/i.test(String(entry?.family || ''))
+);
 
 // Shared fixtures for the Office test suites. Each suite decides its own
 // environment (for example MIXDOG_OOXML_VALIDATOR_DISABLED); this module has no side effects.

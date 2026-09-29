@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
@@ -117,7 +117,9 @@ function sample(cwd) {
 }
 
 async function fixture(t) {
-  const cwd = await mkdtemp(join(tmpdir(), 'mixdog-coverage-'));
+  // The resolved path: macOS's temp directory sits behind /var → /private/var, and a CLI
+  // spawned there reports the real cwd, so a path on the link read as outside the project.
+  const cwd = await realpath(await mkdtemp(join(tmpdir(), 'mixdog-coverage-')));
   t.after(() => rm(cwd, { recursive: true, force: true }));
   await mkdir(join(cwd, 'src/nested'), { recursive: true });
   await writeFile(join(cwd, 'src/nested/app.mjs'), APP_SOURCE);
