@@ -2,6 +2,7 @@
 // per-page roles the render review needs; an unreadable document degrades to
 // one advisory issue instead of failing QA.
 import { inferPptxSlideRoles, reviewOfficeDesign } from '../../quality/design-review.mjs';
+import { issue } from '../../quality/assurance-issue.mjs';
 import { reviewSnapshot } from '../office-actions-inspect.mjs';
 
 function unavailableDesignReview(session, error) {
@@ -11,15 +12,7 @@ function unavailableDesignReview(session, error) {
     profile: session.design?.profile || '',
     requiresVisualInspection: true,
     modelReview: [],
-    issues: [
-      {
-        severity: 'warning',
-        code: 'design_review_unavailable',
-        path: '/',
-        message: error?.message || String(error),
-        source: 'design-review',
-      },
-    ],
+    issues: [issue('design_review_unavailable', '/', error?.message || String(error), 'design-review')],
   };
 }
 

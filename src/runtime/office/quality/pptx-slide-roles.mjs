@@ -42,7 +42,7 @@ function isRegisteredText(shape, anchors) {
 
 // A diagram shape is a connector, a preset geometry that is not a plain text
 // rectangle, or a rectangle with a surface fill (a field, a plane, a lane).
-export function isPptxDiagramShape(shape) {
+function isPptxDiagramShape(shape) {
   if (!shape || shape.placeholder || isMotifShape(shape)) return false;
   if (shape.type === 'p:cxnSp') return true;
   if (shape.type !== 'p:sp' || !shape.geometry) return false;
@@ -53,7 +53,7 @@ export function isPptxDiagramShape(shape) {
 // count: the drawn shapes; fieldShare: the union box of those shapes and the
 // text registered to them (the slide's title — its largest type — excluded),
 // as a share of the canvas.
-export function pptxDiagramCoverage(slide, size = DEFAULT_SLIDE) {
+function pptxDiagramCoverage(slide, size = DEFAULT_SLIDE) {
   const all = (Array.isArray(slide?.shapes) ? slide.shapes : []).filter(
     (shape) => hasBox(shape) && !shape.placeholder && !isMotifShape(shape)
   );
@@ -80,7 +80,7 @@ export function pptxDiagramCoverage(slide, size = DEFAULT_SLIDE) {
 const PICTURE_MIN_SHARE = 0.25;
 
 // The share of the canvas under pictures (each frame's own area; overlaps count twice, which only helps a stack).
-export function pptxPictureShare(slide, size = DEFAULT_SLIDE) {
+function pptxPictureShare(slide, size = DEFAULT_SLIDE) {
   const canvas = canvasArea(size);
   const area = (Array.isArray(slide?.shapes) ? slide.shapes : [])
     .filter((shape) => shape?.type === 'p:pic' && Number(shape.width) > 0 && Number(shape.height) > 0)

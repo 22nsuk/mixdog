@@ -2257,8 +2257,11 @@ test('kit columns under a ruled stat band share its rule', () => {
 // audit fail). The claim steps down until it and its line end above the lower margin, as poster() does.
 test('kit numeral beat keeps a long claim and its line above the lower margin', () => {
   // Widths by script, near the rendered faces: a Hangul syllable an em, a figure half of one, a space under a third.
-  const ems = (part) =>
-    [...part].reduce((total, char) => total + (/[가-힣]/.test(char) ? 1 : char === ' ' ? 0.3 : 0.55), 0);
+  const emWidth = (char) => {
+    if (/[가-힣]/.test(char)) return 1;
+    return char === ' ' ? 0.3 : 0.55;
+  };
+  const ems = (part) => [...part].reduce((total, char) => total + emWidth(char), 0);
   const MEASURE = (text, { size = 15, width = 10, lineHeight = 1 } = {}) => {
     const parts = String(text).split('\n');
     const lines = parts.reduce((total, part) => total + Math.max(1, Math.ceil((ems(part) * size) / 72 / width)), 0);

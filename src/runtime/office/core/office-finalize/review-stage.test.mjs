@@ -9,8 +9,16 @@ test('a drawing that hides cells or another drawing holds finalize even on an au
   const warning = (code, source = 'format-review') => ({ severity: 'warning', code, source });
   assert.equal(blocksFinalize(warning('drawing_covers_cells'), authored), true);
   assert.equal(blocksFinalize(warning('drawing_overlap'), authored), true);
-  assert.equal(blocksFinalize(warning('label_truncated', 'column-fit'), authored), false, 'other warnings stay advisory');
-  assert.equal(blocksFinalize({ severity: 'info', code: 'drawing_overlap' }, authored), false, 'an info note never holds');
+  assert.equal(
+    blocksFinalize(warning('label_truncated', 'column-fit'), authored),
+    false,
+    'other warnings stay advisory'
+  );
+  assert.equal(
+    blocksFinalize({ severity: 'info', code: 'drawing_overlap' }, authored),
+    false,
+    'an info note never holds'
+  );
   assert.equal(blocksFinalize(warning('label_truncated', 'column-fit'), { failOn: 'warning', authored: false }), true);
   assert.equal(blocksFinalize(warning('low_contrast', 'text-metrics'), { failOn: 'warning', authored: true }), false);
 });

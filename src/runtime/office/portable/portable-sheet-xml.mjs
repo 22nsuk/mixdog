@@ -395,7 +395,7 @@ function dateWidth(section) {
 // What Excel's General format prints: eleven characters at most, the decimals rounded to fit with trailing zeros
 // dropped, scientific notation past that. Counted from the stored digits, float noise such as 0.5700000000000001
 // measured eighteen characters for the 0.57 on the sheet.
-export function generalNumberText(number) {
+function generalNumberText(number) {
   const plain = String(number);
   if (plain.length <= 11) return plain;
   const magnitude = Math.abs(number);

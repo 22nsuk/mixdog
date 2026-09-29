@@ -187,11 +187,11 @@ export function mergeAccentSeries(xml) {
     ? ser.replace(/<c:invertIfNegative\b[^>]*\/>/, (tag) => `${tag}${points}`)
     : ser.replace(/<\/c:spPr>/, (tag) => `${tag}${points}`);
   const bar = chart[0]
-    .replace(overlay, '')
-    .replace(base, ser)
+    .replace(overlay, () => '')
+    .replace(base, () => ser)
     .replace('<c:grouping val="stacked"/>', '<c:grouping val="clustered"/>')
     .replace(/<c:overlap val="[^"]*"\/>/, '');
-  return { xml: String(xml).replace(chart[0], bar), changed: true, accent, values: merged };
+  return { xml: String(xml).replace(chart[0], () => bar), changed: true, accent, values: merged };
 }
 
 // The workbook behind the chart: one value column, the accent row holding its real value.
@@ -386,9 +386,8 @@ async function attachSvgIcons(zip, slidePart, xml) {
     const withSvg = blip.endsWith('/>')
       ? `${blip.slice(0, -2)}>${extension}</a:blip>`
       : blip.replace('</a:blip>', `${extension}</a:blip>`);
-    output = output.replace(
-      picture,
-      picture.replace(blip, withSvg).replace(/(<p:cNvPr\b[^>]*\bname=)"[^"]*"/, '$1"Icon"')
+    output = output.replace(picture, () =>
+      picture.replace(blip, () => withSvg).replace(/(<p:cNvPr\b[^>]*\bname=)"[^"]*"/, '$1"Icon"')
     );
   }
   if (!attached) return { xml: output, attached: 0 };
@@ -432,19 +431,155 @@ export function uniqueShapeIds(xml) {
 // (tickLblSkip after the axis tail, dPt after dLbls, varyColors and marker misplaced). PowerPoint forgives
 // it; Keynote, Google Slides and strict validators read the element as malformed.
 const CHART_CHILD_ORDER = {
-  'c:catAx': ['axId', 'scaling', 'delete', 'axPos', 'majorGridlines', 'minorGridlines', 'title', 'numFmt', 'majorTickMark', 'minorTickMark', 'tickLblPos', 'spPr', 'txPr', 'crossAx', 'crosses', 'crossesAt', 'auto', 'lblAlgn', 'lblOffset', 'tickLblSkip', 'tickMarkSkip', 'noMultiLvlLbl', 'extLst'],
-  'c:dateAx': ['axId', 'scaling', 'delete', 'axPos', 'majorGridlines', 'minorGridlines', 'title', 'numFmt', 'majorTickMark', 'minorTickMark', 'tickLblPos', 'spPr', 'txPr', 'crossAx', 'crosses', 'crossesAt', 'auto', 'lblOffset', 'baseTimeUnit', 'majorUnit', 'majorTimeUnit', 'minorUnit', 'minorTimeUnit', 'extLst'],
-  'c:valAx': ['axId', 'scaling', 'delete', 'axPos', 'majorGridlines', 'minorGridlines', 'title', 'numFmt', 'majorTickMark', 'minorTickMark', 'tickLblPos', 'spPr', 'txPr', 'crossAx', 'crosses', 'crossesAt', 'crossBetween', 'majorUnit', 'minorUnit', 'dispUnits', 'extLst'],
-  'c:barChart': ['barDir', 'grouping', 'varyColors', 'ser', 'dLbls', 'gapWidth', 'overlap', 'serLines', 'axId', 'extLst'],
-  'c:lineChart': ['grouping', 'varyColors', 'ser', 'dLbls', 'dropLines', 'hiLowLines', 'upDownBars', 'marker', 'smooth', 'axId', 'extLst'],
+  'c:catAx': [
+    'axId',
+    'scaling',
+    'delete',
+    'axPos',
+    'majorGridlines',
+    'minorGridlines',
+    'title',
+    'numFmt',
+    'majorTickMark',
+    'minorTickMark',
+    'tickLblPos',
+    'spPr',
+    'txPr',
+    'crossAx',
+    'crosses',
+    'crossesAt',
+    'auto',
+    'lblAlgn',
+    'lblOffset',
+    'tickLblSkip',
+    'tickMarkSkip',
+    'noMultiLvlLbl',
+    'extLst',
+  ],
+  'c:dateAx': [
+    'axId',
+    'scaling',
+    'delete',
+    'axPos',
+    'majorGridlines',
+    'minorGridlines',
+    'title',
+    'numFmt',
+    'majorTickMark',
+    'minorTickMark',
+    'tickLblPos',
+    'spPr',
+    'txPr',
+    'crossAx',
+    'crosses',
+    'crossesAt',
+    'auto',
+    'lblOffset',
+    'baseTimeUnit',
+    'majorUnit',
+    'majorTimeUnit',
+    'minorUnit',
+    'minorTimeUnit',
+    'extLst',
+  ],
+  'c:valAx': [
+    'axId',
+    'scaling',
+    'delete',
+    'axPos',
+    'majorGridlines',
+    'minorGridlines',
+    'title',
+    'numFmt',
+    'majorTickMark',
+    'minorTickMark',
+    'tickLblPos',
+    'spPr',
+    'txPr',
+    'crossAx',
+    'crosses',
+    'crossesAt',
+    'crossBetween',
+    'majorUnit',
+    'minorUnit',
+    'dispUnits',
+    'extLst',
+  ],
+  'c:barChart': [
+    'barDir',
+    'grouping',
+    'varyColors',
+    'ser',
+    'dLbls',
+    'gapWidth',
+    'overlap',
+    'serLines',
+    'axId',
+    'extLst',
+  ],
+  'c:lineChart': [
+    'grouping',
+    'varyColors',
+    'ser',
+    'dLbls',
+    'dropLines',
+    'hiLowLines',
+    'upDownBars',
+    'marker',
+    'smooth',
+    'axId',
+    'extLst',
+  ],
   'c:areaChart': ['grouping', 'varyColors', 'ser', 'dLbls', 'dropLines', 'axId', 'extLst'],
   'c:pieChart': ['varyColors', 'ser', 'dLbls', 'firstSliceAng', 'extLst'],
   'c:doughnutChart': ['varyColors', 'ser', 'dLbls', 'firstSliceAng', 'holeSize', 'extLst'],
 };
 const SERIES_CHILD_ORDER = {
-  'c:barChart': ['idx', 'order', 'tx', 'spPr', 'invertIfNegative', 'pictureOptions', 'dPt', 'dLbls', 'trendline', 'errBars', 'cat', 'val', 'shape', 'extLst'],
-  'c:lineChart': ['idx', 'order', 'tx', 'spPr', 'marker', 'dPt', 'dLbls', 'trendline', 'errBars', 'cat', 'val', 'smooth', 'extLst'],
-  'c:areaChart': ['idx', 'order', 'tx', 'spPr', 'pictureOptions', 'dPt', 'dLbls', 'trendline', 'errBars', 'cat', 'val', 'extLst'],
+  'c:barChart': [
+    'idx',
+    'order',
+    'tx',
+    'spPr',
+    'invertIfNegative',
+    'pictureOptions',
+    'dPt',
+    'dLbls',
+    'trendline',
+    'errBars',
+    'cat',
+    'val',
+    'shape',
+    'extLst',
+  ],
+  'c:lineChart': [
+    'idx',
+    'order',
+    'tx',
+    'spPr',
+    'marker',
+    'dPt',
+    'dLbls',
+    'trendline',
+    'errBars',
+    'cat',
+    'val',
+    'smooth',
+    'extLst',
+  ],
+  'c:areaChart': [
+    'idx',
+    'order',
+    'tx',
+    'spPr',
+    'pictureOptions',
+    'dPt',
+    'dLbls',
+    'trendline',
+    'errBars',
+    'cat',
+    'val',
+    'extLst',
+  ],
   'c:pieChart': ['idx', 'order', 'tx', 'spPr', 'explosion', 'dPt', 'dLbls', 'cat', 'val', 'extLst'],
   'c:doughnutChart': ['idx', 'order', 'tx', 'spPr', 'explosion', 'dPt', 'dLbls', 'cat', 'val', 'extLst'],
 };
@@ -493,10 +628,15 @@ export function orderChartChildren(xml) {
     const pattern = new RegExp(`<${element}>([\\s\\S]*?)</${element}>`, 'g');
     output = output.replace(pattern, (whole, inner) => {
       // A line chart's grouping is required, and pptxgenjs leaves it out.
-      const filled = element === 'c:lineChart' && !/<c:grouping\b/.test(inner) ? `<c:grouping val="standard"/>${inner}` : inner;
+      const filled =
+        element === 'c:lineChart' && !/<c:grouping\b/.test(inner) ? `<c:grouping val="standard"/>${inner}` : inner;
       let body = sortedChildren(filled, order);
       const seriesOrder = SERIES_CHILD_ORDER[element];
-      if (seriesOrder) body = body.replace(/<c:ser>([\s\S]*?)<\/c:ser>/g, (_, series) => `<c:ser>${sortedChildren(series, seriesOrder)}</c:ser>`);
+      if (seriesOrder)
+        body = body.replace(
+          /<c:ser>([\s\S]*?)<\/c:ser>/g,
+          (_, series) => `<c:ser>${sortedChildren(series, seriesOrder)}</c:ser>`
+        );
       const next = `<${element}>${body}</${element}>`;
       if (next !== whole) changed = true;
       return next;

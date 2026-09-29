@@ -183,10 +183,8 @@ function persistedReviewDesign(created, fallback) {
   return slidePlans.length ? { ...resolved, slidePlans } : resolved;
 }
 
-async function createWorkbook(directory, content) {
-  const path = join(directory, '01-dashboard.xlsx');
-  const designRequest = design(content, 'executive', 'monitor');
-  const operations = [
+function workbookOperations() {
+  return [
     { op: 'rename_sheet', sheet: 'Sheet1', name: 'Source' },
     {
       op: 'set_range',
@@ -335,6 +333,12 @@ async function createWorkbook(directory, content) {
     { op: 'set_sheet_visibility', sheet: 'Calculation', visibility: 'hidden' },
     { op: 'set_sheet_visibility', sheet: 'Checks', visibility: 'hidden' },
   ];
+}
+
+async function createWorkbook(directory, content) {
+  const path = join(directory, '01-dashboard.xlsx');
+  const designRequest = design(content, 'executive', 'monitor');
+  const operations = workbookOperations();
   const created = await office(
     {
       action: 'create',

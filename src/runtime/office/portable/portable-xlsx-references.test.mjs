@@ -113,7 +113,8 @@ test("a pivot's figures take their source column's format, and its column header
   ]);
   const sheet = await zipText(zip, SHEET);
   const styles = resolveCellStyles(await zipText(zip, 'xl/styles.xml'));
-  const formatAt = (ref) => styles[Number(new RegExp(`<c r="${ref}"[^>]*\\bs="(\\d+)"`).exec(sheet)?.[1] ?? 0)]?.numberFormat;
+  const formatAt = (ref) =>
+    styles[Number(new RegExp(`<c r="${ref}"[^>]*\\bs="(\\d+)"`).exec(sheet)?.[1] ?? 0)]?.numberFormat;
   // Row 3 holds the first segment's figures under the two years and its total; row 5 the grand totals.
   for (const ref of ['F3', 'G3', 'H3', 'F5', 'H5']) assert.equal(formatAt(ref), '#,##0', `${ref} reads #,##0`);
   assert.equal(formatAt('E3'), undefined, 'the segment names keep no number format');

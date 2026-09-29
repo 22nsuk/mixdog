@@ -105,7 +105,9 @@ test('chart children are put in schema order: axis tail, series points, chart-le
   assert.match(ordered.xml, /<c:order val="0"\/><c:dPt><c:idx val="2"\/><\/c:dPt><c:dLbls>/);
   assert.match(ordered.xml, /<c:crossAx val="2"\/><c:tickLblSkip val="1"\/><c:noMultiLvlLbl/);
   assert.equal(orderChartChildren(ordered.xml).changed, false);
-  const line = orderChartChildren('<c:lineChart><c:varyColors val="0"/><c:ser><c:idx val="0"/></c:ser><c:marker val="1"/><c:axId val="1"/></c:lineChart>');
+  const line = orderChartChildren(
+    '<c:lineChart><c:varyColors val="0"/><c:ser><c:idx val="0"/></c:ser><c:marker val="1"/><c:axId val="1"/></c:lineChart>'
+  );
   assert.match(line.xml, /^<c:lineChart><c:grouping val="standard"\/><c:varyColors val="0"\/><c:ser>/);
 });
 
@@ -120,6 +122,16 @@ test('the accent overlay series merges into one series with a per-point fill', (
   assert.match(merged.xml, /<c:dPt><c:idx val="2"\/>[\s\S]*B81E38/);
   assert.match(merged.xml, /<c:pt idx="2"><c:v>31<\/c:v>/);
   assert.match(merged.xml, /<c:grouping val="clustered"\/>/);
+});
+
+test('replacement patterns in a series name are written literally when the accent series merge', () => {
+  const ser = (name, values, color) =>
+    `<c:ser><c:idx val="0"/><c:tx><c:strRef><c:f>x</c:f><c:strCache><c:pt idx="0"><c:v>${name}</c:v></c:pt></c:strCache></c:strRef></c:tx><c:spPr><a:solidFill><a:srgbClr val="${color}"/></a:solidFill></c:spPr><c:invertIfNegative val="0"/><c:val><c:numRef><c:numCache>${values.map((v, i) => `<c:pt idx="${i}"><c:v>${v}</c:v></c:pt>`).join('')}</c:numCache></c:numRef></c:val></c:ser>`;
+  const xml = `<c:barChart><c:barDir val="col"/><c:grouping val="stacked"/>${ser('A$&B', [12, 18, 0], 'E7EBEE')}${ser('A$&B ·', [0, 0, 31], 'B81E38')}<c:overlap val="100"/></c:barChart>`;
+  const merged = mergeAccentSeries(xml);
+  assert.equal(merged.changed, true);
+  assert.equal((merged.xml.match(/A\$&B/g) || []).length, 1);
+  assert.equal((merged.xml.match(/<c:ser>/g) || []).length, 1);
 });
 
 test('a gradient-marked shape is saved as a native gradFill without an outline, and the marker is cleared', () => {

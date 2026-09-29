@@ -168,7 +168,14 @@ test('an office result returns the design in force, not the catalogue it was cho
         tokens: design.tokens,
         artDirection: {
           applyTokens: false,
-          selected: { id: 'x', label: 'X', palette: { accent: '2764A5' }, typography: { display: 'Cambria' }, deck: {}, style: { id: 'x' } },
+          selected: {
+            id: 'x',
+            label: 'X',
+            palette: { accent: '2764A5' },
+            typography: { display: 'Cambria' },
+            deck: {},
+            style: { id: 'x' },
+          },
         },
       },
     },
@@ -178,12 +185,24 @@ test('an office result returns the design in force, not the catalogue it was cho
   const receipt = finalizeOfficeResult(
     {
       design: {
-        library: { source: 'mixdog-starter', pack: null, template: null, templateIndexRevision: 'd3af', recentCompositionCount: 2, pinned: false, warning: '' },
+        library: {
+          source: 'mixdog-starter',
+          pack: null,
+          template: null,
+          templateIndexRevision: 'd3af',
+          recentCompositionCount: 2,
+          pinned: false,
+          warning: '',
+        },
       },
     },
     { action: 'create' }
   );
-  assert.deepEqual(receipt.design.library, { source: 'mixdog-starter' }, 'the library receipt keeps where the design came from');
+  assert.deepEqual(
+    receipt.design.library,
+    { source: 'mixdog-starter' },
+    'the library receipt keeps where the design came from'
+  );
   assert.equal(result.batch.design.layouts, undefined, 'a finalize that carries its batch trims that design too');
   // The design the caller resolved is untouched; only the returned copy is trimmed.
   assert.ok(design.artDirection.candidates.length >= 2);
@@ -253,7 +272,13 @@ test('an overwriting create replaces the document and closes the session that he
   // A session in the middle of a transaction is not closed under it.
   value(await executeOfficeTool({ action: 'begin', session: rewritten.session }, { cwd }));
   const refused = await executeOfficeTool(
-    { action: 'create', path: docx, mode: 'portable', overwrite: true, operations: [{ op: 'append_text', text: 'Third' }] },
+    {
+      action: 'create',
+      path: docx,
+      mode: 'portable',
+      overwrite: true,
+      operations: [{ op: 'append_text', text: 'Third' }],
+    },
     { cwd }
   );
   assert.equal(refused.isError, true);
@@ -403,10 +428,21 @@ test('a QA verdict reaches the model without repeated fields or raw page measure
     { action: 'finalize' }
   );
   assert.deepEqual(closed.review.visualCritique, { ok: true, status: 'pass', pageCount: 1, entryCount: 1 });
-  assert.deepEqual(closed.review.review.trust, { risk: 'none', policy: 'untrusted-data' }, 'a read file keeps its policy');
+  assert.deepEqual(
+    closed.review.review.trust,
+    { risk: 'none', policy: 'untrusted-data' },
+    'a read file keeps its policy'
+  );
   const own = finalizeOfficeResult(
     {
-      trust: { policy: 'untrusted-data', source: 'created-document', risk: 'none', findingCount: 0, findings: [], complete: true },
+      trust: {
+        policy: 'untrusted-data',
+        source: 'created-document',
+        risk: 'none',
+        findingCount: 0,
+        findings: [],
+        complete: true,
+      },
       design: { authoring: 'native', intent: '', audience: '', content: null, review: { required: true } },
     },
     { action: 'batch' }
@@ -415,10 +451,27 @@ test('a QA verdict reaches the model without repeated fields or raw page measure
   assert.deepEqual(own.design, { authoring: 'native', review: { required: true } });
   // A deck snapshot keeps a shape's run summary only where the runs disagree.
   const shapes = [
-    { index: 1, text: 'Title', font: { size: 36, name: 'Noto Sans KR', color: '172B24' }, sizes: [36], fonts: ['Noto Sans KR'], colors: ['172B24'] },
-    { index: 2, text: '2곳', font: { size: 54, name: 'Noto Sans KR', color: '955318' }, sizes: [22, 54], fonts: ['Noto Sans KR'], colors: ['955318'] },
+    {
+      index: 1,
+      text: 'Title',
+      font: { size: 36, name: 'Noto Sans KR', color: '172B24' },
+      sizes: [36],
+      fonts: ['Noto Sans KR'],
+      colors: ['172B24'],
+    },
+    {
+      index: 2,
+      text: '2곳',
+      font: { size: 54, name: 'Noto Sans KR', color: '955318' },
+      sizes: [22, 54],
+      fonts: ['Noto Sans KR'],
+      colors: ['955318'],
+    },
   ];
-  const opened = finalizeOfficeResult({ document: { format: 'pptx', slides: [{ index: 1, text: ['Title', '2곳'], shapes }] } }, { action: 'open' });
+  const opened = finalizeOfficeResult(
+    { document: { format: 'pptx', slides: [{ index: 1, text: ['Title', '2곳'], shapes }] } },
+    { action: 'open' }
+  );
   assert.deepEqual(Object.keys(opened.document.slides[0].shapes[0]).sort(), ['font', 'index', 'text']);
   assert.deepEqual(opened.document.slides[0].shapes[1].sizes, [22, 54], 'a mixed run keeps its sizes');
   assert.equal(opened.document.slides[0].shapes[1].fonts, undefined);
@@ -454,7 +507,16 @@ test('a QA verdict reaches the model without repeated fields or raw page measure
     {
       document: {
         format: 'pptx',
-        slides: [{ path: '/slide[2]', index: 2, notes: '', comments: [], transition: { effect: 0, advanceOnTime: false, advanceTime: 0 }, shapes: [comShape] }],
+        slides: [
+          {
+            path: '/slide[2]',
+            index: 2,
+            notes: '',
+            comments: [],
+            transition: { effect: 0, advanceOnTime: false, advanceTime: 0 },
+            shapes: [comShape],
+          },
+        ],
       },
     },
     { action: 'snapshot' }
@@ -543,14 +605,32 @@ test('a QA verdict reaches the model without repeated fields or raw page measure
                 chart: {
                   chartType: 51,
                   series: [
-                    { index: 1, name: '건수', formula: '', chartType: 51, axisGroup: 1, trendlineCount: 0, hasErrorBars: false, hasDataLabels: false, dataLabels: null },
+                    {
+                      index: 1,
+                      name: '건수',
+                      formula: '',
+                      chartType: 51,
+                      axisGroup: 1,
+                      trendlineCount: 0,
+                      hasErrorBars: false,
+                      hasDataLabels: false,
+                      dataLabels: null,
+                    },
                     { index: 2, name: '목표', chartType: 4, axisGroup: 2 },
                   ],
                 },
               },
             ],
           },
-          { path: '/slide[2]', index: 2, notes: '', comments: [], animations: [], transition: { effect: 0, advanceOnTime: false, advanceTime: 0 }, shapes: [] },
+          {
+            path: '/slide[2]',
+            index: 2,
+            notes: '',
+            comments: [],
+            animations: [],
+            transition: { effect: 0, advanceOnTime: false, advanceTime: 0 },
+            shapes: [],
+          },
         ],
       },
     },
@@ -569,7 +649,17 @@ test('a QA verdict reaches the model without repeated fields or raw page measure
   });
   assert.deepEqual(comChart.slides[1], { path: '/slide[2]', index: 2, notes: '' });
   const shadowed = finalizeOfficeResult(
-    { document: { format: 'pptx', slides: [{ index: 1, shapes: [{ ...comShape, shadow: { visible: -1, color: 0, blur: 4.000001 }, runs: { sizes: [20, 36] } }] }] } },
+    {
+      document: {
+        format: 'pptx',
+        slides: [
+          {
+            index: 1,
+            shapes: [{ ...comShape, shadow: { visible: -1, color: 0, blur: 4.000001 }, runs: { sizes: [20, 36] } }],
+          },
+        ],
+      },
+    },
     { action: 'snapshot' }
   ).document.slides[0].shapes[0];
   assert.deepEqual(shadowed.shadow, { visible: -1, color: 0, blur: 4 });
@@ -610,8 +700,21 @@ test('a QA verdict reaches the model without repeated fields or raw page measure
       document: {
         format: 'docx',
         paragraphs: [
-          { path: '/body/p[1]', index: 1, text: 'Plain', runs: [{ path: '/body/p[1]/run[1]', index: 1, text: 'Plain' }] },
-          { path: '/body/p[2]', index: 2, text: 'A\nB', runs: [{ index: 1, text: 'A' }, { index: 2, text: 'B' }] },
+          {
+            path: '/body/p[1]',
+            index: 1,
+            text: 'Plain',
+            runs: [{ path: '/body/p[1]/run[1]', index: 1, text: 'Plain' }],
+          },
+          {
+            path: '/body/p[2]',
+            index: 2,
+            text: 'A\nB',
+            runs: [
+              { index: 1, text: 'A' },
+              { index: 2, text: 'B' },
+            ],
+          },
           { path: '/body/p[3]', index: 3, text: 'Bold', runs: [{ index: 1, text: 'Bold', bold: true }] },
         ],
         parts: [
@@ -628,7 +731,12 @@ test('a QA verdict reaches the model without repeated fields or raw page measure
       document: {
         format: 'docx',
         paragraphs: [
-          { path: '/body/p[1]', index: 1, text: 'x', format: { spacingAfter: 4, lineSpacing: 12.949999809265137, tabStops: [] } },
+          {
+            path: '/body/p[1]',
+            index: 1,
+            text: 'x',
+            format: { spacingAfter: 4, lineSpacing: 12.949999809265137, tabStops: [] },
+          },
         ],
       },
     },
@@ -652,8 +760,20 @@ test('a QA verdict reaches the model without repeated fields or raw page measure
             orientation: 0,
             topMargin: 70.9000015258789,
             stories: [
-              { path: '/section[1]/header[primary]', kind: 'primary', location: 'header', text: '', linkToPrevious: false },
-              { path: '/section[1]/footer[primary]', kind: 'primary', location: 'footer', text: '팀\r1', linkToPrevious: false },
+              {
+                path: '/section[1]/header[primary]',
+                kind: 'primary',
+                location: 'header',
+                text: '',
+                linkToPrevious: false,
+              },
+              {
+                path: '/section[1]/footer[primary]',
+                kind: 'primary',
+                location: 'footer',
+                text: '팀\r1',
+                linkToPrevious: false,
+              },
             ],
           },
           {
@@ -692,7 +812,13 @@ test('a QA verdict reaches the model without repeated fields or raw page measure
   assert.equal(paged.document.parts[0].text, 'Page one\nPage two', 'a paged snapshot keeps the body text');
   // create/open with finalize:true carry a finalize result and read the same way.
   const oneStep = finalizeOfficeResult(
-    { finalized: true, session: 's1', path: 'p', validation: { ok: true, missing: [] }, review: { ...qaResult(), review: closedRecord } },
+    {
+      finalized: true,
+      session: 's1',
+      path: 'p',
+      validation: { ok: true, missing: [] },
+      review: { ...qaResult(), review: closedRecord },
+    },
     { action: 'create' }
   );
   assert.deepEqual(oneStep.validation, { ok: true });
@@ -714,7 +840,11 @@ test('a QA verdict reaches the model without repeated fields or raw page measure
   assert.equal(unmatched.composition, undefined);
   assert.equal(Object.hasOwn(unmatched, 'compositionHistory'), false);
   const compared = finalizeOfficeResult(
-    { review: { ...record, visualDiff: { available: true, pages: [1], changedPercent: 3.2, images: [] } }, fixes: [], issuesAfter: [] },
+    {
+      review: { ...record, visualDiff: { available: true, pages: [1], changedPercent: 3.2, images: [] } },
+      fixes: [],
+      issuesAfter: [],
+    },
     { action: 'qa' }
   );
   assert.equal(compared.review.visualDiff.changedPercent, 3.2, 'a real comparison stays');
@@ -744,13 +874,23 @@ test('a QA verdict reaches the model without repeated fields or raw page measure
     totalErrors: 0,
   });
   const failing = finalizeOfficeResult(
-    { recalculation: { status: 'errors_found', totalErrors: 1, errorSummary: { '#DIV/0!': { count: 1, cells: ['S!A3'] } } } },
+    {
+      recalculation: {
+        status: 'errors_found',
+        totalErrors: 1,
+        errorSummary: { '#DIV/0!': { count: 1, cells: ['S!A3'] } },
+      },
+    },
     { action: 'finalize' }
   );
   assert.deepEqual(failing.recalculation.errorSummary['#DIV/0!'].cells, ['S!A3'], 'every error location stays');
   assert.equal(oneStep.review.review.polishPlan, undefined);
   const flagged = { risk: 'high', findingCount: 1, findings: [{ category: 'instruction' }] };
-  assert.equal(finalizeOfficeResult({ trust: flagged }, { action: 'open' }).trust, flagged, 'a finding keeps the whole report');
+  assert.equal(
+    finalizeOfficeResult({ trust: flagged }, { action: 'open' }).trust,
+    flagged,
+    'a finding keeps the whole report'
+  );
   assert.deepEqual(closed.review.issuesAfter, [issue]);
   assert.equal(closed.review.advisoryIssues, undefined);
   assert.deepEqual(closed.review.advisoryCodes, ['heading_hierarchy_missing']);
@@ -777,7 +917,13 @@ test('a QA verdict reaches the model without repeated fields or raw page measure
     postSaveGate: { ok: true, blocking: [] },
   };
   const checked = finalizeOfficeResult(
-    { finalized: true, session: 's1', path: 'C:/deck.pptx', review: { ...qaResult(), mode: 'portable', backend: 'mixdog-ooxml' }, validation },
+    {
+      finalized: true,
+      session: 's1',
+      path: 'C:/deck.pptx',
+      review: { ...qaResult(), mode: 'portable', backend: 'mixdog-ooxml' },
+      validation,
+    },
     { action: 'finalize' }
   );
   // A passed check answers with its verdict; default security and a passed post-save gate say nothing.
@@ -850,7 +996,12 @@ test('a QA verdict reaches the model without repeated fields or raw page measure
             freezePanes: { frozen: false, splitRow: 0, splitColumn: 0 },
             cells: [
               { ref: 'A1', value: '지점', formula: null, style: { fontName: 'Calibri', fontSize: 11, bold: false } },
-              { ref: 'B1', value: 0.3, formula: '=A1', style: { fontName: 'Calibri', fontSize: 11, numberFormat: '0.0%', bold: true } },
+              {
+                ref: 'B1',
+                value: 0.3,
+                formula: '=A1',
+                style: { fontName: 'Calibri', fontSize: 11, numberFormat: '0.0%', bold: true },
+              },
             ],
             lineageCount: 1,
             formulaLineage: [
@@ -934,14 +1085,22 @@ test('a QA verdict reaches the model without repeated fields or raw page measure
     font: { size: 11 },
   });
   assert.deepEqual(bodyRead.document.sections, [
-    { path: '/section[1]', orientation: 'portrait', topMargin: 70.9, stories: [{ location: 'header', text: '대외비' }] },
+    {
+      path: '/section[1]',
+      orientation: 'portrait',
+      topMargin: 70.9,
+      stories: [{ location: 'header', text: '대외비' }],
+    },
   ]);
   assert.equal(bodyRead.document.trackChanges, false, 'the backend contract names the tracking state');
   assert.equal(bodyRead.document.comments, undefined);
   assert.equal(bodyRead.document.commentCount, 0);
   // A live session's unsaved document is news and stays.
   const unsaved = finalizeOfficeResult(
-    { finalized: true, validation: { ok: true, native: { ok: true, documentSaved: false, issueCount: 3, issues: [] } } },
+    {
+      finalized: true,
+      validation: { ok: true, native: { ok: true, documentSaved: false, issueCount: 3, issues: [] } },
+    },
     { action: 'finalize' }
   );
   assert.deepEqual(unsaved.validation.native, { ok: true, documentSaved: false, issueCount: 3 });
@@ -1222,10 +1381,16 @@ test('a Korean composed sheet sets the preset roles in Korean faces', () => {
     );
   const korean = [...sheetFonts('출시 판단', { profile: 'editorial' })];
   assert.ok(korean.length > 0);
-  assert.ok(korean.every((face) => ['Malgun Gothic', 'Batang'].includes(face)), korean.join(', '));
+  assert.ok(
+    korean.every((face) => ['Malgun Gothic', 'Batang'].includes(face)),
+    korean.join(', ')
+  );
   assert.ok(korean.includes('Batang'), 'the serif display role takes the serif Korean face');
   const latin = [...sheetFonts('Launch review', { profile: 'editorial' })];
-  assert.ok(latin.every((face) => !['Malgun Gothic', 'Batang'].includes(face)), latin.join(', '));
+  assert.ok(
+    latin.every((face) => !['Malgun Gothic', 'Batang'].includes(face)),
+    latin.join(', ')
+  );
 });
 
 // Round-6 sheet: three percentage cards over a three-column table beside a decision panel printed "###" (a 27 pt
@@ -1258,14 +1423,21 @@ test('a narrow dashboard beside its decision panel prints landscape with room fo
   const ops = expanded.operations;
   assert.equal(ops.find((entry) => entry.op === 'set_page_setup').orientation, 'landscape');
   // Each card column is fitted to its content with the card's value as the floor, after the sheet-wide fit.
-  const sheetFit = ops.findIndex((entry) => entry.op === 'autofit_range' && !entry.rows && entry.range.startsWith('A:') && entry.range !== 'A:A');
-  const floors = ops.filter((entry, index) => entry.op === 'autofit_range' && index > sheetFit && /^([A-Z]+):\1$/.test(entry.range));
+  const sheetFit = ops.findIndex(
+    (entry) => entry.op === 'autofit_range' && !entry.rows && entry.range.startsWith('A:') && entry.range !== 'A:A'
+  );
+  const floors = ops.filter(
+    (entry, index) => entry.op === 'autofit_range' && index > sheetFit && /^([A-Z]+):\1$/.test(entry.range)
+  );
   assert.deepEqual(
     floors.map((entry) => entry.range),
     ['A:A', 'B:B', 'C:C']
   );
   // "47.0%" at 27 pt needs about twelve 11 pt characters; each card is one column here.
-  assert.ok(floors.every((entry) => entry.minWidth >= 12), JSON.stringify(floors));
+  assert.ok(
+    floors.every((entry) => entry.minWidth >= 12),
+    JSON.stringify(floors)
+  );
 });
 
 // Round-7 report: "20시", "70%" and the table's "320" printed in Calibri beside Malgun Gothic Hangul. A Korean
@@ -1293,7 +1465,10 @@ test('a Korean composed document sets its sans roles in the Korean face', () => 
   const editorial = [...fonts('도서관 야간 이용', 'editorial')];
   assert.ok(editorial.includes('Bookman Old Style'), `the serif display keeps its Latin face: ${editorial.join(', ')}`);
   const latin = [...fonts('Library night use', 'data')];
-  assert.ok(latin.some((face) => /^(calibri|arial)$/i.test(face)), latin.join(', '));
+  assert.ok(
+    latin.some((face) => /^(calibri|arial)$/i.test(face)),
+    latin.join(', ')
+  );
 });
 
 // Round-8 sheet: thirty stores as horizontal bars in the 280 pt default frame drew hairline bars and labelled every
@@ -1351,7 +1526,9 @@ test('a composed sheet treats ISO dates as figures', () => {
   const headerRow = /\d+/.exec(table.range)[0];
   assert.equal(styleAt(`A${headerRow}`, 'horizontalAlignment').at(-1)?.properties.horizontalAlignment, 'right');
   assert.ok(
-    ops.some((entry) => entry.op === 'set_style' && entry.range.startsWith(`B${headerRow}:`) && entry.properties?.indent === 1),
+    ops.some(
+      (entry) => entry.op === 'set_style' && entry.range.startsWith(`B${headerRow}:`) && entry.properties?.indent === 1
+    ),
     'the label column after the dates starts one indent in'
   );
 });
@@ -1395,7 +1572,10 @@ test('a preset batch reports its routine writes as counts', () => {
     { op: 'set_style', changed: false, range: 'A1' },
     { op: 'set_cell', changed: true, cell: 'A1', warning: 'clipped' },
   ];
-  const preset = finalizeOfficeResult({ batch: { results, semanticOperations: [{ op: 'compose_document' }] } }, { action: 'batch' });
+  const preset = finalizeOfficeResult(
+    { batch: { results, semanticOperations: [{ op: 'compose_document' }] } },
+    { action: 'batch' }
+  );
   assert.deepEqual(preset.batch.results, [
     results[0],
     results[3],
@@ -1440,17 +1620,32 @@ test('a composed sheet charts one unit, lists insights by line, and leads with t
   // A decision panel beside the table spans rows instead of growing one of the table's.
   const table = ops.find((entry) => entry.op === 'add_table');
   const [, first, last] = /(\d+):[A-Z]+(\d+)$/.exec(table.range).map(Number);
-  const decisionCell = ops.find((entry) => entry.op === 'set_cell' && String(entry.value).startsWith('디스플레이 예산')).cell;
-  assert.ok(Number(/\d+/.exec(decisionCell)[0]) <= last, `the panel sits beside the table: ${decisionCell} vs ${table.range}`);
+  const decisionCell = ops.find(
+    (entry) => entry.op === 'set_cell' && String(entry.value).startsWith('디스플레이 예산')
+  ).cell;
+  assert.ok(
+    Number(/\d+/.exec(decisionCell)[0]) <= last,
+    `the panel sits beside the table: ${decisionCell} vs ${table.range}`
+  );
   const grown = ops.filter((entry) => entry.op === 'set_row_height' && entry.row >= first && entry.row <= last);
   assert.deepEqual(grown, [], `no table row is resized by the panel beside it: ${JSON.stringify(grown)}`);
   // The unfilled dashboard title spans the panel beside the table, not the table alone.
   const titleCell = ops.find((entry) => entry.op === 'set_cell' && entry.value === '채널 성과').cell;
   const titleMerge = ops.find((entry) => entry.op === 'merge_cells' && entry.range.startsWith(`${titleCell}:`)).range;
-  const decisionMerge = ops.find((entry) => entry.op === 'merge_cells' && entry.range.startsWith(`${decisionCell}:`)).range;
-  assert.equal(/:([A-Z]+)\d+$/.exec(titleMerge)[1], /:([A-Z]+)\d+$/.exec(decisionMerge)[1], `${titleMerge} vs ${decisionMerge}`);
+  const decisionMerge = ops.find(
+    (entry) => entry.op === 'merge_cells' && entry.range.startsWith(`${decisionCell}:`)
+  ).range;
+  assert.equal(
+    /:([A-Z]+)\d+$/.exec(titleMerge)[1],
+    /:([A-Z]+)\d+$/.exec(decisionMerge)[1],
+    `${titleMerge} vs ${decisionMerge}`
+  );
   const titleStyle = ops.find((entry) => entry.op === 'set_style' && entry.range === titleMerge).properties;
-  assert.equal(titleStyle.fillColor, undefined, 'the widened title is unfilled, so it never outruns the bands beside it');
+  assert.equal(
+    titleStyle.fillColor,
+    undefined,
+    'the widened title is unfilled, so it never outruns the bands beside it'
+  );
   const chart = ops.find((entry) => entry.op === 'add_chart');
   assert.match(chart.range, /^A\d+:B\d+$/, `one unit on the axis: ${chart.range}`);
   const band = ops.find((entry) => entry.op === 'set_cell' && String(entry.value).includes('검색이'));
@@ -1483,13 +1678,18 @@ test('a composed card that reads the table is floored like the value it shows, a
             ['부산', 71600, 0.94],
             ['호남', 50300, 0.67],
           ],
-          metrics: [{ label: '3분기 야간 처리량', numberFormat: '#,##0"건"', emphasis: true, ...metric }, { label: '가동률', value: 0.94, numberFormat: '0%' }],
+          metrics: [
+            { label: '3분기 야간 처리량', numberFormat: '#,##0"건"', emphasis: true, ...metric },
+            { label: '가동률', value: 0.94, numberFormat: '0%' },
+          ],
           insights: ['증가분의 절반 이상을 부산 허브가 받았습니다.', '부산 허브 가동률이 설계 한계를 넘었습니다.'],
         },
       ],
     }).operations;
   const floors = (ops) =>
-    ops.filter((entry) => entry.op === 'autofit_range' && entry.minWidth && /^[A-Z]+:[A-Z]+$/.test(entry.range)).map((entry) => `${entry.range}=${entry.minWidth}`);
+    ops
+      .filter((entry) => entry.op === 'autofit_range' && entry.minWidth && /^[A-Z]+:[A-Z]+$/.test(entry.range))
+      .map((entry) => `${entry.range}=${entry.minWidth}`);
   const read = expand({ formula: '=SUM(Hubs[처리량 (건)])' });
   assert.deepEqual(floors(read), floors(expand({ value: 204300 })));
   const cell = read.find((entry) => entry.op === 'set_cell' && String(entry.value).startsWith('• 증가분')).cell;
@@ -1506,12 +1706,23 @@ test('a composed section leaves the paragraph gap between its list and the table
       backend: 'mixdog-ooxml',
       created: true,
       design: { profile: 'executive' },
-      operations: [{ op: 'compose_document', title: '운영 보고', sections: [{ heading: '현황', bullets: ['첫째', '둘째'], ...section }] }],
+      operations: [
+        {
+          op: 'compose_document',
+          title: '운영 보고',
+          sections: [{ heading: '현황', bullets: ['첫째', '둘째'], ...section }],
+        },
+      ],
     }).operations;
     const bullets = ops.filter((entry) => entry.op === 'append_text' && entry.properties?.listKind === 'bullet');
     return bullets.map((entry) => entry.properties.spacingAfter);
   };
-  const [first, last] = lastBulletAfter({ table: [['권역', '물량'], ['부산', '4,200']] });
+  const [first, last] = lastBulletAfter({
+    table: [
+      ['권역', '물량'],
+      ['부산', '4,200'],
+    ],
+  });
   assert.equal(first, 3, 'items keep their tight step');
   assert.ok(last > 3, `the last item leaves the paragraph gap: ${last}`);
   assert.ok(lastBulletAfter({ callout: '증설을 승인합니다.' })[1] > 3);
@@ -1531,7 +1742,16 @@ test('a callout under a section table stands apart from it', () => {
         {
           op: 'compose_document',
           title: '운영 보고',
-          sections: [{ heading: '대안 비교', table: [['대안', '비용'], ['분류기 증설', '24억 원']], ...section }],
+          sections: [
+            {
+              heading: '대안 비교',
+              table: [
+                ['대안', '비용'],
+                ['분류기 증설', '24억 원'],
+              ],
+              ...section,
+            },
+          ],
         },
       ],
     }).operations;
@@ -1583,27 +1803,42 @@ test('a dashboard decision panel matches the table, the bands and chart span it,
   const cellOf = (value) => ops.find((entry) => entry.op === 'set_cell' && entry.value === value)?.cell;
   assert.ok(cellOf('도크 2개 증설을 승인합니다.'), 'the decision text is written');
   assert.ok(cellOf('결정 요청'), 'the panel carries the label it was given');
-  assert.equal(ops.some((entry) => /object Object|DECISION/.test(String(entry.value ?? ''))), false);
-  assert.throws(() => expand({ ...operation, decision: { note: '승인' } }), /decision takes a sentence, or \{ text, label \}/);
+  assert.equal(
+    ops.some((entry) => /object Object|DECISION/.test(String(entry.value ?? ''))),
+    false
+  );
+  assert.throws(
+    () => expand({ ...operation, decision: { note: '승인' } }),
+    /decision takes a sentence, or \{ text, label \}/
+  );
   // Card figures written as text land as numbers in a format that shows them the same way.
   const plus = ops.find((entry) => entry.op === 'set_cell' && entry.value === 0.18);
   assert.ok(plus, 'the "+18%" card holds 0.18');
   const plusStyle = ops.find((entry) => entry.op === 'set_style' && entry.range.startsWith(`${plus.cell}:`)).properties;
   assert.equal(plusStyle.numberFormat, '+0%;-0%;0%');
-  assert.ok(ops.some((entry) => entry.op === 'set_cell' && entry.value === 0.928), 'the "92.8%" card holds 0.928');
+  assert.ok(
+    ops.some((entry) => entry.op === 'set_cell' && entry.value === 0.928),
+    'the "92.8%" card holds 0.928'
+  );
   // The month columns share one width; the label column keeps its own.
   const floors = new Map(
-    ops.filter((entry) => entry.op === 'autofit_range' && entry.minWidth).map((entry) => [entry.range.split(':')[0], entry.minWidth])
+    ops
+      .filter((entry) => entry.op === 'autofit_range' && entry.minWidth)
+      .map((entry) => [entry.range.split(':')[0], entry.minWidth])
   );
   assert.equal(new Set(['B', 'C', 'D'].map((column) => floors.get(column))).size, 1, JSON.stringify([...floors]));
   // The panel is about the table's width, and the chart runs to the bands' right edge beside it.
   const decisionCell = cellOf('도크 2개 증설을 승인합니다.');
-  const decisionMerge = ops.find((entry) => entry.op === 'merge_cells' && entry.range.startsWith(`${decisionCell}:`)).range;
+  const decisionMerge = ops.find(
+    (entry) => entry.op === 'merge_cells' && entry.range.startsWith(`${decisionCell}:`)
+  ).range;
   const panelEnd = /:([A-Z]+)\d+$/.exec(decisionMerge)[1];
   assert.ok(panelEnd.length === 1 && panelEnd < 'R', `the panel stops short of R: ${decisionMerge}`);
   assert.equal(ops.find((entry) => entry.op === 'add_chart').toColumn, panelEnd);
   const subtitleCell = cellOf('물류운영팀');
-  const subtitleMerge = ops.find((entry) => entry.op === 'merge_cells' && entry.range.startsWith(`${subtitleCell}:`)).range;
+  const subtitleMerge = ops.find(
+    (entry) => entry.op === 'merge_cells' && entry.range.startsWith(`${subtitleCell}:`)
+  ).range;
   assert.equal(/:([A-Z]+)\d+$/.exec(subtitleMerge)[1], panelEnd, 'the subtitle band spans the panel too');
 });
 
@@ -1842,11 +2077,15 @@ test('a dashboard with a decision panel runs its metric cards over the panel', (
   }).operations;
   const rightEdge = (text) => {
     const cell = ops.find((entry) => entry.op === 'set_cell' && String(entry.value).startsWith(text)).cell;
-    return /:([A-Z]+)\d+$/.exec(ops.find((entry) => entry.op === 'merge_cells' && entry.range.startsWith(`${cell}:`)).range)[1];
+    return /:([A-Z]+)\d+$/.exec(
+      ops.find((entry) => entry.op === 'merge_cells' && entry.range.startsWith(`${cell}:`)).range
+    )[1];
   };
   // The last card, found by its label (its figure is written as a number under its format).
   assert.equal(rightEdge('지연률'), rightEdge('부산 허브 증설'), 'the last card ends where the panel ends');
-  const floors = ops.filter((entry) => entry.op === 'autofit_range' && entry.minWidth && /^([A-Z]+):\1$/.test(entry.range));
+  const floors = ops.filter(
+    (entry) => entry.op === 'autofit_range' && entry.minWidth && /^([A-Z]+):\1$/.test(entry.range)
+  );
   assert.ok(floors.length > 0, 'the table columns keep their card floors');
 });
 
@@ -2385,9 +2624,17 @@ test('PPTX page roles are induced from the geometry of a deck that has no placeh
       role: 'metrics',
       shapes: [...banded].map(([index, slot]) => ({ index, slot, text: 'template words' })),
     },
-    { items: [{ value: '12분', label: '평균 대기' }, { value: '38%', label: '점심 비중' }] }
+    {
+      items: [
+        { value: '12분', label: '평균 대기' },
+        { value: '38%', label: '점심 비중' },
+      ],
+    }
   );
-  assert.ok(fill.deletes.includes(5) && fill.deletes.includes(6), `the second row is emptied: ${JSON.stringify(fill.deletes)}`);
+  assert.ok(
+    fill.deletes.includes(5) && fill.deletes.includes(6),
+    `the second row is emptied: ${JSON.stringify(fill.deletes)}`
+  );
 
   // The numerals of a metrics page are the loudest type on the canvas and there
   // are several of them, so the largest box is not the title there. A row of
@@ -2450,7 +2697,10 @@ test('PPTX page roles are induced from the geometry of a deck that has no placeh
   const fillable = [...grid.values()].filter((role) => !role.startsWith('aside-'));
   assert.equal(fillable.length, 3);
   assert.equal(new Set(fillable).size, 3);
-  assert.deepEqual([...grid.values()].filter((role) => role.startsWith('aside-')), ['aside-1', 'aside-2', 'aside-3']);
+  assert.deepEqual(
+    [...grid.values()].filter((role) => role.startsWith('aside-')),
+    ['aside-1', 'aside-2', 'aside-3']
+  );
 });
 
 // Reading a deck to reuse it: the page answers with the job it does and each
@@ -2547,7 +2797,10 @@ test('a PPTX snapshot reports each page job and the slot every box fills', () =>
 
   // A signed timeline is a process page: its labels sit above and below its spine, and read by rows alone the page
   // was a two-column comparison.
-  const signed = (text, left, top) => ({ ...box(0, left, top, 2.6, 0.6, text, 14), name: 'mixdog-spec:structure:timeline' });
+  const signed = (text, left, top) => ({
+    ...box(0, left, top, 2.6, 0.6, text, 14),
+    name: 'mixdog-spec:structure:timeline',
+  });
   const timeline = annotatePptxSnapshotRoles({
     format: 'pptx',
     slideCount: 2,
@@ -2593,11 +2846,22 @@ test('a template page refuses more items than it holds and the closest fitting p
   const titlesOnlyPage = {
     index: 3,
     role: 'comparison',
-    shapes: [{ index: 1, slot: 'title', text: '' }, { index: 2, slot: 'column-title-1', text: '' }, { index: 3, slot: 'column-title-2', text: '' }],
+    shapes: [
+      { index: 1, slot: 'title', text: '' },
+      { index: 2, slot: 'column-title-1', text: '' },
+      { index: 3, slot: 'column-title-2', text: '' },
+    ],
   };
   const withBodies = { slides: [titlesOnlyPage, { ...page(4, 2), index: 4 }] };
-  assert.equal(selectTemplatePage(withBodies, { role: 'comparison', items: [{ title: '가', body: '설명' }, { title: '나' }] }).index, 4);
-  assert.equal(selectTemplatePage(withBodies, { role: 'comparison', items: [{ title: '가' }, { title: '나' }] }).index, 3);
+  assert.equal(
+    selectTemplatePage(withBodies, { role: 'comparison', items: [{ title: '가', body: '설명' }, { title: '나' }] })
+      .index,
+    4
+  );
+  assert.equal(
+    selectTemplatePage(withBodies, { role: 'comparison', items: [{ title: '가' }, { title: '나' }] }).index,
+    3
+  );
   assert.throws(
     () => templatePageFill(page(1, 2), { items: [{}, {}, {}] }),
     /holds 2 column slots and 3 items were given/
@@ -2639,7 +2903,13 @@ test('compose presets refuse a section field they cannot draw and size the title
       action: 'create',
       path: join(cwd, 'brief.docx'),
       mode: 'portable',
-      operations: [{ op: 'compose_document', title: '도크 분리안', sections: [{ heading: '실행 계획', roadmap: ['1주차: 표지'] }] }],
+      operations: [
+        {
+          op: 'compose_document',
+          title: '도크 분리안',
+          sections: [{ heading: '실행 계획', roadmap: ['1주차: 표지'] }],
+        },
+      ],
     },
     { cwd }
   );
@@ -2711,7 +2981,11 @@ test('a template page fill empties the template words no content claimed', () =>
       { index: 7, slot: 'subtitle', text: 'Illustrative' },
     ],
   };
-  const fill = templatePageFill(page, { title: '흑자 전환', eyebrow: '실적', items: [{ value: '4.2배', label: 'LTV / CAC' }] });
+  const fill = templatePageFill(page, {
+    title: '흑자 전환',
+    eyebrow: '실적',
+    items: [{ value: '4.2배', label: 'LTV / CAC' }],
+  });
   assert.deepEqual(
     fill.sets.map((entry) => [entry.shape, entry.text]),
     [
@@ -2783,7 +3057,8 @@ test('use_template_page reads the bundled template by its sidecar roles', async 
   });
   const snapshot = await office({ action: 'snapshot', session: opened.session });
   const text = snapshot.document.slides[1].text.join(' ');
-  for (const words of ['세 지표가 모두 흑자 전환을 가리킨다', '4.2배', '81%', '14개월', '회수 기간']) assert.ok(text.includes(words), text);
+  for (const words of ['세 지표가 모두 흑자 전환을 가리킨다', '4.2배', '81%', '14개월', '회수 기간'])
+    assert.ok(text.includes(words), text);
   for (const leftover of ['PERFORMANCE', 'Create · edit']) assert.ok(!text.includes(leftover), text);
   // A page with a chart arrives holding the template's own series: the result names that chart, where it now
   // stands, and the operation that replaces its data.
@@ -2807,7 +3082,10 @@ test('use_template_page reads the bundled template by its sidecar roles', async 
   // Its title is the template's words too, and new numbers alone keep it: the record names it for the caller.
   assert.equal(kept.title, 'Workstream time · seconds');
   const after = await office({ action: 'snapshot', session: opened.session });
-  assert.ok(after.document.slides[2].shapes.find((shape) => shape.index === kept.shape)?.chart, 'the named shape is the chart');
+  assert.ok(
+    after.document.slides[2].shapes.find((shape) => shape.index === kept.shape)?.chart,
+    'the named shape is the chart'
+  );
   // Its series take their colours from the theme (accent1, accent2): new data keeps them, resolved through the
   // deck's theme, where the rebuilt chart had fallen back to the default blue.
   const refreshed = await office({
@@ -3026,7 +3304,9 @@ test('use_template_page writes or empties the kicker, lead, and source of a draw
   t.after(async () => {
     await office({ action: 'close', session: opened.session }).catch(() => {});
   });
-  const slots = (await office({ action: 'snapshot', session: opened.session })).document.slides[1].shapes.map((shape) => shape.slot);
+  const slots = (await office({ action: 'snapshot', session: opened.session })).document.slides[1].shapes.map(
+    (shape) => shape.slot
+  );
   assert.deepEqual(
     slots.filter((slot) => !/^metric-/.test(slot || '')),
     ['eyebrow', 'title', 'subtitle', 'source']
@@ -3042,7 +3322,10 @@ test('use_template_page writes or empties the kicker, lead, and source of a draw
         after: 2,
         title: '월 거래자 2,000만 명',
         body: '해외 송금 출시 한 달 만에 2,000만 명을 넘었다.',
-        items: [{ value: '2,010', label: '월 거래자' }, { value: '41.5', label: '분기 거래액' }],
+        items: [
+          { value: '2,010', label: '월 거래자' },
+          { value: '41.5', label: '분기 거래액' },
+        ],
       },
     ],
   });
@@ -3050,11 +3333,31 @@ test('use_template_page writes or empties the kicker, lead, and source of a draw
     (shape) => shape.text
   );
   assert.ok(texts.includes('해외 송금 출시 한 달 만에 2,000만 명을 넘었다.'), texts.join(' | '));
-  for (const stale of ['SUMMARY', '출처: 내부 집계 (예시 수치)', '송금으로 들어온 사용자가 결제와 대출로 이어지며 처음으로 영업이익을 냈다.']) {
+  for (const stale of [
+    'SUMMARY',
+    '출처: 내부 집계 (예시 수치)',
+    '송금으로 들어온 사용자가 결제와 대출로 이어지며 처음으로 영업이익을 냈다.',
+  ]) {
     assert.ok(!texts.includes(stale), `${stale} stayed: ${texts.join(' | ')}`);
   }
   await assert.rejects(
-    office({ action: 'batch', session: opened.session, operations: [{ op: 'use_template_page', path: template, role: 'metrics', after: 3, eyebrow: 'Q3', title: 'x', source: '출처: 없음', subtitle: 'a', body: 'b' }] }),
+    office({
+      action: 'batch',
+      session: opened.session,
+      operations: [
+        {
+          op: 'use_template_page',
+          path: template,
+          role: 'metrics',
+          after: 3,
+          eyebrow: 'Q3',
+          title: 'x',
+          source: '출처: 없음',
+          subtitle: 'a',
+          body: 'b',
+        },
+      ],
+    }),
     /no body box/
   );
 });
@@ -3423,7 +3726,10 @@ test('Office design composition maps Word, Excel, and PDF to native structures',
         title: 'Hubs',
         tableName: 'Hubs',
         headers: ['Hub', 'Volume'],
-        rows: [['Daejeon', 128400], ['Gwangju', 84200]],
+        rows: [
+          ['Daejeon', 128400],
+          ['Gwangju', 84200],
+        ],
         metrics: [{ label: 'Total', formula: '=SUM(Hubs[Volume])' }],
       },
     ],
@@ -3671,7 +3977,8 @@ test('the bundled template’s chart workbooks hold tables that match their head
       const [, from, row, to] = /\bref="([A-Z])(\d+):([A-Z])\d+"/.exec(table);
       const headers = [];
       for (let code = from.charCodeAt(0); code <= to.charCodeAt(0); code += 1) {
-        const cell = new RegExp(`<c r="${String.fromCharCode(code)}${row}"[^>]*>([\\s\\S]*?)</c>`).exec(sheet)?.[1] || '';
+        const cell =
+          new RegExp(`<c r="${String.fromCharCode(code)}${row}"[^>]*>([\\s\\S]*?)</c>`).exec(sheet)?.[1] || '';
         headers.push(/<t[^>]*>([\s\S]*?)<\/t>/.exec(cell)?.[1] || '');
       }
       const columns = [...table.matchAll(/<tableColumn\b[^>]*\bname="([^"]*)"/g)].map((match) => match[1]);

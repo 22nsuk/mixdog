@@ -1,6 +1,6 @@
 import { createCanvas, loadImage } from '@napi-rs/canvas';
 import { reviewRenderedOfficeAesthetics } from './design-aesthetics.mjs';
-import { issue } from './assurance-structure.mjs';
+import { issue } from './assurance-issue.mjs';
 
 function imagePages(image) {
   return Array.isArray(image?.pages) && image.pages.length ? image.pages.map(Number) : [Number(image?.page) || 0];

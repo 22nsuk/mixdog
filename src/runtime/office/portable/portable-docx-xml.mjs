@@ -213,7 +213,7 @@ export function alignWordTableColumns(tableXml, columnAlignments = []) {
 // nothing marks its edges, so its cell padding shows as an indent — "시니어 엔지니어" started 5 pt right of the "경력"
 // heading above it and "2023 – 현재" stopped 5 pt short of the rule. Its outer cells drop the padding on the page
 // side, so the text registers with the paragraphs around it; the padding between columns stays.
-export function isLayoutTable(properties = {}) {
+function isLayoutTable(properties = {}) {
   if (properties.style || properties.shading) return false;
   const borders = properties.borders;
   if (!borders || typeof borders !== 'object') return false;
@@ -247,7 +247,7 @@ export function naturalTableColumnWidths(values, properties = {}, available = 0)
     fontName: properties.fontName || properties.fontNameEastAsia || 'Calibri',
     fontSize: Number(properties.fontSize) > 0 ? Number(properties.fontSize) : 11,
   };
-  const headerBold = rows.length > 1 && properties.headerBold !== false && properties.repeatHeader !== false;
+  const headerBold = tableHeaderBold(properties, rows.length);
   const headers = tableHeaderRows(properties, rows.length);
   const gutters = isLayoutTable(properties) ? [] : gutterColumns(properties);
   const measure = (text, rowIndex, column) =>
@@ -268,7 +268,9 @@ function gutterColumns(properties) {
   );
 }
 const gutterMargin = (gutter) =>
-  gutter ? `<w:tcMar><w:left w:w="${pointsToTwips(CELL_PADDING_POINTS / 2 + GUTTER_POINTS)}" w:type="dxa"/></w:tcMar>` : '';
+  gutter
+    ? `<w:tcMar><w:left w:w="${pointsToTwips(CELL_PADDING_POINTS / 2 + GUTTER_POINTS)}" w:type="dxa"/></w:tcMar>`
+    : '';
 
 // The rows a table's header takes: one, or more for a header of several levels — a group label over the columns it
 // spans ("3분기 처리량" over 7월 · 8월 · 9월) is two. At least one row stays data.
@@ -276,10 +278,18 @@ function tableHeaderRows(properties, rows) {
   return Math.max(1, Math.min(rows - 1, Math.floor(Number(properties?.headerRows) || 1)));
 }
 
-const flushCellMargins = (first, last) =>
-  first || last
-    ? `<w:tcMar>${first ? '<w:left w:w="0" w:type="dxa"/>' : ''}${last ? '<w:right w:w="0" w:type="dxa"/>' : ''}</w:tcMar>`
-    : '';
+// The header row is set apart by weight unless the caller opts out (headerBold, or repeatHeader: false for a table
+// whose first row is data); a one-row table has no header to set apart.
+function tableHeaderBold(properties, rows) {
+  return rows > 1 && properties?.headerBold !== false && properties?.repeatHeader !== false;
+}
+
+const flushCellMargins = (first, last) => {
+  if (!first && !last) return '';
+  const left = first ? '<w:left w:w="0" w:type="dxa"/>' : '';
+  const right = last ? '<w:right w:w="0" w:type="dxa"/>' : '';
+  return `<w:tcMar>${left}${right}</w:tcMar>`;
+};
 
 // `available` is the text width, in points, of the section the table lands in.
 export function wordTableXml(operation, { available = 0 } = {}) {
@@ -298,8 +308,7 @@ export function wordTableXml(operation, { available = 0 } = {}) {
   const runProperties = wordTableRunProperties(operation.properties);
   // The header row is set apart by weight, on both backends, unless the caller
   // says otherwise; a header a reader cannot tell from the data is not one.
-  const headerBold =
-    rows > 1 && operation.properties?.headerBold !== false && operation.properties?.repeatHeader !== false;
+  const headerBold = tableHeaderBold(operation.properties, rows);
   const headerRunProperties = headerBold ? wordTableRunProperties(operation.properties, { bold: true }) : runProperties;
   const headers = tableHeaderRows(operation.properties, rows);
   const gutters = layout ? [] : gutterColumns(operation.properties);
@@ -334,10 +343,7 @@ export function wordTableXml(operation, { available = 0 } = {}) {
         // run together on a single line.
         const runs = text
           .split(/\r?\n/)
-          .map(
-            (line, lineIndex) =>
-              `${lineIndex ? '<w:br/>' : ''}<w:t${/^\s|\s$/.test(line) ? ' xml:space="preserve"' : ''}>${xmlEncode(line)}</w:t>`
-          )
+          .map((line, lineIndex) => `${lineIndex ? '<w:br/>' : ''}${wordTextElement(line)}`)
           .join('');
         // Schema order inside pPr: style and spacing before justification.
         const cellParagraphProperties = `${paragraphProperties(row)}${justifications[column] ? `<w:jc w:val="${justifications[column]}"/>` : ''}`;
@@ -494,6 +500,11 @@ function wordRunFontsXml(name, nameEastAsia) {
   return `<w:rFonts${latin}${eastAsia}/>`;
 }
 
+/** `<w:t>` for one string; edge whitespace is kept with `xml:space="preserve"`, which Word otherwise drops. */
+export function wordTextElement(text, { preserve = false } = {}) {
+  return `<w:t${preserve || /^\s|\s$/.test(text) ? ' xml:space="preserve"' : ''}>${xmlEncode(text)}</w:t>`;
+}
+
 /** `<w:tag w:val="…"/>` for a tri-state property: '' when undefined, else its on/off value. */
 function toggleXml(tag, value, on = '1', off = '0') {
   if (value === undefined) return '';
@@ -522,11 +533,10 @@ export function wordParagraph(text, { alignment = '', style = '', runProperties 
     style ? `<w:pStyle w:val="${xmlEncode(style)}"/>` : '',
     justification ? `<w:jc w:val="${justification}"/>` : '',
   ].join('');
-  const value = String(text ?? '');
   return (
     `<w:p>${properties ? `<w:pPr>${properties}</w:pPr>` : ''}` +
     `<w:r>${runProperties ? `<w:rPr>${runProperties}</w:rPr>` : ''}` +
-    `<w:t${/^\s|\s$/.test(value) ? ' xml:space="preserve"' : ''}>${xmlEncode(value)}</w:t></w:r></w:p>`
+    `${wordTextElement(String(text ?? ''))}</w:r></w:p>`
   );
 }
 
@@ -627,14 +637,14 @@ export function docxTables(current) {
   });
 }
 
-// A table as a caller can pick it out of the page: its size and the words it starts with. A report's metric strip is
-// a table too, and "table 1" named it where the results table was meant; the errors now say which table is which.
 // The grid's columns, as Word counts a table's columns whatever its merges.
 function tableColumnCount(tableXml, rows = tableRowMatches(tableXml)) {
   const grid = /<w:tblGrid\b[\s\S]*?<\/w:tblGrid>/.exec(tableXml)?.[0] || '';
   return (grid.match(/<w:gridCol\b/g) || []).length || (rows.length ? rowCellMatches(rows[0][0]).length : 0);
 }
 
+// A table as a caller can pick it out of the page: its size and the words it starts with. A report's metric strip is
+// a table too, and "table 1" named it where the results table was meant; the errors now say which table is which.
 function tableSummary(tableXml) {
   const rows = tableRowMatches(tableXml);
   const columns = tableColumnCount(tableXml, rows);
@@ -655,7 +665,9 @@ export function docxTable(current, number) {
       .slice(0, 6)
       .map((table, index) => `${index + 1}: ${tableSummary(table[0])}`)
       .join('; ');
-    throw new Error(`DOCX table ${number} not found: the document holds ${tables.length} table(s)${held ? ` (${held})` : ''}`);
+    throw new Error(
+      `DOCX table ${number} not found: the document holds ${tables.length} table(s)${held ? ` (${held})` : ''}`
+    );
   }
   return match;
 }
@@ -763,12 +775,10 @@ function paragraphIndentXml({ indentLeft, indentRight, indentFirstLine }) {
   // w:hanging: a w:firstLine never goes below zero, and clamped there the mark sat inside the indent and every
   // wrapped line started under it.
   const first = Number(indentFirstLine);
-  const firstLine =
-    indentFirstLine === undefined
-      ? ''
-      : first < 0
-        ? ` w:hanging="${twips(-first)}"`
-        : ` w:firstLine="${twips(first)}"`;
+  let firstLine = '';
+  if (indentFirstLine !== undefined) {
+    firstLine = first < 0 ? ` w:hanging="${twips(-first)}"` : ` w:firstLine="${twips(first)}"`;
+  }
   return `<w:ind${left}${right}${firstLine}/>`;
 }
 
@@ -778,13 +788,11 @@ function paragraphIndentXml({ indentLeft, indentRight, indentFirstLine }) {
  * right-aligned figure, a dot leader) never see it.
  */
 export function wordTextContent(text, { preserve = false } = {}) {
-  const textXml = (part) =>
-    `<w:t${preserve || /^\s|\s$/.test(part) ? ' xml:space="preserve"' : ''}>${xmlEncode(part)}</w:t>`;
   const value = String(text ?? '');
-  if (!value.includes('\t')) return textXml(value);
+  if (!value.includes('\t')) return wordTextElement(value, { preserve });
   return value
     .split('\t')
-    .map((part) => (part ? textXml(part) : ''))
+    .map((part) => (part ? wordTextElement(part, { preserve }) : ''))
     .join('<w:tab/>');
 }
 

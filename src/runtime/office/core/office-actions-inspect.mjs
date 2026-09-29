@@ -18,6 +18,10 @@ import { reviewOfficeStructure } from '../quality/assurance.mjs';
 import { OOXML_FORMATS, TABULAR_FORMATS } from './office-core.mjs';
 import { readComSavedCopy, snapshot } from './office-sessions.mjs';
 
+// A finding is the same finding wherever its code and path agree; the merges below drop the ones a result already holds.
+const findingKey = (entry) => `${entry.code}\0${entry.path}`;
+const knownFindings = (result) => new Set((result.issues || []).map(findingKey));
+
 // One document read per document version for every review that needs the whole
 // document: issues and qa both ask for it, and reading it twice per call costs
 // the caller seconds on a large workbook.
@@ -187,9 +191,9 @@ function auditSavedCopy(session, audit) {
 
 function mergeComPptxMeasuredRead(result, { value: measured, error }) {
   if (error) return { ...result, measuredRead: { status: 'unavailable', reason: error?.message || String(error) } };
-  const seen = new Set((result.issues || []).map((issue) => `${issue.code}|${issue.path}`));
+  const seen = knownFindings(result);
   const added = (measured.issues || []).filter(
-    (issue) => !HOST_OWNED_PPTX_CODES.has(String(issue.code || '')) && !seen.has(`${issue.code}|${issue.path}`)
+    (issue) => !HOST_OWNED_PPTX_CODES.has(String(issue.code || '')) && !seen.has(findingKey(issue))
   );
   if (!added.length) return { ...result, measuredRead: { status: 'merged', added: 0 } };
   const issues = normalizeOfficeReviewIssues([...(result.issues || []), ...added]);
@@ -206,7 +210,11 @@ function mergeComPptxMeasuredRead(result, { value: measured, error }) {
 // validated cells, so a cut label, a figure run into the label beside it, ink nobody can see, a number cut below the
 // sample, and a form nobody can type into passed on Excel while the portable audit reported them. The saved copy is
 // read by the portable audits themselves; a number the host already saw cut in a column stays the host's finding.
-const cellColumn = (path) => /^\/sheet\[(.*)\]\/cell\[\$?([A-Z]+)\$?\d+\]$/.exec(String(path || ''))?.slice(1).join('\0');
+const cellColumn = (path) =>
+  /^\/sheet\[(.*)\]\/cell\[\$?([A-Z]+)\$?\d+\]$/
+    .exec(String(path || ''))
+    ?.slice(1)
+    .join('\0');
 
 function xlsxSheetAudits(session, args) {
   return auditSavedCopy(session, async (copy) => {
@@ -222,14 +230,13 @@ function xlsxSheetAudits(session, args) {
 
 function mergeXlsxSheetAudits(result, { value: found, error }) {
   if (error) return { ...result, sheetAudit: { status: 'unavailable', reason: error?.message || String(error) } };
-  const known = new Set((result.issues || []).map((entry) => `${entry.code}\0${entry.path}`));
+  const known = knownFindings(result);
   const overflowing = new Set(
     (result.issues || []).filter((entry) => entry.code === 'cell_overflow').map((entry) => cellColumn(entry.path))
   );
   const added = found.filter(
     (entry) =>
-      !known.has(`${entry.code}\0${entry.path}`) &&
-      !(entry.code === 'column_too_narrow' && overflowing.has(cellColumn(entry.path)))
+      !known.has(findingKey(entry)) && !(entry.code === 'column_too_narrow' && overflowing.has(cellColumn(entry.path)))
   );
   if (!added.length) return { ...result, sheetAudit: { status: 'merged', added: 0 } };
   return {
@@ -275,10 +282,8 @@ async function microsoftOfficeIssues(session, args) {
   // portable rule applies to it and an unlabelled figure no longer passes on Word alone.
   if (session.format === 'docx') {
     const read = await snapshot(session, {}, { full: true });
-    const known = new Set((result.issues || []).map((entry) => `${entry.code}\0${entry.path}`));
-    const added = pictureDescriptionIssues(read?.document || {}).filter(
-      (entry) => !known.has(`${entry.code}\0${entry.path}`)
-    );
+    const known = knownFindings(result);
+    const added = pictureDescriptionIssues(read?.document || {}).filter((entry) => !known.has(findingKey(entry)));
     if (added.length) result = { ...result, issues: normalizeOfficeReviewIssues([...(result.issues || []), ...added]) };
   }
   return result;
@@ -298,10 +303,8 @@ export async function issues(session, args = {}) {
   // A finding the package reader already made at the same place is the same finding worded twice: the portable
   // contrast measure (against the resolved surface) and the format review's (against the slide) both reported
   // "Hard to read" once the portable snapshot carried text colours. The package reader's, the more exact, stays.
-  const found = new Set((result.issues || []).map((entry) => `${entry.code}\0${entry.path}`));
-  const structural = (await structureIssues(session, args)).filter(
-    (entry) => !found.has(`${entry.code}\0${entry.path}`)
-  );
+  const found = knownFindings(result);
+  const structural = (await structureIssues(session, args)).filter((entry) => !found.has(findingKey(entry)));
   // Normalized whether or not the structure review added anything: skipped when it found nothing, a portable deck's
   // overflow and overlap kept the warning the Office backend's copy of the same finding had been raised from.
   const merged = normalizeOfficeReviewIssues([...(result.issues || []), ...structural]);

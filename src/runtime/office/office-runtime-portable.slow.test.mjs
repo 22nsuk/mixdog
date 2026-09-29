@@ -859,10 +859,17 @@ test('page numbers added to a footer Word wrote keep the root that declares its 
   zip.file('word/footer1.xml', footer);
   await writeFile(path, await zip.generateAsync({ type: 'nodebuffer' }));
   const opened = value(await executeOfficeTool({ action: 'open', path, mode: 'portable' }, { cwd }));
-  value(await executeOfficeTool({ action: 'batch', session: opened.session, operations: [{ op: 'add_page_numbers' }] }, { cwd }));
+  value(
+    await executeOfficeTool(
+      { action: 'batch', session: opened.session, operations: [{ op: 'add_page_numbers' }] },
+      { cwd }
+    )
+  );
   value(await executeOfficeTool({ action: 'save', session: opened.session }, { cwd }));
   value(await executeOfficeTool({ action: 'close', session: opened.session }, { cwd }));
-  const written = await (await JSZip.loadAsync(await readFile(opened.output || path))).file('word/footer1.xml').async('string');
+  const written = await (await JSZip.loadAsync(await readFile(opened.output || path)))
+    .file('word/footer1.xml')
+    .async('string');
   assert.ok(written.includes(wordRoot), 'the footer keeps the root Word wrote');
   assert.match(written, /w14:paraId="40B4814C"/);
   assert.match(written, /w:instr=" PAGE "/);
@@ -1438,7 +1445,10 @@ test("a Word chart's highlighted bar takes the accent it is given", async (t) =>
     return { brand: pixels('1F5E4B'), teal: pixels('1F6F8B') };
   };
   const branded = await inks('branded', { accent: '1F5E4B' });
-  assert.ok(branded.brand > 1000 && branded.teal === 0, `the bar is drawn in the given accent: ${JSON.stringify(branded)}`);
+  assert.ok(
+    branded.brand > 1000 && branded.teal === 0,
+    `the bar is drawn in the given accent: ${JSON.stringify(branded)}`
+  );
   const plain = await inks('plain', {});
   assert.ok(plain.teal > 1000 && plain.brand === 0, `without an accent the teal stays: ${JSON.stringify(plain)}`);
 });
@@ -1486,7 +1496,12 @@ test('a sized title without a leading takes 1.25 times its size, exact', async (
         format: 'docx',
         mode: 'portable',
         operations: [
-          { op: 'append_text', text: '야간 처리량 34% 증가, 부산 허브 증설이 필요합니다', style: 'Title', properties: { size: 24 } },
+          {
+            op: 'append_text',
+            text: '야간 처리량 34% 증가, 부산 허브 증설이 필요합니다',
+            style: 'Title',
+            properties: { size: 24 },
+          },
           { op: 'append_text', text: '부제', style: 'Title', properties: { size: 20, lineSpacing: 32 } },
           { op: 'append_text', text: '본문 한 줄', properties: { size: 10.5 } },
         ],
@@ -1697,7 +1712,10 @@ test('portable DOCX merges keep cell properties, span every row, and explain a s
   for (const label of [region, volume, delay]) assert.match(label, /<w:vAlign w:val="bottom"\/>/);
   assert.match(region, /<w:tcW [^>]*\/><w:vMerge w:val="restart"\/><w:vAlign w:val="bottom"\/>/);
   const months = cellsOf(rows[1]).slice(1, 4);
-  assert.equal(width(volume), months.reduce((sum, cell) => sum + width(cell), 0));
+  assert.equal(
+    width(volume),
+    months.reduce((sum, cell) => sum + width(cell), 0)
+  );
   assert.deepEqual(
     cellsOf(rows[3]).map((cell) => [span(cell), /<w:vMerge\/>/.test(cell)]),
     [
@@ -3734,7 +3752,8 @@ test('portable DOCX reads Word-saved literal-mark lists as bullets and numbers n
   const paragraph = (text) => `<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`;
   const item = (text, numId) =>
     `<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="${numId}"/></w:numPr></w:pPr><w:r><w:t>${text}</w:t></w:r></w:p>`;
-  const level = (text) => `<w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="${text}"/></w:lvl>`;
+  const level = (text) =>
+    `<w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="${text}"/></w:lvl>`;
   await writeZip(source, {
     '[Content_Types].xml': '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>',
     'word/document.xml': `<?xml version="1.0"?><w:document xmlns:w="${ns}"><w:body>${paragraph('Findings')}${item('Peak load', 1)}${item('Manual sorting', 1)}${paragraph('Options')}${item('New sorter', 2)}</w:body></w:document>`,
@@ -4809,7 +4828,8 @@ test('a Word table given no widths takes them from its text and keeps its edges 
 test('a long Word table kept with its caption breaks between its edges, a short one moves whole', async (t) => {
   const cwd = await workspace(t);
   const path = join(cwd, 'keeps.docx');
-  const rows = (count) => [['주차', '처리량 (건)']].concat(Array.from({ length: count - 1 }, (_, index) => [`${index + 1}주차`, '13,800']));
+  const rows = (count) =>
+    [['주차', '처리량 (건)']].concat(Array.from({ length: count - 1 }, (_, index) => [`${index + 1}주차`, '13,800']));
   value(
     await executeOfficeTool(
       {
@@ -4974,10 +4994,11 @@ async function listLevelsByText(path) {
     ])
   );
   const levelOf = (abstractId, level) => {
-    const abstract = new RegExp(`<w:abstractNum\\b[^>]*\\bw:abstractNumId="${abstractId}"[^>]*>[\\s\\S]*?</w:abstractNum>`).exec(
-      numbering
-    )?.[0];
-    const lvl = new RegExp(`<w:lvl\\b[^>]*\\bw:ilvl="${level}"[^>]*>[\\s\\S]*?</w:lvl>`).exec(abstract || '')?.[0] || '';
+    const abstract = new RegExp(
+      `<w:abstractNum\\b[^>]*\\bw:abstractNumId="${abstractId}"[^>]*>[\\s\\S]*?</w:abstractNum>`
+    ).exec(numbering)?.[0];
+    const lvl =
+      new RegExp(`<w:lvl\\b[^>]*\\bw:ilvl="${level}"[^>]*>[\\s\\S]*?</w:lvl>`).exec(abstract || '')?.[0] || '';
     return [/<w:numFmt w:val="([^"]+)"/.exec(lvl)?.[1], /<w:lvlText w:val="([^"]*)"/.exec(lvl)?.[1]];
   };
   return [...document.matchAll(/<w:p[ >][\s\S]*?<\/w:p>/g)]
@@ -5070,8 +5091,16 @@ test('a list item placed with indentLeft hangs its text after the mark, and set_
         mode: 'portable',
         save: true,
         operations: [
-          { op: 'append_text', text: '상자 안의 항목', properties: { shading: 'FEF3C7', indentLeft: 12, listKind: 'bullet' } },
-          { op: 'append_text', text: '직접 건 항목', properties: { indentLeft: 40, indentFirstLine: -10, listKind: 'number' } },
+          {
+            op: 'append_text',
+            text: '상자 안의 항목',
+            properties: { shading: 'FEF3C7', indentLeft: 12, listKind: 'bullet' },
+          },
+          {
+            op: 'append_text',
+            text: '직접 건 항목',
+            properties: { indentLeft: 40, indentFirstLine: -10, listKind: 'number' },
+          },
           { op: 'append_text', text: '①\t걸린 조항', properties: { indentLeft: 18, indentFirstLine: -18 } },
           { op: 'append_text', text: '목록이 될 문단' },
           { op: 'append_text', text: '목록에서 뺄 문단', properties: { listKind: 'bullet' } },
@@ -5083,7 +5112,8 @@ test('a list item placed with indentLeft hangs its text after the mark, and set_
     )
   );
   const document = await (await parts(path)).text('word/document.xml');
-  const paragraph = (text) => new RegExp(`<w:p>(?:(?!</w:p>)[\\s\\S])*?${text}(?:(?!</w:p>)[\\s\\S])*?</w:p>`).exec(document)?.[0] || '';
+  const paragraph = (text) =>
+    new RegExp(`<w:p>(?:(?!</w:p>)[\\s\\S])*?${text}(?:(?!</w:p>)[\\s\\S])*?</w:p>`).exec(document)?.[0] || '';
   // The mark stands at the inset the callout gives its paragraphs, the text one list step (18 pt) after it.
   assert.match(paragraph('상자 안의 항목'), /<w:ind w:left="600" w:hanging="360"\/>/);
   assert.match(paragraph('직접 건 항목'), /<w:ind w:left="800" w:hanging="200"\/>/);
@@ -5556,7 +5586,15 @@ test('set_text leaves one run, without the old text\u2019s line breaks', async (
         save: true,
         operations: [
           { op: 'add_slide', layout: 'blank' },
-          { op: 'add_textbox', slide: 1, text: '증설 석 달 만에 처리량은 1.6배가', left: 60, top: 60, width: 500, height: 80 },
+          {
+            op: 'add_textbox',
+            slide: 1,
+            text: '증설 석 달 만에 처리량은 1.6배가',
+            left: 60,
+            top: 60,
+            width: 500,
+            height: 80,
+          },
         ],
       },
       { cwd }
@@ -5567,17 +5605,34 @@ test('set_text leaves one run, without the old text\u2019s line breaks', async (
   const slide = await zip.file('ppt/slides/slide1.xml').async('string');
   zip.file(
     'ppt/slides/slide1.xml',
-    slide.replace(/(<a:t>증설[^<]*<\/a:t><\/a:r>)/, '$1<a:br><a:rPr lang="ko-KR"/></a:br><a:r><a:rPr lang="ko-KR"/><a:t>됐다.</a:t></a:r>')
+    slide.replace(
+      /(<a:t>증설[^<]*<\/a:t><\/a:r>)/,
+      '$1<a:br><a:rPr lang="ko-KR"/></a:br><a:r><a:rPr lang="ko-KR"/><a:t>됐다.</a:t></a:r>'
+    )
   );
   await writeFile(path, await zip.generateAsync({ type: 'nodebuffer' }));
   const opened = value(await executeOfficeTool({ action: 'open', path, mode: 'portable' }, { cwd }));
-  value(await executeOfficeTool({ action: 'batch', session: opened.session, operations: [{ op: 'set_text', slide: 1, shape: 1, text: '처리량은 1.7배가 됐다.' }] }, { cwd }));
+  value(
+    await executeOfficeTool(
+      {
+        action: 'batch',
+        session: opened.session,
+        operations: [{ op: 'set_text', slide: 1, shape: 1, text: '처리량은 1.7배가 됐다.' }],
+      },
+      { cwd }
+    )
+  );
   value(await executeOfficeTool({ action: 'save', session: opened.session }, { cwd }));
   value(await executeOfficeTool({ action: 'close', session: opened.session }, { cwd }));
-  const written = await (await JSZip.loadAsync(await readFile(opened.output || path))).file('ppt/slides/slide1.xml').async('string');
+  const written = await (await JSZip.loadAsync(await readFile(opened.output || path)))
+    .file('ppt/slides/slide1.xml')
+    .async('string');
   const body = /<p:txBody>[\s\S]*?<\/p:txBody>/.exec(written)[0];
   assert.doesNotMatch(body, /<a:br\b/);
-  assert.deepEqual([...body.matchAll(/<a:t>([^<]*)<\/a:t>/g)].map((match) => match[1]), ['처리량은 1.7배가 됐다.']);
+  assert.deepEqual(
+    [...body.matchAll(/<a:t>([^<]*)<\/a:t>/g)].map((match) => match[1]),
+    ['처리량은 1.7배가 됐다.']
+  );
 });
 
 // null takes the fill or the outline away on both backends (Fill.Visible / Line.Visible = 0 on Office, which had
@@ -5601,13 +5656,37 @@ test('set_shape takes a fill or an outline away with null, and a new fill leaves
       { cwd }
     )
   );
-  const shapes = async () => [...(await (await parts(path)).text('ppt/slides/slide1.xml')).matchAll(/<p:sp>[\s\S]*?<\/p:sp>/g)].map((match) => /<p:spPr\b[\s\S]*?<\/p:spPr>/.exec(match[0])[0]);
+  const shapes = async () =>
+    [...(await (await parts(path)).text('ppt/slides/slide1.xml')).matchAll(/<p:sp>[\s\S]*?<\/p:sp>/g)].map(
+      (match) => /<p:spPr\b[\s\S]*?<\/p:spPr>/.exec(match[0])[0]
+    );
   // The second box has no fill of its own; filling it keeps its outline's colour.
-  value(await executeOfficeTool({ action: 'batch', session: created.session, operations: [{ op: 'set_shape', slide: 1, shape: 2, properties: { fillColor: 'FFF2CC' } }] }, { cwd }));
+  value(
+    await executeOfficeTool(
+      {
+        action: 'batch',
+        session: created.session,
+        operations: [{ op: 'set_shape', slide: 1, shape: 2, properties: { fillColor: 'FFF2CC' } }],
+      },
+      { cwd }
+    )
+  );
   value(await executeOfficeTool({ action: 'save', session: created.session }, { cwd }));
   const filled = (await shapes())[1];
-  assert.match(filled, /<a:solidFill><a:srgbClr val="FFF2CC"\/?>(?:<\/a:srgbClr>)?<\/a:solidFill><a:ln\b[^>]*><a:solidFill><a:srgbClr val="1F3A5F"/);
-  value(await executeOfficeTool({ action: 'batch', session: created.session, operations: [{ op: 'set_shape', slide: 1, shape: 1, properties: { fillColor: null, lineColor: null } }] }, { cwd }));
+  assert.match(
+    filled,
+    /<a:solidFill><a:srgbClr val="FFF2CC"\/?>(?:<\/a:srgbClr>)?<\/a:solidFill><a:ln\b[^>]*><a:solidFill><a:srgbClr val="1F3A5F"/
+  );
+  value(
+    await executeOfficeTool(
+      {
+        action: 'batch',
+        session: created.session,
+        operations: [{ op: 'set_shape', slide: 1, shape: 1, properties: { fillColor: null, lineColor: null } }],
+      },
+      { cwd }
+    )
+  );
   value(await executeOfficeTool({ action: 'save', session: created.session }, { cwd }));
   const cleared = (await shapes())[0];
   assert.match(cleared, /<a:noFill\/><a:ln><a:noFill\/><\/a:ln>/);

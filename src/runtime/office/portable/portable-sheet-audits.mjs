@@ -16,7 +16,6 @@ import {
 import { partRelationshipPath, relationshipTargetsByType, zipText } from './portable-opc.mjs';
 import {
   cellWidthScale,
-  displayWidth,
   formattedNumberWidth,
   hiddenSheetAreas,
   mergedRanges,
@@ -78,12 +77,9 @@ function lockedEntryCells(xml, styles, entryCells) {
 
 // total counts every entry cell the validations ask for: "all" only when none of them was opened.
 function protectedInputIssue(sheet, locked, total) {
-  const named =
-    total === 1
-      ? 'the entry cell'
-      : locked.length === total
-        ? `all ${total} entry cells`
-        : `${locked.length} of ${total} entry cells`;
+  let named = `${locked.length} of ${total} entry cells`;
+  if (total === 1) named = 'the entry cell';
+  else if (locked.length === total) named = `all ${total} entry cells`;
   return {
     severity: 'warning',
     code: 'protected_input_locked',
@@ -217,7 +213,7 @@ function labelRoom(column, neighbourColumn, { widths, withheld }) {
 // something: the empty columns before it lend their width, and a hidden
 // column lends none, because the sheet gives it no room on the page.
 function cutLabelColumns(xml, { widths, withheld, styles, strings, digitWidth }) {
-  const merged = mergedAreas(xml);
+  const merged = mergedAreas(xml).filter(Boolean);
   const cutLabels = new Map();
   for (const row of iterateSheetRows(xml)) {
     const cells = [...iterateSheetCells(row.body)]

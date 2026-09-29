@@ -117,16 +117,11 @@ export function anchorPhraseInParagraph(paragraphXml, find, id, markers = null) 
   return output.join('');
 }
 
-/** Tracked find-and-replace at run granularity: only the matched characters
- *  are wrapped in `w:del` and the replacement follows them in `w:ins`, both
- *  wearing the formatting of the run they cut, so the rest of the paragraph
- *  keeps its runs untouched. Returns `count: 0` when no match lies entirely
- *  inside text-only runs. */
 // The words a replacement shares with its find at either end are not an edit: "86억 원으로" → "86억 원(잠정)으로"
 // struck through the whole phrase and wrote it again, where a reviewer marks only "원으로" → "원(잠정)으로". The
 // match is found whole; the revision covers the words between the shared ones. Word granularity, never characters
 // — "22%" → "21.6%" reads as one changed figure, not "2" kept and "2" → "1.6".
-export function sharedWordEdges(find, replacement) {
+function sharedWordEdges(find, replacement) {
   const tokens = (value) => String(value).match(/\s+|\S+/g) || [];
   const before = tokens(find);
   const after = tokens(replacement);
@@ -147,6 +142,11 @@ export function sharedWordEdges(find, replacement) {
   };
 }
 
+/** Tracked find-and-replace at run granularity: only the matched characters
+ *  are wrapped in `w:del` and the replacement follows them in `w:ins`, both
+ *  wearing the formatting of the run they cut, so the rest of the paragraph
+ *  keeps its runs untouched. Returns `count: 0` when no match lies entirely
+ *  inside text-only runs. */
 export function trackedParagraphReplace(paragraphXml, find, fullReplacement, id, author) {
   if (!find) throw new Error('replace_text requires non-empty find');
   const runs = paragraphRuns(paragraphXml);

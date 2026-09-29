@@ -233,10 +233,14 @@ async function requestSessionClient(client, payload, timeoutMs = DEFAULT_TIMEOUT
   });
 }
 
+const unsupportedPlatformResult = () => ({
+  ok: false,
+  available: false,
+  error: 'Microsoft Office COM is available on Windows only',
+});
+
 export async function openMicrosoftOfficeSession(payload, { timeoutMs = DEFAULT_TIMEOUT_MS, signal = null } = {}) {
-  if (!microsoftOfficeComSupported()) {
-    return { ok: false, available: false, error: 'Microsoft Office COM is available on Windows only' };
-  }
+  if (!microsoftOfficeComSupported()) return unsupportedPlatformResult();
   const sessionId = String(payload?.session || '');
   if (!sessionId) return { ok: false, error: 'Microsoft Office session id is required' };
   if (sessionClients.has(sessionId))
@@ -290,14 +294,14 @@ export async function closeMicrosoftOfficeSession(
     } catch {}
     let closeTimer;
     const graceful =
-      client.closed || client.child.exitCode !== null
-        ? true
-        : await Promise.race([
-            new Promise((resolve) => client.child.once('close', () => resolve(true))),
-            new Promise((resolve) => {
-              closeTimer = setTimeout(() => resolve(false), closeTimeoutMs);
-            }),
-          ]);
+      client.closed ||
+      client.child.exitCode !== null ||
+      (await Promise.race([
+        new Promise((resolve) => client.child.once('close', () => resolve(true))),
+        new Promise((resolve) => {
+          closeTimer = setTimeout(() => resolve(false), closeTimeoutMs);
+        }),
+      ]));
     clearTimeout(closeTimer);
     client.closed = true;
     try {
@@ -314,9 +318,7 @@ export async function closeMicrosoftOfficeSession(
 }
 
 export async function callMicrosoftOffice(payload, { timeoutMs = DEFAULT_TIMEOUT_MS, signal = null } = {}) {
-  if (!microsoftOfficeComSupported()) {
-    return { ok: false, available: false, error: 'Microsoft Office COM is available on Windows only' };
-  }
+  if (!microsoftOfficeComSupported()) return unsupportedPlatformResult();
   const sessionId = String(payload?.session || '');
   if (sessionId) {
     const client = sessionClients.get(sessionId);

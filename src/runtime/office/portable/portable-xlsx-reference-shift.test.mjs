@@ -39,9 +39,20 @@ async function operationsWorkbook(sheetName = 'Data') {
   const zip = await JSZip.loadAsync(await createPortableChartWorkbook(DATA, { sheetName }));
   await applyXlsx(zip, [
     { op: 'add_sheet', name: 'Report' },
-    ...[2, 3, 4, 5, 6].map((row) => ({ op: 'set_formula', sheet: 'Data', cell: `G${row}`, formula: `=D${row}/B${row}-1` })),
+    ...[2, 3, 4, 5, 6].map((row) => ({
+      op: 'set_formula',
+      sheet: 'Data',
+      cell: `G${row}`,
+      formula: `=D${row}/B${row}-1`,
+    })),
     { op: 'set_formula', sheet: 'Data', cell: 'D7', formula: '=SUM(D2:D6)' },
-    { op: 'add_conditional_format', sheet: 'Data', range: 'D2:D6', formula: '$D2>AVERAGE($D$2:$D$6)', fillColor: 'FFF2CC' },
+    {
+      op: 'add_conditional_format',
+      sheet: 'Data',
+      range: 'D2:D6',
+      formula: '$D2>AVERAGE($D$2:$D$6)',
+      fillColor: 'FFF2CC',
+    },
     { op: 'add_validation', sheet: 'Data', range: 'E2:E6', type: 'decimal', formula1: '0', formula2: '1' },
     { op: 'add_chart', sheet: 'Data', range: 'A1:A6,D1:D6', cell: 'I2', chartType: 'bar', title: '9월' },
     { op: 'set_page_setup', sheet: 'Data', printArea: 'A1:G7', printTitleRows: '1' },
@@ -77,9 +88,9 @@ async function workbookFacts(zip) {
         xmlDecode(match[2]),
       ])
     ),
-    conditionalFormats: [...data.matchAll(/<conditionalFormatting sqref="([^"]+)">[\s\S]*?<formula>([^<]*)<\/formula>/g)].map(
-      (match) => [match[1], xmlDecode(match[2])]
-    ),
+    conditionalFormats: [
+      ...data.matchAll(/<conditionalFormatting sqref="([^"]+)">[\s\S]*?<formula>([^<]*)<\/formula>/g),
+    ].map((match) => [match[1], xmlDecode(match[2])]),
     validations: [...data.matchAll(/<dataValidation\b[^>]*?\bsqref="([^"]+)"/g)].map((match) => match[1]),
     series: [...chart.matchAll(/<c:f>([^<]*)<\/c:f>/g)].map((match) => xmlDecode(match[1])),
   };
@@ -222,7 +233,10 @@ test('an inserted row or column takes the formatting of the one above or on its 
   for (const match of xml.matchAll(/<col\b[^>]*?\bmin="(\d+)"[^>]*?\bmax="(\d+)"[^>]*?\bwidth="([\d.]+)"/g)) {
     for (let column = Number(match[1]); column <= Number(match[2]); column += 1) widths.set(column, match[3]);
   }
-  assert.deepEqual([2, 3, 4, 5].map((column) => widths.get(column)), Array(4).fill(widths.get(2)));
+  assert.deepEqual(
+    [2, 3, 4, 5].map((column) => widths.get(column)),
+    Array(4).fill(widths.get(2))
+  );
 });
 
 // append_row wrote its values into bare cells: under a table of #,##0 figures and 0.0% rates the new row read 1200 and
@@ -241,20 +255,25 @@ test('an appended row is formatted as the last row is', async () => {
   assert.match(xml, /<row r="7"[^>]*\bht="20"/);
   assert.match(xml, /<c r="B7"[^>]*><v>1200<\/v>/);
   // An empty sheet's first appended row is row 1, with nothing to take from.
-  await applyXlsx(zip, [{ op: 'add_sheet', name: 'Log' }, { op: 'append_row', sheet: 'Log', values: ['시작'] }]);
+  await applyXlsx(zip, [
+    { op: 'add_sheet', name: 'Log' },
+    { op: 'append_row', sheet: 'Log', values: ['시작'] },
+  ]);
   assert.match(await sheetXml(zip, 'Log'), /<row r="1"[^>]*>[\s\S]*시작/);
 });
 
 test('a shared formula whose cells would read differently is written out cell by cell; one that keeps its meaning stays shared', async () => {
   const zip = await operationsWorkbook();
   const sheet = (await workbookSheets(zip)).find((entry) => entry.name === 'Report');
-  const shared = (column, text) =>
-    [9, 10, 11, 12, 13]
-      .map((row) =>
-        row === 9
-          ? `<c r="${column}9"><f t="shared" ref="${column}9:${column}13" si="${column === 'B' ? 0 : 1}">${text}</f><v>0</v></c>`
-          : `<c r="${column}${row}"><f t="shared" si="${column === 'B' ? 0 : 1}"/><v>0</v></c>`
-      );
+  const shared = (column, text) => {
+    const id = column === 'B' ? 0 : 1;
+    return [9, 10, 11, 12, 13].map((row) => {
+      if (row === 9) {
+        return `<c r="${column}9"><f t="shared" ref="${column}9:${column}13" si="${id}">${text}</f><v>0</v></c>`;
+      }
+      return `<c r="${column}${row}"><f t="shared" si="${id}"/><v>0</v></c>`;
+    });
+  };
   const b = shared('B', 'Data!B2');
   const e = shared('E', 'B9*2');
   const rows = [9, 10, 11, 12, 13].map((row, index) => `<row r="${row}">${b[index]}${e[index]}</row>`).join('');
@@ -334,13 +353,20 @@ test('a renamed sheet is renamed everywhere it is named, quoted where its name n
   // Three Report formulas, Data's own, the name, the validation, the rule and the chart's three series references.
   assert.equal(result.referencesRewritten, 10);
   assert.deepEqual(await namingFacts(zip), {
-    report: ["A1=SUM('자료 2026'!B2:B4)", `A2='자료 2026'!A2&"Data!A2"`, "A3=Other!A1+'자료 2026'!$B$2", 'A4=SUM(Vals)'],
+    report: [
+      "A1=SUM('자료 2026'!B2:B4)",
+      `A2='자료 2026'!A2&"Data!A2"`,
+      "A3=Other!A1+'자료 2026'!$B$2",
+      'A4=SUM(Vals)',
+    ],
     name: "'자료 2026'!$B$2:$B$4",
     validation: "'자료 2026'!$A$2:$A$4",
     rule: "C1>'자료 2026'!$B$4",
   });
   assert.deepEqual(await formulas(zip, '자료 2026'), ["C2=B2/'자료 2026'!B3"]);
-  const series = [...(await zipText(zip, 'xl/charts/chart1.xml')).matchAll(/<c:f>([^<]*)<\/c:f>/g)].map((match) => xmlDecode(match[1]));
+  const series = [...(await zipText(zip, 'xl/charts/chart1.xml')).matchAll(/<c:f>([^<]*)<\/c:f>/g)].map((match) =>
+    xmlDecode(match[1])
+  );
   assert.ok(series.length && series.every((text) => text.startsWith("'자료 2026'!")), series.join(' '));
 });
 
@@ -357,14 +383,24 @@ test('a deleted sheet leaves #REF! wherever it was named, as Excel saves it', as
   const report = (await workbookSheets(zip)).find((entry) => entry.name === 'Report');
   zip.file(report.path, (await zipText(zip, report.path)).replace('<f>SUM(#REF!)</f>', '<f>SUM(#REF!B2:B4)</f>'));
   await applyXlsx(zip, [{ op: 'insert_rows', sheet: 'Report', row: 1, count: 1 }]);
-  assert.deepEqual((await namingFacts(zip)).report, ['A2=SUM(#REF!B2:B4)', 'A3=#REF!&"Data!A2"', 'A4=Other!A1+#REF!', 'A5=SUM(Vals)']);
+  assert.deepEqual((await namingFacts(zip)).report, [
+    'A2=SUM(#REF!B2:B4)',
+    'A3=#REF!&"Data!A2"',
+    'A4=Other!A1+#REF!',
+    'A5=SUM(Vals)',
+  ]);
 });
 
 // Two sheets drawing through one drawing part is a package Excel will not open, and that is what a copied sheet with a
 // chart was. Excel's own copy has its own chart reading the copy, its own notes and print area, the copy's formulas
 // read the copy (Report!B2 became 'Report 사본'!B2), and a workbook name reading the sheet gains a copy-level twin.
 test('a copied sheet gets its own chart, notes and names, pointed at the copy, as Excel copies it', async () => {
-  const zip = await JSZip.loadAsync(await createPortableChartWorkbook(DATA.map((row) => row.slice(0, 4)), { sheetName: 'Report' }));
+  const zip = await JSZip.loadAsync(
+    await createPortableChartWorkbook(
+      DATA.map((row) => row.slice(0, 4)),
+      { sheetName: 'Report' }
+    )
+  );
   await applyXlsx(zip, [
     { op: 'add_chart', sheet: 'Report', range: 'A1:A6,D1:D6', cell: 'F2', chartType: 'bar', title: '9월' },
     { op: 'add_note', sheet: 'Report', cell: 'A1', text: '자료: 운영관리시스템' },
@@ -376,23 +412,39 @@ test('a copied sheet gets its own chart, notes and names, pointed at the copy, a
   const [source, copy] = await workbookSheets(zip);
   const owned = async (sheet, type) => {
     const rels = await zipText(zip, sheet.path.replace(/([^/]+)$/, '_rels/$1.rels'));
-    return new RegExp(`Type="[^"]*/${type}"[^>]*Target="([^"]+)"|Target="([^"]+)"[^>]*Type="[^"]*/${type}"`).exec(rels)?.slice(1).find(Boolean);
+    return new RegExp(`Type="[^"]*/${type}"[^>]*Target="([^"]+)"|Target="([^"]+)"[^>]*Type="[^"]*/${type}"`)
+      .exec(rels)
+      ?.slice(1)
+      .find(Boolean);
   };
   for (const type of ['drawing', 'comments', 'vmlDrawing']) {
     assert.ok(await owned(copy, type), `the copy has a ${type}`);
     assert.notEqual(await owned(copy, type), await owned(source, type), `the copy's ${type} is its own`);
   }
-  const charts = Object.keys(zip.files).filter((part) => /^xl\/charts\/chart\d+\.xml$/.test(part)).sort();
+  const charts = Object.keys(zip.files)
+    .filter((part) => /^xl\/charts\/chart\d+\.xml$/.test(part))
+    .sort();
   assert.equal(charts.length, 2);
-  const series = [...(await zipText(zip, charts[1])).matchAll(/<c:f>([^<]*)<\/c:f>/g)].map((match) => xmlDecode(match[1]));
+  const series = [...(await zipText(zip, charts[1])).matchAll(/<c:f>([^<]*)<\/c:f>/g)].map((match) =>
+    xmlDecode(match[1])
+  );
   assert.ok(series.length && series.every((text) => text.startsWith("'Report 사본'!")), series.join(' '));
-  assert.deepEqual((await formulas(zip, 'Report 사본')).filter((entry) => entry.startsWith('E2')), ["E2='Report 사본'!D2*2+D3"]);
-  assert.deepEqual((await formulas(zip, 'Report')).filter((entry) => entry.startsWith('E2')), ['E2=Report!D2*2+D3']);
-  const names = [...(await zipText(zip, 'xl/workbook.xml')).matchAll(/<definedName\b([^>]*)>([^<]*)<\/definedName>/g)].map(
-    (match) => `${/name="([^"]+)"/.exec(match[1])[1]}@${/localSheetId="(\d+)"/.exec(match[1])?.[1] ?? '-'}=${xmlDecode(match[2])}`
+  assert.deepEqual(
+    (await formulas(zip, 'Report 사본')).filter((entry) => entry.startsWith('E2')),
+    ["E2='Report 사본'!D2*2+D3"]
+  );
+  assert.deepEqual(
+    (await formulas(zip, 'Report')).filter((entry) => entry.startsWith('E2')),
+    ['E2=Report!D2*2+D3']
+  );
+  const names = [
+    ...(await zipText(zip, 'xl/workbook.xml')).matchAll(/<definedName\b([^>]*)>([^<]*)<\/definedName>/g),
+  ].map(
+    (match) =>
+      `${/name="([^"]+)"/.exec(match[1])[1]}@${/localSheetId="(\d+)"/.exec(match[1])?.[1] ?? '-'}=${xmlDecode(match[2])}`
   );
   assert.deepEqual(names.sort(), [
-    "Total@-=Report!$D$2",
+    'Total@-=Report!$D$2',
     "Total@1='Report 사본'!$D$2",
     '_xlnm.Print_Area@0=Report!$A$1:$D$6',
     "_xlnm.Print_Area@1='Report 사본'!$A$1:$D$6",
@@ -402,11 +454,17 @@ test('a copied sheet gets its own chart, notes and names, pointed at the copy, a
 // Excel's calculation chain names formula cells by sheet; left naming a deleted sheet, Excel would not open the file.
 test('deleting a sheet drops the calculation chain that named its cells', async () => {
   const zip = await operationsWorkbook();
-  zip.file('xl/calcChain.xml', '<calcChain xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><c r="A1" i="2"/></calcChain>');
+  zip.file(
+    'xl/calcChain.xml',
+    '<calcChain xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><c r="A1" i="2"/></calcChain>'
+  );
   const rels = await zipText(zip, 'xl/_rels/workbook.xml.rels');
   zip.file(
     'xl/_rels/workbook.xml.rels',
-    rels.replace('</Relationships>', '<Relationship Id="rId99" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/calcChain" Target="calcChain.xml"/></Relationships>')
+    rels.replace(
+      '</Relationships>',
+      '<Relationship Id="rId99" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/calcChain" Target="calcChain.xml"/></Relationships>'
+    )
   );
   await applyXlsx(zip, [{ op: 'delete_sheet', sheet: 'Report' }]);
   assert.equal(zip.file('xl/calcChain.xml'), null);
@@ -416,7 +474,12 @@ test('deleting a sheet drops the calculation chain that named its cells', async 
 // A sort moves formulas with their rows. Excel 16, sorting A2:G6 by column C ascending, wrote each moved row's formula
 // with its unqualified references following the row where relative and every sheet-qualified one left as it was.
 test('a sorted row takes its formulas along as Excel moves them', async () => {
-  const zip = await JSZip.loadAsync(await createPortableChartWorkbook(DATA.map((row) => [row[0], row[1], row[3]]), { sheetName: 'Data' }));
+  const zip = await JSZip.loadAsync(
+    await createPortableChartWorkbook(
+      DATA.map((row) => [row[0], row[1], row[3]]),
+      { sheetName: 'Data' }
+    )
+  );
   await applyXlsx(zip, [
     { op: 'add_sheet', name: 'Report' },
     { op: 'set_range', sheet: 'Report', range: 'C1:C7', values: [[1], [2], [3], [4], [5], [6], [7]] },
@@ -433,7 +496,10 @@ test('a sorted row takes its formulas along as Excel moves them', async () => {
   const data = await formulas(zip, 'Data');
   const at = (prefix) => data.filter((entry) => entry.startsWith(prefix));
   assert.deepEqual(at('D'), ['D2=C2/B2-1', 'D3=C3/B3-1', 'D4=C4/B4-1', 'D5=C5/B5-1', 'D6=C6/B6-1']);
-  assert.deepEqual(at('E'), [2, 3, 4, 5, 6].map((row) => `E${row}=C${row}/SUM($C$2:$C$6)`));
+  assert.deepEqual(
+    at('E'),
+    [2, 3, 4, 5, 6].map((row) => `E${row}=C${row}/SUM($C$2:$C$6)`)
+  );
   assert.deepEqual(at('F'), [
     'F2=Report!C6+C3+$B2+B$2',
     'F3=Report!C5+C4+$B3+B$2',
@@ -450,7 +516,9 @@ test('a sorted row takes its formulas along as Excel moves them', async () => {
   ]);
   assert.deepEqual(at('C7'), ['C7=SUM(C2:C6)']);
   assert.deepEqual(await formulas(zip, 'Report'), ['A1=Data!A2']);
-  const values = (await sheetXml(zip, 'Data')).match(/<c r="A[2-6]"[^>]*>[\s\S]*?<\/c>/g).map((cell) => /<t[^>]*>([^<]*)</.exec(cell)?.[1]);
+  const values = (await sheetXml(zip, 'Data'))
+    .match(/<c r="A[2-6]"[^>]*>[\s\S]*?<\/c>/g)
+    .map((cell) => /<t[^>]*>([^<]*)</.exec(cell)?.[1]);
   assert.deepEqual(values, ['제주', '강원', '호남', '부산', '수도권']);
 });
 
@@ -466,7 +534,12 @@ test('a formula filled down as one moves cell by cell when sorted whole, and ref
           : `<c r="D${row}"><f t="shared" si="0"/><v>0</v></c>`
       );
   const workbookWith = async (last) => {
-    const zip = await JSZip.loadAsync(await createPortableChartWorkbook(DATA.map((row) => [row[0], row[1], row[3]]), { sheetName: 'Data' }));
+    const zip = await JSZip.loadAsync(
+      await createPortableChartWorkbook(
+        DATA.map((row) => [row[0], row[1], row[3]]),
+        { sheetName: 'Data' }
+      )
+    );
     const [sheet] = await workbookSheets(zip);
     let xml = await zipText(zip, sheet.path);
     for (const [index, cell] of filled(last).entries()) {
@@ -479,8 +552,13 @@ test('a formula filled down as one moves cell by cell when sorted whole, and ref
     return zip;
   };
   const whole = await workbookWith(6);
-  await applyXlsx(whole, [{ op: 'sort_range', sheet: 'Data', range: 'A2:D6', by: 'C', order: 'asc', hasHeader: false }]);
-  assert.deepEqual((await formulas(whole, 'Data')).filter((entry) => entry.startsWith('D')), [2, 3, 4, 5, 6].map((row) => `D${row}=C${row}/B${row}-1`));
+  await applyXlsx(whole, [
+    { op: 'sort_range', sheet: 'Data', range: 'A2:D6', by: 'C', order: 'asc', hasHeader: false },
+  ]);
+  assert.deepEqual(
+    (await formulas(whole, 'Data')).filter((entry) => entry.startsWith('D')),
+    [2, 3, 4, 5, 6].map((row) => `D${row}=C${row}/B${row}-1`)
+  );
   assert.doesNotMatch(await sheetXml(whole, 'Data'), /t="shared"/);
   const cut = await workbookWith(7);
   await assert.rejects(
@@ -494,7 +572,9 @@ test('a formula filled down as one moves cell by cell when sorted whole, and ref
 test('a picture added to a drawing Excel wrote declares the relationship prefix it uses', async (t) => {
   const zip = await operationsWorkbook();
   const drawingPart = 'xl/drawings/drawing1.xml';
-  const excelRoot = (await zipText(zip, drawingPart)).replace(/<xdr:wsDr\b[^>]*>/, (root) => root.replace(/\s+xmlns:r="[^"]*"/, ''));
+  const excelRoot = (await zipText(zip, drawingPart)).replace(/<xdr:wsDr\b[^>]*>/, (root) =>
+    root.replace(/\s+xmlns:r="[^"]*"/, '')
+  );
   zip.file(drawingPart, excelRoot);
   assert.doesNotMatch(excelRoot, /<xdr:wsDr\b[^>]*xmlns:r=/);
   const folder = await mkdtemp(join(tmpdir(), 'mixdog-drawing-'));
@@ -505,7 +585,12 @@ test('a picture added to a drawing Excel wrote declares the relationship prefix 
   const drawing = await zipText(zip, drawingPart);
   const users = [...drawing.matchAll(/<[\w:]+\b[^>]*\br:(?:embed|id|link)="[^"]*"[^>]*>/g)].map((match) => match[0]);
   assert.equal(users.length, 2, 'the chart frame and the picture');
-  for (const element of users) assert.match(element, /xmlns:r="http:\/\/schemas\.openxmlformats\.org\/officeDocument\/2006\/relationships"/, element);
+  for (const element of users)
+    assert.match(
+      element,
+      /xmlns:r="http:\/\/schemas\.openxmlformats\.org\/officeDocument\/2006\/relationships"/,
+      element
+    );
 });
 
 // Excel moves a note with its cell, box and all, and deletes it with its cell.
@@ -527,7 +612,10 @@ test('a note moves with its cell and goes with it', async () => {
   const before = await notes();
   await applyXlsx(zip, [{ op: 'insert_rows', sheet: 'Data', row: 4, count: 2 }]);
   const inserted = await notes();
-  assert.deepEqual(inserted.refs, before.refs.map((ref) => (ref === 'A6' ? 'A8' : ref)));
+  assert.deepEqual(
+    inserted.refs,
+    before.refs.map((ref) => (ref === 'A6' ? 'A8' : ref))
+  );
   assert.deepEqual(inserted.cells.sort(), ['A8', 'B3']);
   await applyXlsx(zip, [{ op: 'delete_rows', sheet: 'Data', row: 8, count: 1 }]);
   assert.deepEqual((await notes()).refs, ['B3']);

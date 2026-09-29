@@ -13,14 +13,30 @@ import { shapeParagraphs } from '../portable/portable-pptx-core.mjs';
 import { measureTextBlock } from '../portable/text-metrics.mjs';
 
 const ink = { hex: '14181F', a: 1 };
-const style = (size, extra = {}) => ({ font: 'Noto Sans KR', size, bold: false, italic: false, color: ink, ls: 0, hl: null, ...extra });
+const style = (size, extra = {}) => ({
+  font: 'Noto Sans KR',
+  size,
+  bold: false,
+  italic: false,
+  color: ink,
+  ls: 0,
+  hl: null,
+  ...extra,
+});
 
 // A numbered disc as the browser draws it: 44 px circle, one 24 px digit centred, line-height 1.
 const disc = {
   kind: 'text',
   box: { x: 700, y: 380, w: 44, h: 44 },
   inset: { l: 0, r: 0, t: 0, b: 0 },
-  frame: { kind: 'rect', box: { x: 700, y: 380, w: 44, h: 44 }, fill: { hex: 'FF6B3D', a: 1 }, radius: 22, stroke: null, shadow: null },
+  frame: {
+    kind: 'rect',
+    box: { x: 700, y: 380, w: 44, h: 44 },
+    fill: { hex: 'FF6B3D', a: 1 },
+    radius: 22,
+    stroke: null,
+    shadow: null,
+  },
   align: 'center',
   lineHeight: 24,
   fontSize: 24,
@@ -84,7 +100,11 @@ const measure = {
         },
         disc,
         paragraph,
-        { kind: 'table', box: { x: 96, y: 720, w: 400, h: 180 }, rows: [[cell('a', 720)], [cell('b', 780)], [cell('c', 840)]] },
+        {
+          kind: 'table',
+          box: { x: 96, y: 720, w: 400, h: 180 },
+          rows: [[cell('a', 720)], [cell('b', 780)], [cell('c', 840)]],
+        },
       ],
     },
   ],
@@ -122,7 +142,9 @@ test('a one-line band wider than its text keeps the browser alignment; a pill it
     lineHeight: 43.5,
     fontSize: 30,
     inkW: 1100,
-    lines: [{ top: 866, bottom: 910, width: 1100, runs: [{ text: '제약 고객의 이탈 시간이 가장 짧다.', style: style(30) }] }],
+    lines: [
+      { top: 866, bottom: 910, width: 1100, runs: [{ text: '제약 고객의 이탈 시간이 가장 짧다.', style: style(30) }] },
+    ],
   };
   assert.equal(textPlacement(band, 1920).centerAlign, false);
   assert.equal(textPlacement({ ...band, box: { ...band.box, w: 1180 } }, 1920).centerAlign, true);
@@ -163,23 +185,39 @@ test('what runs past the page is cut at its edge, as the browser clips it', asyn
   const dir = await mkdtemp(join(tmpdir(), 'mixdog-html-bleed-'));
   try {
     const output = join(dir, 'deck.pptx');
-    const band = '<svg xmlns="http://www.w3.org/2000/svg" width="2000" height="260" viewBox="0 0 2000 260"><polygon points="0,202 2000,0 2000,57 0,260" fill="#C9CEF2"/></svg>';
+    const band =
+      '<svg xmlns="http://www.w3.org/2000/svg" width="2000" height="260" viewBox="0 0 2000 260"><polygon points="0,202 2000,0 2000,57 0,260" fill="#C9CEF2"/></svg>';
     const items = [
       { kind: 'svg', box: { x: -40, y: 430, w: 2000, h: 260 }, markup: band, alt: 'band', alpha: 1 },
-      { kind: 'rect', box: { x: 1800, y: -20, w: 200, h: 100 }, fill: { hex: 'FF7A45', a: 1 }, radius: 0, stroke: null, shadow: null },
+      {
+        kind: 'rect',
+        box: { x: 1800, y: -20, w: 200, h: 100 },
+        fill: { hex: 'FF7A45', a: 1 },
+        radius: 0,
+        stroke: null,
+        shadow: null,
+      },
       { kind: 'line', seg: [-10, 900, 1950, 900], color: { hex: '161A33', a: 1 }, w: 2 },
     ];
     await buildPptxFromMeasure({ width: 1920, height: 1080, slides: [{ bg: null, items }] }, output);
     const xml = await slideXml(output);
     const drawn = xml.slice(xml.indexOf('</p:grpSpPr>'));
-    const frames = [...drawn.matchAll(/<a:xfrm[^>]*>\s*<a:off x="(-?\d+)" y="(-?\d+)"\/>\s*<a:ext cx="(\d+)" cy="(\d+)"\/>/g)].map((m) => m.slice(1).map(Number));
+    const frames = [
+      ...drawn.matchAll(/<a:xfrm[^>]*>\s*<a:off x="(-?\d+)" y="(-?\d+)"\/>\s*<a:ext cx="(\d+)" cy="(\d+)"\/>/g),
+    ].map((m) => m.slice(1).map(Number));
     assert.equal(frames.length, 3, xml);
     const [W, H] = [12192000, 6858000];
     for (const [x, y, cx, cy] of frames) {
-      assert.ok(x >= 0 && y >= 0 && x + cx <= W + 2000 && y + cy <= H + 2000, `frame ${[x, y, cx, cy]} stays on the ${W}×${H} page`);
+      assert.ok(
+        x >= 0 && y >= 0 && x + cx <= W + 2000 && y + cy <= H + 2000,
+        `frame ${[x, y, cx, cy]} stays on the ${W}×${H} page`
+      );
     }
     // The band keeps its page part: the full canvas width, placed at its own top.
-    assert.ok(frames.some(([x, y, cx]) => x === 0 && Math.abs(cx - W) < 2000 && Math.abs(y - 430 * (W / 1920)) < 2000), JSON.stringify(frames));
+    assert.ok(
+      frames.some(([x, y, cx]) => x === 0 && Math.abs(cx - W) < 2000 && Math.abs(y - 430 * (W / 1920)) < 2000),
+      JSON.stringify(frames)
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -192,7 +230,13 @@ test('a chart spec pins the plot area and can hide the category axis', async () 
     const chart = {
       kind: 'chart',
       box: { x: 96, y: 500, w: 1728, h: 420 },
-      spec: { type: 'col', labels: ['a', 'b'], values: [1, 2], plot: { x: 0, y: 0.1, w: 1, h: 0.8 }, categoryAxis: false },
+      spec: {
+        type: 'col',
+        labels: ['a', 'b'],
+        values: [1, 2],
+        plot: { x: 0, y: 0.1, w: 1, h: 0.8 },
+        categoryAxis: false,
+      },
     };
     await buildPptxFromMeasure({ width: 1920, height: 1080, slides: [{ bg: null, items: [chart] }] }, output);
     const zip = await JSZip.loadAsync(await readFile(output));

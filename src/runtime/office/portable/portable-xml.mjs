@@ -145,10 +145,7 @@ export function replaceInParagraphs(
   if (!words.length) throw new Error('replace_text requires non-empty find');
   const lead = /^\s/.test(find) ? '[ \\n]+' : '',
     tail = /\s$/.test(find) ? '[ \\n]+' : '';
-  const pattern = new RegExp(
-    `${lead}${words.map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[ \\n]+')}${tail}`,
-    'g'
-  );
+  const pattern = new RegExp(`${lead}${words.map(tagPattern).join('[ \\n]+')}${tail}`, 'g');
   const tokenPattern = new RegExp(
     `<${tagPattern(run)}(\\s[^>]*)?>([\\s\\S]*?)</${tagPattern(run)}>|<${tagPattern(lineBreak)}\\b(?:[^>]*?/>|[^>]*>[\\s\\S]*?</${tagPattern(lineBreak)}>)`,
     'g'

@@ -53,7 +53,13 @@ const SCANNERS = [
   ['string', /"(?:[^"]|"")*"/y],
   // Excel writes a reference whose cells were deleted as #REF!, after the sheet name when it named another sheet
   // (Data!#REF!), and one whose sheet was deleted as #REF! before the cells it named (#REF!B2:B4).
-  ['error', new RegExp(String.raw`(?:${SHEET_PREFIX})?#(?:REF!(?:${REFERENCE_BODY})?|DIV\/0!|VALUE!|NAME\?|N\/A|NUM!|NULL!)`, 'yu')],
+  [
+    'error',
+    new RegExp(
+      String.raw`(?:${SHEET_PREFIX})?#(?:REF!(?:${REFERENCE_BODY})?|DIV\/0!|VALUE!|NAME\?|N\/A|NUM!|NULL!)`,
+      'yu'
+    ),
+  ],
   // A name followed by "(" is a call, which keeps LOG10( from reading as a cell.
   ['call', /[A-Za-z_][A-Za-z0-9_.]*(?=\s*\()/y],
   ['reference', new RegExp(`(?:${SHEET_PREFIX})?(?:${REFERENCE_BODY})`, 'yu')],

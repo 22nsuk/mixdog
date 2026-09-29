@@ -26,6 +26,7 @@ import { PIXELS_TO_POINTS, imagePixelSize } from '../portable/portable-opc.mjs';
 import { naturalColumnWidths } from '../shared/column-widths.mjs';
 import { figureColumnAlignments } from '../shared/column-alignments.mjs';
 import { pageSizePoints } from '../shared/page-sizes.mjs';
+import { koreanParticleReplacements } from '../shared/korean-particles.mjs';
 import {
   TABULAR_FORMATS,
   emptyOfficeDesignState,
@@ -41,8 +42,6 @@ import {
   transactionDocumentDiff,
   transactionView,
 } from './office-transactions.mjs';
-
-import { koreanParticleReplacements } from '../shared/korean-particles.mjs';
 
 // Excel fills an unstyled series from the workbook theme (a teal and an orange on the default one) while the
 // portable writer paints its own hue family, so the same add_chart drew two different charts. A chart that
@@ -277,7 +276,7 @@ function withProvenanceCitations(operations) {
 }
 
 async function microsoftBatch(session, args, target, operations) {
-  const result = await microsoftOfficeCall(
+  return await microsoftOfficeCall(
     session,
     target,
     {
@@ -288,7 +287,6 @@ async function microsoftBatch(session, args, target, operations) {
     },
     Math.min(300_000, 90_000 + operations.length * 500)
   );
-  return result;
 }
 
 // Runs the batch on the Office host. An empty new deck first takes the
@@ -528,9 +526,8 @@ async function withDocumentCharts(session, operations, scratch) {
     const pdf = join(directory, `chart-${index + 1}.pdf`);
     await createChartPdf(pdf, block, { width: pointsWide });
     // Three pixels a point: the picture stays sharp in print and at the zoom a reader uses.
-    const [image] = (
-      await renderPdfPages(pdf, { pages: [1], maxWidth: Math.round(pointsWide * 3), maximumScale: 3 })
-    ).images;
+    const [image] = (await renderPdfPages(pdf, { pages: [1], maxWidth: Math.round(pointsWide * 3), maximumScale: 3 }))
+      .images;
     output.push({
       op: 'add_image',
       path: image.path,

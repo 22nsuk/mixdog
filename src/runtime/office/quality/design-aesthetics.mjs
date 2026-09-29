@@ -2,6 +2,7 @@
 // the issues the render can raise (contrast, density, rhythm, repetition) and
 // the v2 score. Sampling lives in design-aesthetics-metrics.mjs.
 import { clamp } from '../shared/values.mjs';
+import { issue } from './assurance-issue.mjs';
 import {
   deviation,
   mean,
@@ -96,15 +97,7 @@ function roleAwareComposition(metric, role) {
   };
 }
 
-function aestheticIssue(code, path, message) {
-  return {
-    severity: 'warning',
-    code,
-    path,
-    message,
-    source: 'aesthetic-review',
-  };
-}
+const aestheticIssue = (code, path, message) => issue(code, path, message, 'aesthetic-review');
 
 function contentPages(pages) {
   return pages.length >= 3 ? pages.slice(1, -1) : pages.slice(1);

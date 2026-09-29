@@ -325,8 +325,9 @@ export function measureTextBlock(paragraphs = [], { width = 0, lineSpacing = 1, 
       italic: paragraph.italic,
     };
     const size = Math.max(1, Number(paragraph.fontSize) || 18);
-    const multipleEarly =
+    const multiple =
       Number(paragraph.lineSpacing) > 0 ? Number(paragraph.lineSpacing) : Math.max(0.5, Number(lineSpacing) || 1);
+    const pitch = lineHeightRatio > 0 ? lineHeightRatio : LINE_HEIGHT_RATIO * multiple;
     // Runs of different sizes ("+4.3" at 47 pt, "%p" at 19 pt) are measured each at its own size: read at the first
     // run's size, a figure with its small unit was reported as breaking mid-word and overflowing its box. When the
     // whole paragraph fits one line that way, it is one line.
@@ -340,7 +341,7 @@ export function measureTextBlock(paragraphs = [], { width = 0, lineSpacing = 1, 
         widest = Math.max(widest, total);
         longestRun = Math.max(longestRun, total);
         lines += 1;
-        height += size * (lineHeightRatio > 0 ? lineHeightRatio : LINE_HEIGHT_RATIO * multipleEarly);
+        height += size * pitch;
         height += Math.max(0, Number(paragraph.spaceBefore) || 0) + Math.max(0, Number(paragraph.spaceAfter) || 0);
         continue;
       }
@@ -351,9 +352,6 @@ export function measureTextBlock(paragraphs = [], { width = 0, lineSpacing = 1, 
       if (part !== ' ') longestRun = Math.max(longestRun, measureTextWidth(part, font));
     }
     lines += wrapped.length;
-    const multiple =
-      Number(paragraph.lineSpacing) > 0 ? Number(paragraph.lineSpacing) : Math.max(0.5, Number(lineSpacing) || 1);
-    const pitch = lineHeightRatio > 0 ? lineHeightRatio : LINE_HEIGHT_RATIO * multiple;
     height += wrapped.length * size * pitch;
     height += Math.max(0, Number(paragraph.spaceBefore) || 0);
     height += Math.max(0, Number(paragraph.spaceAfter) || 0);
@@ -391,9 +389,10 @@ export function contrastRatio(foreground, background) {
 // between blocks of copy, not inside a labelled construct.
 const LABEL_MAX_CHARS = 16;
 
+const paragraphsOf = (box) => (Array.isArray(box?.paragraphs) ? box.paragraphs : []);
+
 function isLabelBox(box) {
-  const paragraphs = Array.isArray(box?.paragraphs) ? box.paragraphs : [];
-  const text = paragraphs
+  const text = paragraphsOf(box)
     .map((paragraph) => String(paragraph.text ?? '').trim())
     .filter(Boolean)
     .join('\n');
@@ -439,9 +438,8 @@ export function reviewTextContrast(boxes = []) {
   for (const box of boxes) {
     const background = box.background;
     if (!background) continue;
-    const paragraphs = Array.isArray(box.paragraphs) ? box.paragraphs : [];
     let worst = null;
-    for (const paragraph of paragraphs) {
+    for (const paragraph of paragraphsOf(box)) {
       if (!String(paragraph.text ?? '').trim()) continue;
       const ratio = contrastRatio(paragraph.color || '000000', background);
       if (ratio == null) continue;
@@ -473,9 +471,8 @@ const CJK_TRACKING_RATIO = 0.05;
 export function reviewCjkTracking(boxes = []) {
   const issues = [];
   for (const box of boxes) {
-    const paragraphs = Array.isArray(box.paragraphs) ? box.paragraphs : [];
     let worst = null;
-    for (const paragraph of paragraphs) {
+    for (const paragraph of paragraphsOf(box)) {
       const text = String(paragraph.text ?? '');
       if (!CJK_TEXT.test(text)) continue;
       const tracking = Number(paragraph.charSpacing) || 0;
@@ -570,7 +567,7 @@ function overflowIssue(measured, usableHeight, { tolerance, substituted, path })
 }
 
 function textBoxFitIssues(box, { slideWidth, slideHeight, tolerance, isFontAvailable }) {
-  const paragraphs = Array.isArray(box.paragraphs) ? box.paragraphs : [];
+  const paragraphs = paragraphsOf(box);
   const path = `/slide[${box.slide}]/shape[${box.shape}]`;
   const { usableWidth, usableHeight } = usableTextArea(box);
   const measured = measureTextBlock(paragraphs, { width: box.wrap === false ? 0 : usableWidth });
@@ -603,7 +600,7 @@ export function reviewTextBoxFit(
 ) {
   const issues = [];
   for (const box of boxes) {
-    const paragraphs = Array.isArray(box.paragraphs) ? box.paragraphs : [];
+    const paragraphs = paragraphsOf(box);
     if (!paragraphs.some((paragraph) => String(paragraph.text ?? '').trim())) continue;
     if (box.autofit === true) continue;
     issues.push(...textBoxFitIssues(box, { slideWidth, slideHeight, tolerance, isFontAvailable }));
@@ -617,7 +614,7 @@ export function reviewTextBoxFit(
 function statementSlides(boxes = []) {
   const perSlide = new Map();
   for (const box of boxes) {
-    const paragraphs = Array.isArray(box.paragraphs) ? box.paragraphs : [];
+    const paragraphs = paragraphsOf(box);
     const text = paragraphs
       .map((paragraph) => String(paragraph.text || ''))
       .join('')
@@ -686,7 +683,7 @@ function hollowBand(content = []) {
 // The author may mean it, so it is information, not a target.
 function titleLineHollow(slideBoxes, content, slideHeight) {
   const texts = slideBoxes
-    .map((box) => ({ box, size: largestFontSize(Array.isArray(box.paragraphs) ? box.paragraphs : []) }))
+    .map((box) => ({ box, size: largestFontSize(paragraphsOf(box)) }))
     .filter(({ box }) => (box.paragraphs || []).some((paragraph) => String(paragraph.text || '').trim()));
   if (texts.length < 2) return null;
   const title = texts.reduce((largest, entry) => (entry.size > largest.size ? entry : largest));
@@ -766,7 +763,7 @@ export function reviewStatLabelProximity(boxes = [], { maximumGap = 36 } = {}) {
     issues.push(...reviewDeclaredRelations(shapes, maximumGap));
     for (const box of shapes) {
       if (box.relation?.role === 'value') continue;
-      const paragraphs = Array.isArray(box.paragraphs) ? box.paragraphs : [];
+      const paragraphs = paragraphsOf(box);
       const text = paragraphs
         .map((paragraph) => String(paragraph.text ?? ''))
         .join(' ')
@@ -777,7 +774,7 @@ export function reviewStatLabelProximity(boxes = [], { maximumGap = 36 } = {}) {
       if (letters > text.replace(/\s/g, '').length * 0.5) continue;
       const nearest = shapes
         .filter((candidate) => candidate !== box)
-        .filter((candidate) => largestFontSize(Array.isArray(candidate.paragraphs) ? candidate.paragraphs : []) <= 20)
+        .filter((candidate) => largestFontSize(paragraphsOf(candidate)) <= 20)
         .filter((candidate) => candidate.paragraphs?.some((paragraph) => String(paragraph.text || '').trim()))
         .sort((first, second) => rectangleGap(box, first) - rectangleGap(box, second))[0];
       if (!nearest) continue;

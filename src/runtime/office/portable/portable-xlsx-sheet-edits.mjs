@@ -19,6 +19,7 @@ import {
 import {
   addPackageRelationship,
   ensureContentTypeOverride,
+  partFromTarget,
   partRelationshipPath,
   provenanceCitation,
   relationshipTargetByType,
@@ -37,7 +38,12 @@ import {
 } from './portable-xml.mjs';
 import { excelPasswordHash, writeWorksheetNote } from './portable-sheet-parts.mjs';
 import { columnFileWidth, workbookDigitWidth } from './portable-sheet-page.mjs';
-import { copiedSheetXml, copySheetParts, inheritedRows, shiftWorksheetCells } from './portable-xlsx-reference-shift.mjs';
+import {
+  copiedSheetXml,
+  copySheetParts,
+  inheritedRows,
+  shiftWorksheetCells,
+} from './portable-xlsx-reference-shift.mjs';
 import {
   areaReference,
   composeSheetView,
@@ -128,7 +134,9 @@ function typedNumber(value) {
   const plain = Number(figure.replace(/,/g, ''));
   const number = percent ? Number((plain / 100).toFixed(places + 2)) : plain;
   const decimals = places > 0;
-  const numberFormat = percent ? (decimals ? '0.00%' : '0%') : grouped ? (decimals ? '#,##0.00' : '#,##0') : null;
+  let numberFormat = null;
+  if (percent) numberFormat = decimals ? '0.00%' : '0%';
+  else if (grouped) numberFormat = decimals ? '#,##0.00' : '#,##0';
   return { value: number, numberFormat };
 }
 
@@ -212,7 +220,7 @@ export async function appendWorksheetRow(zip, sheet, xml, op) {
 
 export function clearWorksheetCell(zip, sheet, xml, op) {
   const parsed = parseCellRef(op.cell);
-  const cellRegex = new RegExp(`<c\\b[^>]*\\br="${parsed.ref}"[^>]*(?:>[\\s\\S]*?</c>|/>)`, 'i');
+  const cellRegex = new RegExp(`<c\\b[^>]*\\br="${parsed.ref}"[^>]*(?:(?<!\\/)>[\\s\\S]*?</c>|/>)`, 'i');
   const changed = cellRegex.test(xml);
   if (changed) zip.file(sheet.path, xml.replace(cellRegex, ''));
   return { op: op.op, changed, sheet: sheet.name, cell: parsed.ref };
@@ -338,7 +346,15 @@ export async function shiftWorksheetRowsOrColumns(zip, sheet, xml, op, sheets = 
   const from = Math.max(1, Number(rows ? op.row : op.column) || 1);
   const insert = op.op.startsWith('insert');
   const rewritten = await shiftWorksheetCells(zip, sheets, sheet, xml, { rows, from, amount, insert, op: op.op });
-  return { op: op.op, changed: true, sheet: sheet.name, from, count: amount, referenceAware: true, referencesRewritten: rewritten };
+  return {
+    op: op.op,
+    changed: true,
+    sheet: sheet.name,
+    from,
+    count: amount,
+    referenceAware: true,
+    referencesRewritten: rewritten,
+  };
 }
 
 export function setWorksheetAutofilter(zip, sheet, xml, op) {
@@ -555,7 +571,7 @@ export async function deleteWorksheetNote(zip, sheet, _xml, op) {
   const relationships = await zipText(zip, partRelationshipPath(sheet.path));
   const target = relationshipTargetByType(relationships, 'comments');
   if (!target) return { op: op.op, changed: false, sheet: sheet.name, cell: parsed.ref };
-  const commentsPart = posix.normalize(posix.join(posix.dirname(sheet.path), target));
+  const commentsPart = partFromTarget(posix.dirname(sheet.path), target);
   const comments = await zipText(zip, commentsPart);
   const pattern = new RegExp(`<comment\\b[^>]*\\bref="${parsed.ref}"[^>]*>[\\s\\S]*?<\\/comment>`);
   const changed = pattern.test(comments);
@@ -574,7 +590,11 @@ export async function copyWorksheet(zip, sheet, xml, op, sheets) {
   const copyPart = `xl/worksheets/sheet${copyOrdinal}.xml`;
   // A table part belongs to the sheet that declares it, so the copy takes the
   // cells without the tableParts entry or the table relationships.
-  const copied = copiedSheetXml(xml.replace(/<tableParts\b[^>]*?(?:\/>|>[\s\S]*?<\/tableParts>)/, ''), sheet.name, label);
+  const copied = copiedSheetXml(
+    xml.replace(/<tableParts\b[^>]*?(?:\/>|>[\s\S]*?<\/tableParts>)/, ''),
+    sheet.name,
+    label
+  );
   zip.file(copyPart, copied);
   await ensureContentTypeOverride(zip, `/${copyPart}`, WORKSHEET_CONTENT_TYPE);
   const relationshipId = await addPackageRelationship(

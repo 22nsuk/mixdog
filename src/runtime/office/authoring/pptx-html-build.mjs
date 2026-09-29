@@ -115,7 +115,12 @@ function addRect(slide, pres, u, item) {
 function addLine(slide, pres, u, item) {
   // Border sides are level or upright, so the page edge cuts them by clamping.
   const clamp = (v, max) => Math.min(max, Math.max(0, v));
-  const [x1, y1, x2, y2] = [clamp(item.seg[0], u.W), clamp(item.seg[1], u.H), clamp(item.seg[2], u.W), clamp(item.seg[3], u.H)];
+  const [x1, y1, x2, y2] = [
+    clamp(item.seg[0], u.W),
+    clamp(item.seg[1], u.H),
+    clamp(item.seg[2], u.W),
+    clamp(item.seg[3], u.H),
+  ];
   if (Math.hypot(x2 - x1, y2 - y1) < 0.5) return;
   slide.addShape(pres.ShapeType.line, {
     x: u.inch(Math.min(x1, x2)),
@@ -223,8 +228,8 @@ export function textPlacement(item, canvasWidth) {
 
 function addText(slide, pres, u, item, canvasWidth) {
   const runs = [];
-  item.lines.forEach((line, li) =>
-    line.runs.forEach((run, ri) =>
+  item.lines.forEach((line, li) => {
+    line.runs.forEach((run, ri) => {
       runs.push({
         text: run.text,
         options: {
@@ -238,9 +243,9 @@ function addText(slide, pres, u, item, canvasWidth) {
           ...(run.style.hl ? { highlight: run.style.hl } : {}),
           ...(li > 0 && ri === 0 ? { softBreakBefore: true } : {}),
         },
-      })
-    )
-  );
+      });
+    });
+  });
   const place = textPlacement(item, canvasWidth);
   const f = item.frame;
   // A framed box's outline stands half its stroke inside, and its words keep their place.
@@ -248,8 +253,12 @@ function addText(slide, pres, u, item, canvasWidth) {
   const framed = f ? strokeInset(item.box, f.stroke, f.radius) : null;
   const g = f ? geometry(pres, u.inch, framed.box, framed.radius) : null;
   // A rounded rectangle's own text rectangle already stands 0.29289 of its corner radius inside the shape.
-  const corner = g?.shape === pres.ShapeType.roundRect ? 0.29289 * Math.min(framed.radius, Math.min(framed.box.w, framed.box.h) / 2) : 0;
+  const corner =
+    g?.shape === pres.ShapeType.roundRect
+      ? 0.29289 * Math.min(framed.radius, Math.min(framed.box.w, framed.box.h) / 2)
+      : 0;
   const m = (v) => Math.max(0, v - corner - half) * u.PT;
+  const frameLine = f?.stroke ? { color: f.stroke.hex, width: f.stroke.w * u.PT } : { type: 'none' };
   slide.addText(runs, {
     x: u.inch(place.x + half),
     y: u.inch(place.y + half),
@@ -265,7 +274,7 @@ function addText(slide, pres, u, item, canvasWidth) {
       ? {
           shape: g.shape,
           fill: fillOf(f.fill),
-          line: f.stroke ? { color: f.stroke.hex, width: f.stroke.w * u.PT } : { type: 'none' },
+          line: frameLine,
           ...shadowOf(f.shadow, u.PT),
         }
       : {}),
@@ -306,7 +315,15 @@ function addTable(slide, u, item) {
   });
 }
 
-const CHART_TYPES = { bar: 'bar', col: 'bar', column: 'bar', line: 'line', area: 'area', pie: 'pie', doughnut: 'doughnut' };
+const CHART_TYPES = {
+  bar: 'bar',
+  col: 'bar',
+  column: 'bar',
+  line: 'line',
+  area: 'area',
+  pie: 'pie',
+  doughnut: 'doughnut',
+};
 
 // data-chart spec → a native, editable chart (see the pptx skill's html reference).
 function addChart(slide, pres, u, item) {
@@ -335,7 +352,16 @@ function addChart(slide, pres, u, item) {
     showTitle: false,
     // plot: the inner plot area as fractions of the chart box, so an overlay (a shaded band, a threshold, a
     // callout) drawn in the HTML lands on the data: category i of n sits at x + (i + 0.5) / n of the plot width.
-    ...(spec.plot ? { layout: { x: Number(spec.plot.x) || 0, y: Number(spec.plot.y) || 0, w: Number(spec.plot.w) || 1, h: Number(spec.plot.h) || 1 } } : {}),
+    ...(spec.plot
+      ? {
+          layout: {
+            x: Number(spec.plot.x) || 0,
+            y: Number(spec.plot.y) || 0,
+            w: Number(spec.plot.w) || 1,
+            h: Number(spec.plot.h) || 1,
+          },
+        }
+      : {}),
     showValue: spec.showValues !== false,
     dataLabelColor: ink,
     dataLabelFontFace: font,
@@ -344,27 +370,47 @@ function addChart(slide, pres, u, item) {
     ...(spec.format ? { dataLabelFormatCode: spec.format } : {}),
     ...(round
       ? { showPercent: false, holeSize: Number(spec.hole) || 60, dataLabelPosition: spec.labelPosition || 'bestFit' }
-      : {
-          ...(kind === 'bar' ? { barDir: column ? 'col' : 'bar', barGapWidthPct: Number(spec.gap ?? 60), barGrouping: spec.stacked ? 'stacked' : 'clustered' } : {}),
-          ...(kind === 'line' ? { lineSize: Number(spec.lineSize) || 3, lineDataSymbol: spec.markers === false ? 'none' : 'circle' } : {}),
-          dataLabelPosition: spec.labelPosition || (spec.stacked ? 'ctr' : kind === 'line' ? 't' : 'outEnd'),
-          catAxisOrientation: kind === 'bar' && !column ? 'maxMin' : 'minMax',
-          catAxisLabelFrequency: 1,
-          ...(spec.categoryAxis === false ? { catAxisHidden: true } : {}),
-          catAxisLabelColor: ink,
-          catAxisLabelFontFace: font,
-          catAxisLabelFontSize: size,
-          catAxisLineShow: Boolean(spec.axisLine),
-          valAxisHidden: spec.valueAxis !== true,
-          valAxisLabelColor: ink,
-          valAxisLabelFontFace: font,
-          valAxisLabelFontSize: size,
-          ...(spec.min != null ? { valAxisMinVal: Number(spec.min) } : { valAxisMinVal: 0 }),
-          ...(spec.max != null ? { valAxisMaxVal: Number(spec.max) } : {}),
-          valGridLine: spec.grid ? { color: spec.grid, size: 1 } : { style: 'none' },
-          catGridLine: { style: 'none' },
-        }),
+      : axisChartOptions(kind, spec, column, { ink, font, size })),
   });
+}
+
+function axisLabelPosition(kind, spec) {
+  if (spec.labelPosition) return spec.labelPosition;
+  if (spec.stacked) return 'ctr';
+  return kind === 'line' ? 't' : 'outEnd';
+}
+
+// The options a bar / line / area chart adds to the shared ones: series geometry, axes and grid.
+function axisChartOptions(kind, spec, column, { ink, font, size }) {
+  const series = {};
+  if (kind === 'bar') {
+    series.barDir = column ? 'col' : 'bar';
+    series.barGapWidthPct = Number(spec.gap ?? 60);
+    series.barGrouping = spec.stacked ? 'stacked' : 'clustered';
+  }
+  if (kind === 'line') {
+    series.lineSize = Number(spec.lineSize) || 3;
+    series.lineDataSymbol = spec.markers === false ? 'none' : 'circle';
+  }
+  return {
+    ...series,
+    dataLabelPosition: axisLabelPosition(kind, spec),
+    catAxisOrientation: kind === 'bar' && !column ? 'maxMin' : 'minMax',
+    catAxisLabelFrequency: 1,
+    ...(spec.categoryAxis === false ? { catAxisHidden: true } : {}),
+    catAxisLabelColor: ink,
+    catAxisLabelFontFace: font,
+    catAxisLabelFontSize: size,
+    catAxisLineShow: Boolean(spec.axisLine),
+    valAxisHidden: spec.valueAxis !== true,
+    valAxisLabelColor: ink,
+    valAxisLabelFontFace: font,
+    valAxisLabelFontSize: size,
+    ...(spec.min != null ? { valAxisMinVal: Number(spec.min) } : { valAxisMinVal: 0 }),
+    ...(spec.max != null ? { valAxisMaxVal: Number(spec.max) } : {}),
+    valGridLine: spec.grid ? { color: spec.grid, size: 1 } : { style: 'none' },
+    catGridLine: { style: 'none' },
+  };
 }
 
 async function addSvg(slide, u, item, sharp) {
@@ -407,10 +453,16 @@ async function meanColour(sharp, png, draw, box, inset = 0) {
   const { data, info } = await sharp(png).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
   const s = info.width / draw.w;
   const pad = Math.ceil(inset * s);
-  const x0 = Math.round((box.x - draw.x) * s) + pad, y0 = Math.round((box.y - draw.y) * s) + pad;
-  const x1 = Math.round((box.x + box.w - draw.x) * s) - pad, y1 = Math.round((box.y + box.h - draw.y) * s) - pad;
+  const x0 = Math.round((box.x - draw.x) * s) + pad,
+    y0 = Math.round((box.y - draw.y) * s) + pad;
+  const x1 = Math.round((box.x + box.w - draw.x) * s) - pad,
+    y1 = Math.round((box.y + box.h - draw.y) * s) - pad;
   const step = Math.max(2, Math.round(Math.sqrt(Math.max(1, (x1 - x0) * (y1 - y0)) / 40000)));
-  let r = 0, g = 0, b = 0, n = 0, total = 0;
+  let r = 0,
+    g = 0,
+    b = 0,
+    n = 0,
+    total = 0;
   for (let y = y0; y < y1; y += step) {
     for (let x = x0; x < x1; x += step) {
       total += 1;
@@ -423,7 +475,16 @@ async function meanColour(sharp, png, draw, box, inset = 0) {
       n += 1;
     }
   }
-  const hex = n ? [r, g, b].map((v) => Math.round(v / n).toString(16).padStart(2, '0')).join('').toUpperCase() : null;
+  const hex = n
+    ? [r, g, b]
+        .map((v) =>
+          Math.round(v / n)
+            .toString(16)
+            .padStart(2, '0')
+        )
+        .join('')
+        .toUpperCase()
+    : null;
   return { hex, coverage: total ? n / total : 0 };
 }
 
@@ -438,7 +499,14 @@ async function addCapture(slide, pres, u, item, sharp) {
   if (item.underlay) {
     const mean = await meanColour(sharp, png, item.draw, item.underlay.box, item.underlay.radius);
     if (mean.hex && mean.coverage > 0.98) {
-      addRect(slide, pres, u, { box: item.underlay.box, radius: item.underlay.radius, rotate: item.underlay.rotate, fill: { hex: mean.hex, a: 1 }, stroke: null, shadow: null });
+      addRect(slide, pres, u, {
+        box: item.underlay.box,
+        radius: item.underlay.radius,
+        rotate: item.underlay.rotate,
+        fill: { hex: mean.hex, a: 1 },
+        stroke: null,
+        shadow: null,
+      });
     }
   }
   const d = item.draw;
@@ -463,7 +531,9 @@ async function imageBytes(src) {
 // The crop origin of a covered picture from its computed object-position ("27% 50%", "-40px 10px"):
 // a percentage places that share of the overflow before the box, a length moves the picture by itself.
 export function coverOffset(position, overflowX, overflowY, scale) {
-  const [x = '50%', y = '50%'] = String(position || '50% 50%').trim().split(/\s+/);
+  const [x = '50%', y = '50%'] = String(position || '50% 50%')
+    .trim()
+    .split(/\s+/);
   const along = (value, overflow) => {
     const n = parseFloat(value);
     if (!Number.isFinite(n)) return Math.round(overflow / 2);
@@ -493,7 +563,9 @@ async function addImage(slide, u, item, sharp) {
   }
   if (item.radius > 0.5) {
     const r = Math.round(item.radius * scale);
-    const mask = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${outW}" height="${outH}"><rect width="${outW}" height="${outH}" rx="${r}" ry="${r}"/></svg>`);
+    const mask = Buffer.from(
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${outW}" height="${outH}"><rect width="${outW}" height="${outH}" rx="${r}" ry="${r}"/></svg>`
+    );
     image = sharp(await image.png().toBuffer()).composite([{ input: mask, blend: 'dest-in' }]);
   }
   const placed = await cropToCanvas(sharp, await image.png().toBuffer(), b, u);

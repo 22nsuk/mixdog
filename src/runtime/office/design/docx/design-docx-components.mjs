@@ -77,7 +77,8 @@ function pushTable(output, state, values, design, variant, widths = null) {
 // The points a one-line label takes at its size: Hangul, kana, and Han a full em, the rest about half of one.
 function labelPoints(text, size) {
   let ems = 0;
-  for (const char of String(text)) ems += /[\u1100-\u11FF\u3040-\u30FF\u3130-\u318F\u3400-\u9FFF\uAC00-\uD7AF]/.test(char) ? 1 : 0.55;
+  for (const char of String(text))
+    ems += /[\u1100-\u11FF\u3040-\u30FF\u3130-\u318F\u3400-\u9FFF\uAC00-\uD7AF]/.test(char) ? 1 : 0.55;
   return ems * size;
 }
 

@@ -21,7 +21,7 @@ import {
 import { presentationSlides } from './portable-pptx-package.mjs';
 import { shapeIdentity } from './pptx-relations.mjs';
 
-export const DEFAULT_TEXT_INSETS = Object.freeze({ left: 7.2, top: 3.6, right: 7.2, bottom: 3.6 });
+const DEFAULT_TEXT_INSETS = Object.freeze({ left: 7.2, top: 3.6, right: 7.2, bottom: 3.6 });
 
 // A painted plane covers a box when the box sits inside it (a point of slack for EMU rounding).
 function coversBounds(entry, bounds) {
@@ -306,7 +306,7 @@ export function setTableValues(shapeXml, values) {
   // row repeats the last row. The rows past the table's end had been dropped, so a refresh with one more hub lost
   // that hub. The table grows down; its width is the page's, and the columns it gains share it with the others — a
   // template's three-column table given four columns ran past the slide's edge and cut the last one off.
-  const columns = Math.max(...values.map((source) => source.length));
+  const columns = Math.max(0, ...values.filter(Array.isArray).map((source) => source.length));
   const grid = elementSpans(inner, 'a:gridCol');
   const addedColumns = Math.max(0, columns - grid.length);
   if (addedColumns) {
@@ -319,7 +319,10 @@ export function setTableValues(shapeXml, values) {
     if (grown) shared[shared.length - 1] += frame - shared.reduce((total, width) => total + width, 0);
     inner = `${inner.slice(0, last.end)}${last.xml.repeat(addedColumns)}${inner.slice(last.end)}`;
     let column = 0;
-    inner = inner.replace(/<a:gridCol\b([^>]*?)\bw="\d+"/g, (_match, head) => `<a:gridCol${head}w="${shared[column++]}"`);
+    inner = inner.replace(
+      /<a:gridCol\b([^>]*?)\bw="\d+"/g,
+      (_match, head) => `<a:gridCol${head}w="${shared[column++]}"`
+    );
     const current = elementSpans(inner, 'a:tr');
     for (let rowIndex = current.length - 1; rowIndex >= 0; rowIndex -= 1) {
       const row = current[rowIndex];
@@ -464,7 +467,14 @@ export function updateShapeGeometry(shape, properties) {
       for (const element of topLevelElements(cleaned, SHAPE_FILLS).reverse()) {
         cleaned = `${cleaned.slice(0, element.start)}${cleaned.slice(element.end)}`;
       }
-      const later = topLevelElements(cleaned, ['a:ln', 'a:effectLst', 'a:effectDag', 'a:scene3d', 'a:sp3d', 'a:extLst'])[0];
+      const later = topLevelElements(cleaned, [
+        'a:ln',
+        'a:effectLst',
+        'a:effectDag',
+        'a:scene3d',
+        'a:sp3d',
+        'a:extLst',
+      ])[0];
       const position = later ? later.start : cleaned.length;
       const inner = `${cleaned.slice(0, position)}${fill}${cleaned.slice(position)}`;
       next = `${next.slice(0, shapeProperties.start)}${inner}${next.slice(shapeProperties.end)}`;

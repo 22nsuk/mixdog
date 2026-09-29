@@ -6,6 +6,7 @@
 // writes before any geometry exists, and `planGate` holds the deck to it.
 
 import { isPictureShape } from '../design/design-discipline.mjs';
+import { issue as sharedIssue } from '../quality/assurance-issue.mjs';
 
 const PLAN_KEYS = ['job', 'relationship', 'move', 'composition', 'carriers', 'texture', 'rhythm'];
 
@@ -170,9 +171,8 @@ function slideFacts(slide) {
   return { geometry, charts, tables, pictures, drawn, text };
 }
 
-function issue(code, path, message, severity = 'warning') {
-  return { severity, code, path, message, source: 'design-review' };
-}
+const issue = (code, path, message, severity = 'warning') =>
+  sharedIssue(code, path, message, 'design-review', severity);
 
 // Plan lines whose named carriers the saved slide does not show. A
 // geometry-based promise (gauge, diagram) is only checked when the snapshot

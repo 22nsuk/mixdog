@@ -118,12 +118,8 @@ export function computedCellValues(xml, strings) {
     if (!value) continue;
     const type = /\bt="([^"]*)"/.exec(cell.attributes)?.[1] || '';
     const text = value[1] || '';
-    computed.set(
-      cell.ref,
-      type === 's'
-        ? { type: 'str', text: xmlEncode(strings[Number(text)] ?? '') }
-        : { type: type === 'n' ? '' : type, text }
-    );
+    if (type === 's') computed.set(cell.ref, { type: 'str', text: xmlEncode(strings[Number(text)] ?? '') });
+    else computed.set(cell.ref, { type: type === 'n' ? '' : type, text });
   }
   return computed;
 }

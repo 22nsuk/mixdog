@@ -31,7 +31,9 @@ td { font-size: 28px; padding: 10px; border-bottom: 1px solid #C9CDD4; }
 </section>
 </body></html>`;
 
-test('the browser lays the HTML out and the runner writes an editable deck', { skip: !localBrowserAvailable() && 'no local Chrome or Edge' }, async () => {
+test('the browser lays the HTML out and the runner writes an editable deck', {
+  skip: !localBrowserAvailable() && 'no local Chrome or Edge',
+}, async () => {
   const dir = await mkdtemp(join(tmpdir(), 'mixdog-html-'));
   try {
     const target = join(dir, 'deck.pptx');
@@ -47,7 +49,10 @@ test('the browser lays the HTML out and the runner writes an editable deck', { s
     }
     const disc = items.find((item) => item.kind === 'text' && item.frame?.radius === 22);
     assert.ok(disc, 'the disc is a framed text item with a full radius');
-    assert.ok(items.some((item) => item.kind === 'svg' && item.alt === 'coins'), 'the data-icon became an inline svg');
+    assert.ok(
+      items.some((item) => item.kind === 'svg' && item.alt === 'coins'),
+      'the data-icon became an inline svg'
+    );
     assert.equal(items.filter((item) => item.kind === 'table').length, 1);
     assert.equal(items.filter((item) => item.kind === 'chart').length, 1);
     assert.equal(measure.slides[0].notes, '발표자 노트');
@@ -64,7 +69,9 @@ test('the browser lays the HTML out and the runner writes an editable deck', { s
   }
 });
 
-test('a deck page that is not 1920×1080 is refused with the size it measured', { skip: !localBrowserAvailable() && 'no local Chrome or Edge' }, async () => {
+test('a deck page that is not 1920×1080 is refused with the size it measured', {
+  skip: !localBrowserAvailable() && 'no local Chrome or Edge',
+}, async () => {
   const dir = await mkdtemp(join(tmpdir(), 'mixdog-html-'));
   try {
     const target = join(dir, 'deck.pptx');

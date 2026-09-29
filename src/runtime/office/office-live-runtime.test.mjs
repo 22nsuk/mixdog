@@ -1078,7 +1078,9 @@ test('[powerpoint] a template page keeps its own background on import', { skip: 
 
 // set_chart_data read its numbers and title and set nothing else under PowerPoint, where the portable writer takes the
 // fields beside them: a refresh asking for value labels and a zero base line came back bare.
-test('[powerpoint] new chart numbers take the label and base-line fields beside them', { skip: !enabled }, async (t) => {
+test('[powerpoint] new chart numbers take the label and base-line fields beside them', {
+  skip: !enabled,
+}, async (t) => {
   const cwd = await mkdtemp(join(tmpdir(), 'mixdog-office-live-'));
   t.after(async () => {
     resetOfficeSessionsForTest();
@@ -1184,7 +1186,11 @@ test('[word] placed list items, hung clauses, set_paragraph_format lists, and a 
     { op: 'append_text', text: '제1조(목적)', style: 'Heading 2' },
     { op: 'append_text', text: '세부 기준', style: 'Heading 3' },
     { op: 'append_text', text: '①\t걸린 조항', properties: { indentLeft: 18, indentFirstLine: -18 } },
-    { op: 'append_text', text: '상자 안의 항목', properties: { shading: 'FEF3C7', indentLeft: 12, listKind: 'bullet' } },
+    {
+      op: 'append_text',
+      text: '상자 안의 항목',
+      properties: { shading: 'FEF3C7', indentLeft: 12, listKind: 'bullet' },
+    },
     { op: 'append_text', text: '목록이 될 문단' },
     { op: 'append_text', text: '목록에서 뺄 문단', properties: { listKind: 'bullet' } },
     { op: 'set_paragraph_format', paragraph: 6, properties: { listKind: 'number', indentLeft: 0 } },
@@ -1203,7 +1209,9 @@ test('[word] placed list items, hung clauses, set_paragraph_format lists, and a 
     const levels = created.batch.results.find((result) => result.op === 'insert_toc').levels;
     const read = value(await executeOfficeTool({ action: 'snapshot', session: created.session }, { cwd })).document
       .paragraphs;
-    const paragraphs = read.slice(3, 7).map((paragraph) => [paragraph.text, paragraph.list?.kind || null, paragraph.style]);
+    const paragraphs = read
+      .slice(3, 7)
+      .map((paragraph) => [paragraph.text, paragraph.list?.kind || null, paragraph.style]);
     value(await executeOfficeTool({ action: 'close', session: created.session }, { cwd }));
     const document = await (await JSZip.loadAsync(await readFile(path))).file('word/document.xml').async('string');
     // Word splits a paragraph's words into runs of its own, so a paragraph is found by its joined text.
@@ -1214,7 +1222,8 @@ test('[word] placed list items, hung clauses, set_paragraph_format lists, and a 
       const indent = /<w:ind\b([^>]*)\/>/.exec(paragraph)?.[1] || '';
       const read = (name) => Number(new RegExp(`\\bw:${name}="(\\d+)"`).exec(indent)?.[1] ?? Number.NaN);
       // Word leaves out a hang the item's list already gives it (18 pt on both backends' lists).
-      const hanging = /\bw:hanging=/.test(indent) ? read('hanging') : /<w:numPr>/.test(paragraph) ? 360 : 0;
+      let hanging = /<w:numPr>/.test(paragraph) ? 360 : 0;
+      if (/\bw:hanging=/.test(indent)) hanging = read('hanging');
       return [read('left'), hanging];
     });
     // The step after the note carries the list on: the list of the step before it, not a new one counting from 1.
@@ -1282,15 +1291,16 @@ test('[word] a Korean list counts 1. 가. 1), any other 1. a. i., and lists join
     const document = await zip.file('word/document.xml').async('string');
     const numbering = (await zip.file('word/numbering.xml')?.async('string')) || '';
     const abstractOf = new Map(
-      [...numbering.matchAll(/<w:num\b[^>]*\bw:numId="(\d+)"[^>]*>\s*<w:abstractNumId w:val="(\d+)"/g)].map(
-        (match) => [match[1], match[2]]
-      )
+      [...numbering.matchAll(/<w:num\b[^>]*\bw:numId="(\d+)"[^>]*>\s*<w:abstractNumId w:val="(\d+)"/g)].map((match) => [
+        match[1],
+        match[2],
+      ])
     );
     const levelOf = (numId, level) => {
       const abstract =
-        new RegExp(`<w:abstractNum\\b[^>]*\\bw:abstractNumId="${abstractOf.get(numId)}"[^>]*>[\\s\\S]*?</w:abstractNum>`).exec(
-          numbering
-        )?.[0] || '';
+        new RegExp(
+          `<w:abstractNum\\b[^>]*\\bw:abstractNumId="${abstractOf.get(numId)}"[^>]*>[\\s\\S]*?</w:abstractNum>`
+        ).exec(numbering)?.[0] || '';
       const lvl = new RegExp(`<w:lvl\\b[^>]*\\bw:ilvl="${level}"[^>]*>[\\s\\S]*?</w:lvl>`).exec(abstract)?.[0] || '';
       return `${/<w:numFmt w:val="([^"]+)"/.exec(lvl)?.[1]} ${/<w:lvlText w:val="([^"]*)"/.exec(lvl)?.[1]}`;
     };
@@ -1404,10 +1414,14 @@ pres.addSlide().addTable([
 ], { x: 0.6, y: 1.2, w: 8, colW: [4, 4], rowH: 0.6, fontSize: 16, color: '52606D' });
 await pres.writeFile({ fileName: OUTPUT });
 `;
-  const authored = value(await executeOfficeTool({ action: 'author', path: source, script, mode: 'portable', render: false }, { cwd }));
+  const authored = value(
+    await executeOfficeTool({ action: 'author', path: source, script, mode: 'portable', render: false }, { cwd })
+  );
   value(await executeOfficeTool({ action: 'close', session: authored.session }, { cwd }));
   const addedRow = async (mode) => {
-    const opened = value(await executeOfficeTool({ action: 'open', path: source, mode, output: join(cwd, `${mode}.pptx`) }, { cwd }));
+    const opened = value(
+      await executeOfficeTool({ action: 'open', path: source, mode, output: join(cwd, `${mode}.pptx`) }, { cwd })
+    );
     value(
       await executeOfficeTool(
         {
@@ -1432,7 +1446,9 @@ await pres.writeFile({ fileName: OUTPUT });
     );
     const slideXml = async () => {
       value(await executeOfficeTool({ action: 'save', session: opened.session }, { cwd }));
-      return await (await JSZip.loadAsync(await readFile(join(cwd, `${mode}.pptx`)))).file('ppt/slides/slide1.xml').async('string');
+      return await (await JSZip.loadAsync(await readFile(join(cwd, `${mode}.pptx`))))
+        .file('ppt/slides/slide1.xml')
+        .async('string');
     };
     const lastRow = (slide) =>
       [...[...slide.matchAll(/<a:tr\b[\s\S]*?<\/a:tr>/g)][3][0].matchAll(/<a:tc\b[\s\S]*?<\/a:tc>/g)].map((cell) => {
@@ -1456,7 +1472,14 @@ await pres.writeFile({ fileName: OUTPUT });
           action: 'batch',
           session: opened.session,
           operations: [
-            { op: 'set_table_cell_style', slide: 1, shape: 1, row: 4, col: 2, properties: { fillColor: 'F5ECD9', color: '8A5A00', bold: true } },
+            {
+              op: 'set_table_cell_style',
+              slide: 1,
+              shape: 1,
+              row: 4,
+              col: 2,
+              properties: { fillColor: 'F5ECD9', color: '8A5A00', bold: true },
+            },
           ],
         },
         { cwd }
@@ -1493,14 +1516,31 @@ test('[compat] fillColor null clears an Excel cell, a Word table cell and a slid
       { op: 'set_style', sheet: 'Sheet1', cell: 'B1', properties: { fillColor: null } },
     ],
     docx: [
-      { op: 'add_table', values: [['권역', '9월'], ['수도권', '29,000']] },
+      {
+        op: 'add_table',
+        values: [
+          ['권역', '9월'],
+          ['수도권', '29,000'],
+        ],
+      },
       { op: 'set_table_cell_style', table: 1, row: 2, col: 1, properties: { fillColor: 'EEF2F7' } },
       { op: 'set_table_cell_style', table: 1, row: 2, col: 2, properties: { fillColor: 'EEF2F7' } },
       { op: 'set_table_cell_style', table: 1, row: 2, col: 2, properties: { fillColor: null } },
     ],
     pptx: [
       { op: 'add_slide' },
-      { op: 'add_table', slide: 1, values: [['권역', '9월'], ['수도권', '29,000']], left: 60, top: 80, width: 400, height: 100 },
+      {
+        op: 'add_table',
+        slide: 1,
+        values: [
+          ['권역', '9월'],
+          ['수도권', '29,000'],
+        ],
+        left: 60,
+        top: 80,
+        width: 400,
+        height: 100,
+      },
       { op: 'set_table_cell_style', slide: 1, shape: 1, row: 2, col: 1, properties: { fillColor: 'F5ECD9' } },
       { op: 'set_table_cell_style', slide: 1, shape: 1, row: 2, col: 2, properties: { fillColor: 'F5ECD9' } },
       { op: 'set_table_cell_style', slide: 1, shape: 1, row: 2, col: 2, properties: { fillColor: null } },
@@ -1510,22 +1550,31 @@ test('[compat] fillColor null clears an Excel cell, a Word table cell and a slid
     xlsx: async (zip) => {
       const sheet = await zip.file('xl/worksheets/sheet1.xml').async('string');
       const styles = await zip.file('xl/styles.xml').async('string');
-      const fills = [...(/<fills[^>]*>([\s\S]*?)<\/fills>/.exec(styles)?.[1] || '').matchAll(/<fill>[\s\S]*?<\/fill>/g)].map(
-        (match) => /rgb="(?:FF)?([0-9A-F]{6})"/i.exec(match[0])?.[1] || 'none'
+      const fills = [
+        ...(/<fills[^>]*>([\s\S]*?)<\/fills>/.exec(styles)?.[1] || '').matchAll(/<fill>[\s\S]*?<\/fill>/g),
+      ].map((match) => /rgb="(?:FF)?([0-9A-F]{6})"/i.exec(match[0])?.[1] || 'none');
+      const xfs = [...(/<cellXfs[^>]*>([\s\S]*?)<\/cellXfs>/.exec(styles)?.[1] || '').matchAll(/<xf\b[^>]*>/g)].map(
+        (match) => Number(/fillId="(\d+)"/.exec(match[0])?.[1] || 0)
       );
-      const xfs = [...(/<cellXfs[^>]*>([\s\S]*?)<\/cellXfs>/.exec(styles)?.[1] || '').matchAll(/<xf\b[^>]*>/g)].map((match) =>
-        Number(/fillId="(\d+)"/.exec(match[0])?.[1] || 0)
+      return ['A1', 'B1'].map(
+        (ref) => fills[xfs[Number(new RegExp(`<c r="${ref}"[^>]*?\\bs="(\\d+)"`).exec(sheet)?.[1] || 0)]] || 'none'
       );
-      return ['A1', 'B1'].map((ref) => fills[xfs[Number(new RegExp(`<c r="${ref}"[^>]*?\\bs="(\\d+)"`).exec(sheet)?.[1] || 0)]] || 'none');
     },
     docx: async (zip) => {
       const row = [...(await zip.file('word/document.xml').async('string')).matchAll(/<w:tr\b[\s\S]*?<\/w:tr>/g)][1][0];
-      return [...row.matchAll(/<w:tc>[\s\S]*?<\/w:tc>/g)].map((cell) => (/<w:shd\b[^>]*w:fill="([^"]+)"/.exec(cell[0])?.[1] || 'none').toUpperCase());
+      return [...row.matchAll(/<w:tc>[\s\S]*?<\/w:tc>/g)].map((cell) =>
+        (/<w:shd\b[^>]*w:fill="([^"]+)"/.exec(cell[0])?.[1] || 'none').toUpperCase()
+      );
     },
     pptx: async (zip) => {
-      const row = [...(await zip.file('ppt/slides/slide1.xml').async('string')).matchAll(/<a:tr\b[\s\S]*?<\/a:tr>/g)][1][0];
+      const row = [
+        ...(await zip.file('ppt/slides/slide1.xml').async('string')).matchAll(/<a:tr\b[\s\S]*?<\/a:tr>/g),
+      ][1][0];
       return [...row.matchAll(/<a:tc\b[\s\S]*?<\/a:tc>/g)].map((cell) => {
-        const own = (/<a:tcPr\b[^>]*\/>|<a:tcPr\b[^>]*>[\s\S]*?<\/a:tcPr>/.exec(cell[0])?.[0] || '').replace(/<a:ln\w*\b[^>]*?(?:\/>|>[\s\S]*?<\/a:ln\w*>)/g, '');
+        const own = (/<a:tcPr\b[^>]*\/>|<a:tcPr\b[^>]*>[\s\S]*?<\/a:tcPr>/.exec(cell[0])?.[0] || '').replace(
+          /<a:ln\w*\b[^>]*?(?:\/>|>[\s\S]*?<\/a:ln\w*>)/g,
+          ''
+        );
         return /<a:noFill\/>/.test(own) ? 'noFill' : /<a:srgbClr val="([0-9A-F]{6})"/i.exec(own)?.[1] || 'none';
       });
     },
@@ -1537,7 +1586,11 @@ test('[compat] fillColor null clears an Excel cell, a Word table cell and a slid
       const created = value(await executeOfficeTool({ action: 'create', path, format, mode, operations }, { cwd }));
       value(await executeOfficeTool({ action: 'save', session: created.session }, { cwd }));
       value(await executeOfficeTool({ action: 'close', session: created.session }, { cwd }));
-      assert.deepEqual(await read[format](await JSZip.loadAsync(await readFile(path))), expected[format], `${format} ${mode}`);
+      assert.deepEqual(
+        await read[format](await JSZip.loadAsync(await readFile(path))),
+        expected[format],
+        `${format} ${mode}`
+      );
     }
   }
 });
@@ -1562,12 +1615,26 @@ pres.defineSlideMaster({ title: 'PLAIN', objects: [] });
 pres.addSlide({ masterName: 'PLAIN' }).addText('처리량', { x: 0.6, y: 0.6, w: 6, h: 0.6, fontSize: 24 });
 await pres.writeFile({ fileName: OUTPUT });
 `;
-  const authored = value(await executeOfficeTool({ action: 'author', path: source, script, mode: 'portable', render: false }, { cwd }));
+  const authored = value(
+    await executeOfficeTool({ action: 'author', path: source, script, mode: 'portable', render: false }, { cwd })
+  );
   value(await executeOfficeTool({ action: 'close', session: authored.session }, { cwd }));
   const footer = async (mode) => {
-    const opened = value(await executeOfficeTool({ action: 'open', path: source, mode, output: join(cwd, `${mode}.pptx`) }, { cwd }));
-    value(await executeOfficeTool({ action: 'batch', session: opened.session, operations: [{ op: 'set_footer', slide: 1, text: '운영팀 · 대외비' }] }, { cwd }));
-    const shapes = value(await executeOfficeTool({ action: 'snapshot', session: opened.session, pages: [1] }, { cwd })).document.slides[0].shapes;
+    const opened = value(
+      await executeOfficeTool({ action: 'open', path: source, mode, output: join(cwd, `${mode}.pptx`) }, { cwd })
+    );
+    value(
+      await executeOfficeTool(
+        {
+          action: 'batch',
+          session: opened.session,
+          operations: [{ op: 'set_footer', slide: 1, text: '운영팀 · 대외비' }],
+        },
+        { cwd }
+      )
+    );
+    const shapes = value(await executeOfficeTool({ action: 'snapshot', session: opened.session, pages: [1] }, { cwd }))
+      .document.slides[0].shapes;
     value(await executeOfficeTool({ action: 'close', session: opened.session }, { cwd }));
     const line = shapes.find((shape) => String(shape.text || '').includes('대외비'));
     return line && [line.left, line.top, line.width, line.height].map(Math.round);
@@ -1599,7 +1666,17 @@ test('[powerpoint] set_shape null takes the fill and the outline away, as the po
           mode,
           operations: [
             { op: 'add_slide' },
-            { op: 'add_shape', slide: 1, shapeType: 'rectangle', text: '요약', left: 100, top: 100, width: 300, height: 100, properties: { fillColor: 'E8F0FE', lineColor: '3367D6', lineWidth: 2 } },
+            {
+              op: 'add_shape',
+              slide: 1,
+              shapeType: 'rectangle',
+              text: '요약',
+              left: 100,
+              top: 100,
+              width: 300,
+              height: 100,
+              properties: { fillColor: 'E8F0FE', lineColor: '3367D6', lineWidth: 2 },
+            },
             { op: 'set_shape', slide: 1, shape: 1, properties: { fillColor: null, lineColor: null } },
           ],
         },
@@ -1610,9 +1687,12 @@ test('[powerpoint] set_shape null takes the fill and the outline away, as the po
     value(await executeOfficeTool({ action: 'close', session: created.session }, { cwd }));
     const slide = await (await JSZip.loadAsync(await readFile(path))).file('ppt/slides/slide1.xml').async('string');
     const spPr = /<p:spPr\b[\s\S]*?<\/p:spPr>/.exec(/<p:sp>[\s\S]*?<\/p:sp>/.exec(slide)[0])[0];
+    let line = 'inherited';
+    if (/<a:ln\b[\s\S]*?<a:noFill\/>/.test(spPr)) line = 'noFill';
+    else if (/<a:ln\b/.test(spPr)) line = 'line';
     return {
       fill: /<p:spPr[^>]*>(?:(?!<a:ln\b)[\s\S])*?<a:(noFill|solidFill)/.exec(spPr)?.[1] || 'inherited',
-      line: /<a:ln\b[\s\S]*?<a:noFill\/>/.test(spPr) ? 'noFill' : /<a:ln\b/.test(spPr) ? 'line' : 'inherited',
+      line,
     };
   };
   const powerpoint = await cleared('background');
@@ -2394,7 +2474,26 @@ test('[excel] a text Excel would type as a date, a number, or a truth value stay
     resetOfficeSessionsForTest();
     await rm(cwd, { recursive: true, force: true });
   });
-  const texts = ['1', '1,234', '12,345.6', '15%', '12.5%', '-500000', '.5', '007', '1-1', '1/2', '2026/10/05', '2026-10-05', '1e3', '(100)', '10:30', 'TRUE', '#N/A', '214-86-12345'];
+  const texts = [
+    '1',
+    '1,234',
+    '12,345.6',
+    '15%',
+    '12.5%',
+    '-500000',
+    '.5',
+    '007',
+    '1-1',
+    '1/2',
+    '2026/10/05',
+    '2026-10-05',
+    '1e3',
+    '(100)',
+    '10:30',
+    'TRUE',
+    '#N/A',
+    '214-86-12345',
+  ];
   const operations = [
     { op: 'set_style', range: 'B1', properties: { numberFormat: '0.0' } },
     { op: 'set_range', range: `A1:A${texts.length}`, values: texts.map((text) => [text]) },
@@ -2597,7 +2696,15 @@ test('[excel] a fit by width alone leaves the printed length free, as the portab
           format: 'xlsx',
           mode,
           operations: [
-            { op: 'set_range', sheet: 'Sheet1', range: 'A1:B2', values: [['일자', '처리량'], ['2026-07-01', 1400]] },
+            {
+              op: 'set_range',
+              sheet: 'Sheet1',
+              range: 'A1:B2',
+              values: [
+                ['일자', '처리량'],
+                ['2026-07-01', 1400],
+              ],
+            },
             { op: 'set_page_setup', sheet: 'Sheet1', fitToPagesWide: 1 },
             // A one-page report after a data sheet fitted by width: Excel had refused its height of 1 once the
             // same statement had set the data sheet's free height ("Specified cast is not valid").
@@ -2612,8 +2719,9 @@ test('[excel] a fit by width alone leaves the printed length free, as the portab
     // The portable reader answers a sheet at a time; Excel answers the workbook either way.
     const fits = {};
     for (const name of ['Sheet1', 'Report']) {
-      const sheets = value(await executeOfficeTool({ action: 'snapshot', session: created.session, sheet: name }, { cwd }))
-        .document.sheets;
+      const sheets = value(
+        await executeOfficeTool({ action: 'snapshot', session: created.session, sheet: name }, { cwd })
+      ).document.sheets;
       const setup = sheets.find((sheet) => sheet.name === name).pageSetup;
       // Excel says False for a free count and the portable reader 0; either way no page limit.
       fits[name] = [Number(setup.fitToPagesWide) || 0, Number(setup.fitToPagesTall) || 0];
@@ -2690,7 +2798,18 @@ test('[excel] freeze_panes freezes a row and a column on an opened workbook, as 
         path: source,
         format: 'xlsx',
         mode: 'portable',
-        operations: [{ op: 'set_range', sheet: 'Sheet1', range: 'A1:C3', values: [['권역', '7월', '9월'], ['수도권', 26100, 29000], ['부산', 21400, 26400]] }],
+        operations: [
+          {
+            op: 'set_range',
+            sheet: 'Sheet1',
+            range: 'A1:C3',
+            values: [
+              ['권역', '7월', '9월'],
+              ['수도권', 26100, 29000],
+              ['부산', 21400, 26400],
+            ],
+          },
+        ],
       },
       { cwd }
     )
@@ -2699,10 +2818,21 @@ test('[excel] freeze_panes freezes a row and a column on an opened workbook, as 
   const frozen = async (mode) => {
     const output = join(cwd, `frozen-${mode}.xlsx`);
     const opened = value(await executeOfficeTool({ action: 'open', path: source, mode, output }, { cwd }));
-    value(await executeOfficeTool({ action: 'batch', session: opened.session, operations: [{ op: 'freeze_panes', sheet: 'Sheet1', row: 2, column: 2 }] }, { cwd }));
+    value(
+      await executeOfficeTool(
+        {
+          action: 'batch',
+          session: opened.session,
+          operations: [{ op: 'freeze_panes', sheet: 'Sheet1', row: 2, column: 2 }],
+        },
+        { cwd }
+      )
+    );
     value(await executeOfficeTool({ action: 'save', session: opened.session }, { cwd }));
     value(await executeOfficeTool({ action: 'close', session: opened.session }, { cwd }));
-    const sheet = await (await JSZip.loadAsync(await readFile(output))).file('xl/worksheets/sheet1.xml').async('string');
+    const sheet = await (await JSZip.loadAsync(await readFile(output)))
+      .file('xl/worksheets/sheet1.xml')
+      .async('string');
     const pane = /<pane\b[^>]*\/>/.exec(sheet)?.[0] || '';
     // Excel records a split it froze as frozenSplit; either state holds the panes frozen.
     return ['xSplit', 'ySplit', 'topLeftCell', 'state'].map((name) =>
@@ -2733,7 +2863,16 @@ test('[excel] an appended row is formatted as the last row is, as the portable w
           format: 'xlsx',
           mode,
           operations: [
-            { op: 'set_range', sheet: 'Sheet1', range: 'A1:C3', values: [['권역', '처리량', '지연률'], ['수도권', 29000, 0.009], ['부산', 26400, 0.019]] },
+            {
+              op: 'set_range',
+              sheet: 'Sheet1',
+              range: 'A1:C3',
+              values: [
+                ['권역', '처리량', '지연률'],
+                ['수도권', 29000, 0.009],
+                ['부산', 26400, 0.019],
+              ],
+            },
             { op: 'set_style', sheet: 'Sheet1', range: 'B2:B3', properties: { numberFormat: '#,##0' } },
             { op: 'set_style', sheet: 'Sheet1', range: 'C2:C3', properties: { numberFormat: '0.0%' } },
             { op: 'append_row', sheet: 'Sheet1', values: ['세종', 1500, 0.006] },
@@ -2897,7 +3036,8 @@ test('[word] a page or column break stands in a plain paragraph of its own, as t
         { cwd }
       )
     );
-    const paragraphs = value(await executeOfficeTool({ action: 'snapshot', session: created.session }, { cwd })).document.paragraphs;
+    const paragraphs = value(await executeOfficeTool({ action: 'snapshot', session: created.session }, { cwd }))
+      .document.paragraphs;
     value(await executeOfficeTool({ action: 'close', session: created.session }, { cwd }));
     return paragraphs.slice(0, 3).map((paragraph) => `${paragraph.text}:${paragraph.style}`);
   };
@@ -2939,9 +3079,12 @@ test('[word] set_list numbers and nests items at the level asked, as the portabl
         { cwd }
       )
     );
-    const paragraphs = value(await executeOfficeTool({ action: 'snapshot', session: created.session }, { cwd })).document.paragraphs;
+    const paragraphs = value(await executeOfficeTool({ action: 'snapshot', session: created.session }, { cwd }))
+      .document.paragraphs;
     value(await executeOfficeTool({ action: 'close', session: created.session }, { cwd }));
-    return paragraphs.slice(1, 4).map((paragraph) => `${paragraph.text}:${paragraph.list?.kind}:${paragraph.list?.level}`);
+    return paragraphs
+      .slice(1, 4)
+      .map((paragraph) => `${paragraph.text}:${paragraph.list?.kind}:${paragraph.list?.level}`);
   };
   const word = await listed('background');
   assert.deepEqual(word, ['접수:number:0', '분류:number:0', '야간 분류:number:1']);
@@ -2967,7 +3110,13 @@ test('[word] a column inserted one past the last lands at the end, and one furth
           format: 'docx',
           mode,
           operations: [
-            { op: 'add_table', values: [['권역', '9월'], ['수도권', '29,000']] },
+            {
+              op: 'add_table',
+              values: [
+                ['권역', '9월'],
+                ['수도권', '29,000'],
+              ],
+            },
             { op: 'insert_table_column', table: 1, column: 3 },
             { op: 'set_table_cell', table: 1, row: 1, col: 3, text: '증가율' },
           ],
@@ -2979,17 +3128,28 @@ test('[word] a column inserted one past the last lands at the end, and one furth
       { action: 'batch', session: created.session, operations: [{ op: 'insert_table_column', table: 1, column: 5 }] },
       { cwd }
     );
-    const table = value(await executeOfficeTool({ action: 'snapshot', session: created.session }, { cwd })).document.tables[0];
+    const table = value(await executeOfficeTool({ action: 'snapshot', session: created.session }, { cwd })).document
+      .tables[0];
     value(await executeOfficeTool({ action: 'close', session: created.session }, { cwd }));
-    return { header: JSON.stringify(table.rows?.[0] ?? table.cells?.[0] ?? table), refused: refused.isError, message: refused.content[0].text };
+    return {
+      header: JSON.stringify(table.rows?.[0] ?? table.cells?.[0] ?? table),
+      refused: refused.isError,
+      message: refused.content[0].text,
+    };
   };
   const word = await grown('background');
   assert.match(word.header, /권역[\s\S]*9월[\s\S]*증가율/);
   assert.equal(word.refused, true);
-  assert.match(word.message, /so it has no column 5: insert_table_column column is the position the new column takes, 1 to 4/);
+  assert.match(
+    word.message,
+    /so it has no column 5: insert_table_column column is the position the new column takes, 1 to 4/
+  );
   const portable = await grown('portable');
   assert.match(portable.header, /권역[\s\S]*9월[\s\S]*증가율/);
-  assert.match(portable.message, /so it has no column 5: insert_table_column column is the position the new column takes, 1 to 4/);
+  assert.match(
+    portable.message,
+    /so it has no column 5: insert_table_column column is the position the new column takes, 1 to 4/
+  );
 });
 
 test('[word] a link or note placed by paragraph lands at the end of its text', { skip: !enabled }, async (t) => {
@@ -3182,7 +3342,10 @@ test('[word] consecutive paragraphs append as one block and read back one by one
   const read = {};
   for (const mode of ['portable', 'background']) {
     const created = value(
-      await executeOfficeTool({ action: 'create', path: join(cwd, `${mode}.docx`), format: 'docx', mode, operations }, { cwd })
+      await executeOfficeTool(
+        { action: 'create', path: join(cwd, `${mode}.docx`), format: 'docx', mode, operations },
+        { cwd }
+      )
     );
     if (mode === 'background') {
       assert.deepEqual(
@@ -3217,7 +3380,10 @@ test('[word] consecutive paragraphs append as one block and read back one by one
     read.background.map((entry) => entry[4]),
     read.portable.map((entry) => entry[4])
   );
-  assert.deepEqual(read.background.slice(-2).map((entry) => entry[4]), [true, false]);
+  assert.deepEqual(
+    read.background.slice(-2).map((entry) => entry[4]),
+    [true, false]
+  );
 });
 
 // A phrase cut inside a word ("성장" of "성장했습니다") took the note's mark mid-word; a phrase ending on a sign
@@ -3486,8 +3652,22 @@ test('[word] a row or table the document lacks is refused with the tables it hol
     await rm(cwd, { recursive: true, force: true });
   });
   const tables = [
-    { op: 'add_table', values: [['184,200건', '+34%'], ['야간 처리량', '전년 대비']] },
-    { op: 'add_table', values: [['권역', '처리량'], ['수도권', '82,400'], ['부산', '71,600'], ['합계', '154,000']] },
+    {
+      op: 'add_table',
+      values: [
+        ['184,200건', '+34%'],
+        ['야간 처리량', '전년 대비'],
+      ],
+    },
+    {
+      op: 'add_table',
+      values: [
+        ['권역', '처리량'],
+        ['수도권', '82,400'],
+        ['부산', '71,600'],
+        ['합계', '154,000'],
+      ],
+    },
   ];
   const refusals = async (mode) => {
     const created = value(
@@ -3520,9 +3700,15 @@ test('[word] a row or table the document lacks is refused with the tables it hol
     return { messages, rows: added.results[0].rows };
   };
   const word = await refusals('background');
-  assert.match(word.messages[0], /DOCX table 1 is 2×2 starting "184,200건", so it has no row 4: insert_table_row row is the position the new row takes, 1 to 3/);
+  assert.match(
+    word.messages[0],
+    /DOCX table 1 is 2×2 starting "184,200건", so it has no row 4: insert_table_row row is the position the new row takes, 1 to 3/
+  );
   assert.match(word.messages[1], /DOCX table 1 is 2×2 starting "184,200건", so it has no row 5$/);
-  assert.match(word.messages[2], /DOCX table 3 not found: the document holds 2 table\(s\) \(1: 2×2 starting "184,200건"; 2: 4×2 starting "권역"\)/);
+  assert.match(
+    word.messages[2],
+    /DOCX table 3 not found: the document holds 2 table\(s\) \(1: 2×2 starting "184,200건"; 2: 4×2 starting "권역"\)/
+  );
   assert.equal(word.rows, 5);
   const portable = await refusals('portable');
   assert.deepEqual(portable.messages, word.messages);
@@ -3623,7 +3809,10 @@ test('[word] a chart lands as a picture that names its figures', { skip: !enable
   const zip = await JSZip.loadAsync(await readFile(join(cwd, 'charted.docx')));
   const document = await zip.file('word/document.xml').async('string');
   assert.match(document, /descr="1분기 120천 건, 2분기 150천 건, 3분기 184\.2천 건"/);
-  assert.ok(Object.keys(zip.files).some((name) => /^word\/media\/.+\.png$/.test(name)), 'the picture is in the package');
+  assert.ok(
+    Object.keys(zip.files).some((name) => /^word\/media\/.+\.png$/.test(name)),
+    'the picture is in the package'
+  );
 });
 
 // A provenance comment names its source in the language the source is named in, as the portable writer writes it:
@@ -3917,7 +4106,7 @@ test('[powerpoint] a data refresh moves a last-point accent to the new last poin
   assert.notEqual(fills.get(1), '1C6FE3', 'the point it left no longer does');
 });
 
-test('[powerpoint] a data refresh that names no categories keeps the chart\'s own, as the portable writer does', {
+test("[powerpoint] a data refresh that names no categories keeps the chart's own, as the portable writer does", {
   skip: !enabled,
 }, async (t) => {
   const cwd = await mkdtemp(join(tmpdir(), 'mixdog-office-live-'));

@@ -208,7 +208,8 @@ await pres.writeFile({fileName:OUTPUT});`;
   assert.equal(written.ok, true, JSON.stringify(written));
   const zip = await JSZip.loadAsync(await readFile(path));
   const slide = await zip.file('ppt/slides/slide1.xml').async('string');
-  for (const words of ['합계', '감소', '90', '\u221232', '30']) assert.ok(slide.includes(`>${words}<`), `${words} is on the page`);
+  for (const words of ['합계', '감소', '90', '\u221232', '30'])
+    assert.ok(slide.includes(`>${words}<`), `${words} is on the page`);
   assert.ok(!slide.includes('>증가<'), 'no rise, so no rise in the legend');
   const chart = await zip.file(/^ppt\/charts\/chart\d+\.xml$/)[0].async('string');
   assert.equal((chart.match(/<c:ser>/g) || []).length, 3, 'the base, the totals, and the drops');

@@ -8,6 +8,7 @@ import {
   ensureContentTypeOverride,
   ensureDefaultContentType,
   loadPackage,
+  partFromTarget,
   partRelationshipPath,
   relationshipMap,
   relationshipTargetByType,
@@ -166,7 +167,7 @@ async function followingLayout(zip, layouts, index) {
   if (!before) return null;
   const target = relationshipTargetByType(await zipText(zip, partRelationshipPath(before.path)), 'slideLayout');
   if (!target) return null;
-  const path = posix.normalize(posix.join(posix.dirname(before.path), target));
+  const path = partFromTarget(posix.dirname(before.path), target);
   const layout = layouts.find((entry) => entry.path === path);
   return layout && layout.type !== 'title' ? layout : null;
 }
@@ -393,7 +394,7 @@ export async function ensureCommentAuthor(zip, author, initials) {
 export async function ensureSlideComments(zip, slide) {
   const relationships = partRelationshipPath(slide.path);
   const target = relationshipTargetByType(await zipText(zip, relationships), 'comments');
-  if (target) return posix.normalize(posix.join(posix.dirname(slide.path), target));
+  if (target) return partFromTarget(posix.dirname(slide.path), target);
   let ordinal = 1;
   while (zip.file(`ppt/comments/comment${ordinal}.xml`)) ordinal += 1;
   const part = `ppt/comments/comment${ordinal}.xml`;
@@ -412,7 +413,7 @@ export async function readSlideNotes(zip, slide) {
   const relationships = await zipText(zip, partRelationshipPath(slide.path));
   const linked = relationshipTargetByType(relationships, 'notesSlide');
   if (!linked) return '';
-  const part = posix.normalize(posix.join(posix.dirname(slide.path), linked));
+  const part = partFromTarget(posix.dirname(slide.path), linked);
   const xml = await zipText(zip, part);
   if (!xml) return '';
   const body = /<p:sp>[\s\S]*?<p:ph type="body"[\s\S]*?<\/p:sp>/.exec(xml)?.[0] || xml;
@@ -424,7 +425,7 @@ export async function readSlideNotes(zip, slide) {
 export async function copySlideNotes(zip, sourcePath, targetPath) {
   const linked = relationshipTargetByType(await zipText(zip, partRelationshipPath(sourcePath)), 'notesSlide');
   if (!linked) return;
-  const sourceNotes = posix.normalize(posix.join(posix.dirname(sourcePath), linked));
+  const sourceNotes = partFromTarget(posix.dirname(sourcePath), linked);
   const xml = await zipText(zip, sourceNotes);
   if (!xml) return;
   let ordinal = 1;

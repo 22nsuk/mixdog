@@ -524,6 +524,44 @@ function ruledTables(page) {
     .map((table) => ruledTable(page, table));
 }
 
+// Tables of an unruled page, read from how its text runs line up in columns.
+function alignedTables(page) {
+  const rows = clusterRows(page.items || []).filter((row) => row.cells.length >= 2);
+  if (rows.length < 2) return [];
+  // Rows far apart on the page are not a table. A form's field labels and the
+  // footer under them line up in two columns, and taken together by position
+  // alone they came back as a two-row table of a label and a page number. A
+  // table's rows follow each other by about a line, so the block ends where
+  // that stops being true.
+  const blocks = [];
+  for (const row of rows) {
+    const height = Math.max(1, ...row.cells.map((cell) => cell.height || 0));
+    const current = blocks.at(-1);
+    if (current && row.top - current.bottom <= height * ALIGNMENT_ROW_GAP) {
+      current.rows.push(row);
+      current.bottom = row.top + height;
+    } else blocks.push({ rows: [row], bottom: row.top + height });
+  }
+  const tables = [];
+  for (const block of blocks) {
+    if (block.rows.length < 2) continue;
+    const counts = new Map();
+    for (const row of block.rows) counts.set(row.cells.length, (counts.get(row.cells.length) || 0) + 1);
+    const [columns, repeated] = [...counts.entries()].sort((left, right) => right[1] - left[1])[0] || [0, 0];
+    const selected = block.rows.filter((row) => Math.abs(row.cells.length - columns) <= 1);
+    if (columns < 2 || selected.length < 2) continue;
+    tables.push({
+      page: page.page,
+      columns,
+      confidence: Number((repeated / block.rows.length).toFixed(3)),
+      source: 'alignment',
+      rows: selected.map((row) => row.cells.map((cell) => cell.text)),
+      geometry: selected,
+    });
+  }
+  return tables;
+}
+
 export function inferPdfTables(layout) {
   const tables = [];
   for (const page of layout.pages || []) {
@@ -532,38 +570,7 @@ export function inferPdfTables(layout) {
       tables.push(...ruled);
       continue;
     }
-    const rows = clusterRows(page.items || []).filter((row) => row.cells.length >= 2);
-    if (rows.length < 2) continue;
-    // Rows far apart on the page are not a table. A form's field labels and the
-    // footer under them line up in two columns, and taken together by position
-    // alone they came back as a two-row table of a label and a page number. A
-    // table's rows follow each other by about a line, so the block ends where
-    // that stops being true.
-    const blocks = [];
-    for (const row of rows) {
-      const height = Math.max(1, ...row.cells.map((cell) => cell.height || 0));
-      const current = blocks.at(-1);
-      if (current && row.top - current.bottom <= height * ALIGNMENT_ROW_GAP) {
-        current.rows.push(row);
-        current.bottom = row.top + height;
-      } else blocks.push({ rows: [row], bottom: row.top + height });
-    }
-    for (const block of blocks) {
-      if (block.rows.length < 2) continue;
-      const counts = new Map();
-      for (const row of block.rows) counts.set(row.cells.length, (counts.get(row.cells.length) || 0) + 1);
-      const [columns, repeated] = [...counts.entries()].sort((left, right) => right[1] - left[1])[0] || [0, 0];
-      const selected = block.rows.filter((row) => Math.abs(row.cells.length - columns) <= 1);
-      if (columns < 2 || selected.length < 2) continue;
-      tables.push({
-        page: page.page,
-        columns,
-        confidence: Number((repeated / block.rows.length).toFixed(3)),
-        source: 'alignment',
-        rows: selected.map((row) => row.cells.map((cell) => cell.text)),
-        geometry: selected,
-      });
-    }
+    tables.push(...alignedTables(page));
   }
   return {
     pageCount: layout.pageCount,

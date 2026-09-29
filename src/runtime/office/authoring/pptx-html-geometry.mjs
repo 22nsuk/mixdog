@@ -37,7 +37,10 @@ export function readGeometry(index, tolerance, nearMiss) {
   const painted = (value) => {
     const m = /rgba?\(([^)]+)\)/.exec(value || '');
     if (!m) return false;
-    const parts = m[1].split(/[ ,/]+/).filter(Boolean).map(parseFloat);
+    const parts = m[1]
+      .split(/[ ,/]+/)
+      .filter(Boolean)
+      .map(parseFloat);
     return (parts.length > 3 ? parts[3] : 1) > 0;
   };
   const ownText = (el) => [...el.childNodes].some((node) => node.nodeType === 3 && node.textContent.trim());
@@ -45,15 +48,27 @@ export function readGeometry(index, tolerance, nearMiss) {
     if (el.id) return `#${el.id}`;
     const classes = (el.getAttribute('class') || '').trim().split(/\s+/).filter(Boolean);
     const text = (el.textContent || '').trim().replace(/\s+/g, ' ');
-    const said = text ? ` "${text.length > 14 ? `${text.slice(0, 14)}…` : text}"` : '';
+    const shown = text.length > 14 ? `${text.slice(0, 14)}…` : text;
+    const said = text ? ` "${shown}"` : '';
     return `<${el.tagName.toLowerCase()}${classes.length ? `.${classes.join('.')}` : ''}>${said}`;
   };
   const push = (check, el, target, message, off) =>
-    findings.push({ check, subject: label(el), ...(target ? { target: label(target) } : {}), off: r1(off), message: `${label(el)} ${message}` });
+    findings.push({
+      check,
+      subject: label(el),
+      ...(target ? { target: label(target) } : {}),
+      off: r1(off),
+      message: `${label(el)} ${message}`,
+    });
 
   // The edges an element visibly paints: all of them for a fill, a picture, a drawing or a full border;
   // a lone border side shows its own edge and its two ends.
-  const SIDE_EDGES = { Top: ['top', 'left', 'right', 'cx'], Bottom: ['bottom', 'left', 'right', 'cx'], Left: ['left', 'top', 'bottom', 'cy'], Right: ['right', 'top', 'bottom', 'cy'] };
+  const SIDE_EDGES = {
+    Top: ['top', 'left', 'right', 'cx'],
+    Bottom: ['bottom', 'left', 'right', 'cx'],
+    Left: ['left', 'top', 'bottom', 'cy'],
+    Right: ['right', 'top', 'bottom', 'cy'],
+  };
   const paintedEdges = (el) => {
     if (el instanceof SVGElement || el.tagName === 'IMG') return new Set(EDGES);
     const cs = getComputedStyle(el);
@@ -72,7 +87,9 @@ export function readGeometry(index, tolerance, nearMiss) {
       const rx = (el instanceof SVGCircleElement ? el.r : el.rx).baseVal.value * Math.hypot(m.a, m.b);
       const ry = (el instanceof SVGCircleElement ? el.r : el.ry).baseVal.value * Math.hypot(m.c, m.d);
       const c = toCanvas(el, el.cx.baseVal.value, el.cy.baseVal.value);
-      return Math.abs(rx - ry) < 0.5 ? { type: 'circle', cx: c.x, cy: c.y, r: rx } : rect(c.x - rx, c.y - ry, 2 * rx, 2 * ry);
+      return Math.abs(rx - ry) < 0.5
+        ? { type: 'circle', cx: c.x, cy: c.y, r: rx }
+        : rect(c.x - rx, c.y - ry, 2 * rx, 2 * ry);
     }
     if (el instanceof SVGGraphicsElement) {
       const b = el.getBBox();
@@ -84,7 +101,8 @@ export function readGeometry(index, tolerance, nearMiss) {
     const edges = paintedEdges(el);
     const raw = getComputedStyle(el).borderTopLeftRadius.trim();
     const radius = raw.endsWith('%') ? (parseFloat(raw) / 100) * Math.min(b.w, b.h) : parseFloat(raw) || 0;
-    if (edges.size === EDGES.length && Math.abs(b.w - b.h) < 1 && radius >= b.w / 2 - 0.5) return { type: 'circle', cx: b.cx, cy: b.cy, r: b.w / 2 };
+    if (edges.size === EDGES.length && Math.abs(b.w - b.h) < 1 && radius >= b.w / 2 - 0.5)
+      return { type: 'circle', cx: b.cx, cy: b.cy, r: b.w / 2 };
     if (!edges.size && ownText(el)) {
       const range = document.createRange();
       range.selectNodeContents(el);
@@ -98,9 +116,12 @@ export function readGeometry(index, tolerance, nearMiss) {
     return { left: b.x, right: b.x + b.w, top: b.y, bottom: b.y + b.h, cx: b.cx, cy: b.cy }[name];
   };
   const ref = (el, token, attribute) => {
-    const id = String(token || '').trim().replace(/^#/, '');
+    const id = String(token || '')
+      .trim()
+      .replace(/^#/, '');
     const found = id ? slide.querySelector(`#${CSS.escape(id)}`) : null;
-    if (!found) push('reference', el, null, `${attribute} names "${token || ''}", which is no element id on this slide`, 0);
+    if (!found)
+      push('reference', el, null, `${attribute} names "${token || ''}", which is no element id on this slide`, 0);
     return found;
   };
 
@@ -129,14 +150,21 @@ export function readGeometry(index, tolerance, nearMiss) {
   const overflow = (s, t) => {
     if (t.type === 'circle') {
       if (s.type === 'circle') return Math.hypot(s.cx - t.cx, s.cy - t.cy) + s.r - t.r;
-      const corners = [[s.x, s.y], [s.x + s.w, s.y], [s.x, s.y + s.h], [s.x + s.w, s.y + s.h]];
+      const corners = [
+        [s.x, s.y],
+        [s.x + s.w, s.y],
+        [s.x, s.y + s.h],
+        [s.x + s.w, s.y + s.h],
+      ];
       return Math.max(...corners.map(([x, y]) => Math.hypot(x - t.cx, y - t.cy))) - t.r;
     }
     const b = boxOf(s);
     return Math.max(t.x - b.x, t.y - b.y, b.x + b.w - (t.x + t.w), b.y + b.h - (t.y + t.h));
   };
   const centreInside = (s, t) =>
-    t.type === 'circle' ? Math.hypot(s.cx - t.cx, s.cy - t.cy) < t.r : s.cx > t.x && s.cx < t.x + t.w && s.cy > t.y && s.cy < t.y + t.h;
+    t.type === 'circle'
+      ? Math.hypot(s.cx - t.cx, s.cy - t.cy) < t.r
+      : s.cx > t.x && s.cx < t.x + t.w && s.cy > t.y && s.cy < t.y + t.h;
   // A connector's miss from the centre of the gap between two separated blocks; null when they overlap.
   const gapMiss = (c, a, b) => {
     if (a.x + a.w <= b.x || b.x + b.w <= a.x) {
@@ -163,7 +191,13 @@ export function readGeometry(index, tolerance, nearMiss) {
     const s = shape(el);
     const d = lineDistance(target, { x: s.cx, y: s.cy });
     if (d === null) {
-      push('on', el, target, `is declared on ${label(target)}, which has no centre line to measure: draw it as an SVG <line>, <polyline> or <path>`, 0);
+      push(
+        'on',
+        el,
+        target,
+        `is declared on ${label(target)}, which has no centre line to measure: draw it as an SVG <line>, <polyline> or <path>`,
+        0
+      );
     } else if (d > tolerance) {
       push('on', el, target, `centre is ${r1(d)}px off the centre line of ${label(target)}`, d);
     }
@@ -180,9 +214,16 @@ export function readGeometry(index, tolerance, nearMiss) {
     const b = ref(el, second, 'data-between');
     if (!a || !b) continue;
     const miss = gapMiss(boxOf(shape(el)), boxOf(shape(a)), boxOf(shape(b)));
-    if (!miss) push('between', el, a, `is declared between ${label(a)} and ${label(b)}, which overlap and leave no gap`, 0);
+    if (!miss)
+      push('between', el, a, `is declared between ${label(a)} and ${label(b)}, which overlap and leave no gap`, 0);
     else if (miss.d > tolerance) {
-      push('between', el, a, `is off the centre of the gap between ${label(a)} and ${label(b)} (dx ${r1(miss.dx)}, dy ${r1(miss.dy)})`, miss.d);
+      push(
+        'between',
+        el,
+        a,
+        `is off the centre of the gap between ${label(a)} and ${label(b)} (dx ${r1(miss.dx)}, dy ${r1(miss.dy)})`,
+        miss.d
+      );
     }
   }
   for (const el of slide.querySelectorAll('[data-align]')) {
@@ -195,7 +236,8 @@ export function readGeometry(index, tolerance, nearMiss) {
       const target = ref(el, token, 'data-align');
       if (!target) continue;
       const d = edge(shape(el), name) - edge(shape(target), name);
-      if (Math.abs(d) > tolerance) push('align', el, target, `${name} is ${r1(d)}px from the ${name} of ${label(target)}`, Math.abs(d));
+      if (Math.abs(d) > tolerance)
+        push('align', el, target, `${name} is ${r1(d)}px from the ${name} of ${label(target)}`, Math.abs(d));
     }
   }
   for (const el of slide.querySelectorAll('[data-label]')) {
@@ -206,7 +248,8 @@ export function readGeometry(index, tolerance, nearMiss) {
     const dx = s.cx - t.cx;
     const dy = s.cy - t.cy;
     const d = Math.max(Math.abs(dx), Math.abs(dy));
-    if (d > tolerance) push('label', el, target, `is off the centre of ${label(target)} (dx ${r1(dx)}, dy ${r1(dy)})`, d);
+    if (d > tolerance)
+      push('label', el, target, `is off the centre of ${label(target)} (dx ${r1(dx)}, dy ${r1(dy)})`, d);
   }
 
   // Undeclared: the painted blocks of the page (fills, borders, pictures, drawings), then the shapes
@@ -222,7 +265,10 @@ export function readGeometry(index, tolerance, nearMiss) {
     if (el.closest('aside.notes') || !shown(el)) continue;
     const inSvg = el instanceof SVGElement && !(el instanceof SVGSVGElement && !el.ownerSVGElement);
     if (inSvg) {
-      if ((el instanceof SVGCircleElement || el instanceof SVGEllipseElement || el instanceof SVGRectElement) && !exempt(el)) {
+      if (
+        (el instanceof SVGCircleElement || el instanceof SVGEllipseElement || el instanceof SVGRectElement) &&
+        !exempt(el)
+      ) {
         const cs = getComputedStyle(el);
         if (cs.fill !== 'none' || cs.stroke !== 'none') drawn.push({ el, s: shape(el), owner: el.ownerSVGElement });
       }
@@ -244,11 +290,20 @@ export function readGeometry(index, tolerance, nearMiss) {
 
   // Each block's container: the smallest other block whose frame holds it (none on the open page).
   const holds = (outer, inner) =>
-    inner.x >= outer.x - 1 && inner.y >= outer.y - 1 && inner.x + inner.w <= outer.x + outer.w + 1 && inner.y + inner.h <= outer.y + outer.h + 1;
+    inner.x >= outer.x - 1 &&
+    inner.y >= outer.y - 1 &&
+    inner.x + inner.w <= outer.x + outer.w + 1 &&
+    inner.y + inner.h <= outer.y + outer.h + 1;
   for (const block of blocks) {
-    block.container = blocks
-      .filter((other) => other !== block && other.frame.w * other.frame.h > block.frame.w * block.frame.h && holds(other.frame, block.frame))
-      .sort((p, q) => p.frame.w * p.frame.h - q.frame.w * q.frame.h)[0] || null;
+    block.container =
+      blocks
+        .filter(
+          (other) =>
+            other !== block &&
+            other.frame.w * other.frame.h > block.frame.w * block.frame.h &&
+            holds(other.frame, block.frame)
+        )
+        .sort((p, q) => p.frame.w * p.frame.h - q.frame.w * q.frame.h)[0] || null;
   }
 
   // Peer blocks in one container and one column (or row) whose visible edges almost meet.
@@ -270,18 +325,35 @@ export function readGeometry(index, tolerance, nearMiss) {
       }
       if (best) {
         const what = best.name === 'cx' || best.name === 'cy' ? 'centres' : `${best.name} edges`;
-        push('near_miss', a.el, b.el, `and ${label(b.el)} share a ${column ? 'column' : 'row'} but their ${what} are ${r1(best.d)}px apart: align them, or mark the offset data-free`, best.d);
+        push(
+          'near_miss',
+          a.el,
+          b.el,
+          `and ${label(b.el)} share a ${column ? 'column' : 'row'} but their ${what} are ${r1(best.d)}px apart: align them, or mark the offset data-free`,
+          best.d
+        );
       }
     }
   }
 
   // A shape almost inside another: its centre within, a part reaching just past the edge.
-  const shapes = [...blocks.filter((b) => !b.free && !b.text).map((b) => ({ el: b.el, s: b.s, owner: null })), ...drawn];
+  const shapes = [
+    ...blocks.filter((b) => !b.free && !b.text).map((b) => ({ el: b.el, s: b.s, owner: null })),
+    ...drawn,
+  ];
   for (const a of shapes) {
     for (const t of shapes) {
-      if (a === t || area(a.s) >= area(t.s) || a.owner === t.el || t.owner === a.el || !centreInside(a.s, t.s)) continue;
+      if (a === t || area(a.s) >= area(t.s) || a.owner === t.el || t.owner === a.el || !centreInside(a.s, t.s))
+        continue;
       const o = overflow(a.s, t.s);
-      if (o > tolerance && o <= nearMiss) push('containment', a.el, t.el, `sits inside ${label(t.el)} but reaches ${r1(o)}px past its edge: bring it inside, or mark it data-free`, o);
+      if (o > tolerance && o <= nearMiss)
+        push(
+          'containment',
+          a.el,
+          t.el,
+          `sits inside ${label(t.el)} but reaches ${r1(o)}px past its edge: bring it inside, or mark it data-free`,
+          o
+        );
     }
   }
 
@@ -302,10 +374,14 @@ export function readGeometry(index, tolerance, nearMiss) {
       const stroke = cs.stroke !== 'none' && parseFloat(cs.strokeWidth) > 0 && parseFloat(cs.strokeOpacity) > 0;
       if (!fill && !stroke) continue;
       const inverse = el.getScreenCTM().inverse();
-      inks.push({ el, b: boxOf(shape(el)), hit: (x, y) => {
-        const p = new DOMPoint(x + base.left, y + base.top).matrixTransform(inverse);
-        return (fill && el.isPointInFill(p)) || (stroke && el.isPointInStroke(p));
-      } });
+      inks.push({
+        el,
+        b: boxOf(shape(el)),
+        hit: (x, y) => {
+          const p = new DOMPoint(x + base.left, y + base.top).matrixTransform(inverse);
+          return (fill && el.isPointInFill(p)) || (stroke && el.isPointInStroke(p));
+        },
+      });
     }
   }
   for (const block of blocks) {
@@ -318,17 +394,27 @@ export function readGeometry(index, tolerance, nearMiss) {
       if (el instanceof SVGElement || el.closest('aside.notes, [data-free]') || !ownText(el) || !shown(el)) continue;
       const range = document.createRange();
       range.selectNodeContents(el);
-      const lines = [...range.getClientRects()].map((r) => rect(r.left - base.left, r.top - base.top, r.width, r.height)).filter((r) => r.w > 1 && r.h > 1);
+      const lines = [...range.getClientRects()]
+        .map((r) => rect(r.left - base.left, r.top - base.top, r.width, r.height))
+        .filter((r) => r.w > 1 && r.h > 1);
       // A filled surface under the words (their own chip, or a card) painted after the drawing hides it there.
       const covers = (ink) => {
         for (let node = el; node && node !== slide; node = node.parentElement) {
-          if (!node.contains(ink.el) && painted(getComputedStyle(node).backgroundColor) && ink.el.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING) return true;
+          if (
+            !node.contains(ink.el) &&
+            painted(getComputedStyle(node).backgroundColor) &&
+            ink.el.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING
+          )
+            return true;
         }
         return false;
       };
-      const near = lines.map((line) => rect(line.x - CLEARANCE, line.y - CLEARANCE, line.w + 2 * CLEARANCE, line.h + 2 * CLEARANCE));
+      const near = lines.map((line) =>
+        rect(line.x - CLEARANCE, line.y - CLEARANCE, line.w + 2 * CLEARANCE, line.h + 2 * CLEARANCE)
+      );
       for (const ink of inks) {
-        if (ink.el === el || el.contains(ink.el) || !near.some((zone) => intersects(zone, ink.b)) || covers(ink)) continue;
+        if (ink.el === el || el.contains(ink.el) || !near.some((zone) => intersects(zone, ink.b)) || covers(ink))
+          continue;
         // The words' own lines, and the clearance ring around them.
         let on = 0;
         let all = 0;
@@ -354,14 +440,26 @@ export function readGeometry(index, tolerance, nearMiss) {
         const share = all ? on / all : 0;
         if (share >= 0.98) continue;
         if (share > 0.02) {
-          push('text_on_drawing', el, ink.el, `runs partly onto ${label(ink.el)} (${Math.round(share * 100)}% of its words on the drawing): set it wholly on the shape or clear of it by ${CLEARANCE}px`, share * 100);
+          push(
+            'text_on_drawing',
+            el,
+            ink.el,
+            `runs partly onto ${label(ink.el)} (${Math.round(share * 100)}% of its words on the drawing): set it wholly on the shape or clear of it by ${CLEARANCE}px`,
+            share * 100
+          );
           break;
         }
         // A small mark beside its words (a bracket, a pin) is theirs; only a drawing well larger than the words
         // is a surface they must keep clear of.
         const wordsArea = lines.reduce((sum, line) => sum + line.w * line.h, 0);
         if (ring && ink.b.w * ink.b.h >= 4 * wordsArea) {
-          push('text_on_drawing', el, ink.el, `comes within ${CLEARANCE}px of ${label(ink.el)}: clear it by ${CLEARANCE}px or set it on the shape`, 0);
+          push(
+            'text_on_drawing',
+            el,
+            ink.el,
+            `comes within ${CLEARANCE}px of ${label(ink.el)}: clear it by ${CLEARANCE}px or set it on the shape`,
+            0
+          );
           break;
         }
       }
@@ -371,30 +469,74 @@ export function readGeometry(index, tolerance, nearMiss) {
   // Small connectors and markers: no text, at most 240 px (a marker at most 64 px).
   for (const c of blocks) {
     if (c.free || c.text || Math.max(c.b.w, c.b.h) > 240) continue;
-    const host = Math.max(c.b.w, c.b.h) <= 64
-      ? blocks.find((b) => b !== c && intersects(b.b, c.b) && (b.turned || b.el instanceof SVGSVGElement || Math.max(b.b.w, b.b.h) / Math.max(1, Math.min(b.b.w, b.b.h)) >= 6))
-      : null;
+    const host =
+      Math.max(c.b.w, c.b.h) <= 64
+        ? blocks.find(
+            (b) =>
+              b !== c &&
+              intersects(b.b, c.b) &&
+              (b.turned ||
+                b.el instanceof SVGSVGElement ||
+                Math.max(b.b.w, b.b.h) / Math.max(1, Math.min(b.b.w, b.b.h)) >= 6)
+          )
+        : null;
     if (host) {
-      push('marker', c.el, host.el, `sits on ${label(host.el)} with no declared relation: declare data-on (an SVG line or path) or data-inside, or mark it data-free`, 0);
+      push(
+        'marker',
+        c.el,
+        host.el,
+        `sits on ${label(host.el)} with no declared relation: declare data-on (an SVG line or path) or data-inside, or mark it data-free`,
+        0
+      );
       continue;
     }
     // A connector stands in open space; a glyph inside a card belongs to the card.
     if (blocks.some((b) => b !== c && intersects(b.b, c.b))) continue;
     const neighbours = blocks.filter(
-      (b) => b !== c && !intersects(b.b, c.b) && b.edges.size === EDGES.length && Math.min(b.b.w, b.b.h) >= 60 && b.b.w * b.b.h >= 4 * c.b.w * c.b.h
+      (b) =>
+        b !== c &&
+        !intersects(b.b, c.b) &&
+        b.edges.size === EDGES.length &&
+        Math.min(b.b.w, b.b.h) >= 60 &&
+        b.b.w * b.b.h >= 4 * c.b.w * c.b.h
     );
     const beside = (b) => span(b.b.y, b.b.y + b.b.h, c.b.y, c.b.y + c.b.h) > 0;
     const stacked = (b) => span(b.b.x, b.b.x + b.b.w, c.b.x, c.b.x + c.b.w) > 0;
     const nearest = (list, key, pick) => list.sort((p, q) => pick * (key(q) - key(p)))[0];
-    const left = nearest(neighbours.filter((b) => beside(b) && b.b.x + b.b.w <= c.b.x + tolerance), (b) => b.b.x + b.b.w, 1);
-    const right = nearest(neighbours.filter((b) => beside(b) && b.b.x >= c.b.x + c.b.w - tolerance), (b) => b.b.x, -1);
-    const above = nearest(neighbours.filter((b) => stacked(b) && b.b.y + b.b.h <= c.b.y + tolerance), (b) => b.b.y + b.b.h, 1);
-    const below = nearest(neighbours.filter((b) => stacked(b) && b.b.y >= c.b.y + c.b.h - tolerance), (b) => b.b.y, -1);
-    const [a, b] = left && right ? [left, right] : above && below ? [above, below] : [null, null];
-    if (!a) continue;
+    const left = nearest(
+      neighbours.filter((b) => beside(b) && b.b.x + b.b.w <= c.b.x + tolerance),
+      (b) => b.b.x + b.b.w,
+      1
+    );
+    const right = nearest(
+      neighbours.filter((b) => beside(b) && b.b.x >= c.b.x + c.b.w - tolerance),
+      (b) => b.b.x,
+      -1
+    );
+    const above = nearest(
+      neighbours.filter((b) => stacked(b) && b.b.y + b.b.h <= c.b.y + tolerance),
+      (b) => b.b.y + b.b.h,
+      1
+    );
+    const below = nearest(
+      neighbours.filter((b) => stacked(b) && b.b.y >= c.b.y + c.b.h - tolerance),
+      (b) => b.b.y,
+      -1
+    );
+    let pair = null;
+    if (left && right) pair = [left, right];
+    else if (above && below) pair = [above, below];
+    if (!pair) continue;
+    const [a, b] = pair;
     const miss = gapMiss(c.b, a.b, b.b);
     if (miss && miss.d > tolerance) {
-      push('connector', c.el, a.el, `sits between ${label(a.el)} and ${label(b.el)} but off the centre of their gap (dx ${r1(miss.dx)}, dy ${r1(miss.dy)}): centre it, declare data-between, or mark it data-free`, miss.d);
+      push(
+        'connector',
+        c.el,
+        a.el,
+        `sits between ${label(a.el)} and ${label(b.el)} but off the centre of their gap (dx ${r1(miss.dx)}, dy ${r1(miss.dy)}): centre it, declare data-between, or mark it data-free`,
+        miss.d
+      );
     }
   }
   return findings;

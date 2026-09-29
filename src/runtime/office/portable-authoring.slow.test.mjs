@@ -824,7 +824,7 @@ test('a chart over a row of periods read by columns is refused with the reading 
 
 // plotBy:'rows' reads one block; Excel took two comma-joined areas and drew a chart with no series while the portable
 // writer refused them. The operation contract refuses the shape before either backend draws it.
-test("a chart read by rows over comma-joined areas is refused before any backend draws it", () => {
+test('a chart read by rows over comma-joined areas is refused before any backend draws it', () => {
   assert.throws(
     () =>
       validateXlsxOperations([
@@ -833,7 +833,9 @@ test("a chart read by rows over comma-joined areas is refused before any backend
     /plotBy:'rows' requires one bounded range/
   );
   assert.doesNotThrow(() =>
-    validateXlsxOperations([{ op: 'add_chart', range: "'Model'!A3:G7", plotBy: 'rows', chartType: 'column', cell: 'A8' }])
+    validateXlsxOperations([
+      { op: 'add_chart', range: "'Model'!A3:G7", plotBy: 'rows', chartType: 'column', cell: 'A8' },
+    ])
   );
 });
 
@@ -1215,7 +1217,21 @@ test('an ISO date written to a sheet is the date Excel would type, under yyyy-mm
 test('a figure written as text is the number Excel would type, under its format, and any other text stays as written', async (t) => {
   const cwd = await workspace(t);
   const book = join(cwd, 'figures.xlsx');
-  const texts = ['1', '1,234', '12,345.6', '15%', '12.5%', '-500000', '.5', '007', '1-2', '1/2', '1e3', '(100)', 'TRUE'];
+  const texts = [
+    '1',
+    '1,234',
+    '12,345.6',
+    '15%',
+    '12.5%',
+    '-500000',
+    '.5',
+    '007',
+    '1-2',
+    '1/2',
+    '1e3',
+    '(100)',
+    'TRUE',
+  ];
   const created = value(
     await executeOfficeTool(
       {
@@ -1794,7 +1810,10 @@ test('portable Word tables gain and drop rows and columns', async (t) => {
     { cwd }
   );
   assert.equal(past.isError, true);
-  assert.match(past.content[0].text, /DOCX table 1 is 3×4, so it has no column 6: insert_table_column column is the position the new column takes, 1 to 5/);
+  assert.match(
+    past.content[0].text,
+    /DOCX table 1 is 3×4, so it has no column 6: insert_table_column column is the position the new column takes, 1 to 5/
+  );
 
   // bold:false turns a copied bold back to regular, as the Word backend's Font.Bold = 0 does; it had changed nothing.
   value(
@@ -2614,13 +2633,22 @@ test('a section keeps its properties in the order the schema fixes', async (t) =
   );
   const order = ['headerReference', 'type', 'pgSz', 'pgMar', 'pgNumType', 'cols', 'titlePg', 'docGrid'];
   const rank = (name) => order.indexOf(name === 'footerReference' ? 'headerReference' : name);
-  const sections = [...(await (await parts(target)).text('word/document.xml')).matchAll(/<w:sectPr\b[^>]*>([\s\S]*?)<\/w:sectPr>/g)];
+  const sections = [
+    ...(await (await parts(target)).text('word/document.xml')).matchAll(/<w:sectPr\b[^>]*>([\s\S]*?)<\/w:sectPr>/g),
+  ];
   assert.equal(sections.length, 2);
   for (const [, inner] of sections) {
     const names = [...inner.matchAll(/<w:(\w+)\b/g)].map((match) => match[1]);
     assert.ok(names.includes('titlePg') && names.includes('cols'), inner);
-    assert.ok(names.every((name) => rank(name) >= 0), `a child outside the expected set: ${names}`);
-    assert.deepEqual(names, [...names].sort((a, b) => rank(a) - rank(b)), `the children stand in schema order: ${names}`);
+    assert.ok(
+      names.every((name) => rank(name) >= 0),
+      `a child outside the expected set: ${names}`
+    );
+    assert.deepEqual(
+      names,
+      [...names].sort((a, b) => rank(a) - rank(b)),
+      `the children stand in schema order: ${names}`
+    );
   }
   value(await executeOfficeTool({ action: 'close', session: created.session }, { cwd }));
 });
@@ -5151,7 +5179,13 @@ test('portable set_table_data rewrites an existing table in place', async (t) =>
             shape: 1,
             row: 2,
             column: 2,
-            properties: { fillColor: 'F5ECD9', color: '8A5A00', bold: true, horizontalAlignment: 'center', verticalAlignment: 'bottom' },
+            properties: {
+              fillColor: 'F5ECD9',
+              color: '8A5A00',
+              bold: true,
+              horizontalAlignment: 'center',
+              verticalAlignment: 'bottom',
+            },
           },
         ],
       },
@@ -5160,17 +5194,30 @@ test('portable set_table_data rewrites an existing table in place', async (t) =>
   ).results[0];
   assert.deepEqual([styled.changed, styled.row, styled.col], [true, 2, 2]);
   const restyled = await (await parts(target)).text('ppt/slides/slide1.xml');
-  const cell = [...[...restyled.matchAll(/<a:tr\b[\s\S]*?<\/a:tr>/g)][1][0].matchAll(/<a:tc\b[\s\S]*?<\/a:tc>/g)].map((match) => match[0]);
-  assert.match(cell[1], /<a:tcPr\b[^>]*\banchor="b"[^>]*>[\s\S]*<a:solidFill><a:srgbClr val="F5ECD9"(?:\/>|><\/a:srgbClr>)<\/a:solidFill>/);
+  const cell = [...[...restyled.matchAll(/<a:tr\b[\s\S]*?<\/a:tr>/g)][1][0].matchAll(/<a:tc\b[\s\S]*?<\/a:tc>/g)].map(
+    (match) => match[0]
+  );
+  assert.match(
+    cell[1],
+    /<a:tcPr\b[^>]*\banchor="b"[^>]*>[\s\S]*<a:solidFill><a:srgbClr val="F5ECD9"(?:\/>|><\/a:srgbClr>)<\/a:solidFill>/
+  );
   assert.match(cell[1], /<a:rPr\b[^>]*\bb="1"[^>]*>[\s\S]*?<a:srgbClr val="8A5A00"[\s\S]*?95/);
   assert.match(cell[1], /<a:pPr\b[^>]*\balgn="ctr"/);
   assert.doesNotMatch(cell[1], /<a:bodyPr\b[^>]*\banchor="(?!b")/, 'the text frame anchors where the cell does');
   // Each border keeps the fill it had: a hidden border cleared of its noFill is a black line round the cell.
-  const borders = (xml) => [...xml.matchAll(/<a:ln[LRTB]\b[\s\S]*?<\/a:ln[LRTB]>|<a:ln[LRTB]\b[^>]*\/>/g)].map((match) => match[0]);
-  assert.deepEqual(borders(cell[1]), borders([...[...slide.matchAll(/<a:tr\b[\s\S]*?<\/a:tr>/g)][1][0].matchAll(/<a:tc\b[\s\S]*?<\/a:tc>/g)][1][0]));
+  const borders = (xml) =>
+    [...xml.matchAll(/<a:ln[LRTB]\b[\s\S]*?<\/a:ln[LRTB]>|<a:ln[LRTB]\b[^>]*\/>/g)].map((match) => match[0]);
+  assert.deepEqual(
+    borders(cell[1]),
+    borders([...[...slide.matchAll(/<a:tr\b[\s\S]*?<\/a:tr>/g)][1][0].matchAll(/<a:tc\b[\s\S]*?<\/a:tc>/g)][1][0])
+  );
   assert.doesNotMatch(cell[0], /F5ECD9|8A5A00/);
   const outside = await executeOfficeTool(
-    { action: 'batch', session: created.session, operations: [{ op: 'set_table_cell_style', slide: 1, shape: 1, row: 3, col: 1, properties: { bold: true } }] },
+    {
+      action: 'batch',
+      session: created.session,
+      operations: [{ op: 'set_table_cell_style', slide: 1, shape: 1, row: 3, col: 1, properties: { bold: true } }],
+    },
     { cwd }
   );
   assert.equal(outside.isError, true);

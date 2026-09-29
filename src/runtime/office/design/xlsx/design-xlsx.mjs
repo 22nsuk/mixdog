@@ -440,10 +440,14 @@ const TABLE_AGGREGATES = {
 };
 function measuredMetric(metric, layout) {
   if (typeof metric?.value === 'number') return metric;
-  const match = /^=\s*(SUM|AVERAGE|MAX|MIN|COUNT)\s*\(\s*[^[\]()]*\[([^\]]+)\]\s*\)\s*$/i.exec(String(metric?.formula || ''));
+  const match = /^=\s*(SUM|AVERAGE|MAX|MIN|COUNT)\s*\(\s*[^[\]()]*\[([^\]]+)\]\s*\)\s*$/i.exec(
+    String(metric?.formula || '')
+  );
   const column = match ? layout.headers.indexOf(match[2].trim()) : -1;
   if (column < 0) return metric;
-  const values = layout.rows.map((row) => Number(Array.isArray(row) ? row[column] : Number.NaN)).filter(Number.isFinite);
+  const values = layout.rows
+    .map((row) => Number(Array.isArray(row) ? row[column] : Number.NaN))
+    .filter(Number.isFinite);
   return values.length ? { ...metric, value: TABLE_AGGREGATES[match[1].toUpperCase()](values) } : metric;
 }
 

@@ -1,5 +1,4 @@
-import { createHash } from 'node:crypto';
-import { plainObject, stableValue } from '../shared/values.mjs';
+import { plainObject, sha256, stableValue } from '../shared/values.mjs';
 import { composeTableRows } from './design-table-input.mjs';
 
 const PURPOSES = new Set(['monitor', 'decide', 'compare', 'explain', 'inspect']);
@@ -196,11 +195,7 @@ const PPTX_VARIANTS = Object.freeze({
   ]),
 });
 
-function sha256(value) {
-  return createHash('sha256')
-    .update(JSON.stringify(stableValue(value)))
-    .digest('hex');
-}
+const fingerprintOf = (value) => sha256(JSON.stringify(stableValue(value)));
 
 function bucket(value, boundaries = [0, 1, 3, 8]) {
   const count = Math.max(0, Number(value) || 0);
@@ -348,7 +343,7 @@ function recentPenalty(context, candidateId) {
 }
 
 function stableTie(seed, id) {
-  return Number.parseInt(sha256(`${seed}\0${id}`).slice(0, 8), 16) / 0xffffffff;
+  return Number.parseInt(fingerprintOf(`${seed}\0${id}`).slice(0, 8), 16) / 0xffffffff;
 }
 
 function selectCandidate(
@@ -422,7 +417,7 @@ export function planOfficeComposition(format, operation = {}, design = {}, { usa
             ].map((value) => Math.round(Number(value) || 0)),
         direction: String(region?.direction || region?.layout || ''),
       }));
-      const fingerprint = sha256({
+      const fingerprint = fingerprintOf({
         kind,
         units: String(operation.plan.units || 'percent'),
         regions: regionSignature,
@@ -535,7 +530,7 @@ export function summarizeOfficeCompositions(format, compositions = []) {
   }
   return {
     format: normalizedFormat,
-    fingerprint: sha256({ format: normalizedFormat, sequence: normalized }),
+    fingerprint: fingerprintOf({ format: normalizedFormat, sequence: normalized }),
     compositionIds: normalized.map((entry) => entry.id),
     count: normalized.length,
   };

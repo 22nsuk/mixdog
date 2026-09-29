@@ -309,7 +309,14 @@ function officeDesignDigest(design) {
 // a count per operation. A write that did not change, or reports anything past
 // its address, stays in place, as does every object a later call names (a
 // table, a chart).
-const PRESET_ROUTINE_OPS = new Set(['append_text', 'set_table_cell_style', 'set_style', 'merge_cells', 'set_cell', 'set_row_height']);
+const PRESET_ROUTINE_OPS = new Set([
+  'append_text',
+  'set_table_cell_style',
+  'set_style',
+  'merge_cells',
+  'set_cell',
+  'set_row_height',
+]);
 const PRESET_ROUTINE_FIELDS = new Set(['op', 'changed', 'style', 'table', 'row', 'col', 'sheet', 'cell', 'range']);
 function presetResults(results, semantic) {
   if (!Array.isArray(semantic) || !semantic.length) return results;
@@ -410,7 +417,13 @@ function modelFacingQaResult(result, topVisualReview, { finalized = false } = {}
       ...review.checklist,
       items: review.checklist.items.filter((item) => item?.status !== 'pass' && !renderOwed(item)),
       ...(dropped && summary
-        ? { summary: { ...summary, total: summary.total - dropped, failed: Math.max(0, (summary.failed || 0) - dropped) } }
+        ? {
+            summary: {
+              ...summary,
+              total: summary.total - dropped,
+              failed: Math.max(0, (summary.failed || 0) - dropped),
+            },
+          }
         : {}),
     };
   }
@@ -480,7 +493,12 @@ function finalizeValidationDigest(validation, result, session = null) {
   for (const key of ['format', 'entries', 'mainPart', 'mainContentType', 'validation']) delete digest[key];
   if (digest.mainContentTypeMissing === false) delete digest.mainContentTypeMissing;
   const security = digest.security;
-  if (security && security.macroExecution === 'disabled' && !security.digitalSignatureInvalidated && Object.keys(security).length <= 2) {
+  if (
+    security &&
+    security.macroExecution === 'disabled' &&
+    !security.digitalSignatureInvalidated &&
+    Object.keys(security).length <= 2
+  ) {
     delete digest.security;
   }
   for (const [check, detail] of Object.entries(PASSED_CHECK_DETAIL)) {
@@ -530,7 +548,13 @@ const bgrHex = (value) =>
     .join('')
     .toUpperCase();
 
-const POWERPOINT_TEXT_FRAME = { marginLeft: 7.2, marginTop: 3.6, marginRight: 7.2, marginBottom: 3.6, paragraphSpacing: 0 };
+const POWERPOINT_TEXT_FRAME = {
+  marginLeft: 7.2,
+  marginTop: 3.6,
+  marginRight: 7.2,
+  marginBottom: 3.6,
+  paragraphSpacing: 0,
+};
 
 // Excel's chart kinds by the name the portable reader and add_chart use; a kind outside this list keeps its number.
 const EXCEL_CHART_TYPES = {
@@ -550,10 +574,18 @@ const EXCEL_CHART_TYPES = {
   15: 'bubble',
   '-4151': 'radar',
 };
-const chartTypeName = (value) => (typeof value === 'number' && EXCEL_CHART_TYPES[value] ? EXCEL_CHART_TYPES[value] : value);
+const chartTypeName = (value) =>
+  typeof value === 'number' && EXCEL_CHART_TYPES[value] ? EXCEL_CHART_TYPES[value] : value;
 
 // A series on the primary axis with no name formula, trendline, error bars, or labels says so by omission.
-const QUIET_SERIES = { formula: '', axisGroup: 1, trendlineCount: 0, hasErrorBars: false, hasDataLabels: false, dataLabels: null };
+const QUIET_SERIES = {
+  formula: '',
+  axisGroup: 1,
+  trendlineCount: 0,
+  hasErrorBars: false,
+  hasDataLabels: false,
+  dataLabels: null,
+};
 
 function comSeriesDigest(entry) {
   const kept = Object.fromEntries(
@@ -561,6 +593,9 @@ function comSeriesDigest(entry) {
   );
   return { ...kept, ...(entry.chartType !== undefined ? { chartType: chartTypeName(entry.chartType) } : {}) };
 }
+
+// A digest step applied to the object entries of a list; anything else passes through.
+const digestObjectWith = (digestEntry) => (entry) => (entry && typeof entry === 'object' ? digestEntry(entry) : entry);
 
 function comShapeDigest(shape) {
   const digest = {};
@@ -575,13 +610,9 @@ function comShapeDigest(shape) {
     if (digest.font && !digest.font.name && !Number(digest.font.size)) delete digest.font;
   }
   if (digest.chart && typeof digest.chart === 'object') {
-    digest.chart = {
-      ...digest.chart,
-      chartType: chartTypeName(digest.chart.chartType),
-      ...(Array.isArray(digest.chart.series)
-        ? { series: digest.chart.series.map((entry) => (entry && typeof entry === 'object' ? comSeriesDigest(entry) : entry)) }
-        : {}),
-    };
+    const chart = { ...digest.chart, chartType: chartTypeName(digest.chart.chartType) };
+    if (Array.isArray(digest.chart.series)) chart.series = digest.chart.series.map(digestObjectWith(comSeriesDigest));
+    digest.chart = chart;
   }
   for (const key of ['textBounds', 'textFrame']) {
     if (digest[key] && typeof digest[key] === 'object') digest[key] = roundAll(digest[key]);
@@ -607,14 +638,18 @@ function comShapeDigest(shape) {
   if (digest.geometry === '') delete digest.geometry;
   if (digest.textFrame && typeof digest.textFrame === 'object') {
     const frame = Object.fromEntries(
-      Object.entries(digest.textFrame).filter(([key, value]) => !(Object.hasOwn(POWERPOINT_TEXT_FRAME, key) && POWERPOINT_TEXT_FRAME[key] === value))
+      Object.entries(digest.textFrame).filter(
+        ([key, value]) => !(Object.hasOwn(POWERPOINT_TEXT_FRAME, key) && POWERPOINT_TEXT_FRAME[key] === value)
+      )
     );
     if (Object.keys(frame).length) digest.textFrame = frame;
     else delete digest.textFrame;
   }
   if (digest.font && typeof digest.font === 'object') {
     const font = Object.fromEntries(
-      Object.entries(digest.font).filter(([key, value]) => !(['bold', 'italic', 'underline'].includes(key) && (value === 0 || value === false)))
+      Object.entries(digest.font).filter(
+        ([key, value]) => !(['bold', 'italic', 'underline'].includes(key) && (value === 0 || value === false))
+      )
     );
     digest.font = font;
   }
@@ -662,11 +697,9 @@ function pptxDocumentDigest(document) {
   if (document?.format !== 'pptx' || !Array.isArray(document.slides)) return document;
   // add_slide names a layout by its name or position; the part it lives in and a path built from that same
   // position repeat what the runtime resolves itself, on every one of a template's dozens of layouts.
-  const layouts = Array.isArray(document.layouts)
-    ? document.layouts.map((layout, position) =>
-        layout && typeof layout === 'object' ? { index: layout.index ?? position + 1, name: layout.name } : layout
-      )
-    : document.layouts;
+  const layoutDigest = (layout, position) =>
+    layout && typeof layout === 'object' ? { index: layout.index ?? position + 1, name: layout.name } : layout;
+  const layouts = Array.isArray(document.layouts) ? document.layouts.map(layoutDigest) : document.layouts;
   return {
     ...document,
     ...(layouts ? { layouts } : {}),
@@ -699,12 +732,11 @@ export function officeDocumentDigest(document) {
 // A delimited file's cell names its place twice: the reference already says the row and the column.
 function tabularDocumentDigest(document) {
   if (!Array.isArray(document.sheets)) return document;
+  const cellDigest = digestObjectWith(({ row, column, ...rest }) => rest);
   return {
     ...document,
     sheets: document.sheets.map((sheet) =>
-      Array.isArray(sheet?.cells)
-        ? { ...sheet, cells: sheet.cells.map((cell) => (cell && typeof cell === 'object' ? (({ row, column, ...rest }) => rest)(cell) : cell)) }
-        : sheet
+      Array.isArray(sheet?.cells) ? { ...sheet, cells: sheet.cells.map(cellDigest) } : sheet
     ),
   };
 }
@@ -730,7 +762,8 @@ function xlsxSheetDigest(sheet, defaults) {
   if (digest.pageSetup && typeof digest.pageSetup === 'object') {
     const setup = Object.fromEntries(
       Object.entries(digest.pageSetup).filter(
-        ([key, entry]) => entry !== '' && entry !== false && !(Object.hasOwn(QUIET_PAGE_SETUP, key) && QUIET_PAGE_SETUP[key] === entry)
+        ([key, entry]) =>
+          entry !== '' && entry !== false && !(Object.hasOwn(QUIET_PAGE_SETUP, key) && QUIET_PAGE_SETUP[key] === entry)
       )
     );
     if (Object.keys(setup).length) digest.pageSetup = setup;
@@ -743,7 +776,9 @@ function xlsxSheetDigest(sheet, defaults) {
     digest.formulaLineage = digest.formulaLineage.map((entry) => {
       const cell = /\/cell\[([^\]]+)\]$/.exec(String(entry?.from || ''))?.[1] || entry?.from;
       const precedents = (entry?.precedents || []).map((precedent) =>
-        precedent?.sheet && precedent.sheet !== sheet.name ? `${precedent.sheet}!${precedent.ref}` : precedent?.ref ?? precedent
+        precedent?.sheet && precedent.sheet !== sheet.name
+          ? `${precedent.sheet}!${precedent.ref}`
+          : (precedent?.ref ?? precedent)
       );
       return { cell, precedents };
     });
@@ -783,7 +818,8 @@ function xlsxDocumentDigest(document) {
     delete digest.definedNames;
     if (digest.definedNameCount === 0) delete digest.definedNameCount;
   }
-  if (plainObject(digest.calculation) && Object.values(digest.calculation).every((value) => !value)) delete digest.calculation;
+  if (plainObject(digest.calculation) && Object.values(digest.calculation).every((value) => !value))
+    delete digest.calculation;
   return digest;
 }
 
@@ -815,13 +851,17 @@ const roundPoint = (field) => (typeof field === 'number' ? Math.round(field * 10
 function pdfDocumentDigest(document) {
   if (document?.format !== 'pdf') return document;
   const digest = withoutPdfDefaults(document);
-  for (const key of Object.keys(digest)) if (/Count$/.test(key) && key !== 'pageCount' && digest[key] === 0) delete digest[key];
+  for (const key of Object.keys(digest))
+    if (/Count$/.test(key) && key !== 'pageCount' && digest[key] === 0) delete digest[key];
   if (digest.metadata && typeof digest.metadata === 'object') {
-    const metadata = Object.fromEntries(Object.entries(digest.metadata).filter(([, field]) => field !== '' && field != null));
+    const metadata = Object.fromEntries(
+      Object.entries(digest.metadata).filter(([, field]) => field !== '' && field != null)
+    );
     if (Object.keys(metadata).length) digest.metadata = metadata;
     else delete digest.metadata;
   }
-  if (digest.pagination && digest.pagination.hasMore !== true && !(Number(digest.pagination.offset) > 0)) delete digest.pagination;
+  if (digest.pagination && digest.pagination.hasMore !== true && !(Number(digest.pagination.offset) > 0))
+    delete digest.pagination;
   if (Array.isArray(digest.pages)) {
     digest.pages = digest.pages.map((page) => {
       const { rotation, width, height, ...rest } = page || {};
@@ -853,7 +893,9 @@ function quietParagraph(raw) {
   if (paragraph.pageEnd !== undefined && paragraph.pageEnd === paragraph.pageStart) delete paragraph.pageEnd;
   if (paragraph.font && typeof paragraph.font === 'object') {
     paragraph.font = Object.fromEntries(
-      Object.entries(paragraph.font).filter(([key, value]) => !(Object.hasOwn(QUIET_PARAGRAPH_FONT, key) && QUIET_PARAGRAPH_FONT[key] === value))
+      Object.entries(paragraph.font).filter(
+        ([key, value]) => !(Object.hasOwn(QUIET_PARAGRAPH_FONT, key) && QUIET_PARAGRAPH_FONT[key] === value)
+      )
     );
     if (!Object.keys(paragraph.font).length) delete paragraph.font;
   }
@@ -915,11 +957,18 @@ function docxDocumentDigest(document) {
   const parts = Array.isArray(document.parts)
     ? document.parts.filter(
         (part) =>
-          !(complete && part?.part === 'word/document.xml' && paragraphs.length && Object.keys(part).every((key) => key === 'part' || key === 'text'))
+          !(
+            complete &&
+            part?.part === 'word/document.xml' &&
+            paragraphs.length &&
+            Object.keys(part).every((key) => key === 'part' || key === 'text')
+          )
       )
     : document.parts;
   // A family the counts already call empty (comments, revisions, notes, controls, images) reads the same absent.
-  const digest = Object.fromEntries(Object.entries(document).filter(([, value]) => !(Array.isArray(value) && !value.length)));
+  const digest = Object.fromEntries(
+    Object.entries(document).filter(([, value]) => !(Array.isArray(value) && !value.length))
+  );
   // Word (COM) places a table by character offsets and reports its left alignment as 0; a comment that is open and
   // unanswered says so by omission, as the portable reader writes it.
   if (Array.isArray(digest.tables)) {
@@ -970,7 +1019,8 @@ function docxDocumentDigest(document) {
       return rest;
     });
   }
-  if (Array.isArray(document.blockOrder) && document.blockOrder.length) digest.blockOrder = blockOrderDigest(document.blockOrder);
+  if (Array.isArray(document.blockOrder) && document.blockOrder.length)
+    digest.blockOrder = blockOrderDigest(document.blockOrder);
   if (!parts?.length) delete digest.parts;
   return { ...digest, paragraphs, ...(parts?.length ? { parts } : {}) };
 }
@@ -1023,7 +1073,8 @@ export function finalizeOfficeResult(value, { action, session = null, startedAt 
   if (finalizing && value.review) {
     value.review = modelFacingQaResult(value.review, value.visualReview, { finalized: value.finalized === true });
     const inner = value.review.review;
-    if (inner?.design) value.review = { ...value.review, review: { ...inner, design: modelReviewOnce(inner.design, session) } };
+    if (inner?.design)
+      value.review = { ...value.review, review: { ...inner, design: modelReviewOnce(inner.design, session) } };
   }
   if (finalizing) {
     // The reopened file's full shape inventory proves persistence, which its
@@ -1092,8 +1143,11 @@ export function finalizeOfficeResult(value, { action, session = null, startedAt 
   }
   // An operation's result names what it did; an empty string field says nothing.
   const withoutBlank = (entry) =>
-    entry && typeof entry === 'object' ? Object.fromEntries(Object.entries(entry).filter(([, field]) => field !== '')) : entry;
-  if (Array.isArray(value.results)) value.results = presetResults(value.results.map(withoutBlank), value.semanticOperations);
+    entry && typeof entry === 'object'
+      ? Object.fromEntries(Object.entries(entry).filter(([, field]) => field !== ''))
+      : entry;
+  if (Array.isArray(value.results))
+    value.results = presetResults(value.results.map(withoutBlank), value.semanticOperations);
   if (Array.isArray(value.batch?.results)) {
     value.batch = {
       ...value.batch,
@@ -1110,6 +1164,12 @@ export function finalizeOfficeResult(value, { action, session = null, startedAt 
     value.factsMode = 'sample';
     value.disclosure = FACTS_SAMPLE_DISCLOSURE;
   }
+  attachOfficeArtifacts(value, action, session);
+  return value;
+}
+
+// The file an action produced or edited, named as an artifact of the result.
+function attachOfficeArtifacts(value, action, session) {
   let operation = '';
   if (action === 'create' || (action === 'author' && value.output)) operation = 'create';
   else if (action === 'render') operation = 'render';
@@ -1117,19 +1177,17 @@ export function finalizeOfficeResult(value, { action, session = null, startedAt 
   let artifactPath = '';
   if (action === 'render' || action === 'secure') artifactPath = value.output;
   else if (operation && session) artifactPath = session.target;
-  if (operation && artifactPath) {
-    value.artifacts = [
-      officeArtifact(
-        session?.format || (action === 'secure' ? 'pdf' : ''),
-        session?.fileKind || (action === 'secure' ? 'pdf' : ''),
-        artifactPath,
-        operation
-      ),
-    ];
-    value.outputCount = value.artifacts.length;
-    value.expectedOutputCount = 1;
-  }
-  return value;
+  if (!operation || !artifactPath) return;
+  value.artifacts = [
+    officeArtifact(
+      session?.format || (action === 'secure' ? 'pdf' : ''),
+      session?.fileKind || (action === 'secure' ? 'pdf' : ''),
+      artifactPath,
+      operation
+    ),
+  ];
+  value.outputCount = value.artifacts.length;
+  value.expectedOutputCount = 1;
 }
 
 export function bounded(value, maxChars, length = null) {

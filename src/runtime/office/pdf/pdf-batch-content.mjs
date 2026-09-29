@@ -161,7 +161,7 @@ async function addLink(state, operation) {
     boxes = await measureTargets(state, request);
   } catch (error) {
     if (!autoUrls || !/found no text matching/.test(String(error?.message || ''))) throw error;
-    throw new Error(`add_link urls:true found no http(s) address in the selected pages; pass find or a box instead`);
+    throw new Error('add_link urls:true found no http(s) address in the selected pages; pass find or a box instead');
   }
   const { document } = state;
   // The destination page is looked up after measuring, on the document the links go into.

@@ -24,11 +24,13 @@ function movedSpan(start, end, move) {
   const { from, amount } = move;
   if (move.insert) {
     const first = start >= from ? start + amount : start;
-    return first > move.limit ? null : [first, Math.min(end >= from ? end + amount : end, move.limit)];
+    if (first > move.limit) return null;
+    return [first, Math.min(end >= from ? end + amount : end, move.limit)];
   }
   const last = from + amount - 1;
-  const first = start < from ? start : start > last ? start - amount : from;
-  const final = end < from ? end : end > last ? end - amount : from - 1;
+  const closedUp = (index, fallback) => (index > last ? index - amount : fallback);
+  const first = start < from ? start : closedUp(start, from);
+  const final = end < from ? end : closedUp(end, from - 1);
   return final < first ? null : [first, final];
 }
 
@@ -44,23 +46,29 @@ function referenceSpan(body, move) {
   const parts = body.split(':');
   const matched = parts.map((part) => REFERENCE_PART.exec(part));
   if (parts.length > 2 || matched.some((match) => !match || (!match[2] && !match[4]))) return null;
-  const indices = matched.map((match) => (move.rows ? match[4] && Number(match[4]) : match[2] && columnNumber(match[2])));
+  const indices = matched.map((match) =>
+    move.rows ? match[4] && Number(match[4]) : match[2] && columnNumber(match[2])
+  );
   if (indices.some((index) => !index)) return null;
   return { parts, indices, start: Math.min(...indices), end: Math.max(...indices) };
 }
 
 /** One reference body (A1, $A$1:B2, 3:5, C:C) moved; null when its cells are all deleted, the same text when unmoved. */
-export function movedReference(body, move) {
+function movedReference(body, move) {
   const span = referenceSpan(body, move);
   if (!span) return body;
   const moved = movedSpan(span.start, span.end, move);
   if (!moved) return null;
   if (moved[0] === span.start && moved[1] === span.end) return body;
   const reversed = span.indices.length === 2 && span.indices[0] > span.indices[1];
-  const values = span.parts.length === 1 ? [moved[0]] : reversed ? [moved[1], moved[0]] : moved;
+  let values = moved;
+  if (span.parts.length === 1) values = [moved[0]];
+  else if (reversed) values = [moved[1], moved[0]];
   return span.parts
     .map((part, index) =>
-      move.rows ? part.replace(/\d+$/, String(values[index])) : part.replace(/[A-Za-z]{1,3}/, columnLabel(values[index]))
+      move.rows
+        ? part.replace(/\d+$/, String(values[index]))
+        : part.replace(/[A-Za-z]{1,3}/, columnLabel(values[index]))
     )
     .join(':');
 }
@@ -88,7 +96,9 @@ const sameSheet = (name, sheet) => typeof name === 'string' && name.toLowerCase(
 // A reference token split into the sheet it names ('My Data'!, Data!, or none) and the cells after it.
 function referenceParts(text) {
   const prefix = text.startsWith("'") ? /^'(?:[^']|'')+'!/.exec(text)?.[0] : /^[^!#]+!/.exec(text)?.[0];
-  return prefix ? { sheet: unquoted(prefix.slice(0, -1)), prefix, body: text.slice(prefix.length) } : { sheet: null, prefix: '', body: text };
+  return prefix
+    ? { sheet: unquoted(prefix.slice(0, -1)), prefix, body: text.slice(prefix.length) }
+    : { sheet: null, prefix: '', body: text };
 }
 
 function mentionsSheet(text, sheet) {
@@ -102,7 +112,7 @@ function mentionsSheet(text, sheet) {
  * sheet a cell or rule sits on; none for a workbook name or a chart series.
  * @throws {UnsupportedFormula} when the formula may name the sheet and cannot be read.
  */
-export function movedFormula(formula, home, move) {
+function movedFormula(formula, home, move) {
   const text = String(formula ?? '');
   if (!sameSheet(home, move.sheet) && !mentionsSheet(text, move.sheet)) return text;
   let moved = '';
@@ -167,7 +177,12 @@ function movedCellFormulas(xml, home, own, move, rewrite, refused) {
     if (id === undefined) continue;
     const group = groups.get(id) || { cells: [] };
     group.cells.push(cell.ref);
-    if (element[2]) Object.assign(group, { master: cell.ref, text: xmlDecode(element[2]), block: /\bref="([^"]+)"/.exec(element[1])?.[1] });
+    if (element[2])
+      Object.assign(group, {
+        master: cell.ref,
+        text: xmlDecode(element[2]),
+        block: /\bref="([^"]+)"/.exec(element[1])?.[1],
+      });
     groups.set(id, group);
   }
   const unshared = new Map();
@@ -216,7 +231,8 @@ function movedCellFormulas(xml, home, own, move, rewrite, refused) {
       const text = xmlDecode(element[2] || '');
       const next = element[2] === undefined ? text : rewrite(`${home}!${ref}`, text, home);
       if (next === text && elementAttributes === element[1]) return whole;
-      replacement = element[2] === undefined ? `<f${elementAttributes}/>` : `<f${elementAttributes}>${xmlEncode(next)}</f>`;
+      replacement =
+        element[2] === undefined ? `<f${elementAttributes}/>` : `<f${elementAttributes}>${xmlEncode(next)}</f>`;
     }
     return `<c${attributes}>${body.replace(element[0], () => replacement)}</c>`;
   });
@@ -227,13 +243,14 @@ function movedCellFormulas(xml, home, own, move, rewrite, refused) {
 function movedRuleFormulas(xml, home, rewrite) {
   return xml.replace(/<(formula[12]?|xm:f)>([\s\S]*?)<\/\1>/g, (whole, tag, text) => {
     const decoded = xmlDecode(text);
-    const next = rewrite(`${home} ${tag === 'formula' ? 'conditional format' : tag === 'xm:f' ? 'rule' : 'validation'}`, decoded, home);
+    const kinds = { formula: 'conditional format', 'xm:f': 'rule' };
+    const next = rewrite(`${home} ${kinds[tag] ?? 'validation'}`, decoded, home);
     return next === decoded ? whole : `<${tag}>${xmlEncode(next)}</${tag}>`;
   });
 }
 
 const recounted = (xml, container, child) =>
-  xml.replace(new RegExp(`<${container}\\b([^>]*)>([\\s\\S]*?)<\\/${container}>`), (whole, attributes, body) => {
+  xml.replace(new RegExp(`<${container}\\b([^>]*)>([\\s\\S]*?)<\\/${container}>`), (_whole, attributes, body) => {
     const count = (body.match(new RegExp(`<${child}\\b(?![\\w:])`, 'g')) || []).length;
     if (!count) return '';
     return `<${container}${/\bcount="/.test(attributes) ? setXmlAttribute(attributes, 'count', count) : attributes}>${body}</${container}>`;
@@ -244,13 +261,16 @@ const recounted = (xml, container, child) =>
 function movedSheetRanges(xml, move, refused) {
   let next = xml;
   for (const tag of ['conditionalFormatting', 'dataValidation', 'ignoredError', 'protectedRange']) {
-    next = next.replace(new RegExp(`<${tag}\\b([^>]*?)(\\/>|>[\\s\\S]*?<\\/${tag}>)`, 'g'), (whole, attributes, rest) => {
-      const list = /\bsqref="([^"]*)"/.exec(attributes)?.[1];
-      if (list === undefined) return whole;
-      const moved = movedAreaList(list, move);
-      if (moved === list) return whole;
-      return moved ? `<${tag}${setXmlAttribute(attributes, 'sqref', moved)}${rest}` : '';
-    });
+    next = next.replace(
+      new RegExp(`<${tag}\\b([^>]*?)(\\/>|>[\\s\\S]*?<\\/${tag}>)`, 'g'),
+      (whole, attributes, rest) => {
+        const list = /\bsqref="([^"]*)"/.exec(attributes)?.[1];
+        if (list === undefined) return whole;
+        const moved = movedAreaList(list, move);
+        if (moved === list) return whole;
+        return moved ? `<${tag}${setXmlAttribute(attributes, 'sqref', moved)}${rest}` : '';
+      }
+    );
   }
   next = recounted(next, 'dataValidations', 'dataValidation');
   next = recounted(next, 'ignoredErrors', 'ignoredError');
@@ -290,7 +310,7 @@ function movedSheetRanges(xml, move, refused) {
   });
   // A page break sits above the row (left of the column) its zero-based id names, and moves with it.
   const breaks = move.rows ? 'rowBreaks' : 'colBreaks';
-  next = next.replace(new RegExp(`<${breaks}\\b([^>]*)>([\\s\\S]*?)<\\/${breaks}>`), (whole, attributes, body) => {
+  next = next.replace(new RegExp(`<${breaks}\\b([^>]*)>([\\s\\S]*?)<\\/${breaks}>`), (_whole, attributes, body) => {
     const kept = body.replace(/<brk\b([^>]*?)\/>/g, (brk, brkAttributes) => {
       const id = Number(/\bid="(\d+)"/.exec(brkAttributes)?.[1]);
       const moved = movedIndex(id + 1, move);
@@ -323,20 +343,26 @@ function movedAnchors(drawing, move) {
     const moved = block.replace(indexPattern, `<xdr:${tag}>${index}</xdr:${tag}>`);
     return reset ? moved.replace(offsetPattern, `<xdr:${tag}Off>0</xdr:${tag}Off>`) : moved;
   };
-  return drawing.replace(/<xdr:(oneCellAnchor|twoCellAnchor)\b([^>]*)>([\s\S]*?)<\/xdr:\1>/g, (whole, kind, attributes, body) => {
-    const editAs = kind === 'oneCellAnchor' ? 'oneCell' : /\beditAs="([^"]+)"/.exec(attributes)?.[1] || 'twoCell';
-    const from = /<xdr:from>([\s\S]*?)<\/xdr:from>/.exec(body);
-    if (editAs === 'absolute' || !from) return whole;
-    const start = place(from[1]);
-    let next = body.replace(from[0], () => `<xdr:from>${written(from[1], start.next, start.reset)}</xdr:from>`);
-    const to = kind === 'twoCellAnchor' && /<xdr:to>([\s\S]*?)<\/xdr:to>/.exec(body);
-    if (to) {
-      const end = place(to[1]);
-      const index = editAs === 'oneCell' ? end.index + start.next - start.index : end.next;
-      next = next.replace(to[0], () => `<xdr:to>${written(to[1], index, editAs !== 'oneCell' && end.reset)}</xdr:to>`);
+  return drawing.replace(
+    /<xdr:(oneCellAnchor|twoCellAnchor)\b([^>]*)>([\s\S]*?)<\/xdr:\1>/g,
+    (whole, kind, attributes, body) => {
+      const editAs = kind === 'oneCellAnchor' ? 'oneCell' : /\beditAs="([^"]+)"/.exec(attributes)?.[1] || 'twoCell';
+      const from = /<xdr:from>([\s\S]*?)<\/xdr:from>/.exec(body);
+      if (editAs === 'absolute' || !from) return whole;
+      const start = place(from[1]);
+      let next = body.replace(from[0], () => `<xdr:from>${written(from[1], start.next, start.reset)}</xdr:from>`);
+      const to = kind === 'twoCellAnchor' && /<xdr:to>([\s\S]*?)<\/xdr:to>/.exec(body);
+      if (to) {
+        const end = place(to[1]);
+        const index = editAs === 'oneCell' ? end.index + start.next - start.index : end.next;
+        next = next.replace(
+          to[0],
+          () => `<xdr:to>${written(to[1], index, editAs !== 'oneCell' && end.reset)}</xdr:to>`
+        );
+      }
+      return next === body ? whole : `<xdr:${kind}${attributes}>${next}</xdr:${kind}>`;
     }
-    return next === body ? whole : `<xdr:${kind}${attributes}>${next}</xdr:${kind}>`;
-  });
+  );
 }
 
 // A note's box in the sheet's legacy drawing: its cell (zero-based x:Row and x:Column) and the box's corners (x:Anchor:
@@ -354,7 +380,7 @@ function movedNoteShape(shape, move) {
   const delta = moved - 1 - index;
   return shape
     .replace(pattern, `<x:${tag}>${moved - 1}</x:${tag}>`)
-    .replace(/<x:Anchor>([^<]*)<\/x:Anchor>/, (whole, anchor) => {
+    .replace(/<x:Anchor>([^<]*)<\/x:Anchor>/, (_whole, anchor) => {
       const corners = anchor.split(',').map((value) => value.trim());
       for (const position of move.rows ? [2, 6] : [0, 4]) corners[position] = String(Number(corners[position]) + delta);
       return `<x:Anchor>${corners.join(', ')}</x:Anchor>`;
@@ -384,11 +410,19 @@ export function inheritedRows(xml, from, amount) {
 function inheritedColumns(xml, from, amount) {
   if (from <= 1) return xml;
   const left = columnLabel(from - 1);
-  return xml.replace(new RegExp(`<c\\b([^>]*?\\br="${left}(\\d+)"[^>]*?)(\\/>|>[\\s\\S]*?<\\/c>)`, 'g'), (whole, attributes, row) => {
-    const style = /\bs="(\d+)"/.exec(attributes)?.[1];
-    if (!style || style === '0') return whole;
-    return whole + Array.from({ length: amount }, (_, offset) => `<c r="${columnLabel(from + offset)}${row}" s="${style}"/>`).join('');
-  });
+  return xml.replace(
+    new RegExp(`<c\\b([^>]*?\\br="${left}(\\d+)"[^>]*?)(\\/>|>[\\s\\S]*?<\\/c>)`, 'g'),
+    (whole, attributes, row) => {
+      const style = /\bs="(\d+)"/.exec(attributes)?.[1];
+      if (!style || style === '0') return whole;
+      return (
+        whole +
+        Array.from({ length: amount }, (_, offset) => `<c r="${columnLabel(from + offset)}${row}" s="${style}"/>`).join(
+          ''
+        )
+      );
+    }
+  );
 }
 
 // Column widths follow their columns; the columns an insert adds join the span of the column on their left.
@@ -400,7 +434,8 @@ function movedColumnWidths(xml, move) {
       if (!min || !max) return whole;
       let span;
       if (!move.insert) span = movedSpan(min, max, move);
-      else if (min >= move.from) span = min + move.amount > move.limit ? null : [min + move.amount, Math.min(max + move.amount, move.limit)];
+      else if (min >= move.from)
+        span = min + move.amount > move.limit ? null : [min + move.amount, Math.min(max + move.amount, move.limit)];
       else span = [min, max >= move.from - 1 ? Math.min(max + move.amount, move.limit) : max];
       if (!span) return '';
       if (span[0] === min && span[1] === max) return whole;
@@ -436,10 +471,13 @@ async function rewriteNamesAndCharts(zip, sheets, rewrite, writes) {
 // The pivot caches that read one sheet, as [part, its XML, the worksheetSource match].
 async function pivotSources(zip, sheetName) {
   const found = [];
-  for (const part of Object.keys(zip.files).filter((entry) => /^xl\/pivotCache\/pivotCacheDefinition\d+\.xml$/i.test(entry))) {
+  for (const part of Object.keys(zip.files).filter((entry) =>
+    /^xl\/pivotCache\/pivotCacheDefinition\d+\.xml$/i.test(entry)
+  )) {
     const cache = (await zipText(zip, part)) || '';
     const source = /<worksheetSource\b([^>]*?)\/>/.exec(cache);
-    if (source && sameSheet(xmlDecode(/\bsheet="([^"]+)"/.exec(source[1])?.[1] || ''), sheetName)) found.push([part, cache, source]);
+    if (source && sameSheet(xmlDecode(/\bsheet="([^"]+)"/.exec(source[1])?.[1] || ''), sheetName))
+      found.push([part, cache, source]);
   }
   return found;
 }
@@ -453,7 +491,9 @@ function renamedCellFormulas(xml, home, rewrite) {
     if (!element) return whole;
     const text = xmlDecode(element[2]);
     const next = rewrite(`${home}!${ref}`, text, home);
-    return next === text ? whole : `<c${attributes}>${body.replace(element[0], () => `<f${element[1]}>${xmlEncode(next)}</f>`)}</c>`;
+    return next === text
+      ? whole
+      : `<c${attributes}>${body.replace(element[0], () => `<f${element[1]}>${xmlEncode(next)}</f>`)}</c>`;
   });
 }
 
@@ -490,7 +530,10 @@ export async function renameSheetReferences(zip, sheets, sheet, to, op) {
   await rewriteNamesAndCharts(zip, sheets, rewrite, writes);
   if (to != null) {
     for (const [part, cache, source] of await pivotSources(zip, sheet.name)) {
-      writes.set(part, cache.replace(source[0], () => `<worksheetSource${setXmlAttribute(source[1], 'sheet', xmlEncode(to))}/>`));
+      writes.set(
+        part,
+        cache.replace(source[0], () => `<worksheetSource${setXmlAttribute(source[1], 'sheet', xmlEncode(to))}/>`)
+      );
     }
   }
   if (refused.length) {
@@ -534,7 +577,8 @@ export function copiedSheetXml(xml, source, name) {
 
 // The relationships a sheet owns outright, which a copy needs its own of: two sheets drawing through one drawing part
 // is a package Excel will not open. Pictures, printer settings and pivot caches stay shared.
-const OWNED_RELATIONSHIP = /\/(?:drawing|chart|chartUserShapes|comments|vmlDrawing|chartStyle|chartColorStyle|pivotTable)$/;
+const OWNED_RELATIONSHIP =
+  /\/(?:drawing|chart|chartUserShapes|comments|vmlDrawing|chartStyle|chartColorStyle|pivotTable)$/;
 
 async function freePartName(zip, part) {
   const [, stem, extension] = /^(.*?)\d*(\.\w+)$/.exec(part);
@@ -548,8 +592,14 @@ async function duplicateOwnedPart(zip, part, rewriteChart) {
   const content = (await zipText(zip, part)) || '';
   zip.file(copy, /^xl\/charts\/chart\d+\.xml$/i.test(part) ? rewriteChart(content) : content);
   const types = (await zipText(zip, '[Content_Types].xml')) || '';
-  const override = new RegExp(`<Override\\b[^>]*\\bPartName="/${part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"[^>]*\\bContentType="([^"]+)"`).exec(types);
-  if (override) zip.file('[Content_Types].xml', types.replace('</Types>', `<Override PartName="/${copy}" ContentType="${override[1]}"/></Types>`));
+  const override = new RegExp(
+    `<Override\\b[^>]*\\bPartName="/${part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"[^>]*\\bContentType="([^"]+)"`
+  ).exec(types);
+  if (override)
+    zip.file(
+      '[Content_Types].xml',
+      types.replace('</Types>', `<Override PartName="/${copy}" ContentType="${override[1]}"/></Types>`)
+    );
   await duplicateOwnedRelationships(zip, part, copy, rewriteChart);
   return copy;
 }
@@ -592,7 +642,10 @@ export async function copySheetParts(zip, sheets, source, copy) {
     }
   };
   const rewriteChart = (xml) =>
-    xml.replace(/<(c|c15):f>([\s\S]*?)<\/\1:f>/g, (whole, tag, text) => `<${tag}:f>${xmlEncode(repoint(xmlDecode(text)))}</${tag}:f>`);
+    xml.replace(
+      /<(c|c15):f>([\s\S]*?)<\/\1:f>/g,
+      (_whole, tag, text) => `<${tag}:f>${xmlEncode(repoint(xmlDecode(text)))}</${tag}:f>`
+    );
   await duplicateOwnedRelationships(zip, source.path, copy.path, rewriteChart, /\/table$/);
   const workbookPath = 'xl/workbook.xml';
   const workbook = (await zipText(zip, workbookPath)) || '';
@@ -604,7 +657,9 @@ export async function copySheetParts(zip, sheets, source, copy) {
     const text = xmlDecode(body);
     const repointed = repoint(text);
     if (local === undefined && repointed === text) continue;
-    added.push(`<definedName${setXmlAttribute(attributes, 'localSheetId', sheets.length)}>${xmlEncode(repointed)}</definedName>`);
+    added.push(
+      `<definedName${setXmlAttribute(attributes, 'localSheetId', sheets.length)}>${xmlEncode(repointed)}</definedName>`
+    );
   }
   if (added.length) zip.file(workbookPath, workbook.replace('</definedNames>', `${added.join('')}</definedNames>`));
 }
@@ -619,7 +674,81 @@ export async function dropCalculationChain(zip) {
   const rels = await zipText(zip, relsPath);
   if (rels) zip.file(relsPath, rels.replace(/<Relationship\b[^>]*\bType="[^"]*\/calcChain"[^>]*\/>/g, ''));
   const types = await zipText(zip, '[Content_Types].xml');
-  if (types) zip.file('[Content_Types].xml', types.replace(/<Override\b[^>]*\bPartName="\/xl\/calcChain\.xml"[^>]*\/>/, ''));
+  if (types)
+    zip.file('[Content_Types].xml', types.replace(/<Override\b[^>]*\bPartName="\/xl\/calcChain\.xml"[^>]*\/>/, ''));
+}
+
+// The sheet's tables: a table the edit moves whole follows it, one it would cut or empty is refused.
+async function moveTableParts(zip, relationships, sheet, move, writes, refused) {
+  const { rows, insert } = move;
+  for (const part of relationshipTargetsByType(relationships, sheet.path, 'table').values()) {
+    const table = (await zipText(zip, part)) || '';
+    const ref = /<table\b[^>]*?\bref="([^"]+)"/.exec(table)?.[1];
+    const moved = ref && movedReference(ref, move);
+    if (!ref || moved === ref) continue;
+    const name = xmlDecode(/<table\b[^>]*?\bdisplayName="([^"]+)"/.exec(table)?.[1] || 'table');
+    const header = referenceSpan(ref, move).start;
+    if (!moved || (!rows && cutsThrough(ref, move))) {
+      refused.push(`table ${name} ${ref} (its ${rows ? 'rows' : 'columns'} would change; Excel rebuilds the table)`);
+      continue;
+    }
+    if (
+      rows &&
+      !insert &&
+      (movedIndex(header, move) === null || referenceSpan(moved, move).start === referenceSpan(moved, move).end)
+    ) {
+      refused.push(`table ${name} ${ref} (the edit deletes its header or every data row)`);
+      continue;
+    }
+    writes.set(
+      part,
+      table.replace(
+        /(<(?:table|autoFilter)\b[^>]*?\bref=")([^"]+)"/g,
+        (_whole, lead, area) => `${lead}${movedReference(area, move) || area}"`
+      )
+    );
+  }
+}
+
+// The sheet's pivot tables, notes (with their legacy boxes) and drawings, each moved with the cells it sits on.
+async function moveOwnedSheetParts(zip, relationships, sheet, move, writes, refused) {
+  for (const part of relationshipTargetsByType(relationships, sheet.path, 'pivotTable').values()) {
+    const pivot = (await zipText(zip, part)) || '';
+    const location = /<location\b([^>]*?)\/>/.exec(pivot);
+    const ref = location && /\bref="([^"]+)"/.exec(location[1])?.[1];
+    const moved = ref && movedReference(ref, move);
+    if (!ref || moved === ref) continue;
+    if (!moved || cutsThrough(ref, move))
+      refused.push(`pivot table at ${sheet.name}!${ref} (the edit cuts through it)`);
+    else
+      writes.set(
+        part,
+        pivot.replace(location[0], () => `<location${setXmlAttribute(location[1], 'ref', moved)}/>`)
+      );
+  }
+  // A note moves with its cell and goes with it, its box following by as many rows (columns) as the cell moved.
+  for (const part of relationshipTargetsByType(relationships, sheet.path, 'comments').values()) {
+    const notes = (await zipText(zip, part)) || '';
+    const next = notes.replace(
+      /<comment\b([^>]*?)\bref="([^"]+)"([^>]*)>([\s\S]*?)<\/comment>/g,
+      (whole, before, ref, after, body) => {
+        const moved = movedReference(ref, move);
+        if (moved === ref) return whole;
+        return moved ? `<comment${before}ref="${moved}"${after}>${body}</comment>` : '';
+      }
+    );
+    if (next !== notes) writes.set(part, next);
+  }
+  for (const part of relationshipTargetsByType(relationships, sheet.path, 'vmlDrawing').values()) {
+    const vml = (await zipText(zip, part)) || '';
+    const next = vml.replace(/<v:shape\b[\s\S]*?<\/v:shape>/g, (shape) => movedNoteShape(shape, move));
+    if (next !== vml) writes.set(part, next);
+  }
+  for (const part of relationshipTargetsByType(relationships, sheet.path, 'drawing').values()) {
+    const drawing = (await zipText(zip, part)) || '';
+    const next = movedAnchors(drawing, move);
+    if (next !== drawing) writes.set(part, next);
+  }
 }
 
 /**
@@ -647,7 +776,11 @@ export async function shiftWorksheetCells(zip, sheets, sheet, xml, { rows, from,
     const own = other.path === sheet.path;
     const source = own ? xml : await zipText(zip, other.path);
     if (!source) continue;
-    let next = movedRuleFormulas(movedCellFormulas(source, other.name, own, move, rewrite, refused), other.name, rewrite);
+    let next = movedRuleFormulas(
+      movedCellFormulas(source, other.name, own, move, rewrite, refused),
+      other.name,
+      rewrite
+    );
     if (own) next = movedSheetRanges(next, move, refused);
     if (next !== source || own) writes.set(other.path, next);
   }
@@ -656,58 +789,15 @@ export async function shiftWorksheetCells(zip, sheets, sheet, xml, { rows, from,
     const ref = /\bref="([^"]+)"/.exec(source[1])?.[1];
     const moved = ref && movedReference(ref, move);
     if (moved === null) refused.push(`pivot source ${sheet.name}!${ref} (its cells are all deleted)`);
-    else if (moved !== ref) writes.set(part, cache.replace(source[0], () => `<worksheetSource${setXmlAttribute(source[1], 'ref', moved)}/>`));
+    else if (moved !== ref)
+      writes.set(
+        part,
+        cache.replace(source[0], () => `<worksheetSource${setXmlAttribute(source[1], 'ref', moved)}/>`)
+      );
   }
   const relationships = await zipText(zip, partRelationshipPath(sheet.path));
-  for (const part of relationshipTargetsByType(relationships, sheet.path, 'table').values()) {
-    const table = (await zipText(zip, part)) || '';
-    const ref = /<table\b[^>]*?\bref="([^"]+)"/.exec(table)?.[1];
-    const moved = ref && movedReference(ref, move);
-    if (!ref || moved === ref) continue;
-    const name = xmlDecode(/<table\b[^>]*?\bdisplayName="([^"]+)"/.exec(table)?.[1] || 'table');
-    const header = referenceSpan(ref, move).start;
-    if (!moved || (!rows && cutsThrough(ref, move))) {
-      refused.push(`table ${name} ${ref} (its ${rows ? 'rows' : 'columns'} would change; Excel rebuilds the table)`);
-      continue;
-    }
-    if (rows && !insert && (movedIndex(header, move) === null || referenceSpan(moved, move).start === referenceSpan(moved, move).end)) {
-      refused.push(`table ${name} ${ref} (the edit deletes its header or every data row)`);
-      continue;
-    }
-    writes.set(
-      part,
-      table.replace(/(<(?:table|autoFilter)\b[^>]*?\bref=")([^"]+)"/g, (whole, lead, area) => `${lead}${movedReference(area, move) || area}"`)
-    );
-  }
-  for (const part of relationshipTargetsByType(relationships, sheet.path, 'pivotTable').values()) {
-    const pivot = (await zipText(zip, part)) || '';
-    const location = /<location\b([^>]*?)\/>/.exec(pivot);
-    const ref = location && /\bref="([^"]+)"/.exec(location[1])?.[1];
-    const moved = ref && movedReference(ref, move);
-    if (!ref || moved === ref) continue;
-    if (!moved || cutsThrough(ref, move)) refused.push(`pivot table at ${sheet.name}!${ref} (the edit cuts through it)`);
-    else writes.set(part, pivot.replace(location[0], () => `<location${setXmlAttribute(location[1], 'ref', moved)}/>`));
-  }
-  // A note moves with its cell and goes with it, its box following by as many rows (columns) as the cell moved.
-  for (const part of relationshipTargetsByType(relationships, sheet.path, 'comments').values()) {
-    const notes = (await zipText(zip, part)) || '';
-    const next = notes.replace(/<comment\b([^>]*?)\bref="([^"]+)"([^>]*)>([\s\S]*?)<\/comment>/g, (whole, before, ref, after, body) => {
-      const moved = movedReference(ref, move);
-      if (moved === ref) return whole;
-      return moved ? `<comment${before}ref="${moved}"${after}>${body}</comment>` : '';
-    });
-    if (next !== notes) writes.set(part, next);
-  }
-  for (const part of relationshipTargetsByType(relationships, sheet.path, 'vmlDrawing').values()) {
-    const vml = (await zipText(zip, part)) || '';
-    const next = vml.replace(/<v:shape\b[\s\S]*?<\/v:shape>/g, (shape) => movedNoteShape(shape, move));
-    if (next !== vml) writes.set(part, next);
-  }
-  for (const part of relationshipTargetsByType(relationships, sheet.path, 'drawing').values()) {
-    const drawing = (await zipText(zip, part)) || '';
-    const next = movedAnchors(drawing, move);
-    if (next !== drawing) writes.set(part, next);
-  }
+  await moveTableParts(zip, relationships, sheet, move, writes, refused);
+  await moveOwnedSheetParts(zip, relationships, sheet, move, writes, refused);
   if (refused.length) {
     const where = rows ? `row ${from}` : `column ${columnLabel(from)}`;
     throw new Error(
@@ -717,7 +807,8 @@ export async function shiftWorksheetCells(zip, sheets, sheet, xml, { rows, from,
     );
   }
   let moved = writes.get(sheet.path);
-  moved = rows ? shiftWorksheetRows(moved, from, insert ? amount : -amount) : shiftWorksheetColumns(moved, from, insert ? amount : -amount);
+  const delta = insert ? amount : -amount;
+  moved = rows ? shiftWorksheetRows(moved, from, delta) : shiftWorksheetColumns(moved, from, delta);
   if (insert) moved = rows ? inheritedRows(moved, from, amount) : inheritedColumns(moved, from, amount);
   if (!rows) moved = movedColumnWidths(moved, move);
   writes.set(sheet.path, moved);

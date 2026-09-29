@@ -1,15 +1,8 @@
 import { slideReceipt } from '../authoring/pptx-receipt.mjs';
 import { isPictureShape, signedVisualType } from '../design/design-discipline.mjs';
+import { issue as sharedIssue } from './assurance-issue.mjs';
 
-function issue(code, message) {
-  return {
-    severity: 'warning',
-    code,
-    path: '/',
-    message,
-    source: 'design-review',
-  };
-}
+const issue = (code, message) => sharedIssue(code, '/', message, 'design-review');
 
 // The deck's shape, read from the page grammar the receipt assigns (beat | evidence | text). Thirteen reference
 // decks (400 pages) run beats — dark or field pages — on 0-21% of their pages (median 13%) and never three in a

@@ -113,7 +113,7 @@ function writeSectionSource(w, section) {
   });
 }
 
-export function writeDocxSection(w, section, sectionIndex, operation) {
+export function writeDocxSection(w, section, sectionIndex) {
   const unknown = Object.keys(section || {}).filter((field) => !SECTION_FIELDS.has(field));
   if (unknown.length) {
     throw new Error(

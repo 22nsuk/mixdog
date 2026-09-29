@@ -71,6 +71,7 @@ import {
   wordTableXml,
   wordTableProperties,
   wordTextContent,
+  wordTextElement,
   withFirstRunText,
 } from './portable-docx-xml.mjs';
 import { documentStyleId } from './portable-docx-styles.mjs';
@@ -119,16 +120,12 @@ function replaceBodyParagraph(current, model, paragraph, nextParagraph) {
   return `${current.slice(0, model.body.start)}${nextInner}${current.slice(model.body.end)}`;
 }
 
-function preserveSpace(text) {
-  return /^\s|\s$/.test(text) ? ' xml:space="preserve"' : '';
-}
-
 function commentEntryXml(id, op, text, stamp) {
   return (
     `<w:comment w:id="${id}" w:author="${xmlEncode(op.author || 'Mixdog')}"` +
     ` w:date="${stamp}" w:initials="${xmlEncode(op.initials || 'MD')}">` +
     `<w:p xmlns:w14="${WORD_2010_NS}" w14:paraId="${commentParagraphId(id)}">` +
-    `<w:r><w:t${preserveSpace(text)}>${xmlEncode(text)}</w:t></w:r></w:p></w:comment>`
+    `<w:r>${wordTextElement(text)}</w:r></w:p></w:comment>`
   );
 }
 
@@ -589,9 +586,7 @@ export async function addDocxHyperlink(zip, op) {
         'External'
       )
     : '';
-  const run =
-    '<w:r><w:rPr><w:color w:val="0563C1"/><w:u w:val="single"/></w:rPr>' +
-    `<w:t${preserveSpace(display)}>${xmlEncode(display)}</w:t></w:r>`;
+  const run = `<w:r><w:rPr><w:color w:val="0563C1"/><w:u w:val="single"/></w:rPr>${wordTextElement(display)}</w:r>`;
   const link =
     `<w:hyperlink${relationshipId ? ` r:id="${relationshipId}"` : ''}` +
     `${op.subAddress ? ` w:anchor="${xmlEncode(op.subAddress)}"` : ''}>${run}</w:hyperlink>`;
@@ -725,7 +720,7 @@ export async function deleteDocxComment(zip, op) {
     .replace(new RegExp(`<w:commentRangeEnd\\b[^>]*\\bw:id="${id}"[^>]*\\/>`, 'g'), '')
     .replace(
       new RegExp(
-        `<w:r>(?:(?!<\\/w:r>)[\\s\\S])*?<w:commentReference\\b[^>]*\\bw:id="${id}"[^>]*\\/>[\\s\\S]*?<\\/w:r>`,
+        `<w:r\\b[^>]*>(?:(?!<\\/w:r>)[\\s\\S])*?<w:commentReference\\b[^>]*\\bw:id="${id}"[^>]*\\/>[\\s\\S]*?<\\/w:r>`,
         'g'
       ),
       ''

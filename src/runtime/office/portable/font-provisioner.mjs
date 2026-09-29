@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { existsSync, promises as fsp } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { join } from 'node:path';
@@ -7,86 +8,100 @@ import { GlobalFonts } from '@napi-rs/canvas';
 
 const execFileAsync = promisify(execFile);
 
+// google/fonts commit the font URLs and sha256 digests below were taken from.
+const GOOGLE_FONTS_COMMIT = '23e54b51ddffbc7713c583748e3bd86f62b1fa4a';
+const GOOGLE_FONTS_RAW = `https://raw.githubusercontent.com/google/fonts/${GOOGLE_FONTS_COMMIT}/ofl`;
+
 export const NOTO_FONT_DEFINITIONS = Object.freeze([
   {
     id: 'noto-sans-latin',
     family: 'Noto Sans',
     fileName: 'NotoSans-Variable.ttf',
     registryName: 'Noto Sans (TrueType)',
-    url: 'https://raw.githubusercontent.com/google/fonts/main/ofl/notosans/NotoSans%5Bwdth%2Cwght%5D.ttf',
+    url: `${GOOGLE_FONTS_RAW}/notosans/NotoSans%5Bwdth%2Cwght%5D.ttf`,
     bytes: 2049096,
+    sha256: 'bfb7bb691513f12e734dc346c03a03f784912432d7e3fa8e56efcf906fe86b3d',
   },
   {
     id: 'noto-sans-kr',
     family: 'Noto Sans KR',
     fileName: 'NotoSansKR-Variable.ttf',
     registryName: 'Noto Sans KR (TrueType)',
-    url: 'https://raw.githubusercontent.com/google/fonts/main/ofl/notosanskr/NotoSansKR%5Bwght%5D.ttf',
+    url: `${GOOGLE_FONTS_RAW}/notosanskr/NotoSansKR%5Bwght%5D.ttf`,
     bytes: 10414588,
+    sha256: '194018e6b2b293a7964f037b25c0249ce1418bc9ab3c971060a03aa57861e252',
   },
   {
     id: 'noto-sans-sc',
     family: 'Noto Sans SC',
     fileName: 'NotoSansSC-Variable.ttf',
     registryName: 'Noto Sans SC (TrueType)',
-    url: 'https://raw.githubusercontent.com/google/fonts/main/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf',
+    url: `${GOOGLE_FONTS_RAW}/notosanssc/NotoSansSC%5Bwght%5D.ttf`,
     bytes: 17772300,
+    sha256: 'a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da',
   },
   {
     id: 'noto-sans-jp',
     family: 'Noto Sans JP',
     fileName: 'NotoSansJP-Variable.ttf',
     registryName: 'Noto Sans JP (TrueType)',
-    url: 'https://raw.githubusercontent.com/google/fonts/main/ofl/notosansjp/NotoSansJP%5Bwght%5D.ttf',
+    url: `${GOOGLE_FONTS_RAW}/notosansjp/NotoSansJP%5Bwght%5D.ttf`,
     bytes: 9589900,
+    sha256: 'c2f3b4d463500a2ddcd3849cded1fceeb9fd6d1c32e6cbecd568453ba50fc68f',
   },
   {
     id: 'noto-sans-tc',
     family: 'Noto Sans TC',
     fileName: 'NotoSansTC-Variable.ttf',
     registryName: 'Noto Sans TC (TrueType)',
-    url: 'https://raw.githubusercontent.com/google/fonts/main/ofl/notosanstc/NotoSansTC%5Bwght%5D.ttf',
+    url: `${GOOGLE_FONTS_RAW}/notosanstc/NotoSansTC%5Bwght%5D.ttf`,
     bytes: 11941968,
+    sha256: '864727d210d54f2537bbe23b3a839436c3992af72de9322af5270897246bd44f',
   },
   {
     id: 'noto-sans-arabic',
     family: 'Noto Sans Arabic',
     fileName: 'NotoSansArabic-Variable.ttf',
     registryName: 'Noto Sans Arabic (TrueType)',
-    url: 'https://raw.githubusercontent.com/google/fonts/main/ofl/notosansarabic/NotoSansArabic%5Bwdth%2Cwght%5D.ttf',
+    url: `${GOOGLE_FONTS_RAW}/notosansarabic/NotoSansArabic%5Bwdth%2Cwght%5D.ttf`,
     bytes: 844676,
+    sha256: '63111b5b2e074dd48cc67692e0a2726d86ee94c1c37fe8598257b7b4e87e869e',
   },
   {
     id: 'noto-sans-devanagari',
     family: 'Noto Sans Devanagari',
     fileName: 'NotoSansDevanagari-Variable.ttf',
     registryName: 'Noto Sans Devanagari (TrueType)',
-    url: 'https://raw.githubusercontent.com/google/fonts/main/ofl/notosansdevanagari/NotoSansDevanagari%5Bwdth%2Cwght%5D.ttf',
-    bytes: 647144,
+    url: `${GOOGLE_FONTS_RAW}/notosansdevanagari/NotoSansDevanagari%5Bwdth%2Cwght%5D.ttf`,
+    bytes: 641944,
+    sha256: '14ec4af41f27482216d1c2229f417ff9b1425e1babb014e57d1d40d03229853e',
   },
   {
     id: 'noto-sans-thai',
     family: 'Noto Sans Thai',
     fileName: 'NotoSansThai-Variable.ttf',
     registryName: 'Noto Sans Thai (TrueType)',
-    url: 'https://raw.githubusercontent.com/google/fonts/main/ofl/notosansthai/NotoSansThai%5Bwdth%2Cwght%5D.ttf',
+    url: `${GOOGLE_FONTS_RAW}/notosansthai/NotoSansThai%5Bwdth%2Cwght%5D.ttf`,
     bytes: 218652,
+    sha256: '5a1c559bb539583c8a1fd99d1c5b9491e5e14478c9cd2bd0970d5c3096cc9ef8',
   },
   {
     id: 'noto-sans-hebrew',
     family: 'Noto Sans Hebrew',
     fileName: 'NotoSansHebrew-Variable.ttf',
     registryName: 'Noto Sans Hebrew (TrueType)',
-    url: 'https://raw.githubusercontent.com/google/fonts/main/ofl/notosanshebrew/NotoSansHebrew%5Bwdth%2Cwght%5D.ttf',
+    url: `${GOOGLE_FONTS_RAW}/notosanshebrew/NotoSansHebrew%5Bwdth%2Cwght%5D.ttf`,
     bytes: 112640,
+    sha256: '7ef36a2c3593758cdb622e1bdef4f84523e92fbc3ccc667438dd80ff54c2de88',
   },
   {
     id: 'noto-sans-bengali',
     family: 'Noto Sans Bengali',
     fileName: 'NotoSansBengali-Variable.ttf',
     registryName: 'Noto Sans Bengali (TrueType)',
-    url: 'https://raw.githubusercontent.com/google/fonts/main/ofl/notosansbengali/NotoSansBengali%5Bwdth%2Cwght%5D.ttf',
+    url: `${GOOGLE_FONTS_RAW}/notosansbengali/NotoSansBengali%5Bwdth%2Cwght%5D.ttf`,
     bytes: 463668,
+    sha256: 'dcd42978094e584a849c84a51450eeac40c8826057d566ea6d4b9627a403a05a',
   },
 ]);
 
@@ -163,6 +178,16 @@ function registerFontInProcess(fontPath, family) {
   return false;
 }
 
+export function verifyFontBuffer(fontDef, buffer) {
+  if (buffer.length !== fontDef.bytes) {
+    throw new Error(`Font ${fontDef.family} size mismatch: expected ${fontDef.bytes} bytes, got ${buffer.length}`);
+  }
+  const digest = createHash('sha256').update(buffer).digest('hex');
+  if (digest !== fontDef.sha256) {
+    throw new Error(`Font ${fontDef.family} sha256 mismatch: expected ${fontDef.sha256}, got ${digest}`);
+  }
+}
+
 async function installFont(fontDef) {
   const status = isFontInstalled(fontDef);
   if (status.installed) {
@@ -182,6 +207,7 @@ async function installFont(fontDef) {
   }
 
   const buffer = Buffer.from(await response.arrayBuffer());
+  verifyFontBuffer(fontDef, buffer);
   await fsp.writeFile(tempPath, buffer);
   await fsp.rename(tempPath, targetPath);
 

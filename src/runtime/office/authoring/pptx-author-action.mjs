@@ -91,7 +91,7 @@ function factsGateResult(target, brief, gate, run) {
 
 // The HTML's own geometry, read in the browser before anything lands: a declared relation that does not
 // hold, or a near miss no declaration covers (pptx-html-geometry.mjs).
-export function geometryGateResult(target, run) {
+function geometryGateResult(target, run) {
   const listed = run.geometry
     .map((page) => `slide ${page.slide}: ${page.findings.map((finding) => finding.message).join('; ')}`)
     .join(' | ');
@@ -163,11 +163,16 @@ async function finishAuthoredDeck(session, { args, cwd, target, run, signal, rep
     result.render.compare = await writeHtmlComparisons(target, run.htmlShots, result.render.images);
     const drift = await measureHtmlDrift(run.htmlShots, run.htmlText, result.render.images);
     result.render.drift = drift;
-    const moved = drift.pages.map((entry) => `slide ${entry.page}: ${entry.items.map((item) => `"${item.text}" dy ${item.dy} dx ${item.dx}`).join(', ')}`);
+    const moved = drift.pages.map(
+      (entry) =>
+        `slide ${entry.page}: ${entry.items.map((item) => `"${item.text}" dy ${item.dy} dx ${item.dx}`).join(', ')}`
+    );
     const drifted = moved.length
       ? ` html_render_drift: text PowerPoint drew more than ${drift.threshold}px from where the HTML put it (${moved.join('; ')}); open those pages' compare pairs and fix the HTML or report the residue.`
       : '';
-    const unread = drift.unreadPages?.length ? ` Pages ${drift.unreadPages.join(', ')} were rendered in shared images, so their drift was not read; render them in batches of 12 or fewer to read it.` : '';
+    const unread = drift.unreadPages?.length
+      ? ` Pages ${drift.unreadPages.join(', ')} were rendered in shared images, so their drift was not read; render them in batches of 12 or fewer to read it.`
+      : '';
     result.nextAction = `${result.nextAction} render.compare holds one image per page, the HTML (left) beside the PPTX render (right): open a page's pair when its render differs from what the HTML drew.${drifted}${unread}`;
   }
   return result;

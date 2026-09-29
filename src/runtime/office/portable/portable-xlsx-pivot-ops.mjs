@@ -97,7 +97,10 @@ async function formatPivotValues(zip, xml, area, destination, anchor, layout) {
   layout.valueFields.forEach((field, position) => {
     const id = numberFormatId(nextStyles, formats[position]);
     if (!id) return;
-    table = table.replace(new RegExp(`(<dataField\\b[^>]*\\bfld="${field}")([^>]*?)(\\/?>)`), `$1$2 numFmtId="${id}"$3`);
+    table = table.replace(
+      new RegExp(`(<dataField\\b[^>]*\\bfld="${field}")([^>]*?)(\\/?>)`),
+      `$1$2 numFmtId="${id}"$3`
+    );
   });
   zip.file(layout.tablePart, table);
 }
@@ -125,6 +128,8 @@ export async function addWorksheetPivotTable(zip, sheet, xml, op) {
       `MixdogPivot${Object.keys(zip.files).filter((part) => /^xl\/pivotTables\/pivotTable\d+\.xml$/.test(part)).length + 1}`
   );
   const axes = [...rowNames, ...columnNames].map(fieldIndex);
+  const valueFields = valueNames.map(fieldIndex);
+  const columnField = columnNames.length ? fieldIndex(columnNames[0]) : -1;
   const written = await writePivotTable(zip, {
     fields: summarizePivotFields(headers, records, axes),
     records,
@@ -134,13 +139,13 @@ export async function addWorksheetPivotTable(zip, sheet, xml, op) {
     destination: String(op.destination || 'A1'),
     name: pivotName,
     rowField: rowNames.length ? fieldIndex(rowNames[0]) : -1,
-    columnField: columnNames.length ? fieldIndex(columnNames[0]) : -1,
-    valueFields: valueNames.map(fieldIndex),
+    columnField,
+    valueFields,
   });
   const anchor = parseAreaRange(String(op.destination || 'A1'));
   await formatPivotValues(zip, xml, area, destination, anchor, {
-    valueFields: valueNames.map(fieldIndex),
-    columnField: columnNames.length ? fieldIndex(columnNames[0]) : -1,
+    valueFields,
+    columnField,
     rows: written.rows,
     columns: written.columns,
     tablePart: written.tablePart,

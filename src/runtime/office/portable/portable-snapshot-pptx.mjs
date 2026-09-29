@@ -210,7 +210,9 @@ function pptxShapeSnapshot(shape, shapeIndex, slideIndex, chartParts) {
             rows: tableRows,
             columns: tableColumns,
             values: [...shape.xml.matchAll(/<a:tr\b[^>]*>([\s\S]*?)<\/a:tr>/g)].map((row) =>
-              [...row[1].matchAll(/<a:tc\b[^>]*?(?:\/>|>([\s\S]*?)<\/a:tc>)/g)].map((cell) => blockText(cell[1] || '', 'a:t'))
+              [...row[1].matchAll(/<a:tc\b[^>]*?(?:\/>|>([\s\S]*?)<\/a:tc>)/g)].map((cell) =>
+                blockText(cell[1] || '', 'a:t')
+              )
             ),
           },
         }

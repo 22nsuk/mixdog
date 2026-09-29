@@ -19,7 +19,7 @@ function writeDocxFooter(output, operation) {
   }
 }
 
-export function expandDocxDocument(operation, sourceDesign, state, _backend, composition) {
+export function expandDocxDocument(operation, sourceDesign, state, composition) {
   // Tables and metric strips read the design's faces directly; a Korean document sets its sans roles in the Korean
   // face so their digits match the Hangul beside them, and keeps each serif role paired run by run.
   const design = koreanDesign(sourceDesign, JSON.stringify(operation), { pairsEastAsia: true });
@@ -27,7 +27,7 @@ export function expandDocxDocument(operation, sourceDesign, state, _backend, com
   writeDocxFrontMatter(writer, operation);
   const sections = Array.isArray(operation.sections) ? operation.sections : [];
   for (const [sectionIndex, section] of sections.entries()) {
-    writeDocxSection(writer, section, sectionIndex, operation);
+    writeDocxSection(writer, section, sectionIndex);
   }
   writeDocxFooter(writer.output, operation);
   return writer.output;

@@ -1,9 +1,11 @@
-import { xmlEncode } from './portable-xml.mjs';
+import {
+  DRAWING_MAIN_NS as DRAWING_NAMESPACE,
+  OFFICE_RELATIONSHIP_BASE as RELATIONSHIP_NAMESPACE,
+  xmlEncode,
+} from './portable-xml.mjs';
 import { contrastRatio } from './text-metrics.mjs';
 
 const CHART_NAMESPACE = 'http://schemas.openxmlformats.org/drawingml/2006/chart';
-const DRAWING_NAMESPACE = 'http://schemas.openxmlformats.org/drawingml/2006/main';
-const RELATIONSHIP_NAMESPACE = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
 const CATEGORY_AXIS_ID = 111_111_111;
 const VALUE_AXIS_ID = 222_222_222;
 
@@ -305,9 +307,7 @@ export function chartXml({
     (zeroBaseline == null ? family.element === 'barChart' || family.element === 'areaChart' : zeroBaseline === true);
   // The order the categories read in: a bar chart lists them top-down, unless the chart being rebuilt was authored the
   // other way (PowerPoint's own bottom-up default, a template's), which it keeps as PowerPoint's refresh keeps it.
-  const reversed = axis?.categoryOrientation
-    ? axis.categoryOrientation === 'maxMin'
-    : family.direction === 'bar';
+  const reversed = axis?.categoryOrientation ? axis.categoryOrientation === 'maxMin' : family.direction === 'bar';
   const sheet = references?.sheet || 'Sheet1';
   const categoryFormula = references?.category || `${sheet}!$A$2:$A$${rows.length + 1}`;
   const plots = entries

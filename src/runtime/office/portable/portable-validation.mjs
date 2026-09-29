@@ -16,6 +16,7 @@ import { EMU_PER_POINT } from './portable-slide-shapes.mjs';
 import {
   imagePixelSize,
   loadPackage,
+  partFromTarget,
   partRelationshipPath,
   relationshipMap,
   relationshipOwner,
@@ -72,6 +73,11 @@ function runField(properties, fill) {
   return HIGHLIGHT_FILLS[highlight] || fill;
 }
 
+// Large text (18pt, or 14pt bold) is readable at 3:1; everything else needs 4.5:1.
+function minimumContrast(size, bold) {
+  return size >= 18 || (size >= 14 && bold) ? 3 : 4.5;
+}
+
 // The worst readable ratio among a block's runs, with the size and weight that
 // decide the minimum. Word keeps sizes in half-points.
 function runInkReading(xml, fill) {
@@ -92,7 +98,7 @@ function runInkReading(xml, fill) {
     const bold = /<w:b(?:\s[^>]*)?\/>/.test(properties);
     const ratio = contrastRatio(color, runField(properties, fill));
     if (ratio == null) continue;
-    const minimum = size >= 18 || (size >= 14 && bold) ? 3 : 4.5;
+    const minimum = minimumContrast(size, bold);
     if (ratio >= minimum) continue;
     if (!worst || ratio < worst.ratio) worst = { ratio, minimum, size };
   }
@@ -220,7 +226,7 @@ function auditTableRow(rowXml, { widths, pathPrefix, slideSurface }, issues, ove
   for (const { xml, body, size, bold, columnOrdinal, fit } of cells) {
     const cellPath = `${pathPrefix}/cell[${columnOrdinal}]`;
     const ratio = tableCellContrast(xml, body, slideSurface);
-    const minimum = size >= 18 || (size >= 14 && bold) ? 3 : 4.5;
+    const minimum = minimumContrast(size, bold);
     // The cap is on the reports; the rows are still measured so the table's height is known.
     if (ratio != null && ratio < minimum && issues.length < MAX_ISSUES) {
       issues.push({
@@ -434,7 +440,7 @@ async function imagePlacementIssues(zip, format) {
       if (!embed || !extent) continue;
       const target = relationships.get(embed);
       if (!target) continue;
-      const media = posix.normalize(posix.join(posix.dirname(part), target));
+      const media = partFromTarget(posix.dirname(part), target);
       const file = zip.file(media);
       if (!file) continue;
       const bytes = await file.async('nodebuffer');

@@ -75,10 +75,9 @@ export async function runPptxHtmlAuthoring(html, output, { target, signal = null
     htmlText: measure.slides.map((slide) => {
       // The browser draws no chart, so a non-text item over one would read the PPTX bars as its own ink.
       const charts = slide.items.filter((item) => item.kind === 'chart').map((item) => item.box);
-      const overChart = (b) => charts.some((c) => b.x < c.x + c.w && c.x < b.x + b.w && b.y < c.y + c.h && c.y < b.y + b.h);
-      return slide.items
-        .map(driftTarget)
-        .filter((target) => target && (target.align !== 'box' || !overChart(target)));
+      const overChart = (b) =>
+        charts.some((c) => b.x < c.x + c.w && c.x < b.x + b.w && b.y < c.y + c.h && c.y < b.y + b.h);
+      return slide.items.map(driftTarget).filter((target) => target && (target.align !== 'box' || !overChart(target)));
     }),
     htmlSource: artifacts.source,
     geometry: measure.geometry,
@@ -99,8 +98,18 @@ function driftTarget(item) {
     if (item.kind === 'rect' && !item.fill && !item.stroke) return null;
     const name = item.alt ? `${DRIFT_LABEL[item.kind]} ${item.alt}` : DRIFT_LABEL[item.kind];
     // A box's outline is its most distinct colour (a white disc ringed in navy on white paper); else its fill.
-    const ink = item.kind === 'rect' ? item.stroke?.hex || (item.fill && item.fill.a > 0.9 ? item.fill.hex : null) : null;
-    return { text: name.length > 24 ? `${name.slice(0, 24)}…` : name, align: 'box', x: b.x, y: b.y, w: b.w, h: b.h, pad: 3, ink };
+    const solidFill = item.fill && item.fill.a > 0.9 ? item.fill.hex : null;
+    const ink = item.kind === 'rect' ? item.stroke?.hex || solidFill : null;
+    return {
+      text: name.length > 24 ? `${name.slice(0, 24)}…` : name,
+      align: 'box',
+      x: b.x,
+      y: b.y,
+      w: b.w,
+      h: b.h,
+      pad: 3,
+      ink,
+    };
   }
   // The glyph boxes of tight display type reach past the element into its neighbours; the element's own
   // content box bounds the read so a neighbour's ink is never taken for this item's.
@@ -116,7 +125,16 @@ function driftTarget(item) {
   const w = Math.max(1, item.box.w - item.inset.l - item.inset.r);
   const pad = item.frame ? Math.max(0, Math.min(3, item.inset.l, item.inset.r, item.inset.t, item.inset.b)) : 3;
   const ink = item.lines[0]?.runs[0]?.style.color?.hex;
-  return { text: text.length > 24 ? `${text.slice(0, 24)}…` : text, align: item.align, x, y: top, w, h: bottom - top, pad, ink };
+  return {
+    text: text.length > 24 ? `${text.slice(0, 24)}…` : text,
+    align: item.align,
+    x,
+    y: top,
+    w,
+    h: bottom - top,
+    pad,
+    ink,
+  };
 }
 
 async function canvasPixels(sharp, path) {
@@ -142,8 +160,14 @@ function inkBounds(image, region, pad = region.pad ?? 3) {
     const key = (image.data[i] << 16) | (image.data[i + 1] << 8) | image.data[i + 2];
     counts.set(key, (counts.get(key) || 0) + 1);
   };
-  for (let x = x0; x <= x1; x += 1) count(x, y0), count(x, y1);
-  for (let y = y0; y <= y1; y += 1) count(x0, y), count(x1, y);
+  for (let x = x0; x <= x1; x += 1) {
+    count(x, y0);
+    count(x, y1);
+  }
+  for (let y = y0; y <= y1; y += 1) {
+    count(x0, y);
+    count(x1, y);
+  }
   const [bg, bgCount] = [...counts.entries()].sort((a, b) => b[1] - a[1])[0];
   // A drawn item on a surround that is not one colour (a band, a gradient, a picture) has no edge to read.
   const border = 2 * (x1 - x0 + 1) + 2 * (y1 - y0 + 1);
@@ -152,7 +176,8 @@ function inkBounds(image, region, pad = region.pad ?? 3) {
   // With the text colour known, ink is what stands nearer to it than half the background's distance, so a
   // gradient or picture behind the words is never read as ink; otherwise, what departs from the background.
   const inkRgb = region.ink ? [0, 2, 4].map((k) => parseInt(region.ink.slice(k, k + 2), 16)) : null;
-  const dist = (i, [cr, cg, cb]) => Math.abs(image.data[i] - cr) + Math.abs(image.data[i + 1] - cg) + Math.abs(image.data[i + 2] - cb);
+  const dist = (i, [cr, cg, cb]) =>
+    Math.abs(image.data[i] - cr) + Math.abs(image.data[i + 1] - cg) + Math.abs(image.data[i + 2] - cb);
   const bgToInk = inkRgb ? Math.abs(r0 - inkRgb[0]) + Math.abs(g0 - inkRgb[1]) + Math.abs(b0 - inkRgb[2]) : 0;
   // A box's fill may sit close to the page (a white panel on paper); its known colour still separates it.
   const known = inkRgb && bgToInk > (region.align === 'box' ? 12 : 90);
@@ -160,7 +185,10 @@ function inkBounds(image, region, pad = region.pad ?? 3) {
   // low that a neighbour's soft shadow reads as the item.
   const departure = region.align === 'box' ? 60 : 90;
   const isInk = known ? (i) => dist(i, inkRgb) < bgToInk / 2 : (i) => dist(i, [r0, g0, b0]) > departure;
-  let l = Infinity, t = Infinity, r = -1, b = -1;
+  let l = Infinity,
+    t = Infinity,
+    r = -1,
+    b = -1;
   for (let y = y0; y <= y1; y += 1) {
     for (let x = x0; x <= x1; x += 1) {
       const i = at(x, y);
@@ -175,7 +203,30 @@ function inkBounds(image, region, pad = region.pad ?? 3) {
   return r < 0 ? null : { l, t, r, b };
 }
 
-export const HTML_DRIFT_PX = 3;
+const HTML_DRIFT_PX = 3;
+
+// A drawn item counts only when both of its edges moved: together is a move, apart is a resize.
+// One edge alone is the reading of a faint edge, not the item.
+function axisDrift(lo, hi) {
+  if (Math.abs(lo) <= 1 || Math.abs(hi) <= 1) return { move: 0, grow: 0 };
+  return Math.sign(lo) === Math.sign(hi)
+    ? { move: Math.sign(lo) * Math.min(Math.abs(lo), Math.abs(hi)), grow: 0 }
+    : { move: 0, grow: hi - lo };
+}
+
+// How a drawn item's ink bounds moved between two renders, or null when it stayed within the threshold.
+function boxDrift(a, b, text, threshold) {
+  const x = axisDrift(b.l - a.l, b.r - a.r);
+  const y = axisDrift(b.t - a.t, b.b - a.b);
+  if (![x.move, y.move, x.grow, y.grow].some((v) => Math.abs(v) > threshold)) return null;
+  return {
+    text,
+    dx: x.move,
+    dy: y.move,
+    ...(x.grow ? { dw: x.grow } : {}),
+    ...(y.grow ? { dh: y.grow } : {}),
+  };
+}
 
 /**
  * How far each item moved between the HTML and PowerPoint's render, in px of the HTML canvas: vertically
@@ -204,28 +255,31 @@ export async function measureHtmlDrift(htmlShots, htmlText, renderedImages, thre
       const b = inkBounds(pptx, target);
       if (!a || !b) continue;
       if (target.align === 'box') {
-        // A drawn item counts only when both of its edges moved: together is a move, apart is a resize.
-        // One edge alone is the reading of a faint edge, not the item.
-        const axis = (lo, hi) => {
-          if (Math.abs(lo) <= 1 || Math.abs(hi) <= 1) return { move: 0, grow: 0 };
-          return Math.sign(lo) === Math.sign(hi)
-            ? { move: Math.sign(lo) * Math.min(Math.abs(lo), Math.abs(hi)), grow: 0 }
-            : { move: 0, grow: hi - lo };
-        };
-        const x = axis(b.l - a.l, b.r - a.r);
-        const y = axis(b.t - a.t, b.b - a.b);
-        if ([x.move, y.move, x.grow, y.grow].some((v) => Math.abs(v) > threshold)) {
-          moved.push({ text: target.text, dx: x.move, dy: y.move, ...(x.grow ? { dw: x.grow } : {}), ...(y.grow ? { dh: y.grow } : {}) });
-        }
+        const drift = boxDrift(a, b, target.text, threshold);
+        if (drift) moved.push(drift);
         continue;
       }
-      const dy = Math.round(((b.t - a.t) + (b.b - a.b)) / 2);
-      const dx = target.align === 'center' ? Math.round(((b.l - a.l) + (b.r - a.r)) / 2) : target.align === 'right' ? b.r - a.r : b.l - a.l;
+      const dy = Math.round((b.t - a.t + (b.b - a.b)) / 2);
+      let dx = b.l - a.l;
+      if (target.align === 'center') dx = Math.round((b.l - a.l + (b.r - a.r)) / 2);
+      else if (target.align === 'right') dx = b.r - a.r;
       if (Math.abs(dy) > threshold || Math.abs(dx) > threshold) moved.push({ text: target.text, dx, dy });
     }
-    if (moved.length) pages.push({ page: image.page, items: moved.sort((p, q) => Math.max(Math.abs(q.dy), Math.abs(q.dx)) - Math.max(Math.abs(p.dy), Math.abs(p.dx))) });
+    if (moved.length)
+      pages.push({
+        page: image.page,
+        items: moved.sort(
+          (p, q) => Math.max(Math.abs(q.dy), Math.abs(q.dx)) - Math.max(Math.abs(p.dy), Math.abs(p.dx))
+        ),
+      });
   }
-  return { code: 'html_render_drift', threshold, unit: 'px on the 1920 × 1080 HTML canvas', pages, ...(skipped.length ? { unreadPages: skipped } : {}) };
+  return {
+    code: 'html_render_drift',
+    threshold,
+    unit: 'px on the 1920 × 1080 HTML canvas',
+    pages,
+    ...(skipped.length ? { unreadPages: skipped } : {}),
+  };
 }
 
 // One image per page: the HTML the author wrote on the left, the PPTX PowerPoint drew on the right.

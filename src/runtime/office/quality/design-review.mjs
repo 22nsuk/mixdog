@@ -14,6 +14,7 @@ import {
 import { authoredBackgroundLadder, isCardGridSlide, isOrnamentalStripe, slideSize } from './design-review-authored.mjs';
 import { reviewBriefPromises, reviewFactCoverage, reviewSourceGrounding } from '../authoring/pptx-brief.mjs';
 import { isAdvisoryOfficeIssue } from './quality-pipeline.mjs';
+import { issue } from './assurance-issue.mjs';
 import { isPptxSpecimenSlide, isPptxStatementSlide } from './pptx-slide-roles.mjs';
 import { usesNativeOfficeDesign } from '../design/native-design.mjs';
 import { reviewNativeDocumentDesign } from './document-design-review.mjs';
@@ -27,9 +28,8 @@ export {
   isPptxStatementSlide,
 } from './pptx-slide-roles.mjs';
 
-function designIssue(code, path, message, severity = 'warning') {
-  return { severity, code, path, message, source: 'design-review' };
-}
+const designIssue = (code, path, message, severity = 'warning') =>
+  issue(code, path, message, 'design-review', severity);
 
 function pptxSlideBackgroundColor(slide) {
   return hex(slide?.background?.color, '');

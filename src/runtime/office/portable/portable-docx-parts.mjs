@@ -6,6 +6,7 @@ import {
   ensureContentTypeOverride,
   ensureDefaultContentType,
   imagePixelSize,
+  partFromTarget,
   partRelationshipPath,
   zipText,
 } from './portable-opc.mjs';
@@ -463,7 +464,7 @@ export async function writeHeaderFooterPart(zip, { header, body, documentXml = '
       .map((match) => match[0])
       .find((element) => new RegExp(`\\bId="${referencedId}"`).test(element));
     const path = target ? /\bTarget="([^"]+)"/.exec(target)?.[1] || '' : '';
-    const existing = path ? `word/${path.replace(/^\.?\//, '')}` : '';
+    const existing = path ? partFromTarget('word', path) : '';
     if (existing && zip.file(existing)) {
       // The story keeps its own root: Word's declares the w14, mc and wp prefixes its paragraphs use, and page
       // numbers added into Word's footer under a root naming only w and r left a document Word would not open.
@@ -717,7 +718,11 @@ export async function ensureNumbering(zip, kind, { restart = false } = {}) {
 // its own at 1.
 export async function appendedNumbering(zip, documentXml, options = {}) {
   const trailing = documentXml.lastIndexOf('<w:sectPr');
-  return numberingAfter(zip, documentXml.slice(0, trailing >= 0 ? trailing : documentXml.lastIndexOf('</w:body>')), options);
+  return numberingAfter(
+    zip,
+    documentXml.slice(0, trailing >= 0 ? trailing : documentXml.lastIndexOf('</w:body>')),
+    options
+  );
 }
 
 // The same choice for an item anywhere in the body, `before` being the body up to it: set_list and

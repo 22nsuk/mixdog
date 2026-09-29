@@ -42,7 +42,8 @@ function extractSlide(index) {
     };
   };
   const rel = (r) => ({ x: r.left - base.left, y: r.top - base.top, w: r.width, h: r.height });
-  const visible = (el, cs) => cs.display !== 'none' && cs.visibility !== 'hidden' && el.getBoundingClientRect().width > 0;
+  const visible = (el, cs) =>
+    cs.display !== 'none' && cs.visibility !== 'hidden' && el.getBoundingClientRect().width > 0;
   const hasOwnText = (el) => [...el.childNodes].some((node) => node.nodeType === 3 && node.textContent.trim());
   const family = (value) =>
     value
@@ -87,10 +88,15 @@ function extractSlide(index) {
     if (cs.mixBlendMode && cs.mixBlendMode !== 'normal') reasons.push('mix-blend-mode');
     // A rotated box of text is read upright by the caller and turned natively; anything else turned is drawn.
     if (turn(cs)) reasons.push('transform');
-    if (['Top', 'Right', 'Bottom', 'Left'].some((s) => px(cs[`border${s}Width`]) > 0 && !['solid', 'none', 'hidden'].includes(cs[`border${s}Style`]))) {
+    if (
+      ['Top', 'Right', 'Bottom', 'Left'].some(
+        (s) => px(cs[`border${s}Width`]) > 0 && !['solid', 'none', 'hidden'].includes(cs[`border${s}Style`])
+      )
+    ) {
       reasons.push('border-style');
     }
-    if (set(cs.boxShadow) && (/inset/.test(cs.boxShadow) || cs.boxShadow.split(/,(?![^(]*\))/).length > 1)) reasons.push('box-shadow');
+    if (set(cs.boxShadow) && (/inset/.test(cs.boxShadow) || cs.boxShadow.split(/,(?![^(]*\))/).length > 1))
+      reasons.push('box-shadow');
     for (const which of ['::before', '::after']) {
       const p = getComputedStyle(el, which);
       if (p.content && p.content !== 'none' && p.content !== 'normal' && p.display !== 'none') reasons.push(which);
@@ -101,7 +107,9 @@ function extractSlide(index) {
       const r = el.getBoundingClientRect();
       const s = slide.getBoundingClientRect();
       const past = r.left < s.left - 0.5 || r.top < s.top - 0.5 || r.right > s.right + 0.5 || r.bottom > s.bottom + 0.5;
-      const bordered = ['Top', 'Right', 'Bottom', 'Left'].some((side) => px(cs[`border${side}Width`]) > 0 && !['none', 'hidden'].includes(cs[`border${side}Style`]));
+      const bordered = ['Top', 'Right', 'Bottom', 'Left'].some(
+        (side) => px(cs[`border${side}Width`]) > 0 && !['none', 'hidden'].includes(cs[`border${side}Style`])
+      );
       const rounded = px(cs.borderTopLeftRadius) > 0 && color(cs.backgroundColor);
       if (past && (bordered || rounded)) reasons.push('bleed');
     }
@@ -190,8 +198,7 @@ function extractSlide(index) {
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
       const ps = getComputedStyle(node.parentElement);
       // An inline run with its own background is a marker highlight.
-      const highlight =
-        node.parentElement !== el && ps.display.startsWith('inline') ? color(ps.backgroundColor) : null;
+      const highlight = node.parentElement !== el && ps.display.startsWith('inline') ? color(ps.backgroundColor) : null;
       const style = {
         hl: highlight ? highlight.hex : null,
         font: family(ps.fontFamily),
@@ -299,9 +306,16 @@ function extractSlide(index) {
     const ink = color(cs.color);
     let markup = new XMLSerializer().serializeToString(clone);
     if (ink) markup = markup.replace(/currentColor/g, `#${ink.hex}`);
-    if (/pathLength=/.test(markup)) notes.push('pathLength in <svg> is not honoured by the rasterizer; write dash lengths in user units.');
+    if (/pathLength=/.test(markup))
+      notes.push('pathLength in <svg> is not honoured by the rasterizer; write dash lengths in user units.');
     const holder = el.closest('[data-alt]');
-    items.push({ kind: 'svg', box: rel(r), markup, alt: holder ? holder.getAttribute('data-alt') : '', alpha: opacityOf(el) });
+    items.push({
+      kind: 'svg',
+      box: rel(r),
+      markup,
+      alt: holder ? holder.getAttribute('data-alt') : '',
+      alpha: opacityOf(el),
+    });
   }
 
   function picture(el, cs) {
@@ -320,7 +334,9 @@ function extractSlide(index) {
     });
   }
 
-  const speakerNotes = [...slide.querySelectorAll('aside.notes')].map((aside) => aside.innerText.trim()).filter(Boolean);
+  const speakerNotes = [...slide.querySelectorAll('aside.notes')]
+    .map((aside) => aside.innerText.trim())
+    .filter(Boolean);
 
   function walk(el) {
     if (el.matches('aside.notes')) return;
@@ -364,9 +380,12 @@ function extractSlide(index) {
             : null,
       });
       if (rich.includes('mix-blend-mode') || rich.includes('backdrop-filter')) {
-        notes.push(`${rich.includes('mix-blend-mode') ? 'mix-blend-mode' : 'backdrop-filter'} on <${tag}> is drawn without the layers behind it.`);
+        notes.push(
+          `${rich.includes('mix-blend-mode') ? 'mix-blend-mode' : 'backdrop-filter'} on <${tag}> is drawn without the layers behind it.`
+        );
       }
-      if (turn(cs) && el.children.length) notes.push(`transform on <${tag}> with children: the children are placed as drawn but set upright.`);
+      if (turn(cs) && el.children.length)
+        notes.push(`transform on <${tag}> with children: the children are placed as drawn but set upright.`);
     }
     const own = el === slide || rich.length ? { rect: null, lines: [] } : paint(el, cs);
     if (el.dataset.chart) {
@@ -428,7 +447,10 @@ function isolateCapture(id) {
       : `html, body { background: transparent !important; }
          section.slide, section.slide * { visibility: hidden !important; }
          ${target} { visibility: visible !important; color: transparent !important; -webkit-text-fill-color: transparent !important; text-shadow: none !important; }
-         ${target.split(', ').map((s) => `${s} *`).join(', ')} { visibility: hidden !important; }`;
+         ${target
+           .split(', ')
+           .map((s) => `${s} *`)
+           .join(', ')} { visibility: hidden !important; }`;
 }
 
 // Shows one slide at a time whatever the deck's own CSS does with the others.
@@ -475,17 +497,22 @@ async function captureRichPaint(page, slideBox, ids) {
     for (const id of ids) {
       await page.evaluate(isolateCapture, id);
       // Runtimes with Uint8Array.fromBase64 get a plain Uint8Array back, whose toString is not base64.
-      const shot = Buffer.from(await page.screenshot({
-        clip: { x: slideBox.x, y: slideBox.y, width: HTML_CANVAS.width, height: HTML_CANVAS.height },
-        omitBackground: true,
-        type: 'png',
-      }));
+      const shot = Buffer.from(
+        await page.screenshot({
+          clip: { x: slideBox.x, y: slideBox.y, width: HTML_CANVAS.width, height: HTML_CANVAS.height },
+          omitBackground: true,
+          type: 'png',
+        })
+      );
       // A shot the element covers edge to edge comes back without an alpha channel: it is the whole page.
       const { channels } = await sharp(shot).stats();
       const alpha = channels[3];
       if (alpha && alpha.max === 0) continue;
       if (!alpha || alpha.min === 255) {
-        out.set(id, { png: shot.toString('base64'), draw: { x: 0, y: 0, w: HTML_CANVAS.width, h: HTML_CANVAS.height } });
+        out.set(id, {
+          png: shot.toString('base64'),
+          draw: { x: 0, y: 0, w: HTML_CANVAS.width, h: HTML_CANVAS.height },
+        });
         continue;
       }
       const { data, info } = await sharp(shot).trim({ threshold: 0 }).png().toBuffer({ resolveWithObject: true });
@@ -493,7 +520,12 @@ async function captureRichPaint(page, slideBox, ids) {
       const top = -(info.trimOffsetTop || 0);
       out.set(id, {
         png: data.toString('base64'),
-        draw: { x: left / CAPTURE_SCALE, y: top / CAPTURE_SCALE, w: info.width / CAPTURE_SCALE, h: info.height / CAPTURE_SCALE },
+        draw: {
+          x: left / CAPTURE_SCALE,
+          y: top / CAPTURE_SCALE,
+          w: info.width / CAPTURE_SCALE,
+          h: info.height / CAPTURE_SCALE,
+        },
       });
     }
   } finally {
@@ -544,7 +576,10 @@ export async function measureHtmlDeck(html, { sourcePath, shotPath, timeoutMs = 
       throw new Error(`Unknown data-icon: ${hint.join(' ')}`);
     }
     const count = await page.$$eval('section.slide', (sections) => sections.length);
-    if (!count) throw new Error('The HTML holds no <section class="slide">; every page is one section.slide on a 1920×1080 canvas.');
+    if (!count)
+      throw new Error(
+        'The HTML holds no <section class="slide">; every page is one section.slide on a 1920×1080 canvas.'
+      );
     const slides = [];
     const shots = [];
     const notes = [];
@@ -568,7 +603,11 @@ export async function measureHtmlDeck(html, { sourcePath, shotPath, timeoutMs = 
       if (findings.length) geometry.push({ slide: index + 1, findings });
       const drawn = await captureRichPaint(page, box, measured.captures);
       const items = measured.items
-        .map((item) => (item.kind === 'capture' ? (drawn.get(item.id) ? { ...item, ...drawn.get(item.id) } : null) : item))
+        .map((item) => {
+          if (item.kind !== 'capture') return item;
+          const paint = drawn.get(item.id);
+          return paint ? { ...item, ...paint } : null;
+        })
         .filter(Boolean);
       slides.push({ bg: measured.bg, items, notes: measured.speakerNotes });
     }

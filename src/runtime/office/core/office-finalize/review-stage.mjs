@@ -21,7 +21,10 @@ const AUTHORED_ADVISORY_SOURCES = new Set([
 const VISIBLE_DEFECT_CODES = new Set(['drawing_covers_cells', 'drawing_overlap']);
 
 export function blocksFinalize(issue, { failOn, authored }) {
-  if (VISIBLE_DEFECT_CODES.has(String(issue?.code || '')) && ['error', 'warning'].includes(String(issue?.severity || '')))
+  if (
+    VISIBLE_DEFECT_CODES.has(String(issue?.code || '')) &&
+    ['error', 'warning'].includes(String(issue?.severity || ''))
+  )
     return true;
   if (authored && AUTHORED_ADVISORY_SOURCES.has(String(issue?.source || ''))) return false;
   return issue?.severity === 'error' || (failOn === 'warning' && issue?.severity === 'warning');

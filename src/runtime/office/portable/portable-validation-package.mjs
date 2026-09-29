@@ -108,8 +108,7 @@ async function comparePackageParts(
     changedParts.push(name);
     if (isProtected(name) && !renumberedWorkbook(name) && !chartDataRewritten(name)) {
       changedProtectedParts.push({ part: name, before, after });
-    }
-    else if (applicationNormalized(name)) applicationNormalizedParts.push(name);
+    } else if (applicationNormalized(name)) applicationNormalizedParts.push(name);
   }
   return { changedProtectedParts, applicationNormalizedParts, changedParts };
 }

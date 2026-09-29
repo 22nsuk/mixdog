@@ -707,6 +707,7 @@ function docxSections(documentXml, relationshipsXml, partText, referenced) {
     const cols = /<w:cols\b([^>]*?)\/?>/.exec(sectionXml)?.[1] || '';
     const columns = Number(/\bw:num="(\d+)"/.exec(cols)?.[1]) || 1;
     const space = Number(/\bw:space="(\d+)"/.exec(cols)?.[1]);
+    const columnSpacing = Number.isFinite(space) ? Math.round((space / TWIPS_PER_POINT) * 100) / 100 : 36;
     return {
       path: `/section[${index}]`,
       index,
@@ -717,9 +718,7 @@ function docxSections(documentXml, relationshipsXml, partText, referenced) {
       rightMargin: margin('right'),
       columns,
       // Word's own spacing when the file names none is half an inch.
-      ...(columns > 1
-        ? { columnSpacing: Number.isFinite(space) ? Math.round((space / TWIPS_PER_POINT) * 100) / 100 : 36 }
-        : {}),
+      ...(columns > 1 ? { columnSpacing } : {}),
       stories,
     };
   });

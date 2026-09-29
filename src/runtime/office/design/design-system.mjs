@@ -10,7 +10,6 @@ export { officeDesignCatalog, resolveOfficeDesign } from './design-tokens.mjs';
 
 export function expandOfficeDesignOperations({
   format,
-  backend = '',
   operations = [],
   design: request = {},
   library = null,
@@ -53,7 +52,7 @@ export function expandOfficeDesignOperations({
       const composition = planOfficeComposition(normalizedFormat, contentOperation, design, {
         usage: compositionUsage,
       });
-      output.push(...expandDocxDocument(contentOperation, design, docxState, backend, composition));
+      output.push(...expandDocxDocument(contentOperation, design, docxState, composition));
       semantic.push({
         op: name,
         sections: Array.isArray(contentOperation.sections) ? contentOperation.sections.length : 0,

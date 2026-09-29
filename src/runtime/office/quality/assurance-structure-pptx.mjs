@@ -134,9 +134,6 @@ function isPptxChromeText(shape) {
   return fontSize > 0 && fontSize <= PPTX_BODY_MIN_PT && text.length <= PPTX_CHROME_MAX_CHARS && !/[\r\n]/.test(text);
 }
 
-// A numeral or short lead directly above its own description is one unit
-// (a hero number and its label, a step number and its detail); the tight gap
-// is the design, not a spacing defect.
 // Near-miss alignment: an element a few points off an axis the slide already
 // shares reads as a mistake, not as a decision — the eye registers the step
 // without being able to name it. The reference axis must already be held by two
@@ -164,13 +161,15 @@ const PPTX_AXIS_KINDS = Object.freeze(['left edge', 'centre', 'right edge', 'top
 // position. Registering that single position as three different kinds would let
 // any box's edge drift against a rule it has nothing to do with, so the collapsed
 // dimension reports its centre only; the drawn dimension keeps both ends.
+const PPTX_VERTICAL_AXES = new Set(['top edge', 'bottom edge', 'middle']);
+const PPTX_HORIZONTAL_AXES = new Set(['left edge', 'right edge', 'centre']);
+
 function pptxShapeAxes(shape) {
   const flat = { x: shape.width === 0, y: shape.height === 0 };
   const span = shape.pageSpan || {};
-  const VERTICAL = new Set(['top edge', 'bottom edge', 'middle']);
-  const HORIZONTAL = new Set(['left edge', 'right edge', 'centre']);
   return pptxPlacedAxes(shape, flat).filter(
-    ([kind]) => !(span.spansHeight && VERTICAL.has(kind)) && !(span.spansWidth && HORIZONTAL.has(kind))
+    ([kind]) =>
+      !(span.spansHeight && PPTX_VERTICAL_AXES.has(kind)) && !(span.spansWidth && PPTX_HORIZONTAL_AXES.has(kind))
   );
 }
 
@@ -705,14 +704,24 @@ const FRAME_EDGED_GEOMETRY = new Set(['rect', 'roundRect']);
 function reviewPptxTextEdgeCrossing(slide, textShapes, issues) {
   for (const textShape of textShapes) {
     if (isPptxChromeText(textShape)) continue;
-    const t = { l: Number(textShape.left), t: Number(textShape.top), w: Number(textShape.width), h: Number(textShape.height) };
+    const t = {
+      l: Number(textShape.left),
+      t: Number(textShape.top),
+      w: Number(textShape.width),
+      h: Number(textShape.height),
+    };
     if (!(t.w > 0 && t.h > 0)) continue;
     for (const surface of slide.shapes || []) {
       if (surface === textShape || isMotifShape(surface) || String(surface.text || '').trim()) continue;
       if (!isPptxPicture(surface) && !solidShapeFill(surface)) continue;
       if (surface.geometry && !FRAME_EDGED_GEOMETRY.has(surface.geometry)) continue;
       if (!hasFrame(surface)) continue;
-      const s = { l: Number(surface.left), t: Number(surface.top), w: Number(surface.width), h: Number(surface.height) };
+      const s = {
+        l: Number(surface.left),
+        t: Number(surface.top),
+        w: Number(surface.width),
+        h: Number(surface.height),
+      };
       const across = Math.min(t.l + t.w, s.l + s.w) - Math.max(t.l, s.l);
       const down = Math.min(t.t + t.h, s.t + s.h) - Math.max(t.t, s.t);
       if (across <= 0 || down <= 0) continue;

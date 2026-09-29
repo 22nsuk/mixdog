@@ -29,6 +29,7 @@ import {
   wordJustification,
   wordTableProperties,
   wordTextContent,
+  wordTextElement,
   withFirstRunText,
 } from './portable-docx-xml.mjs';
 import { docxRevisionTree, flattenDocxRevisions } from './docx-revisions.mjs';
@@ -106,15 +107,14 @@ export function docxTocEntries(documentXml, lower, upper, headingLevels = new Ma
 // An entry carries its page after a tab once a render has measured it (numberDocxTableOfContents); the tab stop
 // on the paragraph sets it on the right margin behind a dot leader, the way Word draws its own contents.
 export function docxTocCacheRuns(entries, lower) {
-  return entries.length
-    ? entries
-        .map(
-          (entry) =>
-            `<w:r><w:t xml:space="preserve">${xmlEncode(`${'    '.repeat(entry.level - lower)}${entry.text}`)}</w:t></w:r>` +
-            (entry.page ? `<w:r><w:tab/></w:r><w:r><w:t>${Number(entry.page)}</w:t></w:r>` : '')
-        )
-        .join('<w:r><w:br/></w:r>')
-    : '<w:r><w:t>Update this field in Word to build the table of contents.</w:t></w:r>';
+  if (!entries.length) return '<w:r><w:t>Update this field in Word to build the table of contents.</w:t></w:r>';
+  const pageRun = (entry) => (entry.page ? `<w:r><w:tab/></w:r><w:r><w:t>${Number(entry.page)}</w:t></w:r>` : '');
+  return entries
+    .map(
+      (entry) =>
+        `<w:r><w:t xml:space="preserve">${xmlEncode(`${'    '.repeat(entry.level - lower)}${entry.text}`)}</w:t></w:r>${pageRun(entry)}`
+    )
+    .join('<w:r><w:br/></w:r>');
 }
 
 const TOC_FIELD = /<w:fldSimple\b([^>]*\bw:instr="([^"]*TOC[^"]*)"[^>]*)>([\s\S]*?)<\/w:fldSimple>/g;
@@ -560,7 +560,7 @@ export async function fitDocxTable(zip, op) {
 function controlFilledWith(control, contentInner, text) {
   const first = /<w:r(?:\s[^>]*)?>[\s\S]*?<\/w:r>/.exec(contentInner);
   const runProperties = first ? /<w:rPr(?:\s[^>]*)?>[\s\S]*?<\/w:rPr>/.exec(first[0])?.[0] || '' : '';
-  const run = `<w:r>${runProperties}<w:t${/^\s|\s$/.test(text) ? ' xml:space="preserve"' : ''}>${xmlEncode(text)}</w:t></w:r>`;
+  const run = `<w:r>${runProperties}${wordTextElement(text)}</w:r>`;
   const [firstParagraph] = contentInner.match(/<w:p(?:\s[^>]*)?>[\s\S]*?<\/w:p>/) || [];
   const paragraph = firstParagraph
     ? `${/^<w:p(?:\s[^>]*)?>(?:<w:pPr(?:\s[^>]*)?>[\s\S]*?<\/w:pPr>)?/.exec(firstParagraph)?.[0] || '<w:p>'}${run}</w:p>`
@@ -704,7 +704,10 @@ function styledDocxCell(cell, op) {
   const eastAsiaFontAttrs = cellEastAsia ? ` w:eastAsia="${cellEastAsia}"` : '';
   // bold:false and italic:false switch the weight off, as the Word backend's Font.Bold = 0 does: a data row inserted
   // before a total copies the total's bold, and asking for it back to regular changed nothing here.
-  const toggled = (tag, value) => (value === undefined ? '' : value ? `<w:${tag}/><w:${tag}Cs/>` : `<w:${tag} w:val="0"/><w:${tag}Cs w:val="0"/>`);
+  const toggled = (tag, value) => {
+    if (value === undefined) return '';
+    return value ? `<w:${tag}/><w:${tag}Cs/>` : `<w:${tag} w:val="0"/><w:${tag}Cs w:val="0"/>`;
+  };
   const runFormat = [
     cellFont || cellEastAsia ? `<w:rFonts${latinFontAttrs}${eastAsiaFontAttrs}/>` : '',
     toggled('b', op.properties?.bold),
@@ -760,7 +763,7 @@ function mergedCellXml(joined, spans) {
 // Merges the located cell across colSpan columns (dropping the absorbed
 // cells) and rowSpan rows (continuation cells become vMerge, spanning the same columns: a block merge left the
 // continuation rows' absorbed cells in place, one grid column too many a cell).
-function mergedDocxTable({ table, rows, row, cells, cell }, op) {
+function mergedDocxTable({ table, rows, row, cells }, op) {
   const colSpan = Math.max(1, Number(op.colSpan) || 1);
   const rowSpan = Math.max(1, Number(op.rowSpan) || 1);
   const gridSpan = colSpan > 1 ? `<w:gridSpan w:val="${colSpan}"/>` : '';
@@ -807,7 +810,7 @@ export async function styleOrMergeDocxTableCell(zip, op) {
   const nextTable =
     op.op === 'set_table_cell_style'
       ? table[0].replace(cell[0], styledDocxCell(cell[0], op))
-      : mergedDocxTable({ table, rows, row, cells, cell }, op);
+      : mergedDocxTable({ table, rows, row, cells }, op);
   current = replaceDocxTable(current, table, nextTable);
   zip.file('word/document.xml', current);
   return {

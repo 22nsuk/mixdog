@@ -522,7 +522,10 @@ const CELL_FILLS = ['a:noFill', 'a:solidFill', 'a:gradFill', 'a:blipFill', 'a:pa
 function filledCellProperties(tcPr, fill, anchor) {
   const open = /^<a:tcPr\b([^>]*?)(\/?)>/.exec(tcPr);
   let attributes = open[1];
-  if (anchor) attributes = /\banchor="/.test(attributes) ? attributes.replace(/\banchor="[^"]*"/, `anchor="${anchor}"`) : `${attributes} anchor="${anchor}"`;
+  if (anchor)
+    attributes = /\banchor="/.test(attributes)
+      ? attributes.replace(/\banchor="[^"]*"/, `anchor="${anchor}"`)
+      : `${attributes} anchor="${anchor}"`;
   let children = open[2] ? '' : tcPr.slice(open[0].length, tcPr.lastIndexOf('</a:tcPr>'));
   if (fill) {
     for (const element of topLevelElements(children, CELL_FILLS).reverse()) {
@@ -543,11 +546,15 @@ export async function handleSetTableCellStyle(context, op) {
   const shape = slideShape(tree, op);
   if (!/<a:tbl>/.test(shape.xml)) throw new Error(`PPTX shape ${op.shape} on slide ${op.slide} is not a table`);
   const rows = [...shape.xml.matchAll(/<a:tr\b[^>]*>[\s\S]*?<\/a:tr>/g)];
-  const cells = rows[Number(op.row) - 1] ? [...rows[Number(op.row) - 1][0].matchAll(/<a:tc\b[^>]*?(?:\/>|>[\s\S]*?<\/a:tc>)/g)] : [];
+  const cells = rows[Number(op.row) - 1]
+    ? [...rows[Number(op.row) - 1][0].matchAll(/<a:tc\b[^>]*?(?:\/>|>[\s\S]*?<\/a:tc>)/g)]
+    : [];
   const cell = cells[Number(op.col) - 1];
   if (!cell) {
     const columns = rows[0] ? [...rows[0][0].matchAll(/<a:tc\b/g)].length : 0;
-    throw new Error(`PPTX table shape ${op.shape} is ${rows.length}x${columns}; row ${op.row}, col ${op.col} is outside it`);
+    throw new Error(
+      `PPTX table shape ${op.shape} is ${rows.length}x${columns}; row ${op.row}, col ${op.col} is outside it`
+    );
   }
   const properties = op.properties || {};
   let styled = cell[0].replace(
@@ -556,20 +563,30 @@ export async function handleSetTableCellStyle(context, op) {
       `<a:txBody>${restyledParagraphs(inner, { ...properties, alignment: properties.horizontalAlignment ?? properties.alignment })}</a:txBody>`
   );
   // fillColor: null leaves the cell unfilled, as the Office backend's Fill.Visible = 0 does.
-  const fill = properties.fillColor === null ? '<a:noFill/>' : properties.fillColor ? solidFillXml(properties.fillColor) : '';
+  let fill = '';
+  if (properties.fillColor === null) fill = '<a:noFill/>';
+  else if (properties.fillColor) fill = solidFillXml(properties.fillColor);
   const anchor = textAnchor(properties.verticalAlignment);
   // The cell's own text frame may name an anchor too (this writer's add_table sets one); it follows the cell's.
   if (anchor) styled = styled.replace(/(<a:bodyPr\b[^>]*?\banchor=")[^"]*"/, `$1${anchor}"`);
   if (fill || anchor) {
     if (!/<a:tcPr\b/.test(styled)) styled = styled.replace('</a:tc>', '<a:tcPr/></a:tc>');
-    styled = styled.replace(/<a:tcPr\b[^>]*?(?:\/>|>[\s\S]*?<\/a:tcPr>)/, (tcPr) => filledCellProperties(tcPr, fill, anchor));
+    styled = styled.replace(/<a:tcPr\b[^>]*?(?:\/>|>[\s\S]*?<\/a:tcPr>)/, (tcPr) =>
+      filledCellProperties(tcPr, fill, anchor)
+    );
   }
   const row = rows[Number(op.row) - 1];
   const nextRow = row[0].replace(cell[0], () => styled);
   const updated = shape.xml.replace(row[0], () => nextRow);
-  const nextInner = `${tree.inner.slice(0, shape.start)}${updated}${tree.inner.slice(shape.end)}`;
-  context.zip.file(path, `${current.slice(0, tree.start)}${nextInner}${current.slice(tree.end)}`);
-  return { op: op.op, changed: updated !== shape.xml, slide: Number(op.slide), shape: Number(op.shape), row: Number(op.row), col: Number(op.col) };
+  writeShape(context, { path, current, tree }, shape, updated);
+  return {
+    op: op.op,
+    changed: updated !== shape.xml,
+    slide: Number(op.slide),
+    shape: Number(op.shape),
+    row: Number(op.row),
+    col: Number(op.col),
+  };
 }
 
 export async function handleSetTableDataOrReplaceImage(context, op) {

@@ -69,11 +69,11 @@ export function worksheetGeometry(xml, digitWidth = 7) {
       : Math.ceil((baseCharacters * digitWidth + 5) / 8) * 8;
   const columns = [...xml.matchAll(/<col\b([^>]*?)\/>/g)].map((match) => {
     const width = Number(xmlAttribute(match[1], 'width'));
+    const shown = width > 0 ? columnPixels(width, digitWidth) : defaultPixels;
     return {
       start: Number(xmlAttribute(match[1], 'min')),
       end: Number(xmlAttribute(match[1], 'max')),
-      pixels:
-        xmlAttribute(match[1], 'hidden') === '1' ? 0 : width > 0 ? columnPixels(width, digitWidth) : defaultPixels,
+      pixels: xmlAttribute(match[1], 'hidden') === '1' ? 0 : shown,
     };
   });
   const rows = new Map(

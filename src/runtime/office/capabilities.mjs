@@ -234,7 +234,7 @@ function hoistFreezePaneCell(format, name, operation) {
 // reviewer "검토자" came back as "MD" (the runtime's own default) on the portable writer and on PowerPoint, and as the
 // machine user's initials on Word. A Hangul name takes its first syllable, as Korean Office does; a Latin one the
 // first letter of up to three words.
-function authorInitials(format, name, operation) {
+function authorInitials(name, operation) {
   if (!['add_comment', 'add_comment_reply'].includes(name) || operation.initials !== undefined) return;
   const author = String(operation.author || '').trim();
   if (!author) return;
@@ -434,11 +434,14 @@ function docxTableAlignmentFaults(format, name, operation, index) {
   return faults;
 }
 
+// A field the caller gave, or the stable id (slideId, shapeId) that stands for it on a stable-target backend.
+const suppliedField = (operation, field, stableTargets) =>
+  operation[field] !== undefined ||
+  (stableTargets && ['slide', 'shape'].includes(field) && operation[`${field}Id`] !== undefined);
+
 function requiredInputFault(batch, name, operation, index, signatureValue, stableTargets) {
   const { format, backend } = batch;
-  const supplied = (field) =>
-    operation[field] !== undefined ||
-    (stableTargets && ['slide', 'shape'].includes(field) && operation[`${field}Id`] !== undefined);
+  const supplied = (field) => suppliedField(operation, field, stableTargets);
   const missing = signatureValue.required.filter((field) => !supplied(field));
   const matchesAlternative =
     !signatureValue.oneOf.length || signatureValue.oneOf.some((alternative) => alternative.every(supplied));
@@ -463,7 +466,7 @@ function operationContractFaults(batch, operation, index) {
   const { format, backend, catalog } = batch;
   applyFieldAliases(format, name, operation);
   hoistFreezePaneCell(format, name, operation);
-  authorInitials(format, name, operation);
+  authorInitials(name, operation);
   const signatureValue = operationSignature(format, name);
   const stableTargets = format === 'pptx' && backend === 'mixdog-ooxml';
   const allowed = allowedOperationFields(signatureValue, stableTargets);
@@ -472,11 +475,7 @@ function operationContractFaults(batch, operation, index) {
   hoistComposeSheetTable(format, name, operation);
   hoistGeometryProperties(signatureValue, operation, allowed);
   const propertyKeys = propertyKeySet(catalog, signatureValue);
-  const missing = signatureValue.required.filter(
-    (field) =>
-      operation[field] === undefined &&
-      !(stableTargets && ['slide', 'shape'].includes(field) && operation[`${field}Id`] !== undefined)
-  );
+  const missing = signatureValue.required.filter((field) => !suppliedField(operation, field, stableTargets));
   return [
     unknownFieldsFault(batch, name, operation, index, { allowed, propertyKeys, missing }),
     unknownPropertiesFault(batch, name, operation, index, propertyKeys),

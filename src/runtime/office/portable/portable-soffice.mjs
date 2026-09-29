@@ -5,7 +5,7 @@ import { constants as fsConstants, rmSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import JSZip from 'jszip';
 import { copyFile, readFile, rename, writeFile, mkdir, mkdtemp, rm, stat } from 'node:fs/promises';
-import { zipText } from './portable-opc.mjs';
+import { packageBuffer, zipText } from './portable-opc.mjs';
 import {
   computedCellValues,
   iterateSheetCells,
@@ -34,6 +34,13 @@ const SOFFICE_QUIET_ARGS = [
   '--norestore',
 ];
 
+// The child may already have exited; a kill that finds nothing to stop is not a failure.
+function killQuietly(child) {
+  try {
+    child.kill();
+  } catch {}
+}
+
 // A detection probe must always answer. soffice.exe is a GUI launcher that can
 // sit forever without exiting, which deadlocked detection before the rendering
 // call was ever reached, so the probe is bounded and the child killed on expiry.
@@ -49,9 +56,7 @@ function commandExists(command) {
     };
     const child = spawn(command, ['--version'], { windowsHide: true, stdio: 'ignore' });
     timer = setTimeout(() => {
-      try {
-        child.kill();
-      } catch {}
+      killQuietly(child);
       finish(false);
     }, SOFFICE_PROBE_TIMEOUT_MS);
     child.once('error', () => finish(false));
@@ -116,6 +121,8 @@ async function libreOfficeProgram() {
 }
 
 let pendingProfile = null;
+const createdProfiles = new Set();
+let exitHandlerRegistered = false;
 
 // Conversion must never attach to the user's own running LibreOffice: a shared
 // profile makes the second invocation either fail or block until the desktop
@@ -127,11 +134,17 @@ function sharedProfileDir() {
     const created = await mkdtemp(join(tmpdir(), 'mixdog-office-profile-'));
     // An exit handler cannot await, and a profile left behind accumulates one
     // directory per run of the app.
-    process.once('exit', () => {
-      try {
-        rmSync(created, { recursive: true, force: true });
-      } catch {}
-    });
+    createdProfiles.add(created);
+    if (!exitHandlerRegistered) {
+      exitHandlerRegistered = true;
+      process.once('exit', () => {
+        for (const profile of createdProfiles) {
+          try {
+            rmSync(profile, { recursive: true, force: true });
+          } catch {}
+        }
+      });
+    }
     return created;
   })();
   return pendingProfile;
@@ -169,9 +182,7 @@ export function runSoffice(program, args, { signal, timeoutMs, timeoutMessage, c
       resolve(value);
     };
     const onAbort = () => {
-      try {
-        child.kill();
-      } catch {}
+      killQuietly(child);
       finish({ ok: false, error: cancelMessage });
     };
     child.stderr.setEncoding('utf8');
@@ -183,9 +194,7 @@ export function runSoffice(program, args, { signal, timeoutMs, timeoutMessage, c
       finish(code === 0 ? { ok: true } : { ok: false, error: stderr.trim() || `LibreOffice exited with code ${code}` })
     );
     timer = setTimeout(() => {
-      try {
-        child.kill();
-      } catch {}
+      killQuietly(child);
       finish({ ok: false, error: timeoutMessage });
     }, timeoutMs);
     if (signal?.aborted) onAbort();
@@ -353,12 +362,7 @@ async function withoutFormulaCache(source) {
     if (next !== xml) zip.file(name, next);
   }
   if (!stripped) return source;
-  return await zip.generateAsync({
-    type: 'nodebuffer',
-    compression: 'DEFLATE',
-    compressionOptions: { level: 6 },
-    platform: 'DOS',
-  });
+  return await packageBuffer(zip);
 }
 
 // The roundtrip is asked for values and nothing else. What LibreOffice writes back is its own reading of the
@@ -374,7 +378,8 @@ async function withComputedValues(originalZip, produced) {
     const part = calculated.get(sheet.name);
     if (!part) continue;
     const computed = computedCellValues(await zipText(produced, part), strings);
-    if (computed.size) originalZip.file(sheet.path, writeCachedValues(await zipText(originalZip, sheet.path), computed));
+    if (computed.size)
+      originalZip.file(sheet.path, writeCachedValues(await zipText(originalZip, sheet.path), computed));
   }
   await refreshChartCaches(originalZip);
   const workbookXml = await zipText(originalZip, 'xl/workbook.xml');

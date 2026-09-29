@@ -317,7 +317,7 @@ test('a document keeps a paragraph after its last table and between two tables',
         .replace(/<w:tc>[\s\S]*?<\/w:tc>/g, '')
         .matchAll(/<w:(p|tbl)\b(\/)?/g),
     ]
-      .map((match) => (match[1] === 'tbl' ? 'T' : match[2] ? 'e' : 'p'))
+      .map(blockLetter)
       .join('');
   assert.equal(await blocks(), 'pTeTe');
   value(
@@ -371,7 +371,7 @@ test('a document keeps a paragraph after its last table and between two tables',
       .replace(/<w:tc>[\s\S]*?<\/w:tc>/g, '')
       .matchAll(/<w:(p|tbl)\b(\/)?/g),
   ]
-    .map((match) => (match[1] === 'tbl' ? 'T' : match[2] ? 'e' : 'p'))
+    .map(blockLetter)
     .join('');
   assert.equal(pairBlocks, 'pTeTp');
   // Moving that paragraph away leaves the tables apart too.
@@ -394,7 +394,7 @@ test('a document keeps a paragraph after its last table and between two tables',
       .replace(/<w:tc>[\s\S]*?<\/w:tc>/g, '')
       .matchAll(/<w:(p|tbl)\b(\/)?/g),
   ]
-    .map((match) => (match[1] === 'tbl' ? 'T' : match[2] ? 'e' : 'p'))
+    .map(blockLetter)
     .join('');
   assert.doesNotMatch(moved, /TT/, moved);
 });
@@ -1179,9 +1179,25 @@ test('a drawing laid over filled cells is reported, one clear of them is not', a
           mode: 'portable',
           overwrite: true,
           operations: [
-            { op: 'set_range', range: 'A1:B3', values: [['연도', '순현금흐름'], ['2027', 9.2], ['2028', 10.0]] },
+            {
+              op: 'set_range',
+              range: 'A1:B3',
+              values: [
+                ['연도', '순현금흐름'],
+                ['2027', 9.2],
+                ['2028', 10.0],
+              ],
+            },
             { op: 'set_range', range: 'A22:B22', values: [['비고', '재무팀 검토']] },
-            { op: 'add_chart', range: 'A1:B3', cell, chartType: 'column', title: '순현금흐름 (억원)', width: 300, height: 220 },
+            {
+              op: 'add_chart',
+              range: 'A1:B3',
+              cell,
+              chartType: 'column',
+              title: '순현금흐름 (억원)',
+              width: 300,
+              height: 220,
+            },
           ],
         },
         { cwd }
@@ -1192,7 +1208,11 @@ test('a drawing laid over filled cells is reported, one clear of them is not', a
     return audited.issues.filter((issue) => issue.code === 'drawing_covers_cells');
   };
   const covering = await audit('A8');
-  assert.deepEqual(covering.map((issue) => issue.path), ['/sheet[Sheet1]/chart[1]'], JSON.stringify(covering));
+  assert.deepEqual(
+    covering.map((issue) => issue.path),
+    ['/sheet[Sheet1]/chart[1]'],
+    JSON.stringify(covering)
+  );
   assert.match(covering[0].message, /over 2 filled cells \(A22, B22\)/);
   assert.deepEqual(await audit('D2'), []);
 });
@@ -1411,7 +1431,8 @@ test('fitting columns keeps a withheld column withheld', async (t) => {
 // floor the layout asks for; a row fit that came after it used to rewrite every
 // width from the text again and undo it.
 test('a column width is stored as Excel stores it: the characters asked for and its padding, in the default digit', async (t) => {
-  const fonts = (name) => `<styleSheet><fonts count="1"><font><sz val="11"/><name val="${name}"/></font></fonts></styleSheet>`;
+  const fonts = (name) =>
+    `<styleSheet><fonts count="1"><font><sz val="11"/><name val="${name}"/></font></fonts></styleSheet>`;
   assert.equal(maximumDigitWidth(fonts('Calibri')), 7);
   if (MALGUN_GOTHIC_INSTALLED) assert.equal(maximumDigitWidth(fonts('맑은 고딕')), 8);
   // The values Excel itself wrote for ColumnWidth 9 and 5.2 in 맑은 고딕 11 (a column snaps to whole pixels).
@@ -1448,7 +1469,14 @@ test('a label is measured in its own face: a bold header that prints inside its 
         path: join(cwd, 'header.xlsx'),
         mode: 'portable',
         operations: [
-          { op: 'set_range', range: 'A1:C2', values: [['시작', '기간 (일)', '진행률'], ['2026-10-05', 12, 0.4]] },
+          {
+            op: 'set_range',
+            range: 'A1:C2',
+            values: [
+              ['시작', '기간 (일)', '진행률'],
+              ['2026-10-05', 12, 0.4],
+            ],
+          },
           { op: 'set_style', range: 'A1:C1', properties: { fontName: 'Malgun Gothic', fontSize: 10, bold: true } },
           { op: 'set_column_width', column: 'B', width: 9 },
         ],
@@ -1707,3 +1735,9 @@ test('portable snapshots carry notes, booleans, and conventions; the financial a
     [`/sheet[${first.name}]/cell[B2]`]
   );
 });
+
+// One letter per body block of a Word document: T a table, e an empty (self-closed) paragraph, p a paragraph.
+function blockLetter(match) {
+  if (match[1] === 'tbl') return 'T';
+  return match[2] ? 'e' : 'p';
+}

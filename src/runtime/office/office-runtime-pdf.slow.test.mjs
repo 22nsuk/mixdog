@@ -1129,7 +1129,9 @@ async function pageContent(path) {
   const document = await PDFDocument.load(await readFile(path));
   const contents = document.getPage(0).node.Contents();
   const streams =
-    contents instanceof PDFArray ? contents.asArray().map((reference) => document.context.lookup(reference)) : [contents];
+    contents instanceof PDFArray
+      ? contents.asArray().map((reference) => document.context.lookup(reference))
+      : [contents];
   return streams.map((stream) => Buffer.from(decodePDFRawStream(stream).decode()).toString('latin1')).join('\n');
 }
 
@@ -2229,8 +2231,14 @@ test('PDF section heads step down from the cover title, and a wrapped table row 
   const at = (text) => items.find((item) => item.text.startsWith(text));
   const [title, heading, speaker, topic] = ['Partner Day', 'Program', 'Kim', 'How payments'].map(at);
   assert.ok(title && heading && speaker && topic, JSON.stringify(items.map((item) => item.text)));
-  assert.ok(heading.height < title.height * 0.7, `head ${heading.height.toFixed(1)} under title ${title.height.toFixed(1)}`);
-  assert.ok(Math.abs(speaker.top - topic.top) < 1, `speaker at ${speaker.top.toFixed(1)}, topic at ${topic.top.toFixed(1)}`);
+  assert.ok(
+    heading.height < title.height * 0.7,
+    `head ${heading.height.toFixed(1)} under title ${title.height.toFixed(1)}`
+  );
+  assert.ok(
+    Math.abs(speaker.top - topic.top) < 1,
+    `speaker at ${speaker.top.toFixed(1)}, topic at ${topic.top.toFixed(1)}`
+  );
 });
 
 // A first column of 1호, 2호 is a row label with a digit in it; figures are set

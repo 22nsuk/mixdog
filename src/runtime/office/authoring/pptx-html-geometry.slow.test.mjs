@@ -58,13 +58,18 @@ const DECK = `<!doctype html><html lang="ko"><head><meta charset="utf-8"><style>
 </section>
 </body></html>`;
 
-test('the geometry read refuses the misses a page makes and passes the relations that hold', { skip: !localBrowserAvailable() && 'no local Chrome or Edge' }, async () => {
+test('the geometry read refuses the misses a page makes and passes the relations that hold', {
+  skip: !localBrowserAvailable() && 'no local Chrome or Edge',
+}, async () => {
   const dir = await mkdtemp(join(tmpdir(), 'mixdog-geometry-'));
   try {
     const artifacts = htmlArtifacts(join(dir, 'deck.pptx'));
     const { geometry } = await measureHtmlDeck(DECK, { sourcePath: artifacts.source, shotPath: artifacts.shot });
     const page = (n) => geometry.find((entry) => entry.slide === n)?.findings || [];
-    const checks = (n) => page(n).map((finding) => finding.check).sort();
+    const checks = (n) =>
+      page(n)
+        .map((finding) => finding.check)
+        .sort();
     const off = (n, check) => page(n).find((finding) => finding.check === check)?.off;
 
     // An arrow under the midline of staggered cards, and a block 22 px out of the column above it.

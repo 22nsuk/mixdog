@@ -253,23 +253,25 @@ function Snapshot-Word($doc, $payload) {
             # Tab stops shape only a line that holds a tab, and Word lists every default stop beside the paragraph's own,
             # so reading them cost 15 ms a paragraph — a third of a long document's snapshot — for lines with no tab.
             $tabStops = @()
-            if ($text.Contains("`t")) { try {
-                $tabs = $p.TabStops
-                $tabCount = [int]$tabs.Count
-                for ($tabIndex = 1; $tabIndex -le $tabCount; $tabIndex++) {
-                    $tab = $tabs.Item($tabIndex)
-                    # Word lists its default stops (every DefaultTabStop points)
-                    # beside the paragraph's own; the snapshot reports the ones
-                    # the paragraph sets, as the portable reader does.
-                    if (-not [bool]$tab.CustomTab) { continue }
-                    $tabStops += [ordered]@{
-                        position  = [double]$tab.Position
-                        alignment = [int]$tab.Alignment
-                        leader    = [int]$tab.Leader
+            if ($text.Contains("`t")) {
+                try {
+                    $tabs = $p.TabStops
+                    $tabCount = [int]$tabs.Count
+                    for ($tabIndex = 1; $tabIndex -le $tabCount; $tabIndex++) {
+                        $tab = $tabs.Item($tabIndex)
+                        # Word lists its default stops (every DefaultTabStop points)
+                        # beside the paragraph's own; the snapshot reports the ones
+                        # the paragraph sets, as the portable reader does.
+                        if (-not [bool]$tab.CustomTab) { continue }
+                        $tabStops += [ordered]@{
+                            position  = [double]$tab.Position
+                            alignment = [int]$tab.Alignment
+                            leader    = [int]$tab.Leader
+                        }
                     }
                 }
+                catch {} 
             }
-            catch {} }
             $format = $p.Format
             # The page the paragraph starts on and the page its last character sits on. Information(3) on the whole
             # range answered the page of its end for both, so a paragraph running over a page break started overleaf.
@@ -538,12 +540,12 @@ function Snapshot-Word($doc, $payload) {
         $typeCode = [int]$revision.Type
         $author = $(try { [string]$revision.Author } catch { '' })
         $entry = [ordered]@{
-            path     = "/body/revision[$revisionIndex]"
-            index    = $revisionIndex
-            type     = $(if ($revisionTypes.ContainsKey($typeCode)) { [string]$revisionTypes[$typeCode] } else { 'unknown' })
-            author   = $author
-            date     = $(try { ([datetime]$revision.Date).ToUniversalTime().ToString('o') } catch { '' })
-            text     = $(try { ([string]$revision.Range.Text).TrimEnd("`r", "`a") } catch { '' })
+            path   = "/body/revision[$revisionIndex]"
+            index  = $revisionIndex
+            type   = $(if ($revisionTypes.ContainsKey($typeCode)) { [string]$revisionTypes[$typeCode] } else { 'unknown' })
+            author = $author
+            date   = $(try { ([datetime]$revision.Date).ToUniversalTime().ToString('o') } catch { '' })
+            text   = $(try { ([string]$revision.Range.Text).TrimEnd("`r", "`a") } catch { '' })
         }
         # The paragraph the revision starts in: the range up to and including
         # its first character ends inside that paragraph, so the paragraph count
@@ -785,6 +787,17 @@ function Excel-ValidationBlocks($sheet, $area) {
     }
     foreach ($run in $runs) { $blocks.Add($sheet.Range($sheet.Cells.Item($run.top, $run.left), $sheet.Cells.Item($run.bottom, $run.right))) }
     return , $blocks
+}
+
+function Excel-FormulaLineage($entries, [string]$sheetName) {
+    return @($entries | ForEach-Object {
+            [ordered]@{
+                path       = "$($_.path)/lineage"
+                from       = $_.path
+                formula    = $_.formula
+                precedents = @(Excel-FormulaPrecedents ([string]$_.formula) $sheetName)
+            }
+        })
 }
 
 function Snapshot-Excel($book, $payload) {
@@ -1101,14 +1114,7 @@ function Snapshot-Excel($book, $payload) {
         }
         foreach ($cell in $cells) { $cell.style = $styles[$cell.ref] }
         $entry.cells = $cells
-        $entry.formulaLineage = @($cells | Where-Object { $_.formula } | ForEach-Object {
-                [ordered]@{
-                    path       = "$($_.path)/lineage"
-                    from       = $_.path
-                    formula    = $_.formula
-                    precedents = @(Excel-FormulaPrecedents ([string]$_.formula) ([string]$sheet.Name))
-                }
-            })
+        $entry.formulaLineage = @(Excel-FormulaLineage @($cells | Where-Object { $_.formula }) ([string]$sheet.Name))
         $entry.lineageCount = $entry.formulaLineage.Count
         if ($payload.sheet -and [string]::Equals([string]$payload.sheet, [string]$sheet.Name, [System.StringComparison]::OrdinalIgnoreCase)) {
             $range = $used
@@ -1165,16 +1171,6 @@ function Snapshot-Excel($book, $payload) {
             }
             else { $null })
     }
-}
-
-function Excel-ColumnLabel([int]$column) {
-    $label = ''
-    while ($column -gt 0) {
-        $column--
-        $label = [char](65 + ($column % 26)) + $label
-        $column = [Math]::Floor($column / 26)
-    }
-    return $label
 }
 
 function Matrix-Item($matrix, [int]$row, [int]$column) {
@@ -1265,7 +1261,7 @@ function Snapshot-ExcelPage($book, $payload) {
                 if ($detailed -or $formula) {
                     $absoluteRow = $rangeStartRow + $r - 1
                     $absoluteColumn = $rangeStartColumn + $c - 1
-                    $address = "$(Excel-ColumnLabel $absoluteColumn)$absoluteRow"
+                    $address = "$(Excel-ColumnLetters $absoluteColumn)$absoluteRow"
                 }
                 if ($formula) {
                     $formulaEntry = [ordered]@{
@@ -1322,26 +1318,19 @@ function Snapshot-ExcelPage($book, $payload) {
         $cursor += $take
         $remaining -= $take
     }
-    $lineage = @($formulaEntries | ForEach-Object {
-            [ordered]@{
-                path       = "$($_.path)/lineage"
-                from       = $_.path
-                formula    = $_.formula
-                precedents = @(Excel-FormulaPrecedents ([string]$_.formula) ([string]$sheet.Name))
-            }
-        })
+    $lineage = @(Excel-FormulaLineage @($formulaEntries) ([string]$sheet.Name))
     [object[]]$cellOutput = @()
     [object[]]$rowBlockOutput = @()
     if ($detailed) { $cellOutput = @($cells) } else { $rowBlockOutput = @($rowBlocks) }
     return [ordered]@{
-        format      = 'xlsx'
-        path        = [string]$book.FullName
-        activeSheet = [string]$book.ActiveSheet.Name
-        sheetCount  = [int]$book.Worksheets.Count
+        format       = 'xlsx'
+        path         = [string]$book.FullName
+        activeSheet  = [string]$book.ActiveSheet.Name
+        sheetCount   = [int]$book.Worksheets.Count
         # A page reads one sheet; the names say which others the workbook holds, as the portable page does.
-        sheetNames  = @(foreach ($worksheet in @($book.Worksheets)) { [string]$worksheet.Name })
+        sheetNames   = @(foreach ($worksheet in @($book.Worksheets)) { [string]$worksheet.Name })
         defaultStyle = Excel-DefaultStyle $book
-        sheets      = @([ordered]@{
+        sheets       = @([ordered]@{
                 path           = "/sheet[$([string]$sheet.Name)]"
                 name           = [string]$sheet.Name
                 rows           = $rowCount
@@ -1355,7 +1344,7 @@ function Snapshot-ExcelPage($book, $payload) {
                 formulaLineage = $lineage
                 truncated      = $cursor -lt $total
             })
-        pagination  = [ordered]@{
+        pagination   = [ordered]@{
             unit       = 'cell'
             scope      = "$([string]$sheet.Name)!$([string]$base.Address($false, $false))"
             offset     = $offset
@@ -2208,14 +2197,7 @@ function Format-WordAppended($doc, $paragraph, [int]$paragraphIndex, $op) {
     }
     Set-WordParagraphFlow $format $props
     Set-WordListItemInset $format $props
-    if ($props.tabStops) {
-        $format.TabStops.ClearAll()
-        foreach ($tab in @($props.tabStops)) {
-            $alignment = switch ([string]$tab.alignment) { 'center' { 1 } 'right' { 2 } 'decimal' { 3 } 'bar' { 4 } default { 0 } }
-            $leader = switch ([string]$tab.leader) { 'dot' { 1 } 'dots' { 1 } 'dotted' { 1 } 'dash' { 2 } 'hyphen' { 2 } 'line' { 3 } 'underscore' { 3 } 'heavy' { 4 } 'middleDot' { 5 } default { 0 } }
-            $null = $format.TabStops.Add([single]$tab.position, $alignment, $leader)
-        }
-    }
+    Set-WordTabStops $format $props
     if ($props.border) { Set-WordParagraphBorder $paragraph $props.border }
     return [ordered]@{ style = $style; styleNotFound = $styleNotFound }
 }
@@ -2326,7 +2308,7 @@ function Set-ExcelNumberFormat($target, [string]$format) {
     }
     $names = Excel-ColorNames $target.Application
     if ($names.Count) {
-        $local = [regex]::Replace($format, $script:ExcelColorPattern, [System.Text.RegularExpressions.MatchEvaluator]{
+        $local = [regex]::Replace($format, $script:ExcelColorPattern, [System.Text.RegularExpressions.MatchEvaluator] {
                 param($match)
                 if ($match.Groups[2].Success) { return "[$($names.Color)$($match.Groups[2].Value)]" }
                 return "[$($names[$match.Groups[1].Value])]"
@@ -2447,8 +2429,28 @@ function Word-StoryRanges($doc) {
     return $ranges
 }
 
+function Set-WordTabStops($format, $props) {
+    if (-not $props.tabStops) { return }
+    $format.TabStops.ClearAll()
+    foreach ($tab in @($props.tabStops)) {
+        $alignment = switch ([string]$tab.alignment) { 'center' { 1 } 'right' { 2 } 'decimal' { 3 } 'bar' { 4 } default { 0 } }
+        $leader = switch ([string]$tab.leader) { 'dot' { 1 } 'dots' { 1 } 'dotted' { 1 } 'dash' { 2 } 'hyphen' { 2 } 'line' { 3 } 'underscore' { 3 } 'heavy' { 4 } 'middleDot' { 5 } default { 0 } }
+        $null = $format.TabStops.Add([single]$tab.position, $alignment, $leader)
+    }
+}
+
 function Template-CountFilled($filled, [string]$key, [int]$count) {
     $filled[$key] = $(if ($filled.Contains($key)) { [int]$filled[$key] + $count } else { $count })
+}
+
+function Template-Result($op, $filled, $ranges) {
+    $remaining = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    foreach ($range in $ranges) {
+        foreach ($match in @(Template-Matches ([string]$range.Text))) { $null = $remaining.Add([string]$match.Key) }
+    }
+    $unfilled = @($remaining) | Sort-Object
+    if ([bool]$op.strict -and $unfilled.Count -gt 0) { throw "Unfilled template tokens: $($unfilled -join ', ')" }
+    return [ordered]@{ op = 'fill_template'; changed = $filled.Count -gt 0; filled = $filled; unfilledTokens = $unfilled; strict = [bool]$op.strict }
 }
 
 function Fill-WordTemplate($doc, $op) {
@@ -2476,16 +2478,10 @@ function Fill-WordTemplate($doc, $op) {
             if ($count -eq 0) { continue }
             $search = $range.Duplicate
             $changed = $search.Find.Execute([string]$raw, $false, $false, $false, $false, $false, $true, 0, $false, [string]$values[$key], 2)
-            if ($changed) { $filled[$key] = $(if ($filled.Contains($key)) { [int]$filled[$key] + $count } else { $count }) }
+            if ($changed) { Template-CountFilled $filled $key $count }
         }
     }
-    $remaining = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
-    foreach ($range in @(Word-StoryRanges $doc)) {
-        foreach ($match in @(Template-Matches ([string]$range.Text))) { $null = $remaining.Add([string]$match.Key) }
-    }
-    $unfilled = @($remaining) | Sort-Object
-    if ([bool]$op.strict -and $unfilled.Count -gt 0) { throw "Unfilled template tokens: $($unfilled -join ', ')" }
-    return [ordered]@{ op = 'fill_template'; changed = $filled.Count -gt 0; filled = $filled; unfilledTokens = $unfilled; strict = [bool]$op.strict }
+    return Template-Result $op $filled @(Word-StoryRanges $doc)
 }
 
 function PowerPoint-ShapeTextRanges($shape) {
@@ -2560,16 +2556,10 @@ function Fill-PowerPointTemplate($presentation, $op) {
                 $replaced++
                 $after = [int]$found.Start + [Math]::Max([int]$found.Length, 1) - 1
             }
-            if ($replaced -gt 0) { $filled[$key] = $(if ($filled.Contains($key)) { [int]$filled[$key] + $replaced } else { $replaced }) }
+            if ($replaced -gt 0) { Template-CountFilled $filled $key $replaced }
         }
     }
-    $remaining = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
-    foreach ($range in @(PowerPoint-TextRanges $presentation)) {
-        foreach ($match in @(Template-Matches ([string]$range.Text))) { $null = $remaining.Add([string]$match.Key) }
-    }
-    $unfilled = @($remaining) | Sort-Object
-    if ([bool]$op.strict -and $unfilled.Count -gt 0) { throw "Unfilled template tokens: $($unfilled -join ', ')" }
-    return [ordered]@{ op = 'fill_template'; changed = $filled.Count -gt 0; filled = $filled; unfilledTokens = $unfilled; strict = [bool]$op.strict }
+    return Template-Result $op $filled @(PowerPoint-TextRanges $presentation)
 }
 
 # Word reports styles under the UI language, so a Korean install answers "제목 1"
@@ -2639,49 +2629,49 @@ function Word-CanonicalStyleName($doc, [string]$localName) {
 function Word-StyleValue([string]$name) {
     # Built-in styles go by their id: a Korean Word names Quote "인용", so compose_document's quote failed by name.
     $styles = @{
-        quote        = -181
-        intensequote = -182
-        normal    = -1
-        heading1  = -2
-        heading2  = -3
-        heading3  = -4
-        heading4  = -5
-        heading5  = -6
-        heading6  = -7
-        heading7  = -8
-        heading8  = -9
-        heading9  = -10
-        title     = -63
-        subtitle  = -75
-        tablegrid = -155
+        quote           = -181
+        intensequote    = -182
+        normal          = -1
+        heading1        = -2
+        heading2        = -3
+        heading3        = -4
+        heading4        = -5
+        heading5        = -6
+        heading6        = -7
+        heading7        = -8
+        heading8        = -9
+        heading9        = -10
+        title           = -63
+        subtitle        = -75
+        tablegrid       = -155
         # A Korean Word refuses these English names too ("캡션", "목록 단락", "간격 없음"): the ids reach them in any
         # language. (WdBuiltinStyle)
-        caption          = -35
-        listparagraph    = -180
-        listbullet       = -49
-        listbullet2      = -55
-        listbullet3      = -56
-        listnumber       = -50
-        listnumber2      = -59
-        listnumber3      = -60
-        nospacing        = -158
-        bodytext         = -67
-        footnotetext     = -30
-        endnotetext      = -44
-        header           = -32
-        footer           = -33
-        tocheading       = -267
-        toc1             = -20
-        toc2             = -21
-        toc3             = -22
-        hyperlink        = -86
-        strong           = -88
-        emphasis         = -89
-        subtleemphasis   = -261
-        intenseemphasis  = -262
-        booktitle        = -265
-        blocktext        = -85
-        plaintext        = -91
+        caption         = -35
+        listparagraph   = -180
+        listbullet      = -49
+        listbullet2     = -55
+        listbullet3     = -56
+        listnumber      = -50
+        listnumber2     = -59
+        listnumber3     = -60
+        nospacing       = -158
+        bodytext        = -67
+        footnotetext    = -30
+        endnotetext     = -44
+        header          = -32
+        footer          = -33
+        tocheading      = -267
+        toc1            = -20
+        toc2            = -21
+        toc3            = -22
+        hyperlink       = -86
+        strong          = -88
+        emphasis        = -89
+        subtleemphasis  = -261
+        intenseemphasis = -262
+        booktitle       = -265
+        blocktext       = -85
+        plaintext       = -91
     }
     $key = $name.Replace(' ', '').Replace('-', '').ToLowerInvariant()
     if ($styles.ContainsKey($key)) { return [int]$styles[$key] }
@@ -3266,14 +3256,7 @@ function Invoke-WordOperation($doc, $op) {
             }
             Set-WordParagraphFlow $format $props
             Set-WordListItemInset $format $props
-            if ($props.tabStops) {
-                $format.TabStops.ClearAll()
-                foreach ($tab in @($props.tabStops)) {
-                    $alignment = switch ([string]$tab.alignment) { 'center' { 1 } 'right' { 2 } 'decimal' { 3 } 'bar' { 4 } default { 0 } }
-                    $leader = switch ([string]$tab.leader) { 'dot' { 1 } 'dots' { 1 } 'dotted' { 1 } 'dash' { 2 } 'hyphen' { 2 } 'line' { 3 } 'underscore' { 3 } 'heavy' { 4 } 'middleDot' { 5 } default { 0 } }
-                    $null = $format.TabStops.Add([single]$tab.position, $alignment, $leader)
-                }
-            }
+            Set-WordTabStops $format $props
             if ($props.border) { Set-WordParagraphBorder $paragraph $props.border }
             return [ordered]@{ op = 'set_paragraph_format'; changed = $true; paragraph = [int]$op.paragraph }
         }
@@ -4054,7 +4037,7 @@ function PowerPoint-Layout($presentation, $reference) {
     $defaultNames = @{ 'title slide' = 'title'; 'title and content' = 'obj'; 'section header' = 'secHead'; 'two content' = 'twoObj'; 'comparison' = 'twoTxTwoObj'; 'title only' = 'titleOnly'; 'content with caption' = 'objTx'; 'picture with caption' = 'picTx'; 'title and vertical text' = 'vertTx'; 'vertical title and text' = 'vertTitleAndTx' }
     $lookup = ([string]$reference).Trim().ToLowerInvariant()
     $typeName = if ($defaultNames.ContainsKey($lookup)) { $defaultNames[$lookup] } else { [string]$reference }
-    $wanted = [Array]::FindIndex([string[]]$types, [Predicate[string]]{ param($type) [string]::Equals($type, $typeName, [System.StringComparison]::OrdinalIgnoreCase) }) + 1
+    $wanted = [Array]::FindIndex([string[]]$types, [Predicate[string]] { param($type) [string]::Equals($type, $typeName, [System.StringComparison]::OrdinalIgnoreCase) }) + 1
     if ($wanted -gt 0) {
         for ($index = 1; $index -le $layouts.Count; $index++) {
             $probe = $presentation.Slides.AddSlide($presentation.Slides.Count + 1, $layouts.Item($index))
@@ -5318,7 +5301,7 @@ function Set-PowerPointChartData(
             }
         }
     }
-    $lastColumn = Excel-ColumnLabel ($specs.Count + 1)
+    $lastColumn = Excel-ColumnLetters ($specs.Count + 1)
     $lastRow = $pointCount + 1
     $sourceAddress = "A1:${lastColumn}${lastRow}"
     $chartData = $null
@@ -5328,11 +5311,7 @@ function Set-PowerPointChartData(
     $source = $null
     $lastOpenError = ''
     $seriesCount = 0
-    $excelProcessIdsBefore = @(
-        Get-Process -Name EXCEL -ErrorAction SilentlyContinue | ForEach-Object {
-            try { [int]$_.Id } finally { try { $_.Dispose() } catch {} }
-        }
-    )
+    $excelProcessIdsBefore = @(Excel-ProcessIds)
     try {
         $chartData = $chart.ChartData
         if ($allowUiActivation) { $null = $chartData.Activate() }
@@ -5539,11 +5518,9 @@ function Set-PowerPointFooterFace($slide, [bool]$footer) {
 function Ink-OnFill([string]$fill) {
     $hex = $fill.Trim().TrimStart('#')
     if ($hex -notmatch '^[0-9A-Fa-f]{6}$') { return '1F2429' }
-    $channel = { param([int]$value) $c = $value / 255.0; if ($c -le 0.03928) { $c / 12.92 } else { [Math]::Pow(($c + 0.055) / 1.055, 2.4) } }
-    $luminance = { param([string]$h) 0.2126 * (& $channel ([Convert]::ToInt32($h.Substring(0, 2), 16))) + 0.7152 * (& $channel ([Convert]::ToInt32($h.Substring(2, 2), 16))) + 0.0722 * (& $channel ([Convert]::ToInt32($h.Substring(4, 2), 16))) }
-    $field = & $luminance $hex
+    $field = Ink-Luminance $hex
     $white = 1.05 / ($field + 0.05)
-    $dark = & $luminance '1F2429'
+    $dark = Ink-Luminance '1F2429'
     $ink = ([Math]::Max($field, $dark) + 0.05) / ([Math]::Min($field, $dark) + 0.05)
     if ($white -ge $ink) { return 'FFFFFF' } else { return '1F2429' }
 }
@@ -6811,7 +6788,8 @@ function Apply-Operations(
         # the batch before. Only a batch that changed something is undone.
         if ($live -and $format -eq 'docx' -and $wordRecordStarted) {
             $touched = $wordChanged -or $(if ($savedBefore) { -not [bool]$document.Saved } else {
-                    (Snapshot-Fingerprint (Snapshot-Document $document $format ([ordered]@{}))) -ne $beforeFingerprint })
+                    (Snapshot-Fingerprint (Snapshot-Document $document $format ([ordered]@{}))) -ne $beforeFingerprint 
+                })
             if ($touched) { try { $null = $document.Undo(1) } catch {} }
         }
         elseif ($live -and $format -eq 'pptx' -and $allowUiActivation) {

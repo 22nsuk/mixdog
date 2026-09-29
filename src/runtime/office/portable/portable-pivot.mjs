@@ -1,13 +1,17 @@
 import { posix } from 'node:path';
 import { addPackageRelationship, ensureContentTypeOverride, partRelationshipPath, zipText } from './portable-opc.mjs';
 import { columnLabel, columnNumber, parseCellRef, setCellInSheet } from './portable-cells.mjs';
-import { SPREADSHEET_MAIN, XML_HEADER, xmlEncode } from './portable-xml.mjs';
+import {
+  OFFICE_RELATIONSHIP_BASE as RELATIONSHIP_BASE,
+  SPREADSHEET_MAIN,
+  XML_HEADER,
+  xmlEncode,
+} from './portable-xml.mjs';
 
 const CACHE_DEFINITION_CONTENT_TYPE =
   'application/vnd.openxmlformats-officedocument.spreadsheetml.pivotCacheDefinition+xml';
 const CACHE_RECORDS_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.pivotCacheRecords+xml';
 const PIVOT_TABLE_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.pivotTable+xml';
-const RELATIONSHIP_BASE = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
 
 // axes: the field indexes laid out as rows or columns. A numeric field on an axis is still a set of items — "Year"
 // across the top is 2013 and 2014, not a sum — so its values are listed as numeric items; left as a bare number
@@ -116,7 +120,7 @@ function cacheRecordsXml(fields, records) {
 // autofit, or a fit audit to read, so the computed grid is written as cells.
 // The captions a pivot prints, in the language of its fields: Korean Excel heads a sum "합계 : 매출" and its totals
 // "총합계"; written in English beside Hangul fields, a pivot read "Sum of 매출" over "Grand Total".
-export function pivotCaptions(fields) {
+function pivotCaptions(fields) {
   const korean = /[\uac00-\ud7af]/.test(fields.map((field) => field?.name ?? '').join(''));
   return korean
     ? { sum: (name) => `합계 : ${name}`, grand: '총합계', total: '합계' }

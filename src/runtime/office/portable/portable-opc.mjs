@@ -80,7 +80,7 @@ export async function fillTemplateParts(zip, parts, tag, operation, { replace = 
     changed: Object.keys(filled).length > 0,
     filled,
     unfilledTokens,
-    strict: operation.strict === true,
+    strict: Boolean(operation.strict),
   };
 }
 
@@ -267,10 +267,7 @@ export function relationshipTargetsByType(relationshipsXml, owner, type) {
     const id = xmlAttribute(attributes, 'Id');
     const target = xmlAttribute(attributes, 'Target');
     if (!id || !target) continue;
-    targets.set(
-      id,
-      target.startsWith('/') ? target.slice(1) : posix.normalize(posix.join(posix.dirname(owner), target))
-    );
+    targets.set(id, partFromTarget(posix.dirname(owner), target));
   }
   return targets;
 }
@@ -291,7 +288,7 @@ function* internalRelationships(xml) {
 
 // The part a relationship target names: absolute from the package root,
 // relative from the directory of the part that declares it.
-function partFromTarget(directory, target) {
+export function partFromTarget(directory, target) {
   return target.startsWith('/') ? target.slice(1) : posix.normalize(posix.join(directory, target));
 }
 
@@ -425,7 +422,6 @@ async function clonePartTree(zip, sourcePath, cache = new Map()) {
 
 // The relationships a copied slide must own outright before it is editable on
 // its own: everything else stays shared with the slide it was copied from.
-
 export async function cloneOwnedSlideParts(zip, relationshipsPath) {
   const xml = await zipText(zip, relationshipsPath);
   if (!xml) return [];
@@ -453,11 +449,6 @@ export async function cloneOwnedSlideParts(zip, relationshipsPath) {
   return copied;
 }
 
-// A page borrowed from another deck was drawn on that deck's layout. When this
-// deck already holds the same layout the import points at it; when the two were
-// cut from different templates the layout is copied in and adopted by this
-// deck's master, so the page keeps the geometry it was built with and the
-// master still lists every layout under it.
 // Slide layout ids live above 2^31 by the OOXML convention PowerPoint writes.
 const FIRST_SLIDE_LAYOUT_ID = 2_147_483_648;
 
@@ -501,6 +492,11 @@ async function registerLayoutOnMaster(zip, master, targetPath) {
   );
 }
 
+// A page borrowed from another deck was drawn on that deck's layout. When this
+// deck already holds the same layout the import points at it; when the two were
+// cut from different templates the layout is copied in and adopted by this
+// deck's master, so the page keeps the geometry it was built with and the
+// master still lists every layout under it.
 async function adoptImportedLayout(source, zip, layoutPath, cache) {
   const master = Object.keys(zip.files)
     .filter((name) => /^ppt\/slideMasters\/slideMaster\d+\.xml$/.test(name))
@@ -571,7 +567,9 @@ export function relationshipTarget(relPath, target) {
   let decoded = xmlDecode(target).split('#')[0].split('?')[0];
   try {
     decoded = decodeURIComponent(decoded);
-  } catch {}
+  } catch {
+    // A malformed percent escape is a literal part name: keep the text as written.
+  }
   const owner = relationshipOwner(relPath);
   const base = owner ? posix.dirname(owner) : '';
   return posix.normalize(decoded.startsWith('/') ? decoded.slice(1) : posix.join(base, decoded));

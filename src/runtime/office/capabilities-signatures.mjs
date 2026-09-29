@@ -107,7 +107,19 @@ export const FORMAT_SIGNATURES = {
     }),
     add_chart: signature(
       ['categories', 'values'],
-      ['chartType', 'title', 'unit', 'highlight', 'forecast', 'accent', 'height', 'width', 'altText', 'paragraph', 'properties'],
+      [
+        'chartType',
+        'title',
+        'unit',
+        'highlight',
+        'forecast',
+        'accent',
+        'height',
+        'width',
+        'altText',
+        'paragraph',
+        'properties',
+      ],
       {
         propertySets: ['paragraphFormat'],
         notes:
@@ -123,12 +135,12 @@ export const FORMAT_SIGNATURES = {
     set_comment_resolved: signature(['comment', 'resolved']),
     insert_table_row: signature(['table', 'row'], [], {
       notes:
-        'row is the position the new row takes: it goes in before the row there now and copies that row, and one past the last row adds it at the end. A row the table does not have is refused with the table\'s size and first words, so a metric strip taken for the results table shows at once.',
+        "row is the position the new row takes: it goes in before the row there now and copies that row, and one past the last row adds it at the end. A row the table does not have is refused with the table's size and first words, so a metric strip taken for the results table shows at once.",
     }),
     delete_table_row: signature(['table', 'row']),
     insert_table_column: signature(['table', 'column'], [], {
       notes:
-        'column is the position the new column takes: it goes in before the column there now and copies it, and one past the last column adds it at the end, copying the last. A column the table does not have is refused with the table\'s size and first words.',
+        "column is the position the new column takes: it goes in before the column there now and copies it, and one past the last column adds it at the end, copying the last. A column the table does not have is refused with the table's size and first words.",
     }),
     delete_table_column: signature(['table', 'column']),
     set_header_footer: signature(['text'], ['section', 'kind', 'variant', 'header', 'properties'], {
@@ -237,10 +249,12 @@ export const FORMAT_SIGNATURES = {
         "The copy has its own charts, notes and print area, and its formulas, charts and sheet-level names read the copy, as Excel's copy does; a workbook name that reads the source gains a copy-level twin.",
     }),
     delete_sheet: signature(['sheet'], [], {
-      notes: 'Every formula, name, rule, validation and chart series that named the sheet reads #REF! afterwards, as Excel saves it.',
+      notes:
+        'Every formula, name, rule, validation and chart series that named the sheet reads #REF! afterwards, as Excel saves it.',
     }),
     rename_sheet: signature(['name'], ['sheet'], {
-      notes: 'Every formula, name, rule, validation, chart series and pivot source that names the sheet follows the new name.',
+      notes:
+        'Every formula, name, rule, validation, chart series and pivot source that names the sheet follows the new name.',
     }),
     insert_rows: signature(['row'], ['sheet', 'count'], {
       notes:

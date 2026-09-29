@@ -1652,7 +1652,14 @@ test('slide review reports the words a later picture or filled shape covers', ()
     reviewOfficeStructure({
       format: 'pptx',
       document: slide([
-        { text: '이용은 역과 강변 대여소에 모인다', left: 48, top: textTop, width: 600, height: 35, font: { size: 27 } },
+        {
+          text: '이용은 역과 강변 대여소에 모인다',
+          left: 48,
+          top: textTop,
+          width: 600,
+          height: 35,
+          font: { size: 27 },
+        },
         { text: '', left: 48, top: 90, width: 530, height: 370, fill: { color: 'DCE7DF' } },
       ]),
     }).filter((entry) => entry.code === 'text_crosses_edge');

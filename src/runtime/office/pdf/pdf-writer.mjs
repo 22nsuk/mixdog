@@ -290,7 +290,8 @@ function spaceBefore(block, type) {
 // draws the same embedding rather than a second copy of the image.
 async function blockImage(flow, block, baseDir) {
   flow.images ||= new Map();
-  if (!flow.images.has(block)) flow.images.set(block, await embedImage(flow.document, resolve(baseDir, String(block.path || ''))));
+  if (!flow.images.has(block))
+    flow.images.set(block, await embedImage(flow.document, resolve(baseDir, String(block.path || ''))));
   return flow.images.get(block);
 }
 
@@ -366,7 +367,7 @@ function drawListBlock(flow, block) {
   const layout = listLayout(flow, block);
   const { items, fontSize, lineHeight, ordered, markers, markerWidth, widestMarker, indent, left } = layout;
   const tint = color(block.color);
-  items.forEach((item, itemIndex) => {
+  items.forEach((_item, itemIndex) => {
     const marker = markers[itemIndex];
     const markerX = ordered ? left + widestMarker - markerWidth(marker) : left;
     const lines = layout.lines[itemIndex];
@@ -489,11 +490,11 @@ function drawTableRow(flow, block, layout, rowIndex) {
     const textTop = isHeader ? top - (height - inset - lines.length * lineHeight) : top - inset;
     const right = layout.alignments[column] === 'right';
     lines.forEach((line, lineIndex) => {
-      const inset = right
+      const textLeft = right
         ? cellWidths[column] - padding - face.widthOfTextAtSize(line, fontSize)
         : padding + layout.leads[column];
       flow.page.drawText(line, {
-        x: x + Math.max(padding * 0.5, inset),
+        x: x + Math.max(padding * 0.5, textLeft),
         y: textTop - lineIndex * lineHeight - fontSize * 0.78 - (lineHeight - fontSize) / 2,
         size: fontSize,
         font: face,
@@ -772,17 +773,17 @@ function chartLayout(flow, block, box) {
   const across = String(block.chartType || 'bar').toLowerCase() !== 'column';
   const titleSize = size + 1;
   const titleH = block.title ? linesHeight(bold, block.title, titleSize, box.width, titleSize * 1.3) + 6 : 0;
-  const highlight =
-    block.highlight === undefined
-      ? -1
-      : typeof block.highlight === 'number'
-        ? block.highlight
-        : categories.indexOf(String(block.highlight));
+  let highlight = -1;
+  if (typeof block.highlight === 'number') highlight = block.highlight;
+  else if (block.highlight !== undefined) highlight = categories.indexOf(String(block.highlight));
   const forecast = new Set(forecastEntries(block).map((entry) => forecastIndex(categories, entry)));
   const base = { size, categories, values, labels, titleSize, titleH, highlight, forecast, across };
   if (across) {
     // The names column is as wide as its longest name, a third of the width at most, where a longer name wraps.
-    const labelW = Math.min(box.width / 3, Math.max(...categories.map((name) => font.widthOfTextAtSize(name, size))) + 10);
+    const labelW = Math.min(
+      box.width / 3,
+      Math.max(...categories.map((name) => font.widthOfTextAtSize(name, size))) + 10
+    );
     const valueW = Math.max(...labels.map((label) => bold.widthOfTextAtSize(label, size))) + 8;
     const names = categories.map((name) => wrapText(name, font, size, Math.max(8, labelW - 10)));
     const rows = names.map((lines) => Math.max(size * 2.4, lines.length * size * 1.25 + 8));
@@ -975,8 +976,6 @@ function flowedFieldSpecs(blocks) {
   });
 }
 
-/** The room a field block needs, so the heading that introduces a form is not
- *  left at the foot of a page while its boxes move to the next one. */
 // A checkbox or a radio is a square with its label beside it, the way a form is read and ticked; stretched to the
 // column like a text box it drew a 350 pt bar with the tick floating in its middle.
 const MARK_SIZE = 14;
@@ -1015,6 +1014,8 @@ function choiceOptions(flow, item, x, y, labelSize) {
   });
 }
 
+/** The room a field block needs, so the heading that introduces a form is not
+ *  left at the foot of a page while its boxes move to the next one. */
 function fieldBlockHeight(block) {
   const type = blockType(block);
   if (type !== 'field' && type !== 'fieldRow') return 0;
@@ -1093,15 +1094,18 @@ async function flowBlocks(flow, blocks, baseDir) {
     // the first unit of the list, table, or paragraph it opens, or the picture
     // it introduces with that picture's caption, each of which keeps together itself.
     const next = blocks[index + 1] || {};
-    const companion =
-      type === 'heading'
-        ? fieldBlockHeight(next) ||
-          listLeadHeight(flow, next) ||
-          tableLeadHeight(flow, next) ||
-          paragraphLeadHeight(flow, next) ||
-          chartUnitHeight(flow, next, blocks[index + 2]) ||
-          (blockType(next) === 'image' ? (await imageUnit(flow, next, baseDir, blocks[index + 2])).needed : 0)
-        : 0;
+    let companion = 0;
+    if (type === 'heading') {
+      companion =
+        fieldBlockHeight(next) ||
+        listLeadHeight(flow, next) ||
+        tableLeadHeight(flow, next) ||
+        paragraphLeadHeight(flow, next) ||
+        chartUnitHeight(flow, next, blocks[index + 2]);
+      if (!companion && blockType(next) === 'image') {
+        companion = (await imageUnit(flow, next, baseDir, blocks[index + 2])).needed;
+      }
+    }
     if (companion) {
       const level = Math.min(3, Math.max(1, Number(block.level) || 1));
       const size = Number(block.size || HEADING_SIZES[level]);

@@ -472,9 +472,8 @@ function worksheetWithRows(rows) {
         .map((value, columnIndex) => {
           if (value == null || value === '') return '';
           const reference = `${columnLabel(columnIndex + 1)}${rowIndex + 1}`;
-          const numeric = Number(value);
-          if (typeof value === 'number' && Number.isFinite(numeric)) {
-            return `<c r="${reference}"><v>${numeric}</v></c>`;
+          if (typeof value === 'number' && Number.isFinite(value)) {
+            return `<c r="${reference}"><v>${value}</v></c>`;
           }
           return `<c r="${reference}" t="inlineStr"><is><t>${xmlEncode(value)}</t></is></c>`;
         })
@@ -511,7 +510,7 @@ export function portableCreateSupported(fileKind) {
 
 export async function createPortableOoxmlDocument(path, { fileKind, title = '', sheetName = 'Sheet1' } = {}) {
   const kind = String(fileKind || '').toLowerCase();
-  const family = Object.hasOwn(FILE_KIND_FAMILIES, kind) ? FILE_KIND_FAMILIES[kind] : '';
+  const family = portableCreateSupported(kind) ? FILE_KIND_FAMILIES[kind] : '';
   if (!family) {
     throw new Error(
       `Portable Office creation supports ${Object.keys(FILE_KIND_FAMILIES).join(', ')}; .${kind || 'unknown'} requires Microsoft Office`

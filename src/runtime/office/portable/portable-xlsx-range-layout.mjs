@@ -21,7 +21,6 @@ import { resolveCellStyles } from './portable-sheet-styles.mjs';
 import { columnFileWidth, maximumDigitWidth, textCharacters } from './portable-sheet-page.mjs';
 import {
   cellWidthScale,
-  displayWidth,
   formattedNumberWidth,
   hiddenSheetAreas,
   mergedRanges,
@@ -152,7 +151,9 @@ function writeSortedRows(xml, sorted, area, firstRow, refAt) {
         return { ref, formula: sortedFormula(formula, parseCellRef(ref).row - row) };
       } catch (error) {
         if (!(error instanceof UnsupportedFormula)) throw error;
-        throw new Error(`XLSX sort_range cannot move the formula in ${refAt(row, columnNumber(parseCellRef(ref).col))} (=${formula}): ${error.reason}.`);
+        throw new Error(
+          `XLSX sort_range cannot move the formula in ${refAt(row, columnNumber(parseCellRef(ref).col))} (=${formula}): ${error.reason}.`
+        );
       }
     })
   );

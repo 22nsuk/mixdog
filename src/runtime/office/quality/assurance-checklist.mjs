@@ -1,5 +1,5 @@
 import { plainObject } from '../shared/values.mjs';
-import { issue } from './assurance-structure.mjs';
+import { issue } from './assurance-issue.mjs';
 
 const CHECKLIST_RULES = Object.freeze({
   docx: [

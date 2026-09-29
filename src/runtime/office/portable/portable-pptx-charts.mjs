@@ -91,6 +91,25 @@ const REBUILD_FIELDS = [
   'dataLabelPosition',
   'dataLabelColor',
 ];
+// An accent on the last point marks the latest period; when the refresh changes the number of points it moves to
+// the new last one. Kept at its index, a monthly refresh left April lit under a title about May.
+function accentOnLastPoint(series, count) {
+  let block = series;
+  const previousCount = Number(/<c:val>[\s\S]*?<c:ptCount val="(\d+)"/.exec(block)?.[1]) || 0;
+  const seriesColor = /<a:srgbClr val="([0-9A-Fa-f]{6})"/.exec(block.split('<c:dPt>')[0])?.[1] || '';
+  const pointAt = (point) => Number(/<c:idx val="(\d+)"/.exec(point)?.[1]);
+  const points = [...block.matchAll(/<c:dPt>[\s\S]*?<\/c:dPt>/g)].map((point) => point[0]);
+  const accents = points.filter((point) => /<a:srgbClr val="([0-9A-Fa-f]{6})"/.exec(point)?.[1] !== seriesColor);
+  if (count !== previousCount && accents.length === 1 && pointAt(accents[0]) === previousCount - 1) {
+    // The accent and the point now last trade places; one past the new end is dropped by the caller.
+    const displaced = points.find((point) => pointAt(point) === count - 1);
+    const moved = (point, to) => point.replace(/<c:idx val="\d+"\/>/, `<c:idx val="${to}"/>`);
+    block = block.replace(accents[0], moved(accents[0], count - 1));
+    if (displaced) block = block.replace(displaced, moved(displaced, previousCount - 1));
+  }
+  return block;
+}
+
 function refreshChartDataInPlace(xml, categories, series, op) {
   if (REBUILD_FIELDS.some((field) => op[field] !== undefined)) return null;
   const blocks = [...String(xml).matchAll(/<c:ser>[\s\S]*?<\/c:ser>/g)];
@@ -107,20 +126,7 @@ function refreshChartDataInPlace(xml, categories, series, op) {
     let block = blocks[index][0];
     const entry = series[index];
     if (!/<c:val>[\s\S]*?<c:numCache>/.test(block)) return null;
-    // An accent on the last point marks the latest period; when the refresh changes the number of points it moves to
-    // the new last one. Kept at its index, a monthly refresh left April lit under a title about May.
-    const previousCount = Number(/<c:val>[\s\S]*?<c:ptCount val="(\d+)"/.exec(block)?.[1]) || 0;
-    const seriesColor = /<a:srgbClr val="([0-9A-Fa-f]{6})"/.exec(block.split('<c:dPt>')[0])?.[1] || '';
-    const pointAt = (point) => Number(/<c:idx val="(\d+)"/.exec(point)?.[1]);
-    const points = [...block.matchAll(/<c:dPt>[\s\S]*?<\/c:dPt>/g)].map((point) => point[0]);
-    const accents = points.filter((point) => /<a:srgbClr val="([0-9A-Fa-f]{6})"/.exec(point)?.[1] !== seriesColor);
-    if (count !== previousCount && accents.length === 1 && pointAt(accents[0]) === previousCount - 1) {
-      // The accent and the point now last trade places; one past the new end is dropped below.
-      const displaced = points.find((point) => pointAt(point) === count - 1);
-      const moved = (point, to) => point.replace(/<c:idx val="\d+"\/>/, `<c:idx val="${to}"/>`);
-      block = block.replace(accents[0], moved(accents[0], count - 1));
-      if (displaced) block = block.replace(displaced, moved(displaced, previousCount - 1));
-    }
+    block = accentOnLastPoint(block, count);
     if (entry.name != null) {
       // A name read from the sheet keeps its reference and takes the new cache; one written as text is rewritten.
       block = /<c:tx>\s*<c:v>/.test(block)
@@ -223,7 +229,12 @@ function retitledChart(xml, text) {
 const CATEGORY_ORDERS = Object.freeze({ topdown: 'maxMin', bottomup: 'minMax' });
 function categoryOrientationFor(op) {
   if (op.categoryOrder == null || op.categoryOrder === '') return '';
-  const orientation = CATEGORY_ORDERS[String(op.categoryOrder).replace(/[\s_-]/g, '').toLowerCase()];
+  const orientation =
+    CATEGORY_ORDERS[
+      String(op.categoryOrder)
+        .replace(/[\s_-]/g, '')
+        .toLowerCase()
+    ];
   if (!orientation) throw new Error("set_chart_data categoryOrder must be 'topDown' or 'bottomUp'");
   return orientation;
 }
@@ -256,6 +267,30 @@ function withCategoryOrientation(xml, orientation) {
   return xml.replace(categoryAxis, oriented).replace(valueAxis, crossed);
 }
 
+// The new series carrying the colours the chart already had.
+function withKeptColors(series, kept, previousCount) {
+  return series.map((entry, index) => {
+    if (!entry) return entry;
+    let points = kept.pointColors?.[index] || [];
+    // Point colors are kept only where the new data still has that point, so a
+    // shorter refresh never leaves the accent on a category that is gone; a
+    // lone accent on the last point follows the last point.
+    const valueCount = Array.isArray(entry.values) ? entry.values.length : 0;
+    const base = kept.seriesColors[index];
+    const lit = points.map((color, point) => (color && color !== base ? point : -1)).filter((point) => point >= 0);
+    if (valueCount !== previousCount && lit.length === 1 && lit[0] === previousCount - 1) {
+      const accent = points[lit[0]];
+      points = [...points];
+      points[lit[0]] = points[valueCount - 1];
+      points[valueCount - 1] = accent;
+    }
+    const carried =
+      entry.pointColors === undefined && points.some(Boolean) ? { pointColors: points.slice(0, valueCount) } : {};
+    const filled = entry.color === undefined && kept.seriesColors[index] ? { color: kept.seriesColors[index] } : {};
+    return Object.keys(carried).length || Object.keys(filled).length ? { ...entry, ...filled, ...carried } : entry;
+  });
+}
+
 export async function handleSetChartData(context, op) {
   const { zip } = context;
   const { part: chartPart, xml: existing } = await resolveSlideChart(zip, context.slides, op);
@@ -281,29 +316,13 @@ export async function handleSetChartData(context, op) {
       if (!kept.seriesColors[index] && token) kept.seriesColors[index] = await themeColor(zip, masterPart, token);
     }
   }
-  const previousCount = chartCategories(existing).length;
-  const coloured = series.map((entry, index) => {
-    if (!entry) return entry;
-    let points = kept.pointColors?.[index] || [];
-    // Point colors are kept only where the new data still has that point, so a
-    // shorter refresh never leaves the accent on a category that is gone; a
-    // lone accent on the last point follows the last point.
-    const valueCount = Array.isArray(entry.values) ? entry.values.length : 0;
-    const base = kept.seriesColors[index];
-    const lit = points.map((color, point) => (color && color !== base ? point : -1)).filter((point) => point >= 0);
-    if (valueCount !== previousCount && lit.length === 1 && lit[0] === previousCount - 1) {
-      const accent = points[lit[0]];
-      points = [...points];
-      points[lit[0]] = points[valueCount - 1];
-      points[valueCount - 1] = accent;
-    }
-    const carried =
-      entry.pointColors === undefined && points.some(Boolean) ? { pointColors: points.slice(0, valueCount) } : {};
-    const filled = entry.color === undefined && kept.seriesColors[index] ? { color: kept.seriesColors[index] } : {};
-    return Object.keys(carried).length || Object.keys(filled).length ? { ...entry, ...filled, ...carried } : entry;
-  });
+  const coloured = withKeptColors(series, kept, chartCategories(existing).length);
   const inPlace = refreshChartDataInPlace(existing, categories, series, op);
   const refreshed = inPlace && op.title != null ? retitledChart(inPlace, String(op.title)) : inPlace;
+  // Another type is another chart: its categories read the way that type reads them.
+  const retypedAxis =
+    op.chartType && op.chartType !== detectChartType(existing) ? { ...kept.axis, categoryOrientation: '' } : kept.axis;
+  const chosen = (given, kept) => (given === undefined ? kept : given === true);
   const rebuilt = refreshed
     ? null
     : chartXml({
@@ -311,15 +330,13 @@ export async function handleSetChartData(context, op) {
         title: op.title ?? chartTitleText(existing),
         categories,
         series: coloured,
-        showValues: op.showValues === undefined ? kept.showValues : op.showValues === true,
+        showValues: chosen(op.showValues, kept.showValues),
         dataLabelPosition: op.dataLabelPosition ?? kept.dataLabelPosition,
         dataLabelColor: op.dataLabelColor ?? kept.dataLabelColor,
         valueNumberFormat: op.valueNumberFormat ?? kept.valueNumberFormat,
         showLegend: op.showLegend ?? kept.showLegend,
-        zeroBaseline: op.zeroBaseline === undefined ? kept.zeroBaseline : op.zeroBaseline === true,
-        // Another type is another chart: its categories read the way that type reads them.
-        axis:
-          op.chartType && op.chartType !== detectChartType(existing) ? { ...kept.axis, categoryOrientation: '' } : kept.axis,
+        zeroBaseline: chosen(op.zeroBaseline, kept.zeroBaseline),
+        axis: retypedAxis,
         externalDataId: 'rId1',
         text: CHART_TEXT.slide,
       });
@@ -365,7 +382,7 @@ export async function handleSetChartData(context, op) {
   };
 }
 
-export const BOTTOM_UP_NOTE =
+const BOTTOM_UP_NOTE =
   "The bars read from the bottom up, the first category lowest, as this chart was authored; categoryOrder:'topDown' lists them from the top in the order given.";
 
 // Rewrites the chart's series blocks in place. `wanted` is a 1-based series

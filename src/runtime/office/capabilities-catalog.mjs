@@ -482,7 +482,16 @@ export const CATALOG = {
         'bodyRowHeight',
         'columnWidths',
       ],
-      tableCell: ['fillColor', 'horizontalAlignment', 'verticalAlignment', 'fontName', 'fontSize', 'bold', 'italic', 'color'],
+      tableCell: [
+        'fillColor',
+        'horizontalAlignment',
+        'verticalAlignment',
+        'fontName',
+        'fontSize',
+        'bold',
+        'italic',
+        'color',
+      ],
       template: ['tokens', 'strict'],
       authoring: [
         'shapeType',
