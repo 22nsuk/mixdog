@@ -7,7 +7,7 @@ import { getProvider, initProviders } from '../src/runtime/agent/orchestrator/pr
 import { estimateToolSchemaTokens } from '../src/runtime/agent/orchestrator/session/context-utils.mjs';
 import { validateComputerToolArgs } from '../src/runtime/computer-bridge/action-schema.mjs';
 import { TOOL_DEFS as COMPUTER_TOOL_DEFS } from '../src/runtime/computer-bridge/tool-defs.mjs';
-import { percentile, sortedFinite } from './lib/trace-stats.mjs';
+import { distribution, percentile, sortedFinite } from './lib/trace-stats.mjs';
 
 function arg(name, fallback) {
   const prefix = `--${name}=`;
@@ -31,14 +31,6 @@ function parseArgs(value) {
   } catch {
     return null;
   }
-}
-
-function distribution(values) {
-  const sorted = sortedFinite(values.map(Number));
-  return {
-    p50: percentile(sorted, 50),
-    p95: percentile(sorted, 95),
-  };
 }
 
 const scenarios = [

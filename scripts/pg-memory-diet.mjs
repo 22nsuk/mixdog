@@ -252,7 +252,7 @@ async function prepare(dataDir, runtimeDir, sourcePort) {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  if (process.argv[2] !== 'prepare' || !process.argv[3] || !process.argv[4]) {
+  if (process.argv[2] !== 'prepare' || !process.argv[3] || !process.argv[4] || !process.argv[5]) {
     throw new Error('Usage: node scripts/pg-memory-diet.mjs prepare <data-dir> <runtime-dir> <source-port>');
   }
   await prepare(resolve(process.argv[3]), resolve(process.argv[4]), Number(process.argv[5]));

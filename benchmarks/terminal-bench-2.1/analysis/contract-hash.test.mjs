@@ -13,19 +13,18 @@ test('contract digest captures wrappers, edit dialect, provider wire schema, and
 
   assert.equal(digest.schemaVersion, 2);
   assert.equal(digest.workflow, 'headless');
-  for (const name of ['web_search', 'web_fetch', 'memory', 'recall', 'git_stage', 'github', 'cwd']) {
+  for (const name of ['web_search', 'web_fetch', 'memory', 'recall', 'load_tool', 'github', 'cwd']) {
     assert.ok(digest.disabledTools.includes(name));
   }
   assert.equal(digest.disabledTools.includes('git'), false);
-  assert.equal(digest.disabledTools.includes('git_stage'), true);
   assert.deepEqual(Object.keys(digest.routeContracts), ['lead', 'leadFallback']);
 
   const lead = digest.routeContracts.lead;
   assert.equal(lead.providerMode, 'native');
-  assert.equal(lead.toolCatalogCount, 11);
-  assert.equal(lead.activeToolCount, 11);
-  assert.equal(lead.providerToolCount, 11);
-  assert.ok(lead.toolCatalogNames.includes('load_tool'));
+  assert.equal(lead.toolCatalogCount, 10);
+  assert.equal(lead.activeToolCount, 10);
+  assert.equal(lead.providerToolCount, 10);
+  assert.equal(lead.toolCatalogNames.includes('load_tool'), false);
   assert.ok(lead.toolCatalogNames.includes('git'));
   assert.equal(lead.toolCatalogNames.includes('git_stage'), false);
   assert.equal(lead.toolCatalogNames.includes('cwd'), false);
@@ -35,8 +34,8 @@ test('contract digest captures wrappers, edit dialect, provider wire schema, and
   assert.equal(lead.activeToolNames.includes('cwd'), false);
 
   const fallback = digest.routeContracts.leadFallback;
-  assert.equal(fallback.toolCatalogCount, 11);
-  assert.equal(fallback.providerToolCount, 11);
+  assert.equal(fallback.toolCatalogCount, 10);
+  assert.equal(fallback.providerToolCount, 10);
   assert.ok(fallback.toolCatalogNames.includes('edit'));
   assert.equal(fallback.toolCatalogNames.includes('apply_patch'), false);
   assert.notEqual(lead.providerToolHash, fallback.providerToolHash);
@@ -48,7 +47,7 @@ test('contract digest includes worker, reviewer, and debugger routes', async () 
   const digest = await buildContractDigest(undefined, {
     provider: 'openai-oauth',
     model: 'gpt-5.6-sol',
-    workflow: 'solo',
+    workflow: 'default',
     routes: [
       { id: 'worker', provider: 'openai-oauth', model: 'gpt-5.6-luna' },
       { id: 'reviewer', provider: 'openai-oauth', model: 'gpt-5.6-sol' },

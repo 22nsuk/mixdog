@@ -42,9 +42,15 @@ curl -sIL -o /dev/null -w "  HTTP %{http_code}\n" "$URL" || {
 }
 
 echo "==> Test 2: full download + sha256 (manifest match)"
-curl -sL -o "$WORK/$ASSET" "$URL"
+curl -fsSL -o "$WORK/$ASSET" "$URL"
 SHA="$(sha256sum "$WORK/$ASSET" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$WORK/$ASSET" | awk '{print $1}')"
 echo "  sha256=$SHA"
+EXPECTED_SHA="$(curl -fsSL "${URL}.sha256" | awk '{print tolower($1)}')"
+[[ "$SHA" == "$EXPECTED_SHA" ]] || {
+	echo "FAIL: sha256 mismatch (got $SHA, release sidecar says ${EXPECTED_SHA:-<empty>})"
+	exit 1
+}
+echo "  PASS: sha256 matches release sidecar"
 
 echo "==> Test 3: corrupt tarball — flip one byte and ensure tar fails or runtime detects"
 cp "$WORK/$ASSET" "$WORK/corrupt.tar.gz"

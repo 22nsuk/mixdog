@@ -11,9 +11,10 @@ upload_url="$(gh api "$api" --jq '.upload_url | split("{")[0]')"
 
 remote_asset() {
 	local name="$1"
-	gh api --paginate "${api}/assets?per_page=100" \
-		--jq ".[] | select(.name == \"${name}\") | [.id, .state, .size, .digest] | @tsv" |
-		head -n 1
+	local rows
+	rows="$(gh api --paginate "${api}/assets?per_page=100" |
+		jq -r --arg name "$name" '.[] | select(.name == $name) | [.id, .state, .size, .digest] | @tsv')"
+	printf '%s\n' "${rows%%$'\n'*}"
 }
 
 delete_remote_asset() {

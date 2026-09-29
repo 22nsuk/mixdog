@@ -362,8 +362,6 @@ test('anthropic effort: legacy claude-3-7-sonnet gets NO adaptive thinking / eff
   assert.equal(shouldIncludeEffortBeta(model, { effort: 'high' }), false);
 });
 
-// === 8. Anthropic effort (output_config vs legacy thinking budget) ==========
-
 test('anthropic effort: sonnet-4-6 uses output_config + effort beta, not thinking', () => {
   const model = 'claude-sonnet-4-6';
   const body = _buildRequestBodyForCacheSmoke([{ role: 'user', content: 'hi' }], model, [], { effort: 'high' });

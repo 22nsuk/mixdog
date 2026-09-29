@@ -15,6 +15,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parsePeriod } from '../src/runtime/memory/lib/recall-format.mjs';
+import { argValue, hasFlag } from './lib/cli-args.mjs';
 import {
   evaluateCase,
   parseRecallOutput,
@@ -30,17 +31,6 @@ import {
 const __dir = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dir, '..');
 const DEFAULT_CASES_PATH = resolve(__dir, 'recall-bench-cases.json');
-
-function argValue(name, fallback = null) {
-  const idx = process.argv.indexOf(`--${name}`);
-  if (idx >= 0 && idx + 1 < process.argv.length) return process.argv[idx + 1];
-  const pref = `--${name}=`;
-  const hit = process.argv.find((a) => a.startsWith(pref));
-  return hit ? hit.slice(pref.length) : fallback;
-}
-function hasFlag(name) {
-  return process.argv.includes(`--${name}`);
-}
 
 const DEFAULT_CASES = [
   { id: 'kw-ko', label: 'keyword query (ko)', args: { query: '\uBA54\uBAA8\uB9AC \uC7AC\uD604' }, expect: 'results' },
@@ -225,9 +215,9 @@ function printSummary(rows) {
 }
 
 async function main() {
-  const casesPath = argValue('cases', DEFAULT_CASES_PATH);
-  const jsonMode = hasFlag('json');
-  const strict = hasFlag('strict');
+  const casesPath = argValue('--cases', DEFAULT_CASES_PATH);
+  const jsonMode = hasFlag('--json');
+  const strict = hasFlag('--strict');
   const cases = loadCases(casesPath);
 
   let memoryModule;

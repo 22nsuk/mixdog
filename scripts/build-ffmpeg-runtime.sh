@@ -16,6 +16,22 @@ echo "==> Downloading FFmpeg n${FFMPEG_VERSION}"
 curl -fsSL --retry 3 \
 	"https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz" \
 	-o "$BUILD_DIR/ffmpeg.tar.xz"
+# ffmpeg.org publishes no .sha256 for releases; this digest was computed from the
+# official https://ffmpeg.org/releases/ffmpeg-6.1.1.tar.xz. Update it with FFMPEG_VERSION.
+FFMPEG_SHA256="8684f4b00f94b85461884c3719382f1261f0d9eb3d59640a1f4ac0873616f968"
+if [[ "$FFMPEG_VERSION" != "6.1.1" ]]; then
+	echo "No pinned SHA-256 for FFmpeg ${FFMPEG_VERSION}" >&2
+	exit 1
+fi
+if command -v sha256sum >/dev/null 2>&1; then
+	ACTUAL_SHA256="$(sha256sum "$BUILD_DIR/ffmpeg.tar.xz" | cut -d' ' -f1)"
+else
+	ACTUAL_SHA256="$(shasum -a 256 "$BUILD_DIR/ffmpeg.tar.xz" | cut -d' ' -f1)"
+fi
+if [[ "$ACTUAL_SHA256" != "$FFMPEG_SHA256" ]]; then
+	echo "FFmpeg source SHA-256 mismatch: expected $FFMPEG_SHA256, got $ACTUAL_SHA256" >&2
+	exit 1
+fi
 tar -xJf "$BUILD_DIR/ffmpeg.tar.xz" -C "$BUILD_DIR"
 
 # shellcheck disable=SC2054  # comma lists are single ffmpeg --enable-* values

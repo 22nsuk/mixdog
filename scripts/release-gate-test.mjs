@@ -26,7 +26,7 @@ import { desktopGateRegex, runtimeGateRegex, RELEASE_CRITICAL_PATHS } from './re
 // advisory runner when reviewing a deliberate specification change.
 const advisoryTest = process.env.MIXDOG_TEST_ADVISORY === '1' ? test : test.skip;
 
-// ==== from verify-release-assets-test.mjs ====
+// ---- Release asset manifests ----
 const VERSION = '1.2.3';
 const APP_VERSION = '0.9.49';
 const GRAPH_VERSION = '0.1.0';
@@ -346,7 +346,7 @@ test('full guard reads deterministic fixtures and downloads every declared asset
   assert.deepEqual(new Set(requestedUrls), expectedUrls);
 });
 
-// ==== from deploy-workflow-test.mjs ====
+// ---- Deploy and release workflow contracts ----
 const workflow = (name) => readFile(new URL(`../.github/workflows/${name}`, import.meta.url), 'utf8');
 
 test('Deploy is the one-click release entry with incremental native workers', async () => {
@@ -412,6 +412,8 @@ test('release path selection classifies desktop, runtime, and critical paths', (
     'src/help.mjs',
     'package-lock.json',
     'scripts/native-binary-arch.test.mjs',
+    'scripts/prune-desktop-runtime.mjs',
+    'scripts/prune-embedding-runtime.test.mjs',
     'scripts/release-paths.mjs',
   ])
     assert.match(path, desktop, `desktop gate must select ${path}`);
@@ -842,7 +844,7 @@ advisoryTest('runtime platform smoke restores npm downloads on every runner', as
   assert.match(smoke, /npm ci --prefer-offline --no-audit --no-fund/);
 });
 
-// ==== from release-version-discipline-test.mjs ====
+// ---- Version discipline ----
 const ROOT = dirname(fileURLToPath(new URL('../package.json', import.meta.url)));
 const STRICT_VERSION = /^\d+\.\d+\.\d+$/;
 

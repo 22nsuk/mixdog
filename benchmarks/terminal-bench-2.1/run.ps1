@@ -52,7 +52,8 @@ function Assert-PrebakeCurrent {
     $baked = ""
     try {
         $baked = [string]((Get-Content -Raw -LiteralPath $stampPath | ConvertFrom-Json).mixdogVersion)
-    } catch {
+    }
+    catch {
         throw "prebake stamp unreadable ($stampPath); $rebuildHint"
     }
     if ([string]::IsNullOrWhiteSpace($baked)) {
@@ -90,11 +91,12 @@ if ($Status) {
                     $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
                     if ($manifest.preset -eq $Preset) {
                         [pscustomobject]@{
-                            Path = $_.FullName
+                            Path      = $_.FullName
                             StartedAt = [datetimeoffset]$manifest.startedAt
                         }
                     }
-                } catch { }
+                }
+                catch { }
             } |
             Sort-Object StartedAt |
             Select-Object -Last 1
@@ -149,24 +151,27 @@ if (-not [string]::IsNullOrWhiteSpace([string]$presetConfig.compareTo)) {
         throw "Pinned baseline jobs directory not found: $baselineJobsDir"
     }
     $comparison = [ordered]@{
-        name = [string]$presetConfig.compareTo
+        name     = [string]$presetConfig.compareTo
         baseline = $baselineProperty.Value
     }
 }
 
 $concurrent = if ($null -ne $presetConfig.concurrent) {
     [int]$presetConfig.concurrent
-} else {
+}
+else {
     [int]$presetDoc.defaults.concurrent
 }
 $attempts = if ($null -ne $presetConfig.attempts) {
     [int]$presetConfig.attempts
-} else {
+}
+else {
     [int]$presetDoc.defaults.attempts
 }
 $maxRetries = if ($null -ne $presetConfig.maxRetries) {
     [int]$presetConfig.maxRetries
-} else {
+}
+else {
     [int]$presetDoc.defaults.maxRetries
 }
 if ($concurrent -lt 1 -or $attempts -lt 1 -or $maxRetries -lt 0) {
@@ -174,21 +179,22 @@ if ($concurrent -lt 1 -or $attempts -lt 1 -or $maxRetries -lt 0) {
 }
 
 $definition = [ordered]@{
-    dataset = [string]$presetDoc.dataset
-    suite = [string]$presetConfig.suite
-    tasks = $tasks
+    dataset      = [string]$presetDoc.dataset
+    suite        = [string]$presetConfig.suite
+    tasks        = $tasks
     routeProfile = $routeProfile
-    routes = $routeProperty.Value.routes
+    routes       = $routeProperty.Value.routes
     leadFallback = $routeProperty.Value.leadFallback
-    concurrent = $concurrent
-    attempts = $attempts
-    maxRetries = $maxRetries
+    concurrent   = $concurrent
+    attempts     = $attempts
+    maxRetries   = $maxRetries
 }
 $definitionJson = $definition | ConvertTo-Json -Depth 20 -Compress
 $sha = [Security.Cryptography.SHA256]::Create()
 try {
     $hashBytes = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($definitionJson))
-} finally {
+}
+finally {
     $sha.Dispose()
 }
 $fingerprint = "sha256:" + (($hashBytes | ForEach-Object { $_.ToString("x2") }) -join "")
@@ -210,14 +216,14 @@ if ($null -ne $comparison) {
 Assert-PrebakeCurrent
 
 $runnerArgs = @{
-    JobsDir = $resolvedJobsDir
-    Include = [string[]]$tasks
-    Concurrent = $concurrent
-    Attempts = $attempts
-    MaxRetries = $maxRetries
+    JobsDir      = $resolvedJobsDir
+    Include      = [string[]]$tasks
+    Concurrent   = $concurrent
+    Attempts     = $attempts
+    MaxRetries   = $maxRetries
     RouteProfile = $routeProfile
-    DryRun = [bool]$DryRun
-    FastSetup = ($tasks.Count -eq 8 -and $attempts -eq 1 -and -not $ColdSetup)
+    DryRun       = [bool]$DryRun
+    FastSetup    = ($tasks.Count -eq 8 -and $attempts -eq 1 -and -not $ColdSetup)
 }
 if (-not [string]::IsNullOrWhiteSpace($ResumeFrom)) {
     $runnerArgs.ResumeFrom = $ResumeFrom
@@ -288,21 +294,21 @@ if ($null -eq $contract.rulesHash -or $null -eq $contract.toolContractHash -or $
 "contract rules=$($contract.rulesHash.Substring(7, 12)) tools=$($contract.toolContractHash.Substring(7, 12)) catalog=$($contract.toolCount) active=$($contract.activeToolCount) provider-tools=$($contract.providerToolCount)"
 $manifest = [ordered]@{
     schemaVersion = 1
-    preset = $Preset
-    fingerprint = $fingerprint
-    contract = $contract
-    startedAt = (Get-Date).ToUniversalTime().ToString("o")
-    definition = $definition
+    preset        = $Preset
+    fingerprint   = $fingerprint
+    contract      = $contract
+    startedAt     = (Get-Date).ToUniversalTime().ToString("o")
+    definition    = $definition
     # Provenance for env-switch A/B runs. Only MIXDOG_* switches are recorded
     # verbatim; anything else could carry a credential, so its value is masked.
-    agentEnv = @(
+    agentEnv      = @(
         foreach ($entry in $agentEnvEntries) {
             $name = $entry.Split("=", 2)[0]
             if ($name -like "MIXDOG_*") { $entry } else { "$name=***" }
         }
     )
-    comparison = $comparison
-    fastSetup = [bool]$runnerArgs.FastSetup
+    comparison    = $comparison
+    fastSetup     = [bool]$runnerArgs.FastSetup
 }
 Write-JsonAtomic $manifest $manifestPath
 
@@ -310,7 +316,8 @@ $benchmarkExitCode = 0
 try {
     & $runnerPath @runnerArgs
     $benchmarkExitCode = [int]$LASTEXITCODE
-} catch {
+}
+catch {
     $benchmarkExitCode = 1
     [Console]::Error.WriteLine("benchmark failed: $($_.Exception.Message)")
 }
@@ -320,7 +327,8 @@ $manifest.exitCode = $benchmarkExitCode
 if (Test-Path -LiteralPath $provenancePath -PathType Leaf) {
     try {
         $manifest.runtime = Get-Content -Raw -LiteralPath $provenancePath | ConvertFrom-Json
-    } catch {
+    }
+    catch {
         Write-Warning "runtime provenance unreadable ($provenancePath): $($_.Exception.Message)"
     }
 }

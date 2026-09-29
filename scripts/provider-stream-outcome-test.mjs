@@ -552,25 +552,30 @@ test('transport fallback: typed transport failures switch, untyped ones do not',
 
 const encoder = new TextEncoder();
 const frame = (e) => encoder.encode(`event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`);
-function eofResponse(events) {
-  const chunks = events.map(frame);
+// A response body that yields the given byte chunks, then EOF; `delivered`
+// counts the chunks a parser actually pulled.
+function chunkBody(chunks) {
   let i = 0;
   return {
-    body: {
-      getReader() {
-        return {
-          read() {
-            if (i < chunks.length) return Promise.resolve({ done: false, value: chunks[i++] });
-            return Promise.resolve({ done: true, value: undefined });
-          },
-          cancel() {
-            return Promise.resolve();
-          },
-          releaseLock() {},
-        };
-      },
+    get delivered() {
+      return i;
+    },
+    getReader() {
+      return {
+        read() {
+          if (i < chunks.length) return Promise.resolve({ done: false, value: chunks[i++] });
+          return Promise.resolve({ done: true, value: undefined });
+        },
+        cancel() {
+          return Promise.resolve();
+        },
+        releaseLock() {},
+      };
     },
   };
+}
+function eofResponse(events) {
+  return { body: chunkBody(events.map(frame)) };
 }
 function delayedResponse(steps) {
   let i = 0;
@@ -886,24 +891,7 @@ test('anthropic SSE: a terminal message_delta stop_reason truncates IMMEDIATELY'
     { type: 'content_block_stop', index: 0 },
     { type: 'message_stop' },
   ];
-  let delivered = 0;
-  const chunks = events.map((e) => encoder.encode(`event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`));
-  const response = {
-    body: {
-      getReader() {
-        return {
-          read() {
-            if (delivered < chunks.length) return Promise.resolve({ done: false, value: chunks[delivered++] });
-            return Promise.resolve({ done: true, value: undefined });
-          },
-          cancel() {
-            return Promise.resolve();
-          },
-          releaseLock() {},
-        };
-      },
-    },
-  };
+  const response = eofResponse(events);
   const dispatched = [];
   const state = anthropicState();
   const thrown = await parseSSEStream(
@@ -924,7 +912,7 @@ test('anthropic SSE: a terminal message_delta stop_reason truncates IMMEDIATELY'
   assert.equal(thrown.pendingToolUse, true);
   assert.equal(dispatched.length, 0);
   assert.equal(state.sawCompleted, false);
-  assert.equal(delivered, 4, 'the parser stopped at the terminal frame, before the late frames');
+  assert.equal(response.body.delivered, 4, 'the parser stopped at the terminal frame, before the late frames');
   assert.equal(thrown.streamOutcome.replaySafe, true, 'nothing dispatched: replay stays idempotent');
 });
 
@@ -1411,26 +1399,11 @@ test('legacy gap: an Anthropic stall with complete tool calls is not replayable'
 // ── OpenAI Responses HTTP/SSE: real transport, EOF without a terminal frame ─
 
 function sseResponse(events) {
-  const chunks = events.map((e) => encoder.encode(`data: ${JSON.stringify(e)}\n\n`));
-  let i = 0;
   return {
     ok: true,
     status: 200,
     headers: new Map(),
-    body: {
-      getReader() {
-        return {
-          read() {
-            if (i < chunks.length) return Promise.resolve({ done: false, value: chunks[i++] });
-            return Promise.resolve({ done: true, value: undefined });
-          },
-          cancel() {
-            return Promise.resolve();
-          },
-          releaseLock() {},
-        };
-      },
-    },
+    body: chunkBody(events.map((e) => encoder.encode(`data: ${JSON.stringify(e)}\n\n`))),
   };
 }
 async function runHttpSse(events, extra = {}) {
@@ -1772,25 +1745,7 @@ test('anthropic SSE: a signature-only thinking block is not exposed reasoning', 
 // ── Gemini: buffered stream text is not visible output ──────────────────────
 
 function geminiRestResponse(chunks) {
-  const bytes = encoder.encode(chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join(''));
-  let sent = false;
-  return {
-    body: {
-      getReader() {
-        return {
-          read() {
-            if (sent) return Promise.resolve({ done: true, value: undefined });
-            sent = true;
-            return Promise.resolve({ done: false, value: bytes });
-          },
-          cancel() {
-            return Promise.resolve();
-          },
-          releaseLock() {},
-        };
-      },
-    },
-  };
+  return { body: chunkBody([encoder.encode(chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join(''))]) };
 }
 const GEMINI_TEXT_CHUNK = { candidates: [{ content: { parts: [{ text: 'half an answer' }] } }] };
 

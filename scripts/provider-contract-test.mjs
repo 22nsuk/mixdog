@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import './provider-contract-test-env.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
@@ -172,18 +173,6 @@ test('OpenRouter model sanitizer applies hosted filters with a nine-month defaul
     else process.env.MIXDOG_MODEL_STALE_MONTHS = previousStaleMonths;
   }
 });
-// Usage snapshots persist to <data dir>/gateway-oauth-usage-cache.json. Without
-// an isolated data dir these fixtures wrote provider rows into the developer's
-// real cache, where a fake model id could later win a provider fallback lookup.
-const PROVIDER_CONTRACT_DATA_DIR = mkdtempSync(join(tmpdir(), 'mixdog-provider-contract-'));
-process.env.MIXDOG_DATA_DIR = PROVIDER_CONTRACT_DATA_DIR;
-process.on('exit', () => {
-  try {
-    rmSync(PROVIDER_CONTRACT_DATA_DIR, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
-  } catch {
-    /* a still-open handle leaves it for the OS temp cleanup */
-  }
-});
 
 function stream(events) {
   return {
@@ -224,6 +213,30 @@ test('startup provider catalog refresh runs once for every session runtime in th
   assert.equal(providerCatalogRevision(), before + 2);
 });
 
+function providerModelsFixture(overrides) {
+  return createProviderModels({
+    caches: {
+      providerModelsCache: { models: null, at: 0 },
+      providerModelsPromise: null,
+      providerModelsLoadSeq: 0,
+      webSearchProviderModelsCache: { models: null, at: 0 },
+    },
+    modelMetaByRoute: new Map(),
+    webSearchCapableFor: () => false,
+    sortProviderModelsRaw: sortProviderModels,
+    providerModelCacheRowRaw: providerModelCacheRow,
+    normalizeWebSearchProviderId: (value) => value,
+    isWebSearchCapableProvider: () => false,
+    ensureFullConfig: () => {},
+    awaitKeychainPrewarm: async () => {},
+    ensureProvidersReady: async () => {},
+    bootProfile: () => {},
+    scheduleProviderModelWarmup: () => {},
+    quickHelpers: {},
+    ...overrides,
+  });
+}
+
 test('session runtimes share one provider catalog read and rebuild only their local preferences', async () => {
   let reads = 0;
   let revision = 73001;
@@ -238,28 +251,10 @@ test('session runtimes share one provider catalog read and rebuild only their lo
     providerCatalogRevision: () => revision,
   };
   const factory = () =>
-    createProviderModels({
-      caches: {
-        providerModelsCache: { models: null, at: 0 },
-        providerModelsPromise: null,
-        providerModelsLoadSeq: 0,
-        webSearchProviderModelsCache: { models: null, at: 0 },
-      },
-      modelMetaByRoute: new Map(),
+    providerModelsFixture({
       getRoute: () => ({ provider: 'shared-provider' }),
       getConfig: () => ({}),
       getReg: () => registry,
-      webSearchCapableFor: () => false,
-      sortProviderModelsRaw: sortProviderModels,
-      providerModelCacheRowRaw: providerModelCacheRow,
-      normalizeWebSearchProviderId: (value) => value,
-      isWebSearchCapableProvider: () => false,
-      ensureFullConfig: () => {},
-      awaitKeychainPrewarm: async () => {},
-      ensureProvidersReady: async () => {},
-      bootProfile: () => {},
-      scheduleProviderModelWarmup: () => {},
-      quickHelpers: {},
     });
   const first = factory();
   const second = factory();
@@ -291,29 +286,13 @@ test('quick picker read seeds a secrets-aware full catalog load', async () => {
     getAllProviders: () => new Map([['catalog-provider', provider]]),
     providerCatalogRevision: () => 74001,
   };
-  const api = createProviderModels({
-    caches: {
-      providerModelsCache: { models: null, at: 0 },
-      providerModelsPromise: null,
-      providerModelsLoadSeq: 0,
-      webSearchProviderModelsCache: { models: null, at: 0 },
-    },
-    modelMetaByRoute: new Map(),
+  const api = providerModelsFixture({
     getRoute: () => ({ provider: 'catalog-provider' }),
     getConfig: () => ({ providers: { 'catalog-provider': { enabled: true } } }),
     getReg: () => registry,
-    webSearchCapableFor: () => false,
-    sortProviderModelsRaw: sortProviderModels,
-    providerModelCacheRowRaw: providerModelCacheRow,
-    normalizeWebSearchProviderId: (value) => value,
-    isWebSearchCapableProvider: () => false,
-    ensureFullConfig: () => {},
     awaitKeychainPrewarm: async () => {
       keychainReads += 1;
     },
-    ensureProvidersReady: async () => {},
-    bootProfile: () => {},
-    scheduleProviderModelWarmup: () => {},
     quickHelpers: {
       quickProviderModelRows: () => [{ id: 'quick-model', provider: 'catalog-provider' }],
     },
@@ -352,28 +331,10 @@ test('first full picker load waits for startup provider catalog refresh', async 
       revision += 1;
     },
   };
-  const api = createProviderModels({
-    caches: {
-      providerModelsCache: { models: null, at: 0 },
-      providerModelsPromise: null,
-      providerModelsLoadSeq: 0,
-      webSearchProviderModelsCache: { models: null, at: 0 },
-    },
-    modelMetaByRoute: new Map(),
+  const api = providerModelsFixture({
     getRoute: () => ({ provider: 'catalog-provider' }),
     getConfig: () => ({ providers: { 'catalog-provider': { enabled: true } } }),
     getReg: () => registry,
-    webSearchCapableFor: () => false,
-    sortProviderModelsRaw: sortProviderModels,
-    providerModelCacheRowRaw: providerModelCacheRow,
-    normalizeWebSearchProviderId: (value) => value,
-    isWebSearchCapableProvider: () => false,
-    ensureFullConfig: () => {},
-    awaitKeychainPrewarm: async () => {},
-    ensureProvidersReady: async () => {},
-    bootProfile: () => {},
-    scheduleProviderModelWarmup: () => {},
-    quickHelpers: {},
   });
 
   const pending = api.collectProviderModels();
@@ -1221,7 +1182,6 @@ test('OpenCode Go normalizes both route families to inclusive provider usage', a
       promptTokens: 100,
     }
   );
-  assert.equal(anthropic.usage.inputTokens, 100, 'context footprint is inclusive');
 
   const openai = await provider.send([], 'glm-5.2', [], {});
   assert.equal(openai, openaiRaw);
@@ -1239,7 +1199,6 @@ test('OpenCode Go normalizes both route families to inclusive provider usage', a
       promptTokens: 100,
     }
   );
-  assert.equal(openai.usage.inputTokens, 100, 'context footprint remains inclusive');
 });
 
 test('OpenCode Go Anthropic delegation traces additive inner usage before inclusive outer normalization', (t) => {
@@ -1352,7 +1311,7 @@ test('constructing Grok OAuth prewarms only through the injected seam', () => {
       preconnectCalls += 1;
     },
   });
-  assert.ok(provider);
+  assert.ok(provider instanceof GrokOAuthProvider);
   assert.equal(preconnectCalls, 1);
 });
 

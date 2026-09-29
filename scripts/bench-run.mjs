@@ -24,6 +24,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { pricedSplitCost } from '../benchmarks/terminal-bench-2.1/analysis/model-rates.mjs';
 import { argValue, hasFlag } from './lib/cli-args.mjs';
+import { extractSessionId } from './lib/bench-sandbox.mjs';
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const HEADLESS = pathToFileURL(resolve(__dir, '../src/headless-exec.mjs')).href;
@@ -45,12 +46,6 @@ function resolveModelOpts(modelArg, providerArg) {
     .toLowerCase();
   if (MODEL_ALIASES[key] && !providerArg) return { ...MODEL_ALIASES[key] };
   return { provider: providerArg || null, model: modelArg || null };
-}
-
-function extractSessionId(text) {
-  const s = String(text || '');
-  const m = s.match(/sessionId:\s*(sess_[A-Za-z0-9_]+)/) || s.match(/\b(sess_[A-Za-z0-9_]+)/);
-  return m ? m[1] : null;
 }
 
 const RUNNERS = {

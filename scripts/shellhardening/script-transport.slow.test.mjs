@@ -93,6 +93,47 @@ test('PowerShell filter plan preserves the producer native exit code', () => {
   assert.match(plan.command, /; exit \$__mixdogProducerExit[0-9a-f]+\.Value$/);
 });
 
+test('PowerShell filter plan leaves pipelines nested in a group unwrapped', () => {
+  for (const command of [
+    "$t = Get-Content a.cs -Raw; ([regex]::Matches($t,'(\\w+)\\s*(?:\\(|=)') | % { $_.Groups[1].Value }) -join ','",
+    'try { git status | Select-String main } catch { $_ }',
+    'foreach ($f in $files) { $n = 1; Get-Content $f | Select-String x }',
+    '@(Get-ChildItem | Select-Object -First 3).Count',
+  ]) {
+    assert.equal(buildPowerShellFilterTeePlan(command), null, command);
+  }
+  assert.ok(buildPowerShellFilterTeePlan('$x = 1; git log --oneline | Select-Object -First 3'));
+});
+
+test('Windows fresh pwsh spawn reports parse errors in UTF-8 and keeps exit codes', {
+  skip: process.platform !== 'win32',
+}, async () => {
+  const previous = process.env.MIXDOG_SHELL_WARM_STANDBY;
+  process.env.MIXDOG_SHELL_WARM_STANDBY = '0';
+  try {
+    const run = async (command) =>
+      normalizeToolEnvelope(await executeBashTool({ command, timeout_ms: 10_000 }, process.cwd())).result;
+    const parse = await run("$x = (1 + ; Write-Output '한글'");
+    assert.match(parse, /^\[exit code: 1\]/);
+    assert.match(parse, /ParserError: /);
+    assert.doesNotMatch(parse, /MethodInvocationException|sanitized/);
+    assert.match(await run("Write-Output '한글-정상'"), /한글-정상/);
+    assert.match(await run('exit 3'), /^\[exit code: 3\]/);
+  } finally {
+    if (previous === undefined) delete process.env.MIXDOG_SHELL_WARM_STANDBY;
+    else process.env.MIXDOG_SHELL_WARM_STANDBY = previous;
+  }
+});
+
+test('Windows runs a grouped PowerShell pipeline as written', {
+  skip: process.platform !== 'win32',
+}, async () => {
+  const command = "$t = 'private int Alpha; internal void Beta('; ([regex]::Matches($t,'(\\w+)\\s*(?:\\(|;)') | % { $_.Groups[1].Value }) -join ','";
+  const result = normalizeToolEnvelope(await executeBashTool({ command, timeout_ms: 10_000 }, process.cwd()));
+  assert.equal(result.explicitSuccess, true, result.result);
+  assert.match(result.result, /Alpha,Beta/);
+});
+
 // Byte-identity, end to end: the shell echoes back exactly what was sent. The
 // bodies below are the shapes the deleted scanner used to corrupt (a heredoc
 // body containing `&`, an ANSI-C `$'…'` delimiter, an arithmetic `<<`, a

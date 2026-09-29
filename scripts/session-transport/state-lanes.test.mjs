@@ -326,8 +326,7 @@ test('disconnected channel remote-state churn keeps only the latest frame', asyn
 
 test('channel transport publishes the pinned remote session independently of state-file persistence', async () => {
   const states = [];
-  let transport = null;
-  transport = createChannelTransport({
+  const transport = createChannelTransport({
     handleCall: async (name, args) => {
       if (name === 'activate_channel_bridge' && args.active === true) {
         transport.notify('notifications/mixdog/remote', { state: 'acquired' });

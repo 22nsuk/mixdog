@@ -9,6 +9,10 @@ set -euo pipefail
 
 PG_VERSION="16.4"
 PGVECTOR_VERSION="0.8.2"
+# sha256 from https://ftp.postgresql.org/pub/source/v16.4/postgresql-16.4.tar.gz.sha256
+PG_TARBALL_SHA256="2e17a90062403e15d6540480fdec50c8b005eb48729a91cb4989ffeb04df193c"
+# Commit the pgvector v0.8.2 tag resolves to (git ls-remote refs/tags/v0.8.2).
+PGVECTOR_COMMIT="cab9da72c04353f143bb06b42ab70a403daac64a"
 TARGET_OS="${TARGET_OS:-darwin}"
 TARGET_ARCH="${TARGET_ARCH:-$(uname -m | sed 's/x86_64/x64/')}"
 
@@ -41,6 +45,7 @@ else
 		curl -fsSL "https://ftp.postgresql.org/pub/source/v${PG_VERSION}/postgresql-${PG_VERSION}.tar.gz" \
 			-o "postgresql-${PG_VERSION}.tar.gz"
 	fi
+	echo "${PG_TARBALL_SHA256}  postgresql-${PG_VERSION}.tar.gz" | shasum -a 256 -c -
 	rm -rf "postgresql-${PG_VERSION}"
 	tar xzf "postgresql-${PG_VERSION}.tar.gz"
 
@@ -85,8 +90,9 @@ else
 	echo "==> Cloning + building pgvector $PGVECTOR_VERSION"
 	cd "$BUILD_DIR"
 	rm -rf pgvector
-	git clone --branch "v${PGVECTOR_VERSION}" --depth 1 \
-		https://github.com/pgvector/pgvector.git pgvector
+	git clone https://github.com/pgvector/pgvector.git pgvector
+	git -C pgvector -c advice.detachedHead=false checkout --detach "$PGVECTOR_COMMIT"
+	[[ "$(git -C pgvector rev-parse HEAD)" == "$PGVECTOR_COMMIT" ]]
 	cd pgvector
 	make PG_CONFIG="$PG_CONFIG" -j"$(sysctl -n hw.logicalcpu)"
 	make PG_CONFIG="$PG_CONFIG" install

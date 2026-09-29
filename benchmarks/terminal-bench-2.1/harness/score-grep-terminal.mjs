@@ -150,7 +150,9 @@ function readRanges(call) {
   const raw = call.args?.path;
   const values = Array.isArray(raw) ? raw : [raw];
   return values.map((value) => {
-    const path = typeof value === 'string' ? value : value && typeof value.path === 'string' ? value.path : null;
+    let path = null;
+    if (typeof value === 'string') path = value;
+    else if (typeof value?.path === 'string') path = value.path;
     if (!path) return null;
     const rawOffset = typeof value === 'object' && value ? value.offset : call.args?.offset;
     const rawLimit = typeof value === 'object' && value ? value.limit : call.args?.limit;

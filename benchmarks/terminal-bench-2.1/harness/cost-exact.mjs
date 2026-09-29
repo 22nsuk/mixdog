@@ -52,9 +52,10 @@ for (const entry of readdirSync(runDir, { withFileTypes: true })) {
     const out = s ? num(s.totalOutputTokens) : num(u?.outputTokens);
     // True billing-uncached input: provider-reported when mirrored (family
     // semantics above), else transcript aggregate minus the writes it folds in.
-    const inTok = u && u.inputTokens != null
-        ? (R ? uncachedTokens(R, num(u.inputTokens), num(u.cacheTokens), num(u.cacheWriteTokens)) : null)
-        : Math.max(num(s?.totalUncachedInputTokens) - cw, 0);
+    let inTok = Math.max(num(s?.totalUncachedInputTokens) - cw, 0);
+    if (u && u.inputTokens != null) {
+        inTok = R ? uncachedTokens(R, num(u.inputTokens), num(u.cacheTokens), num(u.cacheWriteTokens)) : null;
+    }
     const flag = s ? '' : ' [usage-only]';
     const sessionCosts = Array.isArray(ud?.sessions) && ud.sessions.length
         ? ud.sessions.map((x) => pricedCost({
@@ -65,9 +66,10 @@ for (const entry of readdirSync(runDir, { withFileTypes: true })) {
             output: x.outputTokens,
         }))
         : null;
-    const cost = sessionCosts
-        ? (sessionCosts.some((value) => value == null) ? null : sessionCosts.reduce((acc, value) => acc + value, 0))
-        : pricedSplitCost({ model, uncached: inTok, cached: cr, cacheWrite: cw, output: out });
+    let cost;
+    if (!sessionCosts) cost = pricedSplitCost({ model, uncached: inTok, cached: cr, cacheWrite: cw, output: out });
+    else if (sessionCosts.some((value) => value == null)) cost = null;
+    else cost = sessionCosts.reduce((acc, value) => acc + value, 0);
     const agent = (Date.parse(r.agent_execution.finished_at) - Date.parse(r.agent_execution.started_at)) / 1e3;
     const name = entry.name.split('__')[0];
     let turns = Number.isFinite(Number(s?.lastIterationIndex)) ? Number(s.lastIterationIndex) : null;
@@ -75,7 +77,7 @@ for (const entry of readdirSync(runDir, { withFileTypes: true })) {
         try {
             const measured = (readFileSync(join(dir, 'agent', 'mixdog.txt'), 'utf8').match(/\[turn-timing\]/g) || []).length;
             if (measured > 0) turns = measured;
-        } catch {}
+        } catch { /* older trials have no turn-timing log */ }
     }
     const ctx = num(s?.lastContextTokens);
     sum.n++; sum.t += agent; sum.win += reward; sum.ctx += ctx;

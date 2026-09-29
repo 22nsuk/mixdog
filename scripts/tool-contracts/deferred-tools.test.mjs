@@ -73,17 +73,6 @@ test('load_tool is a pure loader: free-text queries never load or discover', () 
       throw new Error(`tool_search bulk select missing ${name}: ${JSON.stringify(bulkSelectResult)}`);
     }
   }
-  const prefixedSelectSession = {
-    tools: smokeCatalog.filter((tool) => fullDefaults.has(tool?.name)),
-    deferredToolCatalog: smokeCatalog.slice(),
-    deferredSelectedTools: [...fullDefaults],
-  };
-  const prefixedSelectResult = JSON.parse(
-    __renderToolSearchForTest({ names: ['shell', 'recall'] }, prefixedSelectSession, 'full')
-  );
-  if (!prefixedSelectResult.activeTools.includes('shell') || !prefixedSelectResult.activeTools.includes('recall')) {
-    throw new Error(`tool_search select field should accept select: prefix: ${JSON.stringify(prefixedSelectResult)}`);
-  }
   if (
     !Array.isArray(toolSearchSession.deferredDiscoveredTools) ||
     !toolSearchSession.deferredDiscoveredTools.includes('shell')

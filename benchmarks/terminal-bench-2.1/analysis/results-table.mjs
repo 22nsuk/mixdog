@@ -58,7 +58,8 @@ const kOf = (name) => Math.max(1, Math.round(scores[name].total / tasks.length))
 const cell = (name, task) => {
     const e = byRun[name][task];
     if (!e) return '—';
-    return kOf(name) === 1 ? (e.pass > 0 ? 'pass' : 'fail') : `${e.pass}/${e.total}`;
+    if (kOf(name) !== 1) return `${e.pass}/${e.total}`;
+    return e.pass > 0 ? 'pass' : 'fail';
 };
 
 const md = [

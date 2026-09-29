@@ -1,6 +1,7 @@
 // Shared per-process environment for the tool-contract suites. Import this
 // module FIRST in every suite: it wires the debug native-spawn binary and
 // keeps intentionally malformed fixtures out of production failure logs.
+import '../test-data-dir.mjs';
 import '../native-spawn-test-runtime.mjs';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';

@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { appendFile, mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { availableParallelism, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FAILURE_RECORDS_ENV } from './test-failure-records.mjs';
 import { classifyRerunOutcomes, formatFailureSummary } from './test-failure-summary.mjs';
@@ -58,6 +58,27 @@ export function chunkFileArgs(fileArgs, budget) {
   return chunks;
 }
 
+const positiveInt = (value) => {
+  const n = Number(value);
+  return Number.isInteger(n) && n > 0 ? n : null;
+};
+
+// `node --test` defaults to availableParallelism()-1 file processes. When the
+// run is one of several concurrent shell commands (the Mixdog shell tool
+// exports the admission cap as MIXDOG_SHELL_CONCURRENCY_CAP), that multiplies
+// across peers, so each run takes its share of the cores. Precedence: an
+// explicit --test-concurrency flag, then MIXDOG_TEST_CONCURRENCY, then the
+// share; with none of them Node's default stands and standalone runs are
+// unchanged. Returns the flag to add, or null.
+export function testConcurrencyArg(nodeArgs, env = process.env, parallelism = availableParallelism()) {
+  if (nodeArgs.some((arg) => arg === '--test-concurrency' || arg.startsWith('--test-concurrency='))) return null;
+  const explicit = positiveInt(env.MIXDOG_TEST_CONCURRENCY);
+  if (explicit) return `--test-concurrency=${explicit}`;
+  const cap = positiveInt(env.MIXDOG_SHELL_CONCURRENCY_CAP);
+  if (!cap) return null;
+  return `--test-concurrency=${Math.max(2, Math.floor(parallelism / cap))}`;
+}
+
 function spawnBatch(args, env) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, args, { stdio: 'inherit', env });
@@ -108,8 +129,10 @@ export async function runNodeTests(
   // every fixture directory a test forgets to delete goes with it instead of
   // piling up in the system temp directory.
   const scratchDir = await mkdtemp(join(tmpdir(), 'mixdog-test-scratch-'));
+  const concurrencyArg = testConcurrencyArg(nodeArgs);
   const runArgs = [
     ...nodeArgs,
+    ...(concurrencyArg ? [concurrencyArg] : []),
     `--test-reporter=${SUMMARY_REPORTER}`,
     '--test-reporter-destination=stdout',
     '--test-reporter=spec',

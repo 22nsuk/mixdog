@@ -59,13 +59,9 @@ def main():
     print(f"trials={len(rows)} with_context={len(contexts)} with_calls={len(calls)}")
     if contexts:
         print(
-            "final_context median=%d mean=%d min=%d max=%d"
-            % (
-                statistics.median(contexts),
-                sum(contexts) / len(contexts),
-                min(contexts),
-                max(contexts),
-            )
+            f"final_context median={int(statistics.median(contexts))} "
+            f"mean={int(sum(contexts) / len(contexts))} "
+            f"min={min(contexts)} max={max(contexts)}"
         )
     print(f"total_steps_sum={sum(steps)} model_calls_sum={sum(calls)}")
     print(json.dumps(rows[:5], indent=2))

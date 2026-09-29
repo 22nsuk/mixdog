@@ -22,6 +22,7 @@ export const DESKTOP_GATE_PREFIXES = ['apps/desktop/', 'src/', 'vendor/', 'LICEN
 export const DESKTOP_GATE_FILES = ['README.md', 'NOTICE.md', ...PACKAGE_MANIFESTS];
 // Desktop packaging/postinstall scripts; `.test` companions ride along.
 export const DESKTOP_GATE_SCRIPT_BASES = [
+  'scripts/prune-desktop-runtime',
   'scripts/prune-embedding-runtime',
   'scripts/native-binary-arch',
   'scripts/native-tool-download',

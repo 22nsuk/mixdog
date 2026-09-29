@@ -23,7 +23,7 @@ test('shell capture sanitizes binary/control output and keeps capturing', async 
   assert.deepEqual(binary.binaryOutput, { channel: 'stdout', bytes: 14 });
   const captured = await binary.getStdout();
   assert.match(captured, /^\[binary output on stdout sanitized;/);
-  assert.doesNotMatch(captured, /\u0000/);
+  assert.equal(captured.includes('\u0000'), false);
   assert.match(captured, /prefixsuffix/);
   assert.match(captured, /must-follow/);
 });

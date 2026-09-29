@@ -8,22 +8,13 @@
 //   node scripts/internal-comms-bench.mjs
 //   node scripts/internal-comms-bench.mjs --run [--model grok] [--provider P] [--json]
 import { execFileSync, spawnSync } from 'node:child_process';
-import {
-  copyFileSync,
-  cpSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
-import { homedir } from 'node:os';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { argValue, hasFlag } from './lib/cli-args.mjs';
 import { median, sortedFinite } from './lib/trace-stats.mjs';
+import { field, num, sessionId } from './lib/trace-row.mjs';
+import { copyAuthArtifacts, defaultUserDataDir, extractSessionId, readUnifiedConfig } from './lib/bench-sandbox.mjs';
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dir, '..');
@@ -63,12 +54,6 @@ const MODEL_ALIASES = {
   grok: { provider: 'grok-oauth', model: 'grok-composer-2.5-fast' },
 };
 
-const AUTH_ARTIFACT_BY_PROVIDER = {
-  'grok-oauth': ['grok-oauth.json', 'grok-oauth-models.json'],
-  'anthropic-oauth': ['anthropic-oauth-credentials.json', 'anthropic-oauth-models.json'],
-  'openai-oauth': ['openai-oauth.json', 'openai-oauth-models.json'],
-};
-
 const INITIAL_MATH_JS = `export function mul(a, b) {
   return a * b;
 }
@@ -80,19 +65,6 @@ function resolveModelOpts(modelArg, providerArg) {
     .toLowerCase();
   if (MODEL_ALIASES[key] && !providerArg) return { ...MODEL_ALIASES[key] };
   return { provider: providerArg || null, model: modelArg || null };
-}
-
-function defaultUserDataDir() {
-  return process.env.MIXDOG_DATA_DIR || join(process.env.MIXDOG_HOME || join(homedir(), '.mixdog'), 'data');
-}
-
-function readUnifiedConfig(dataDir) {
-  try {
-    const unified = JSON.parse(readFileSync(join(dataDir, 'mixdog-config.json'), 'utf8'));
-    return unified && typeof unified === 'object' ? unified : {};
-  } catch {
-    return {};
-  }
 }
 
 function gitPathForRule(relFromSrc) {
@@ -132,40 +104,6 @@ function ruleVariantBytes() {
   return rows;
 }
 
-function authArtifactNamesForSandbox(realDataDir, provider) {
-  const names = new Set();
-  for (const file of AUTH_ARTIFACT_BY_PROVIDER[provider] || []) names.add(file);
-  try {
-    for (const entry of readdirSync(realDataDir, { withFileTypes: true })) {
-      if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
-      if (/oauth/i.test(entry.name) || /credentials/i.test(entry.name)) names.add(entry.name);
-    }
-  } catch {
-    /* missing real data dir */
-  }
-  return [...names];
-}
-
-function copyAuthArtifacts(realDataDir, sandboxDataDir, provider) {
-  const copied = [];
-  const skipped = [];
-  for (const name of authArtifactNamesForSandbox(realDataDir, provider)) {
-    const src = join(realDataDir, name);
-    const dest = join(sandboxDataDir, name);
-    if (!existsSync(src)) {
-      skipped.push(name);
-      continue;
-    }
-    try {
-      copyFileSync(src, dest);
-      copied.push(name);
-    } catch {
-      skipped.push(name);
-    }
-  }
-  return { copied, skipped };
-}
-
 function materializePluginRoot(variant, sandboxRoot) {
   const pluginRoot = join(sandboxRoot, `plugin-${variant}`);
   cpSync(PLUGIN_ROOT, pluginRoot, { recursive: true });
@@ -194,12 +132,6 @@ function prepareTaskCwd(parentDir) {
   const taskCwd = mkdtempSync(join(parentDir, 'task-'));
   resetTaskCwd(taskCwd);
   return taskCwd;
-}
-
-function extractSessionId(text) {
-  const s = String(text || '');
-  const m = s.match(/sessionId:\s*(sess_[A-Za-z0-9_]+)/) || s.match(/\b(sess_[A-Za-z0-9_]+)/);
-  return m ? m[1] : null;
 }
 
 function runHeadlessWorker({ pluginRoot, dataDir, taskCwd, prompt, provider, model, effort, fast }) {
@@ -253,25 +185,6 @@ function readRows(path) {
     }
   }
   return rows;
-}
-
-function payload(row) {
-  return row?.payload && typeof row.payload === 'object' ? row.payload : {};
-}
-
-function field(row, name) {
-  if (row && row[name] != null) return row[name];
-  const p = payload(row);
-  return p[name] != null ? p[name] : null;
-}
-
-function num(row, name) {
-  const n = Number(field(row, name));
-  return Number.isFinite(n) ? n : null;
-}
-
-function sessionId(row) {
-  return String(row?.session_id || row?.sessionId || field(row, 'session_id') || '');
 }
 
 function sum(values) {
@@ -605,7 +518,7 @@ function fmtDeltaEntry(entry) {
   return `${plusSign(entry.delta)}${Math.round(entry.delta)}${pct}`;
 }
 
-function runLeadMode({ route, effort, fast, repeat, jsonMode, leadPrompt }) {
+function runLeadVariants({ route, effort, fast, repeat, leadPrompt }) {
   const realDataDir = defaultUserDataDir();
   const userUnified = readUnifiedConfig(realDataDir);
   const sandboxRoot = mkdtempSync(join(REPO_ROOT, '.tmp-internal-comms-bench-lead-'));
@@ -670,7 +583,11 @@ function runLeadMode({ route, effort, fast, repeat, jsonMode, leadPrompt }) {
   } finally {
     rmSync(sandboxRoot, { recursive: true, force: true });
   }
+  return { perVariant, runsMeta, invalidRun };
+}
 
+function runLeadMode({ route, effort, fast, repeat, jsonMode, leadPrompt }) {
+  const { perVariant, runsMeta, invalidRun } = runLeadVariants({ route, effort, fast, repeat, leadPrompt });
   if (invalidRun) {
     process.stderr.write(
       `[internal-comms-bench] aborting before aggregation: invalid variant=${invalidRun.variant} run=${invalidRun.index + 1} reasons=${invalidRun.reasons.join('; ')}\n`
@@ -684,14 +601,17 @@ function runLeadMode({ route, effort, fast, repeat, jsonMode, leadPrompt }) {
   const deltaMedian = {};
   const deltaMean = {};
   for (const role of [...ROLES, 'total']) {
-    const aM = role === 'total' ? aggA.total.median : aggA.byRole[role].median;
-    const bM = role === 'total' ? aggB.total.median : aggB.byRole[role].median;
-    const aAvg = role === 'total' ? aggA.total.mean : aggA.byRole[role].mean;
-    const bAvg = role === 'total' ? aggB.total.mean : aggB.byRole[role].mean;
-    deltaMedian[role] = { delta: bM - aM, pct: pctChange(bM, aM) };
-    deltaMean[role] = { delta: bAvg - aAvg, pct: pctChange(bAvg, aAvg) };
+    const a = role === 'total' ? aggA.total : aggA.byRole[role];
+    const b = role === 'total' ? aggB.total : aggB.byRole[role];
+    deltaMedian[role] = { delta: b.median - a.median, pct: pctChange(b.median, a.median) };
+    deltaMean[role] = { delta: b.mean - a.mean, pct: pctChange(b.mean, a.mean) };
   }
 
+  printLeadReport({ route, repeat, jsonMode, leadPrompt, runsMeta, aggA, aggB, deltaMedian, deltaMean });
+  process.exit(leadModeExitCode(runsMeta, perVariant));
+}
+
+function printLeadReport({ route, repeat, jsonMode, leadPrompt, runsMeta, aggA, aggB, deltaMedian, deltaMean }) {
   if (jsonMode) {
     console.log(
       JSON.stringify(
@@ -732,8 +652,6 @@ function runLeadMode({ route, effort, fast, repeat, jsonMode, leadPrompt }) {
       `delta B-vs-A (mean):   ${[...ROLES, 'total'].map((r) => `${r}=${fmtDeltaEntry(deltaMean[r])}`).join(' ')}`
     );
   }
-
-  process.exit(leadModeExitCode(runsMeta, perVariant));
 }
 
 function pctChange(b, a) {
@@ -765,6 +683,35 @@ Usage:
 `);
 }
 
+function printOfflineSummary({ mode, repeat, jsonMode }) {
+  printUsage();
+  const ruleStats = ruleVariantBytes();
+  const aSum = sum(ruleStats.map((r) => r.a_chars));
+  const bSum = sum(ruleStats.map((r) => r.b_chars));
+  if (jsonMode) {
+    console.log(
+      JSON.stringify(
+        {
+          mode: 'usage',
+          run_mode: mode,
+          repeat,
+          rule_files: RULE_FILES,
+          rule_stats: ruleStats,
+          rule_chars: { A: aSum, B: bSum },
+          liveCommand: 'node scripts/internal-comms-bench.mjs --run --model grok',
+          liveLeadCommand: 'node scripts/internal-comms-bench.mjs --run --mode lead --repeat 3 --model grok',
+        },
+        null,
+        2
+      )
+    );
+  } else {
+    process.stdout.write(
+      `[internal-comms-bench] rule chars A(prior@HEAD)=${aSum} B(on-disk)=${bSum} (${RULE_FILES.length} files); mode=${mode} repeat=${repeat}\n`
+    );
+  }
+}
+
 function main() {
   const jsonMode = hasFlag('--json');
   const doRun = hasFlag('--run');
@@ -778,32 +725,7 @@ function main() {
   const fast = hasFlag('--fast');
 
   if (!doRun) {
-    printUsage();
-    const ruleStats = ruleVariantBytes();
-    const aSum = sum(ruleStats.map((r) => r.a_chars));
-    const bSum = sum(ruleStats.map((r) => r.b_chars));
-    if (jsonMode) {
-      console.log(
-        JSON.stringify(
-          {
-            mode: 'usage',
-            run_mode: mode,
-            repeat,
-            rule_files: RULE_FILES,
-            rule_stats: ruleStats,
-            rule_chars: { A: aSum, B: bSum },
-            liveCommand: 'node scripts/internal-comms-bench.mjs --run --model grok',
-            liveLeadCommand: 'node scripts/internal-comms-bench.mjs --run --mode lead --repeat 3 --model grok',
-          },
-          null,
-          2
-        )
-      );
-    } else {
-      process.stdout.write(
-        `[internal-comms-bench] rule chars A(prior@HEAD)=${aSum} B(on-disk)=${bSum} (${RULE_FILES.length} files); mode=${mode} repeat=${repeat}\n`
-      );
-    }
+    printOfflineSummary({ mode, repeat, jsonMode });
     process.exit(0);
   }
 
@@ -819,6 +741,10 @@ function main() {
     return;
   }
 
+  runWorkerMode({ route, effort, fast, prompt, jsonMode, realDataDir, userUnified });
+}
+
+function runWorkerMode({ route, effort, fast, prompt, jsonMode, realDataDir, userUnified }) {
   const sandboxRoot = mkdtempSync(join(REPO_ROOT, '.tmp-internal-comms-bench-'));
   const results = {};
   try {

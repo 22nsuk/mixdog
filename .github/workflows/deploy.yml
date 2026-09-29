@@ -226,6 +226,7 @@ jobs:
             'scripts/voice-runtime-config.json',
             'scripts/build-voice-runtime-unix.sh',
             'scripts/build-voice-runtime-windows.ps1',
+            'scripts/build-ffmpeg-runtime.sh',
             'scripts/generate-voice-runtime-manifest.mjs',
             'scripts/plan-voice-runtime-release.mjs',
             'scripts/verify-voice-runtime-release.mjs',

@@ -44,7 +44,7 @@ for(const tr of fs.readdirSync(base).sort()){
   turns=st.lastIterationIndex||"?";
   mu.fin=Number(st.lastContextTokens)||null;
   const ag=r.agent_execution||r.agent;if(ag&&ag.started_at&&ag.finished_at)t=Math.round((new Date(ag.finished_at)-new Date(ag.started_at))/1000);
- }catch{}
+ }catch{/* usage/transcript files are optional per trial */}
  const c=cb[task];
  let line=(Number(rew)>=1?"PASS ":"FAIL ")+task.padEnd(34);
  if(mu&&mu.fin){finSum+=mu.fin;finN++;}

@@ -147,29 +147,29 @@ export function summarizeRuns(runs) {
     groups.set(run.bundle, group);
   }
   const cohorts = [...groups].map(([bundle, rows]) => ({
-      bundle, rules: rows[0].rules, tools: rows[0].tools,
-      ...aggregate(rows),
-      taskTotals: [...new Set(rows.flatMap((row) => row.tasks.map((task) => task.task)))].sort().map((task) => {
-        const results = rows.flatMap((row) => row.tasks.filter((entry) => entry.task === task));
-        return {
-          task,
-          passed: sum(results, (row) => Number(row.passed)),
-          agent: sum(results, (row) => row.agent),
-          agentMedian: median(results.map((row) => row.agent)),
-          agentSd: sd(results.map((row) => row.agent)),
-          calls: sum(results, (row) => row.calls),
-          output: results.every((row) => row.outputComplete === true)
-            ? sum(results, (row) => row.output) : null,
-          outputRecorded: sum(results, (row) => row.output),
-          reasoning: results.every((row) => row.thinkingComplete === true)
-            ? sum(results, (row) => row.thinking) : null,
-          reasoningRecorded: sum(results, (row) => row.thinking),
-          reasoningComplete: results.every((row) => row.thinkingComplete === true),
-          streamSeconds: sum(results, (row) => row.streamSeconds),
-        };
-      }),
-      rows,
-    }));
+    bundle, rules: rows[0].rules, tools: rows[0].tools,
+    ...aggregate(rows),
+    taskTotals: [...new Set(rows.flatMap((row) => row.tasks.map((task) => task.task)))].sort().map((task) => {
+      const results = rows.flatMap((row) => row.tasks.filter((entry) => entry.task === task));
+      return {
+        task,
+        passed: sum(results, (row) => Number(row.passed)),
+        agent: sum(results, (row) => row.agent),
+        agentMedian: median(results.map((row) => row.agent)),
+        agentSd: sd(results.map((row) => row.agent)),
+        calls: sum(results, (row) => row.calls),
+        output: results.every((row) => row.outputComplete === true)
+          ? sum(results, (row) => row.output) : null,
+        outputRecorded: sum(results, (row) => row.output),
+        reasoning: results.every((row) => row.thinkingComplete === true)
+          ? sum(results, (row) => row.thinking) : null,
+        reasoningRecorded: sum(results, (row) => row.thinking),
+        reasoningComplete: results.every((row) => row.thinkingComplete === true),
+        streamSeconds: sum(results, (row) => row.streamSeconds),
+      };
+    }),
+    rows,
+  }));
   // Every later bundle against the first one, in observation order; the first
   // bundle is the baseline the round started from.
   const comparisons = cohorts.slice(1).flatMap((candidate) => ['wall', 'agent']
@@ -192,7 +192,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   }
   const previous = append ? JSON.parse(readFileSync(args[1], 'utf8')).runs : [];
   const child = spawnSync(process.execPath, [
-    fileURLToPath(new URL('_tmp-contract-metrics.mjs', import.meta.url)),
+    fileURLToPath(new URL('contract-metrics.mjs', import.meta.url)),
     ...args.slice(2),
   ], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
   if (child.error) throw child.error;

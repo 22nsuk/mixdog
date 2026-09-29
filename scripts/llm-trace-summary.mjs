@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { resolve } from 'node:path';
 import { parseSince } from './lib/parse-since.mjs';
 import { argValue, intArg } from './lib/cli-args.mjs';
 import { stats } from './lib/trace-stats.mjs';
+import { defaultTraceFiles, field, num as numberField, payload } from './lib/trace-row.mjs';
 
 const pathArg = argValue('--path', null);
 const dataDir = argValue('--data-dir', null);
@@ -14,32 +13,6 @@ const last = intArg('--last', 5000);
 const limit = intArg('--limit', 20);
 const slowMs = intArg('--slow-ms', 3000);
 const jsonMode = process.argv.includes('--json');
-
-const mixdogHome = process.env.MIXDOG_HOME || resolve(homedir(), '.mixdog');
-const mixdogDataDir = process.env.MIXDOG_DATA_DIR || resolve(mixdogHome, 'data');
-
-function unique(values) {
-  const seen = new Set();
-  const out = [];
-  for (const value of values) {
-    const key = String(value || '');
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    out.push(value);
-  }
-  return out;
-}
-
-function defaultTraceFiles() {
-  if (pathArg) return [resolve(pathArg)];
-  const dirs = dataDir ? [resolve(dataDir)] : [resolve(process.cwd(), '.mixdog', 'data'), mixdogDataDir];
-  return unique(
-    dirs.flatMap((dir) => [
-      resolve(dir, 'history', 'agent-trace.jsonl.1'),
-      resolve(dir, 'history', 'agent-trace.jsonl'),
-    ])
-  );
-}
 
 function readRows(file) {
   if (!existsSync(file)) return [];
@@ -53,21 +26,6 @@ function readRows(file) {
         return { file, kind: 'parse_error', payload: { line: line.slice(0, 300) } };
       }
     });
-}
-
-function payload(row) {
-  return row?.payload && typeof row.payload === 'object' ? row.payload : {};
-}
-
-function field(row, name) {
-  if (row && row[name] != null) return row[name];
-  const p = payload(row);
-  return p[name] != null ? p[name] : null;
-}
-
-function numberField(row, name) {
-  const n = Number(field(row, name));
-  return Number.isFinite(n) ? n : null;
 }
 
 function countBy(rows, fn) {
@@ -133,7 +91,7 @@ function printCounts(label, obj, max = 12) {
   console.log(`${label}: ${parts.join(', ') || '(none)'}`);
 }
 
-const files = defaultTraceFiles();
+const files = defaultTraceFiles({ pathArg, dataDir });
 const sinceTs = parseSince(sinceArg);
 const allRows = files
   .flatMap(readRows)

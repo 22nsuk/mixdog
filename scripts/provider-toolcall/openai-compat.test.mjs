@@ -15,11 +15,6 @@ import {
   compatResponsesEventStream,
 } from './_shared.mjs';
 
-// === 1. openai-compat ======================================================
-// Chat path:      parseToolCalls(choice, label)         openai-compat.mjs:957
-// Responses path: parseResponsesToolCalls(response,...) openai-compat.mjs:972
-// Both exported (added `export` keyword only).
-
 test('openai-compat (chat): native tool_calls → canonical toolCalls', () => {
   const choice = {
     message: {
@@ -571,7 +566,7 @@ function assertDoSendUsesOnlyInjectedPreconnect() {
       node.type === 'CallExpression' &&
       node.callee?.type === 'MemberExpression' &&
       node.callee.object?.type === 'ThisExpression' &&
-      node.callee.computed === false &&
+      !node.callee.computed &&
       node.callee.property?.name === '_preconnectFn'
     ) {
       callsInjectedInstanceMember = true;

@@ -91,9 +91,11 @@ const readMjsSources = (rel) => {
 // switch silently forces a full prompt-cache rewrite (seen as a
 // promptΔ spike + cache_ratio=0% turn in session-bench).
 function assertSetRouteStaysNextSessionOnly() {
-  const runtimeSrc = [readMjsSources('src/mixdog-session-runtime.mjs'), readMjsSources('src/session-runtime')].join(
-    '\n'
-  );
+  const runtimeSrc = [
+    readMjsSources('src/mixdog-session-runtime.mjs'),
+    readMjsSources('src/session-runtime'),
+    readMjsSources('src/runtime/agent/orchestrator/runtime-core'),
+  ].join('\n');
   // The empty-session recreate lives in recreateEmptySession (model-route/);
   // the guard covers the setRoute body and that helper together.
   const setRouteBlock = [

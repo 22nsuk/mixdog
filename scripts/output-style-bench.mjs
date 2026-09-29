@@ -2,21 +2,12 @@
 // Lead output-style composition and depth bench.
 import { createRequire } from 'node:module';
 import { execFileSync } from 'node:child_process';
-import {
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
-import { homedir } from 'node:os';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { findOutputStyle, listOutputStyleCatalog } from '../src/session-runtime/output-styles.mjs';
 import { argValue, hasFlag } from './lib/cli-args.mjs';
+import { copyAuthArtifacts, defaultUserDataDir, readUnifiedConfig } from './lib/bench-sandbox.mjs';
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dir, '..');
@@ -36,12 +27,6 @@ const MODEL_ALIASES = {
   'gpt-5.5': { provider: 'openai-oauth', model: 'gpt-5.5' },
   grok: { provider: 'grok-oauth', model: 'grok-composer-2.5-fast' },
 };
-// Filenames verified in provider ensureAuth / token paths (resolvePluginData / getPluginData).
-const AUTH_ARTIFACT_BY_PROVIDER = {
-  'grok-oauth': ['grok-oauth.json', 'grok-oauth-models.json'],
-  'anthropic-oauth': ['anthropic-oauth-credentials.json', 'anthropic-oauth-models.json'],
-  'openai-oauth': ['openai-oauth.json', 'openai-oauth-models.json'],
-};
 
 function resolveModelOpts(modelArg, providerArg) {
   const key = String(modelArg || '')
@@ -49,17 +34,6 @@ function resolveModelOpts(modelArg, providerArg) {
     .toLowerCase();
   if (MODEL_ALIASES[key] && !providerArg) return { ...MODEL_ALIASES[key] };
   return { provider: providerArg || null, model: modelArg || null };
-}
-function defaultUserDataDir() {
-  return process.env.MIXDOG_DATA_DIR || join(process.env.MIXDOG_HOME || join(homedir(), '.mixdog'), 'data');
-}
-function readUnifiedConfig(dataDir) {
-  try {
-    const unified = JSON.parse(readFileSync(join(dataDir, 'mixdog-config.json'), 'utf8'));
-    return unified && typeof unified === 'object' ? unified : {};
-  } catch {
-    return {};
-  }
 }
 function outputStyleBodyFromMeta(meta) {
   const text = String(meta || '');
@@ -318,38 +292,6 @@ function runInjectionScaffold() {
   } finally {
     rmSync(baseDir, { recursive: true, force: true });
   }
-}
-function authArtifactNamesForSandbox(realDataDir, provider) {
-  const names = new Set();
-  for (const file of AUTH_ARTIFACT_BY_PROVIDER[provider] || []) names.add(file);
-  try {
-    for (const entry of readdirSync(realDataDir, { withFileTypes: true })) {
-      if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
-      if (/oauth/i.test(entry.name) || /credentials/i.test(entry.name)) names.add(entry.name);
-    }
-  } catch {
-    /* missing real data dir */
-  }
-  return [...names];
-}
-function copyAuthArtifacts(realDataDir, sandboxDataDir, provider) {
-  const copied = [];
-  const skipped = [];
-  for (const name of authArtifactNamesForSandbox(realDataDir, provider)) {
-    const src = join(realDataDir, name);
-    const dest = join(sandboxDataDir, name);
-    if (!existsSync(src)) {
-      skipped.push(name);
-      continue;
-    }
-    try {
-      copyFileSync(src, dest);
-      copied.push(name);
-    } catch {
-      skipped.push(name);
-    }
-  }
-  return { copied, skipped };
 }
 function prepareStyleSandbox(baseSandbox, styleId, userUnified, realDataDir, provider) {
   const dataDir = join(baseSandbox, styleId);

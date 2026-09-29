@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - ".github/workflows/**"
+      - ".github/actions/**"
       - "apps/desktop/**"
       - "apps/relay/**"
       - "native/**"
@@ -15,6 +16,7 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/**"
+      - ".github/actions/**"
       - "apps/desktop/**"
       - "apps/relay/**"
       - "native/**"

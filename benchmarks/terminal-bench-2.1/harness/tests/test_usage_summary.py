@@ -79,7 +79,7 @@ class UsageSummaryTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("turns= 7", result.stdout)
         self.assertIn("in=400000", result.stdout)
-        self.assertIn("$3.45", result.stdout)
+        self.assertIn("$2.76", result.stdout)
         self.assertIn("avg turns=7.0", result.stdout)
 
     @unittest.skipUnless(shutil.which("node"), "Node.js is not installed")

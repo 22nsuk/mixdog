@@ -89,7 +89,7 @@ test('BP layering keeps profile/skills in BP2 and ordered BP3 sections', () => {
     );
   }
   if (
-    /BP3_SESSION|BP3_PROJECT|BP3_ENVIRONMENT|BP3_LANGUAGE/.test(layeredPrompt.sessionEnvironment) === false ||
+    !/BP3_SESSION|BP3_PROJECT|BP3_ENVIRONMENT|BP3_LANGUAGE/.test(layeredPrompt.sessionEnvironment) ||
     /BP3_WORKFLOW|BP3_ROLE|BP3_MEMORY/.test(layeredPrompt.sessionEnvironment)
   ) {
     throw new Error(`session environment must exclude the stable BP3 core: ${layeredPrompt.sessionEnvironment}`);

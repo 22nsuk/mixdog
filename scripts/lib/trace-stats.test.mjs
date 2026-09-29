@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { median, percentile, sortedFinite, stats } from './trace-stats.mjs';
+import { distribution, median, percentile, sortedFinite, stats } from './trace-stats.mjs';
+
+test('distribution coerces samples with Number() and reports nearest-rank p50/p95', () => {
+  assert.deepEqual(distribution(['10', 20, '30', 40]), { p50: 20, p95: 40 });
+  assert.deepEqual(distribution([]), { p50: null, p95: null });
+  assert.deepEqual(distribution([undefined, 'x']), { p50: null, p95: null });
+});
 
 test('percentile picks the nearest rank of an ascending sample', () => {
   const sorted = [10, 20, 30, 40];

@@ -72,10 +72,10 @@ test('shell, edit, and task keep their execution contracts', () => {
   }
   const shellProps = shellTool?.inputSchema?.properties || {};
   if (
-    JSON.stringify(Object.keys(shellProps)) !== JSON.stringify(['command', 'timeout_ms']) ||
+    JSON.stringify(Object.keys(shellProps)) !== JSON.stringify(['command', 'timeout_ms', 'wait_ms']) ||
     shellProps.command?.minLength !== undefined
   ) {
-    throw new Error(`shell schema must expose only command and optional timeout_ms: ${JSON.stringify(shellProps)}`);
+    throw new Error(`shell schema must expose only command, optional timeout_ms and wait_ms: ${JSON.stringify(shellProps)}`);
   }
   // timeout_ms is DECLARED in the model-facing schema (the schema states the
   // contract) while the default stays "no deadline" — the description and

@@ -56,7 +56,7 @@ export async function prepareRequiredNativeAssets({
       }
       const destination = join(stagedToolsDir, fileName);
       await copyFile(installedPath, destination);
-      if (process.platform !== 'win32') {
+      if (platform !== 'win32') {
         await chmod(destination, 0o755);
       }
       return [name, join(target, fileName)];

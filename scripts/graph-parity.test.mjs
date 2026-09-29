@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -43,6 +43,12 @@ function rec(overrides = {}) {
 
 function sym(name, kind, startLine, startCol = 1, endCol = name.length + 1) {
   return { name, kind, startLine, startCol, endCol };
+}
+
+function tempDir(t, prefix = 'graph-parity-') {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  return dir;
 }
 
 function writeJsonl(dir, name, records) {
@@ -244,8 +250,8 @@ test('evaluateGate fails on LOSS, import diffs, time ratio, manifest, and one-si
   assert.match(evaluateGate(oneSide, {}).join('\n'), /files only on one side/);
 });
 
-test('CLI jsonl mode: identical records exit 0', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'graph-parity-'));
+test('CLI jsonl mode: identical records exit 0', async (t) => {
+  const dir = tempDir(t);
   const records = [rec({ symbols: [sym('alpha', 'function', 1)] })];
   const oldPath = writeJsonl(dir, 'old.jsonl', records);
   const newPath = writeJsonl(dir, 'new.jsonl', records);
@@ -258,8 +264,8 @@ test('CLI jsonl mode: identical records exit 0', async () => {
   assert.equal(json.totals.loss, 0);
 });
 
-test('CLI jsonl mode: LOSS and import diffs exit 1; ADDITION-only does not', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'graph-parity-'));
+test('CLI jsonl mode: LOSS and import diffs exit 1; ADDITION-only does not', async (t) => {
+  const dir = tempDir(t);
   const lossOld = writeJsonl(dir, 'loss-old.jsonl', [
     rec({ symbols: [sym('keep', 'function', 1), sym('gone', 'function', 2)] }),
   ]);
@@ -284,8 +290,8 @@ test('CLI jsonl mode: LOSS and import diffs exit 1; ADDITION-only does not', asy
   assert.match(imports.stdout, /IMPORT/);
 });
 
-test('CLI jsonl mode: KIND_CHANGE, COL_DRIFT, one-sided files, thresholds, language aggregation', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'graph-parity-'));
+test('CLI jsonl mode: KIND_CHANGE, COL_DRIFT, one-sided files, thresholds, language aggregation', async (t) => {
+  const dir = tempDir(t);
   const kindOld = writeJsonl(dir, 'kind-old.jsonl', [rec({ symbols: [sym('foo', 'function', 4)] })]);
   const kindNew = writeJsonl(dir, 'kind-new.jsonl', [rec({ symbols: [sym('foo', 'method', 4)] })]);
   const kind = await runCli(['--old-jsonl', kindOld, '--new-jsonl', kindNew]);
@@ -396,8 +402,8 @@ test('compareWalks 3000 files stays linear in file count', () => {
   assert.ok(ms < 2000, `quadratic compareWalks: ${ms.toFixed(1)}ms for 3000 files`);
 });
 
-test('CLI jsonl mode: empty output, missing symbols, backslash rels', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'graph-parity-'));
+test('CLI jsonl mode: empty output, missing symbols, backslash rels', async (t) => {
+  const dir = tempDir(t);
   const emptyOld = writeJsonl(dir, 'empty-old.jsonl', []);
   const emptyNew = writeJsonl(dir, 'empty-new.jsonl', []);
   const empty = await runCli(['--old-jsonl', emptyOld, '--new-jsonl', emptyNew]);
@@ -679,8 +685,8 @@ test('--allow-new-languages ignores files-only-new and extra manifest rows', () 
   assert.match(md, /excluded manifest rows: 2/);
 });
 
-test('CLI jsonl: kind-map, tokens, allow-new-languages', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'graph-parity-stage3-'));
+test('CLI jsonl: kind-map, tokens, allow-new-languages', async (t) => {
+  const dir = tempDir(t, 'graph-parity-stage3-');
   const mapPath = join(dir, 'kinds.json');
   writeFileSync(mapPath, JSON.stringify({ javascript: { kinds: { function: 'method', class: 'class' } } }));
 
@@ -771,50 +777,34 @@ test('auto kind-map: langs without kinds / failure inactive; identity allowed', 
   }));
   assert.equal(kindMapActive(empty.map), false);
   assert.equal(empty.source, 'langs');
-  const emptyMd = formatMarkdown({
-    filesCompared: 0,
-    filesOnlyOld: [],
-    filesOnlyNew: [],
-    totals: {
-      loss: 0,
-      addition: 0,
-      kindChange: 0,
-      kindMapped: 0,
-      colDrift: 0,
-      importDiff: 0,
-      scalar: 0,
-      parseError: 0,
-    },
-    byLanguage: {},
-    kindMapSource: empty.source,
-    kindMapActive: false,
-    reasons: [],
-  });
+  const inactiveMarkdown = (kindMapSource) =>
+    formatMarkdown({
+      filesCompared: 0,
+      filesOnlyOld: [],
+      filesOnlyNew: [],
+      totals: {
+        loss: 0,
+        addition: 0,
+        kindChange: 0,
+        kindMapped: 0,
+        colDrift: 0,
+        importDiff: 0,
+        scalar: 0,
+        parseError: 0,
+      },
+      byLanguage: {},
+      kindMapSource,
+      kindMapActive: false,
+      reasons: [],
+    });
+  const emptyMd = inactiveMarkdown(empty.source);
   assert.match(emptyMd, /kind-map: inactive \(--langs produced no kinds\)/);
 
   const failed = await loadKindMap({ new: 'graph' }, '.', async () => {
     throw new Error('boom');
   });
   assert.equal(failed.source, 'langs-failed');
-  const failMd = formatMarkdown({
-    filesCompared: 0,
-    filesOnlyOld: [],
-    filesOnlyNew: [],
-    totals: {
-      loss: 0,
-      addition: 0,
-      kindChange: 0,
-      kindMapped: 0,
-      colDrift: 0,
-      importDiff: 0,
-      scalar: 0,
-      parseError: 0,
-    },
-    byLanguage: {},
-    kindMapSource: failed.source,
-    kindMapActive: false,
-    reasons: [],
-  });
+  const failMd = inactiveMarkdown(failed.source);
   assert.match(failMd, /kind-map: inactive \(--langs failed\)/);
 
   const mapped = await loadKindMap({ new: 'graph' }, '.', async () => ({

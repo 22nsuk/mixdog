@@ -1,4 +1,3 @@
-// Consolidated suite; sources: shell-hardening-test.mjs, shell-failure-diagnostics-test.mjs, windows-hide-spawn-options-test.mjs
 import '../native-spawn-test-runtime.mjs';
 import assert from 'node:assert/strict';
 import os from 'node:os';
@@ -14,7 +13,6 @@ import {
   executeBashTool,
   _backgroundResultLines,
   _composeShellFailure,
-  _exitClassDiagnostic,
   _isBenignSearchExitOne,
   _placeDestructiveWarningsAfterStatus,
   _shellFailureStatus,
@@ -51,10 +49,8 @@ import {
   buildShellCompletion,
   killShellJob,
   normalizeShellJobDetail,
-  peekShellJob,
   shellJobPublicTaskResult,
   shellJobTaskStatus,
-  waitForShellJob,
 } from '../../src/runtime/agent/orchestrator/tools/builtin/shell-jobs.mjs';
 import { executeTaskTool } from '../../src/runtime/agent/orchestrator/tools/builtin/task-tool.mjs';
 import { TaskOutput } from '../../src/runtime/agent/orchestrator/tools/shell-exec-output.mjs';
@@ -65,7 +61,7 @@ import {
 import { normalizeToolEnvelope } from '../../src/runtime/agent/orchestrator/session/tool-envelope.mjs';
 import { shellCommandExitCode } from '../../src/tui/session/tool-result-status.mjs';
 import { stripShellExitHeader } from '../../src/tui/session/tool-result-text.mjs';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
   _bindNativeSearchServerLifecycle,
@@ -92,7 +88,6 @@ import {
 } from '../../src/runtime/agent/orchestrator/tools/builtin/shell-lossless-compact.mjs';
 import { executeGlobTool } from '../../src/runtime/agent/orchestrator/tools/builtin/search-tool.mjs';
 
-// ==== from shell-hardening-test.mjs ====
 // Regression + integration tests for three recent shell hardening changes:
 //   A) benign exit-1 detection for search-style / `git diff --exit-code`
 //      pipelines (bash-tool.mjs `_isBenignSearchExitOne`) — exit 1 is a signal
@@ -179,7 +174,6 @@ function assertSpawnToolFailure(result) {
   assert.equal(classifyToolFailure(rendered, 'shell'), 'tool-call/failure');
 }
 
-// ==== from windows-hide-spawn-options-test.mjs ====
 const root = fileURLToPath(new URL('../..', import.meta.url));
 
 function source(relativePath) {
@@ -296,7 +290,6 @@ export {
   EventEmitter,
   DEFAULT_SHELL_AUTO_BACKGROUND_MS,
   _placeDestructiveWarningsAfterStatus,
-  _exitClassDiagnostic,
   _isBenignSearchExitOne,
   executeBashTool,
   buildPowerShellFilterTeePlan,
@@ -325,10 +318,8 @@ export {
   buildShellCompletion,
   killShellJob,
   normalizeShellJobDetail,
-  peekShellJob,
   shellJobPublicTaskResult,
   shellJobTaskStatus,
-  waitForShellJob,
   executeTaskTool,
   SURVIVING_DESCENDANTS_UNREACHABLE_WARNING,
   SURVIVING_DESCENDANTS_WARNING,
@@ -343,8 +334,6 @@ export {
   stripShellExitHeader,
   spawn,
   readFileSync,
-  fileURLToPath,
-  pathToFileURL,
   delay,
   _bindNativeSearchServerLifecycle,
   _ackNativeSearchCancellationForTest,
@@ -369,7 +358,6 @@ export {
   hasCmd,
   withoutUnhandledProcessFailure,
   assertSpawnToolFailure,
-  root,
   source,
   pidAlive,
   waitUntil,

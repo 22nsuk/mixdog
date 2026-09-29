@@ -49,13 +49,16 @@ function bridgeFixture() {
   let closeHandler = null;
   return {
     alive: true,
+    writes: [],
     onData(handler) {
       dataHandler = handler;
     },
     onClose(handler) {
       closeHandler = handler;
     },
-    write() {},
+    write(bytes) {
+      this.writes.push(bytes);
+    },
     close(error = null) {
       if (!this.alive) return;
       this.alive = false;
@@ -929,11 +932,6 @@ test('Cursor retries a rejected credential once but never after visible output',
   assert.equal(attempts, 2);
 
   authCalls.length = 0;
-  attempts = 0;
-  provider._accessToken = async ({ forceRefresh = false } = {}) => {
-    authCalls.push(forceRefresh);
-    return forceRefresh ? 'fresh-token' : 'stale-token';
-  };
   provider.config.runtime.handleChatCompletion = async () =>
     new Response(
       new ReadableStream({
@@ -1150,12 +1148,7 @@ test('Cursor request context includes harness rules and MCP routing instructions
     'mixdog rule',
     () => {}
   );
-  const frames = [];
-  __cursorWireInternals.createFrameParser(
-    (bytes) => frames.push(bytes),
-    () => {}
-  )(writes[0]);
-  const result = __cursorWireInternals.decodeMessage('AgentClientMessage', frames[0]);
+  const result = decodeClientMessage(writes[0]);
   const context = result.execClientMessage.requestContextResult.success.requestContext;
   assert.equal(context.tools.length, 1);
   assert.equal(context.tools[0].name, 'read');
@@ -1167,22 +1160,7 @@ test('Cursor request context includes harness rules and MCP routing instructions
 });
 
 test('Cursor checkpoint occupancy never becomes billable prompt tokens', async () => {
-  let data;
-  let close;
-  const bridge = {
-    alive: true,
-    write() {},
-    onData(handler) {
-      data = handler;
-    },
-    onClose(handler) {
-      close = handler;
-    },
-    close(error = null) {
-      this.alive = false;
-      close?.(error);
-    },
-  };
+  const bridge = bridgeFixture();
   const response = __cursorWireInternals.createStreamResponse({
     bridge,
     heartbeat: setInterval(() => {}, 10_000),
@@ -1192,7 +1170,7 @@ test('Cursor checkpoint occupancy never becomes billable prompt tokens', async (
     key: 'usage-measurement-fixture',
   });
   const emit = (message) =>
-    data(__cursorWireInternals.connectFrame(__cursorWireInternals.encodeMessage('AgentServerMessage', message)));
+    bridge.emit(__cursorWireInternals.connectFrame(__cursorWireInternals.encodeMessage('AgentServerMessage', message)));
   emit({
     conversationCheckpointUpdate: __cursorWireInternals.encodeMessage('ConversationStateStructure', {
       tokenDetails: { usedTokens: 2_000_000 },
@@ -1471,26 +1449,8 @@ async function assertRepeatedToolIdsDeduplicate() {
 // A resumed run whose tool results are incomplete replays the unanswered call
 // instead of writing a result for it, and finishes once the result arrives.
 async function assertResumedRunReplaysMissingToolResult() {
-  const missingWrites = [];
-  let missingData = null;
-  let missingClose = null;
-  const missingBridge = {
-    alive: true,
-    write(bytes) {
-      missingWrites.push(bytes);
-    },
-    onData(handler) {
-      missingData = handler;
-    },
-    onClose(handler) {
-      missingClose = handler;
-    },
-    close(error = null) {
-      if (!this.alive) return;
-      this.alive = false;
-      missingClose?.(error);
-    },
-  };
+  const missingBridge = bridgeFixture();
+  const missingWrites = missingBridge.writes;
   const partialActive = {
     bridge: missingBridge,
     heartbeat: setInterval(() => {}, 10_000),
@@ -1519,12 +1479,7 @@ async function assertResumedRunReplaysMissingToolResult() {
     'composer-2.5',
     'missing-result-key'
   );
-  const missingFrames = [];
-  __cursorWireInternals.createFrameParser(
-    (bytes) => missingFrames.push(bytes),
-    () => {}
-  )(missingWrites[0]);
-  const firstResult = __cursorWireInternals.decodeMessage('AgentClientMessage', missingFrames[0]);
+  const firstResult = decodeClientMessage(missingWrites[0]);
   assert.ok(firstResult.execClientMessage.mcpResult.success);
   const replayText = await missingResponse.text();
   assert.match(replayText, /call-no-result/);
@@ -1538,21 +1493,16 @@ async function assertResumedRunReplaysMissingToolResult() {
     'composer-2.5',
     'missing-result-key'
   );
-  const finalFrames = [];
-  __cursorWireInternals.createFrameParser(
-    (bytes) => finalFrames.push(bytes),
-    () => {}
-  )(missingWrites[1]);
-  const finalResult = __cursorWireInternals.decodeMessage('AgentClientMessage', finalFrames[0]);
+  const finalResult = decodeClientMessage(missingWrites[1]);
   assert.ok(finalResult.execClientMessage.mcpResult.success);
-  missingData(
+  missingBridge.emit(
     __cursorWireInternals.connectFrame(
       __cursorWireInternals.encodeMessage('AgentServerMessage', {
         interactionUpdate: { turnEnded: {} },
       })
     )
   );
-  missingData(__cursorWireInternals.connectFrame(new TextEncoder().encode('{}'), 2));
+  missingBridge.emit(__cursorWireInternals.connectFrame(new TextEncoder().encode('{}'), 2));
   await finalResponse.text();
 }
 
@@ -1702,31 +1652,7 @@ test('Cursor clean end-stream closes both SSE and its transport', async () => {
 });
 
 test('Cursor stream rejects protocol errors instead of rendering them as assistant text', async () => {
-  let dataHandler = null;
-  let closeHandler = null;
-  const bridge = {
-    alive: true,
-    onData(handler) {
-      dataHandler = handler;
-    },
-    onClose(handler) {
-      closeHandler = handler;
-    },
-    write() {},
-    close(error = null) {
-      if (!this.alive) return;
-      this.alive = false;
-      closeHandler?.(error);
-    },
-    emit(bytes) {
-      dataHandler?.(bytes);
-    },
-    end() {
-      if (!this.alive) return;
-      this.alive = false;
-      closeHandler?.(null);
-    },
-  };
+  const bridge = bridgeFixture();
   const response = __cursorWireInternals.createStreamResponse({
     bridge,
     heartbeat: setInterval(() => {}, 10_000),
@@ -1801,29 +1727,7 @@ test('Cursor stream rejects protocol errors instead of rendering them as assista
 });
 
 test('Cursor answers interaction queries, rejects unknown native execs, and accepts turnEnded close', async () => {
-  let dataHandler = null;
-  let closeHandler = null;
-  const bridge = {
-    alive: true,
-    writes: [],
-    onData(handler) {
-      dataHandler = handler;
-    },
-    onClose(handler) {
-      closeHandler = handler;
-    },
-    write(bytes) {
-      this.writes.push(bytes);
-    },
-    close(error = null) {
-      if (!this.alive) return;
-      this.alive = false;
-      closeHandler?.(error);
-    },
-    emit(bytes) {
-      dataHandler?.(bytes);
-    },
-  };
+  const bridge = bridgeFixture();
   const heartbeat = setInterval(() => {}, 10_000);
   heartbeat.unref?.();
   const response = __cursorWireInternals.createStreamResponse({
@@ -1860,15 +1764,7 @@ test('Cursor answers interaction queries, rejects unknown native execs, and acce
     )
   );
 
-  const replies = [];
-  for (const write of bridge.writes) {
-    __cursorWireInternals.createFrameParser(
-      (bytes) => {
-        replies.push(__cursorWireInternals.decodeMessage('AgentClientMessage', bytes));
-      },
-      () => {}
-    )(write);
-  }
+  const replies = bridge.writes.map(decodeClientMessage);
   assert.match(replies[0].interactionResponse.webSearchRequestResponse.rejected.reason, /Mixdog tools/);
   assert.match(replies[1].interactionResponse.webFetchRequestResponse.rejected.reason, /Mixdog tools/);
   assert.equal(replies[2].execClientControlMessage.throw.id, 22);

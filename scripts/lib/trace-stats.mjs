@@ -22,6 +22,13 @@ export function sortedFinite(values) {
   return values.filter((n) => Number.isFinite(n)).sort((a, b) => a - b);
 }
 
+// p50/p95 of the samples after Number() coercion; null percentiles when none
+// is finite.
+export function distribution(values) {
+  const sorted = sortedFinite(values.map(Number));
+  return { p50: percentile(sorted, 50), p95: percentile(sorted, 95) };
+}
+
 export function stats(nums) {
   const arr = sortedFinite(nums);
   if (arr.length === 0) return null;

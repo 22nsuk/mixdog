@@ -156,7 +156,7 @@ test('transport policy: ws-full forces _computeDelta to full (delta OFF)', () =>
   }
 });
 
-// === 10b. Shared Responses transport policy (capability gating) ============
+// Shared Responses transport policy (capability gating):
 // resolveResponsesTransportPolicy generalizes the OpenAI switch across every
 // Responses backend. Full-capability providers (OpenAI OAuth/direct) resolve
 // byte-identically to resolveOpenAiTransportPolicy; xAI/Grok also carry WS
@@ -268,7 +268,7 @@ test('stream progress excludes transport and response acknowledgements from visi
     'utf8'
   );
   const recoverySource = readFileSync(
-    new URL('../../src/runtime/agent/orchestrator/session/send-with-recovery.mjs', import.meta.url),
+    new URL('../../src/runtime/agent/orchestrator/session/send-instrumentation.mjs', import.meta.url),
     'utf8'
   );
   assert.match(turnSource, /if \(isVisibleStreamProgress\(args\[0\]\)\)/);
@@ -296,8 +296,7 @@ test('responses transport policy: _gateTransportMode down-shifts per capability'
   }
 });
 
-// === 11. x-codex-turn-state parity =======================================
-// Server-issued sticky-routing token, held per logical turn: captured once
+// x-codex-turn-state parity. Server-issued sticky-routing token, held per logical turn: captured once
 // from response metadata, replayed unchanged in later request metadata within
 // that turn, never fabricated, and dropped between turns.
 test('codex turn-state: captures server response header once, never synthesizes', () => {

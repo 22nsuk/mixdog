@@ -29,6 +29,10 @@ async function fixture(t, entries) {
 function runNode(cwd, args) {
   const env = { ...process.env };
   delete env.NODE_TEST_CONTEXT;
+  // An agent shell exports its shell cap, which makes the runner add a
+  // --test-concurrency flag; these tests pin the runner's own argv.
+  delete env.MIXDOG_SHELL_CONCURRENCY_CAP;
+  delete env.MIXDOG_TEST_CONCURRENCY;
   const result = spawnSync(process.execPath, args, { cwd, env, encoding: 'utf8', timeout: 10_000 });
   assert.ifError(result.error);
   assert.equal(result.signal, null);
@@ -155,9 +159,7 @@ test('arguments preserve defaults, flag forwarding, last lane, and normalized fi
 });
 
 test('re-run, exclusion and help flags stay opt-in and reject unusable values', () => {
-  // An absent flag must leave the parsed options untouched, so nothing
-  // downstream can branch on re-runs or lane exclusion by accident.
-  assert.deepEqual(parseArgs([]), { lane: 'fast', list: false, nodeArgs: [], filters: [] });
+  // (absent flags leaving the options untouched is pinned by the defaults case above)
   assert.equal(parseArgs(['--rerun-failed', '3']).rerunFailed, 3);
   assert.equal(parseArgs(['--rerun-failed=0']).rerunFailed, 0);
   assert.deepEqual(parseArgs(['--exclude-lane=electron', '--exclude-lane', 'slow']).excludeLanes, ['electron', 'slow']);

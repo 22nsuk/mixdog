@@ -334,7 +334,7 @@ function clangFormatAssets(release) {
   };
   const assets = {};
   for (const [platform, name] of Object.entries(map)) {
-    assets[platform] = { match: (candidate) => candidate === name };
+    assets[platform] = exact(name);
   }
   return { version: `${major}.0.0`, assets };
 }
@@ -412,8 +412,8 @@ function listTarGz(buffer) {
         const real = tar.subarray(offset, offset + 512);
         const realSize = Number.parseInt(real.subarray(124, 136).toString('utf8').replace(/\0.*$/, '').trim(), 8) || 0;
         offset += 512 + Math.ceil(realSize / 512) * 512;
-        continue;
       }
+      continue;
     } else if (name) {
       names.push(name);
     }
@@ -430,10 +430,7 @@ function pickBinPath(entries, binNames, fallback) {
   }
   const loose = files.filter((file) => {
     const base = file.split('/').pop();
-    return binNames.some((want) => {
-      const stem = want.replace(/\.exe$/i, '');
-      return base === want || base.startsWith(`${stem}-`) || base.startsWith(`${stem}_`) || base.startsWith(stem);
-    });
+    return binNames.some((want) => base.startsWith(want.replace(/\.exe$/i, '')));
   });
   if (loose.length === 1) return loose[0];
   if (fallback && files.includes(fallback)) return fallback;
@@ -706,11 +703,12 @@ async function main() {
       throw new Error(`--pin unknown engine '${id}'`);
     }
   }
-  if (checkOnly) {
-    await check();
-    return;
+  try {
+    if (checkOnly) await check();
+    else await generate(pins);
+  } finally {
+    await rm(TMP_DIR, { recursive: true, force: true });
   }
-  await generate(pins);
 }
 
 main().catch((error) => {

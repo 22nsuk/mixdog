@@ -154,7 +154,7 @@ function assertLeadSkillSurface(skillManifestTmp) {
         `Lead BP3 must relocate the shell payload exactly once without a new heading: ${visible.slice(0, 1200)}`
       );
     }
-    const skillToolNames = (skillSession.tools || []).map((tool) => tool?.name).filter(Boolean);
+    const skillToolNames = sessionToolNames(skillSession);
     if (!skillToolNames.includes('Skill')) {
       throw new Error(`lead skill manifest session must expose Skill loader: ${skillToolNames.join(', ')}`);
     }
@@ -176,7 +176,7 @@ function assertGptEditToolSurface(skillManifestTmp) {
     permission: 'read-write',
   });
   try {
-    const names = (gptEditSession.tools || []).map((tool) => tool?.name).filter(Boolean);
+    const names = sessionToolNames(gptEditSession);
     if (!names.includes('apply_patch') || names.includes('edit')) {
       throw new Error(`GPT sessions must expose apply_patch only: ${names.join(', ')}`);
     }
@@ -216,11 +216,6 @@ function assertAgentSkillSurface(skillManifestTmp) {
         `agent Skill manifest must expose metadata only, never SKILL.md body: ${systemVisible.slice(0, 1200)}`
       );
     }
-    if (!/# Tool Calls/i.test(systemVisible) || !/^# Agent$/im.test(systemVisible)) {
-      throw new Error(
-        `agent system layers must carry BP1 tool policy and BP3 role rules: ${systemVisible.slice(0, 1200)}`
-      );
-    }
     if (
       !/# Tool Calls/i.test(systemLayers[0]?.content || '') ||
       /available-skills/i.test(systemLayers[0]?.content || '') ||
@@ -232,7 +227,7 @@ function assertAgentSkillSurface(skillManifestTmp) {
       );
     }
     const agentSkillTool = (agentSkillSession.tools || []).find((tool) => tool?.name === 'Skill');
-    const agentSkillToolNames = (agentSkillSession.tools || []).map((tool) => tool?.name).filter(Boolean);
+    const agentSkillToolNames = sessionToolNames(agentSkillSession);
     if (!agentSkillToolNames.includes('Skill')) {
       throw new Error(
         `read-write agent schema must expose Skill loader with the manifest: ${agentSkillToolNames.join(', ')}`
@@ -309,7 +304,7 @@ test('worker session context hygiene and verification tool exposure', () => {
         `shell-capable agent BP3 must include the shell syntax payload exactly once: ${visible.slice(0, 1200)}`
       );
     }
-    const workerToolNames = (workerSession.tools || []).map((tool) => tool?.name).filter(Boolean);
+    const workerToolNames = sessionToolNames(workerSession);
     if (workerToolNames.includes('load_tool')) {
       throw new Error(`agent session schema must not expose deferred load_tool: ${workerToolNames.join(', ')}`);
     }

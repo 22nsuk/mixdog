@@ -10,8 +10,13 @@ import { summarizeToolBatching } from './tool-batching.mjs';
 const json = p => JSON.parse(readFileSync(p, 'utf8'));
 const jsonl = p => readFileSync(p, 'utf8').split(/\r?\n/).filter(s => s.trim()).map(JSON.parse);
 const sum = xs => xs.reduce((a, b) => a + b, 0);
-const strip = x => Array.isArray(x) ? x.map(strip) : x && typeof x === 'object'
-  ? Object.fromEntries(Object.entries(x).filter(([k]) => k !== 'description' && k !== 'freeformDescription').map(([k, v]) => [k, strip(v)])) : x;
+function strip(x) {
+  if (Array.isArray(x)) return x.map(strip);
+  if (!x || typeof x !== 'object') return x;
+  return Object.fromEntries(Object.entries(x)
+    .filter(([k]) => k !== 'description' && k !== 'freeformDescription')
+    .map(([k, v]) => [k, strip(v)]));
+}
 const [mode, ...args] = process.argv.slice(2);
 
 function trials(report) {
@@ -117,8 +122,11 @@ if (mode === 'snapshot') {
         const output = typeof item.output === 'string' ? item.output
           : (item.output?.content ?? []).filter(c => c.type === 'text').map(c => c.text).join('\n');
         const a = typeof item.arguments === 'string' ? JSON.parse(item.arguments) : item.arguments;
+        let shownArgs = a;
+        if (a.patch) shownArgs = { patchChars: a.patch.length };
+        else if (a.command) shownArgs = { command: '(below)' };
         console.log(JSON.stringify({ request, name: item.name,
-          args: a.patch ? { patchChars: a.patch.length } : a.command ? { command: '(below)' } : a,
+          args: shownArgs,
           status: item.status, outputChars: output.length }));
         if (a.command) console.log(typeof a.command === 'string' ? a.command : JSON.stringify(a.command));
         console.log(output.slice(0, 600));

@@ -53,7 +53,7 @@ def resolve_with_real_runtime(config: dict) -> dict:
     config_uri = (repo_root / "src/runtime/agent/orchestrator/config.mjs").as_uri()
     helpers_uri = (repo_root / "src/session-runtime/config-helpers.mjs").as_uri()
     workflow_uri = (repo_root / "src/session-runtime/workflow.mjs").as_uri()
-    agent_helpers_uri = (repo_root / "src/standalone/agent-tool/helpers.mjs").as_uri()
+    agent_helpers_uri = (repo_root / "src/session-runtime/services/agent-tool/helpers.mjs").as_uri()
     script = f"""
 import {{ loadConfig, getDefaultPreset }} from {json.dumps(config_uri)};
 import {{

@@ -189,9 +189,10 @@ for (const entry of entries) {
   }
 }
 
+const runNoun = entries.length === 1 ? 'run' : 'runs';
 console.log(
   failed === 0
-    ? `\nverified: every recorded digest reproduces from its pinned commit (${entries.length} run${entries.length === 1 ? '' : 's'})`
+    ? `\nverified: every recorded digest reproduces from its pinned commit (${entries.length} ${runNoun})`
     : `\nFAILED: ${failed} digest mismatch(es)`,
 );
 process.exit(failed === 0 ? 0 : 1);

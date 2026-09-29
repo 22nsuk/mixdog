@@ -81,9 +81,7 @@ function daemonPost(discovery, path, body) {
 function waitForSseFrame(discovery, clientToken, predicate, timeoutMs = 2_000) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
-      try {
-        req.destroy();
-      } catch {}
+      req.destroy();
       reject(new Error('timed out waiting for SSE frame'));
     }, timeoutMs);
     const req = http.request(
@@ -338,10 +336,8 @@ function sessionSnapshotFromFrames(frames, sessionId) {
 
 export {
   http,
-  mkdtempSync,
   writeFileSync,
   performance,
-  tmpdir,
   join,
   pathToFileURL,
   applySessionStatePatch,

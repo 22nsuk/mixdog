@@ -342,3 +342,35 @@ test('read legacy line/context and negative-offset absorption', () => {
     );
   }
 });
+
+test('read batch cap counts distinct files and offsets are not capped like limits', async () => {
+  const windows = [];
+  for (let file = 0; file < 7; file++) {
+    windows.push({ file_path: `f${file}.txt`, offset: 1, limit: 2 }, { file_path: `f${file}.txt`, offset: 50, limit: 2 });
+  }
+  const manyWindowsErr = validateBuiltinArgs('read', { file_path: windows });
+  if (manyWindowsErr) throw new Error(`14 windows over 7 files must pass the batch cap: ${manyWindowsErr}`);
+  const elevenFiles = Array.from({ length: 11 }, (_, index) => `f${index}.txt`);
+  const elevenFilesArgs = { file_path: elevenFiles };
+  const elevenFilesErr = validateBuiltinArgs('read', elevenFilesArgs);
+  if (elevenFilesErr || elevenFilesArgs.skipped_files?.join() !== 'f10.txt') {
+    throw new Error(`11 distinct files must keep 10 and skip the 11th: ${elevenFilesErr} ${JSON.stringify(elevenFilesArgs)}`);
+  }
+  const bigLimitErr = validateBuiltinArgs('read', { file_path: 'a.txt', limit: 100001 });
+  if (!/limit an integer from 1 to 100000/.test(bigLimitErr || '')) {
+    throw new Error(`limit above the window cap must stay rejected: ${bigLimitErr}`);
+  }
+
+  const dir = mkdtempSync(join(tmpdir(), 'mixdog-read-deep-offset-'));
+  try {
+    const file = join(dir, 'deep.log');
+    writeFileSync(file, Array.from({ length: 150_000 }, (_, index) => `line-${index + 1}`).join('\n'));
+    const args = { file_path: file, offset: 120_000, limit: 2 };
+    const argsErr = validateBuiltinArgs('read', args);
+    if (argsErr) throw new Error(`offset past 100000 must pass validation: ${argsErr}`);
+    const out = await executeBuiltinTool('read', args, root);
+    assertOk('read deep offset', out, /line-120000\s*\n\s*line-120001/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

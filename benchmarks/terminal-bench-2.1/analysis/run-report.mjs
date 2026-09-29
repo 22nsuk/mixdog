@@ -235,6 +235,62 @@ function codexBaselineMetrics(trialDir) {
   };
 }
 
+function readMixdogLog(trialDir) {
+  let resultEvent = null;
+  let lastRequestUsage = null;
+  try {
+    for (const line of readFileSync(join(trialDir, 'agent', 'mixdog.txt'), 'utf8').split(/\r?\n/)) {
+      if (!line.includes('"type":"result"') && !line.includes('"type":"model.request.completed"')) continue;
+      try {
+        const row = JSON.parse(line);
+        if (row?.type === 'result') resultEvent = row;
+        if (row?.type === 'model.request.completed' && row?.usage) lastRequestUsage = row.usage;
+      } catch { /* retain the last valid result row */ }
+    }
+  } catch { /* non-mixdog baselines have other logs */ }
+  return { resultEvent, lastRequestUsage };
+}
+
+// Provider-aware by construction: `input_tokens` is the FULL prompt on
+// OpenAI (cache reads are a subset of it) but only the uncached
+// remainder on Anthropic. Summing the split fields for both families
+// double-counted every cached token of an OpenAI run — a ~1.9x inflated
+// context on the 2026-08-23 sol run. model-rates already draws exactly
+// this line for pricing; an unknown model reads as inclusive, which can
+// understate but can never double-count.
+function lastRequestContextTokens(lastRequestUsage, resultEvent) {
+  const input = optionalNumber(lastRequestUsage.input_tokens);
+  if (input == null) return null;
+  const family = rateFor(inline(resultEvent?.model))?.family;
+  return family === 'anthropic'
+    ? input
+      + finite(lastRequestUsage.cached_input_tokens)
+      + finite(lastRequestUsage.cache_write_input_tokens)
+    : input;
+}
+
+// A baseline harness writes its own transcript. Claude Code reports the
+// live window on every assistant message, so the last one carries the
+// final context and the metric stays comparable across harnesses.
+function claudeCodeFinalContext(trialDir) {
+  let finalContextTokens = null;
+  try {
+    for (const line of readFileSync(join(trialDir, 'agent', 'claude-code.txt'), 'utf8').split(/\r?\n/)) {
+      if (!line.includes('"usage"')) continue;
+      try {
+        const usage = JSON.parse(line)?.message?.usage;
+        const input = optionalNumber(usage?.input_tokens);
+        if (input != null) {
+          finalContextTokens = input
+            + finite(usage?.cache_read_input_tokens)
+            + finite(usage?.cache_creation_input_tokens);
+        }
+      } catch { /* retain the last valid usage row */ }
+    }
+  } catch { /* baseline without a readable transcript */ }
+  return finalContextTokens;
+}
+
 function collectTrials(runDir, costDetails = {}) {
   const rows = [];
   for (const entry of readdirSync(runDir, { withFileTypes: true })) {
@@ -253,56 +309,13 @@ function collectTrials(runDir, costDetails = {}) {
     const trace = traceDiagnostics(trialDir);
     const codex = codexBaselineMetrics(trialDir);
     const directCost = optionalNumber(result?.agent_result?.cost_usd);
-    let resultEvent = null;
-    let finalContextTokens = null;
-    let lastRequestUsage = null;
-    try {
-      for (const line of readFileSync(join(trialDir, 'agent', 'mixdog.txt'), 'utf8').split(/\r?\n/)) {
-        if (!line.includes('"type":"result"') && !line.includes('"type":"model.request.completed"')) continue;
-        try {
-          const row = JSON.parse(line);
-          if (row?.type === 'result') resultEvent = row;
-          if (row?.type === 'model.request.completed' && row?.usage) lastRequestUsage = row.usage;
-        } catch { /* retain the last valid result row */ }
-      }
-    } catch { /* non-mixdog baselines have other logs */ }
-    if (lastRequestUsage) {
-      // Provider-aware by construction: `input_tokens` is the FULL prompt on
-      // OpenAI (cache reads are a subset of it) but only the uncached
-      // remainder on Anthropic. Summing the split fields for both families
-      // double-counted every cached token of an OpenAI run — a ~1.9x inflated
-      // context on the 2026-08-23 sol run. model-rates already draws exactly
-      // this line for pricing; an unknown model reads as inclusive, which can
-      // understate but can never double-count.
-      const input = optionalNumber(lastRequestUsage.input_tokens);
-      const family = rateFor(inline(resultEvent?.model))?.family;
-      if (input != null) {
-        finalContextTokens = family === 'anthropic'
-          ? input
-            + finite(lastRequestUsage.cached_input_tokens)
-            + finite(lastRequestUsage.cache_write_input_tokens)
-          : input;
-      }
-    }
-    if (finalContextTokens == null) {
-      // A baseline harness writes its own transcript. Claude Code reports the
-      // live window on every assistant message, so the last one carries the
-      // final context and the metric stays comparable across harnesses.
-      try {
-        for (const line of readFileSync(join(trialDir, 'agent', 'claude-code.txt'), 'utf8').split(/\r?\n/)) {
-          if (!line.includes('"usage"')) continue;
-          try {
-            const usage = JSON.parse(line)?.message?.usage;
-            const input = optionalNumber(usage?.input_tokens);
-            if (input != null) {
-              finalContextTokens = input
-                + finite(usage?.cache_read_input_tokens)
-                + finite(usage?.cache_creation_input_tokens);
-            }
-          } catch { /* retain the last valid usage row */ }
-        }
-      } catch { /* baseline without a readable transcript */ }
-    }
+    const detailCost = optionalNumber(costDetails[task]);
+    let costSource = usage.costSource ?? null;
+    if (detailCost != null) costSource = 'cost-details';
+    else if (directCost != null) costSource = 'harbor-result';
+    const { resultEvent, lastRequestUsage } = readMixdogLog(trialDir);
+    let finalContextTokens = lastRequestUsage ? lastRequestContextTokens(lastRequestUsage, resultEvent) : null;
+    if (finalContextTokens == null) finalContextTokens = claudeCodeFinalContext(trialDir);
     const totalSeconds = seconds(result?.started_at, result?.finished_at);
     const environmentSetupSeconds = seconds(
       result?.environment_setup?.started_at,
@@ -366,13 +379,9 @@ function collectTrials(runDir, costDetails = {}) {
         output: optionalNumber(result?.agent_result?.n_output_tokens)
           ?? finite(trace?.tokens?.output),
       },
-      costUsd: optionalNumber(costDetails[task]) ?? directCost ?? usage.costUsd,
-      costSource: optionalNumber(costDetails[task]) != null
-        ? 'cost-details'
-        : (directCost != null ? 'harbor-result' : (usage.costSource ?? null)),
-      costUnsupported: Boolean(usage.costUnsupported)
-        && optionalNumber(costDetails[task]) == null
-        && directCost == null,
+      costUsd: detailCost ?? directCost ?? usage.costUsd,
+      costSource,
+      costUnsupported: Boolean(usage.costUnsupported) && detailCost == null && directCost == null,
       // Normalized total first: it is the only field with one meaning across
       // providers. The event-derived value behind it is provider-corrected but
       // still reconstructed from split counters.
@@ -564,21 +573,27 @@ function knownCost(rows) {
   };
 }
 
-function buildPairComparison({ manifest, historyRoot, current, trials }) {
-  const config = manifest?.comparison?.baseline;
-  if (!config?.jobsDir) return null;
-  const jobsDir = resolve(historyRoot, config.jobsDir);
-  if (!existsSync(jobsDir)) return { error: `Pinned baseline not found: ${jobsDir}` };
-  const runDir = findRunDir(jobsDir);
-  const aggregate = tryReadJson(join(runDir, 'result.json'));
-  const baselineTrials = collectTrials(runDir, loadCostDetails(config, historyRoot));
-  // Trials of one task carry no intrinsic one-to-one correspondence, so each
-  // side's trials are grouped per task and paired index-wise after a
-  // pass-first sort. That keeps the outcome counts deterministic and equal to
-  // the per-task overlap (both-pass per task = min of the two pass counts),
-  // and lets a k=5 run pair against a k=5 baseline trial for trial. A
-  // baseline with fewer trials per task cycles, which reproduces the old
-  // k=1-baseline behavior of repeating it across every one of our trials.
+function pairSide(trial) {
+  return {
+    passed: trial.passed,
+    agentSeconds: trial.agentSeconds,
+    wallSeconds: trial.timing?.totalSeconds ?? null,
+    tokens: trial.tokens,
+    costUsd: trial.costUsd,
+    costUnsupported: trial.costUnsupported,
+    finalContextTokens: trial.finalContextTokens,
+    providerRequests: trial.activity?.providerRequests ?? null,
+  };
+}
+
+// Trials of one task carry no intrinsic one-to-one correspondence, so each
+// side's trials are grouped per task and paired index-wise after a
+// pass-first sort. That keeps the outcome counts deterministic and equal to
+// the per-task overlap (both-pass per task = min of the two pass counts),
+// and lets a k=5 run pair against a k=5 baseline trial for trial. A
+// baseline with fewer trials per task cycles, which reproduces the old
+// k=1-baseline behavior of repeating it across every one of our trials.
+function pairTrials(baselineTrials, trials) {
   const passFirst = (a, b) => Number(b.passed) - Number(a.passed)
     || String(a.startedAt ?? '').localeCompare(String(b.startedAt ?? ''));
   const byTask = new Map();
@@ -599,35 +614,24 @@ function buildPairComparison({ manifest, historyRoot, current, trials }) {
     const baselineGroup = byTask.get(task);
     for (const [index, ours] of oursGroup.entries()) {
       const baseline = baselineGroup[index % baselineGroup.length];
-      const outcome = ours.passed
-        ? (baseline.passed ? 'both-pass' : 'ours-only')
-        : (baseline.passed ? 'baseline-only' : 'both-fail');
-      pairs.push({
-        task,
-        outcome,
-        ours: {
-          passed: ours.passed,
-          agentSeconds: ours.agentSeconds,
-          wallSeconds: ours.timing?.totalSeconds ?? null,
-          tokens: ours.tokens,
-          costUsd: ours.costUsd,
-          costUnsupported: ours.costUnsupported,
-          finalContextTokens: ours.finalContextTokens,
-          providerRequests: ours.activity?.providerRequests ?? null,
-        },
-        baseline: {
-          passed: baseline.passed,
-          agentSeconds: baseline.agentSeconds,
-          wallSeconds: baseline.timing?.totalSeconds ?? null,
-          tokens: baseline.tokens,
-          costUsd: baseline.costUsd,
-          costUnsupported: baseline.costUnsupported,
-          finalContextTokens: baseline.finalContextTokens,
-          providerRequests: baseline.activity?.providerRequests ?? null,
-        },
-      });
+      let outcome = 'both-fail';
+      if (ours.passed) outcome = baseline.passed ? 'both-pass' : 'ours-only';
+      else if (baseline.passed) outcome = 'baseline-only';
+      pairs.push({ task, outcome, ours: pairSide(ours), baseline: pairSide(baseline) });
     }
   }
+  return pairs;
+}
+
+function buildPairComparison({ manifest, historyRoot, current, trials }) {
+  const config = manifest?.comparison?.baseline;
+  if (!config?.jobsDir) return null;
+  const jobsDir = resolve(historyRoot, config.jobsDir);
+  if (!existsSync(jobsDir)) return { error: `Pinned baseline not found: ${jobsDir}` };
+  const runDir = findRunDir(jobsDir);
+  const aggregate = tryReadJson(join(runDir, 'result.json'));
+  const baselineTrials = collectTrials(runDir, loadCostDetails(config, historyRoot));
+  const pairs = pairTrials(baselineTrials, trials);
   const oursRows = pairs.map((pair) => ({ ...pair.ours, task: pair.task }));
   const baselineRows = pairs.map((pair) => ({ ...pair.baseline, task: pair.task }));
   const oursCost = knownCost(oursRows);
@@ -648,6 +652,8 @@ function buildPairComparison({ manifest, historyRoot, current, trials }) {
     Number.isFinite(pair.ours.wallSeconds) && Number.isFinite(pair.baseline.wallSeconds));
   const oursWall = sum(timedPairs, (pair) => pair.ours.wallSeconds);
   const baselineWall = sum(timedPairs, (pair) => pair.baseline.wallSeconds);
+  const oursTokens = tokenTotals(oursRows);
+  const baselineTokens = tokenTotals(baselineRows);
   const complete = current.result.total > 0 && current.result.completed === current.result.total;
   const baselineStats = aggregate?.stats ?? {};
   const baselinePassed = baselineTrials.filter((trial) => trial.passed).length;
@@ -676,7 +682,7 @@ function buildPairComparison({ manifest, historyRoot, current, trials }) {
       total: pairs.length,
       agentTotalSeconds: oursAgent,
       wallTotalSeconds: oursWall,
-      tokens: tokenTotals(oursRows),
+      tokens: oursTokens,
       cost: oursCost,
       finalContextMedianTokens: currentContext,
     },
@@ -689,7 +695,7 @@ function buildPairComparison({ manifest, historyRoot, current, trials }) {
       retries: finite(baselineStats.n_retries),
       agentTotalSeconds: baselineAgent,
       wallTotalSeconds: baselineWall,
-      tokens: tokenTotals(baselineRows),
+      tokens: baselineTokens,
       cost: baselineCost,
       fullCostUsd: config.costDetails
         ? knownCost(baselineTrials).usd
@@ -714,9 +720,7 @@ function buildPairComparison({ manifest, historyRoot, current, trials }) {
       cost: comparableOursCost > 0 && comparableBaselineCost > 0
         ? comparableOursCost / comparableBaselineCost
         : null,
-      inputTokens: tokenTotals(baselineRows).input > 0
-        ? tokenTotals(oursRows).input / tokenTotals(baselineRows).input
-        : null,
+      inputTokens: baselineTokens.input > 0 ? oursTokens.input / baselineTokens.input : null,
       finalContextReduction: complete && currentContext != null && baselineContext > 0
         ? 1 - currentContext / baselineContext
         : null,
@@ -725,17 +729,8 @@ function buildPairComparison({ manifest, historyRoot, current, trials }) {
   };
 }
 
-export function generateRunReport({ jobsDir, historyRoot }) {
-  const absoluteJobsDir = resolve(jobsDir);
-  const manifest = readJson(join(absoluteJobsDir, 'preset-run.json'));
-  if (manifest.schemaVersion !== 1) {
-    throw new Error(`Unsupported preset-run schemaVersion: ${manifest.schemaVersion}`);
-  }
-  const runDir = findRunDir(absoluteJobsDir);
-  const aggregate = tryReadJson(join(runDir, 'result.json'));
-  const trials = collectTrials(runDir);
+function runCounts(aggregate, trials, configuredTasks) {
   const stats = aggregate?.stats ?? {};
-  const configuredTasks = manifest?.definition?.tasks ?? [];
   const total = finite(aggregate?.n_total_trials, configuredTasks.length || trials.length);
   const completed = finite(stats.n_completed_trials, trials.filter((trial) => trial.settled).length);
   const passed = trials.filter((trial) => trial.passed).length;
@@ -751,6 +746,70 @@ export function generateRunReport({ jobsDir, historyRoot }) {
     && cancelled === 0
     && pending === 0
     && running === 0;
+  return { passed, total, completed, errors, retries, cancelled, pending, running, clean };
+}
+
+// Rank the current run against clean same-contract history and record the
+// previous-run deltas and bottlenecks on `current`.
+function attachHistoryComparison(current, manifest, historyRoot, absoluteJobsDir) {
+  const { clean, total, passed } = current.result;
+  const historical = historyReports(
+    historyRoot,
+    manifest.fingerprint,
+    absoluteJobsDir,
+    manifest.contract ?? null,
+  );
+  const priorClean = historical
+    .filter((report) => report?.result?.clean && report.result.total === total)
+    .sort((a, b) => String(a?.timing?.finishedAt).localeCompare(String(b?.timing?.finishedAt)));
+  const comparable = priorClean.filter((report) => report.result.passed === passed);
+  if (clean) {
+    const cohort = [...comparable, current];
+    current.comparison = {
+      eligible: true,
+      cohortSize: cohort.length,
+      ranks: {
+        agentTotalSeconds: rankMetric(cohort, ['timing', 'agentTotalSeconds']),
+        wallSeconds: rankMetric(cohort, ['timing', 'wallSeconds']),
+        inputTokens: rankMetric(cohort, ['tokens', 'input']),
+        outputTokens: rankMetric(cohort, ['tokens', 'output']),
+      },
+      previous: null,
+    };
+  } else {
+    current.comparison.provisional = true;
+    current.comparison.cohortSize = priorClean.length;
+  }
+  const previous = clean ? comparable.at(-1) : priorClean.at(-1);
+  if (previous) {
+    current.comparison.previous = {
+      provisional: !clean,
+      jobsDir: previous.paths.jobsDir,
+      finishedAt: previous.timing.finishedAt,
+      deltas: {
+        agentTotalSeconds: metricDelta(current, previous, ['timing', 'agentTotalSeconds']),
+        wallSeconds: metricDelta(current, previous, ['timing', 'wallSeconds']),
+        inputTokens: metricDelta(current, previous, ['tokens', 'input']),
+        outputTokens: metricDelta(current, previous, ['tokens', 'output']),
+      },
+    };
+    current.bottlenecks = buildBottlenecks(current, previous);
+  }
+}
+
+export function generateRunReport({ jobsDir, historyRoot }) {
+  const absoluteJobsDir = resolve(jobsDir);
+  const manifest = readJson(join(absoluteJobsDir, 'preset-run.json'));
+  if (manifest.schemaVersion !== 1) {
+    throw new Error(`Unsupported preset-run schemaVersion: ${manifest.schemaVersion}`);
+  }
+  const runDir = findRunDir(absoluteJobsDir);
+  const aggregate = tryReadJson(join(runDir, 'result.json'));
+  const trials = collectTrials(runDir);
+  const stats = aggregate?.stats ?? {};
+  const {
+    passed, total, completed, errors, retries, cancelled, pending, running, clean,
+  } = runCounts(aggregate, trials, manifest?.definition?.tasks ?? []);
   const tokenFallback = tokenTotals(trials);
   const startedAt = aggregate?.started_at
     ?? trials.map((trial) => trial.startedAt).filter(Boolean).sort().at(0)
@@ -835,48 +894,7 @@ export function generateRunReport({ jobsDir, historyRoot }) {
     pair: null,
   };
 
-  const historical = historyReports(
-    resolve(historyRoot),
-    manifest.fingerprint,
-    absoluteJobsDir,
-    manifest.contract ?? null,
-  );
-  const priorClean = historical
-    .filter((report) => report?.result?.clean && report.result.total === total)
-    .sort((a, b) => String(a?.timing?.finishedAt).localeCompare(String(b?.timing?.finishedAt)));
-  const comparable = priorClean.filter((report) => report.result.passed === passed);
-  if (clean) {
-    const cohort = [...comparable, current];
-    current.comparison = {
-      eligible: true,
-      cohortSize: cohort.length,
-      ranks: {
-        agentTotalSeconds: rankMetric(cohort, ['timing', 'agentTotalSeconds']),
-        wallSeconds: rankMetric(cohort, ['timing', 'wallSeconds']),
-        inputTokens: rankMetric(cohort, ['tokens', 'input']),
-        outputTokens: rankMetric(cohort, ['tokens', 'output']),
-      },
-      previous: null,
-    };
-  } else {
-    current.comparison.provisional = true;
-    current.comparison.cohortSize = priorClean.length;
-  }
-  const previous = clean ? comparable.at(-1) : priorClean.at(-1);
-  if (previous) {
-    current.comparison.previous = {
-      provisional: !clean,
-      jobsDir: previous.paths.jobsDir,
-      finishedAt: previous.timing.finishedAt,
-      deltas: {
-        agentTotalSeconds: metricDelta(current, previous, ['timing', 'agentTotalSeconds']),
-        wallSeconds: metricDelta(current, previous, ['timing', 'wallSeconds']),
-        inputTokens: metricDelta(current, previous, ['tokens', 'input']),
-        outputTokens: metricDelta(current, previous, ['tokens', 'output']),
-      },
-    };
-    current.bottlenecks = buildBottlenecks(current, previous);
-  }
+  attachHistoryComparison(current, manifest, resolve(historyRoot), absoluteJobsDir);
   current.pair = buildPairComparison({
     manifest,
     historyRoot: resolve(historyRoot),
@@ -889,6 +907,7 @@ export function generateRunReport({ jobsDir, historyRoot }) {
 const number = (value, digits = 1) => Number.isFinite(value) ? value.toFixed(digits) : 'n/a';
 const rankText = (rank) => rank ? `${rank.rank}/${rank.count}` : 'n/a';
 const percent = (value) => Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : 'n/a';
+const shortHash = (hash) => String(hash || '').replace(/^sha256:/, '').slice(0, 12) || 'n/a';
 
 export function formatRunReport(report) {
   const previous = report.comparison.previous;
@@ -906,20 +925,18 @@ export function formatRunReport(report) {
   ];
   const contract = report.preset.contract;
   if (contract) {
-    const short = (hash) => String(hash || '').replace(/^sha256:/, '').slice(0, 12) || 'n/a';
     const toolHash = contract.toolContractHash || contract.toolCatalogHash;
     const activeCount = contract.activeToolCount ?? contract.toolCount;
     const providerCount = contract.providerToolCount ?? activeCount;
     const routeCount = Object.keys(contract.routeContracts || {}).length || 1;
-    lines.push(`- Contract: rules ${short(contract.rulesHash)} (${contract.rulesFiles} files), tools ${short(toolHash)} (${contract.toolCount} catalog, ${activeCount} active, ${providerCount} provider, ${routeCount} route${routeCount === 1 ? '' : 's'})`);
+    lines.push(`- Contract: rules ${shortHash(contract.rulesHash)} (${contract.rulesFiles} files), tools ${shortHash(toolHash)} (${contract.toolCount} catalog, ${activeCount} active, ${providerCount} provider, ${routeCount} route${routeCount === 1 ? '' : 's'})`);
   }
   const runtime = report.preset.runtime;
   if (runtime) {
-    const digest = (hash) => String(hash || '').replace(/^sha256:/, '').slice(0, 12) || 'n/a';
     const dirty = runtime.sourceDirty === null || runtime.sourceDirty === undefined
       ? 'unknown'
       : String(runtime.sourceDirty);
-    lines.push(`- Source: commit ${digest(runtime.sourceCommit)} (dirty ${dirty}), bundle ${digest(runtime.bundleSha256)} (${runtime.bundleFileCount ?? 'n/a'} files), mixdog ${runtime.mixdogVersion || 'n/a'}`);
+    lines.push(`- Source: commit ${shortHash(runtime.sourceCommit)} (dirty ${dirty}), bundle ${shortHash(runtime.bundleSha256)} (${runtime.bundleFileCount ?? 'n/a'} files), mixdog ${runtime.mixdogVersion || 'n/a'}`);
   }
   if (previous) {
     lines.push(`- Previous delta: agent ${number(previous.deltas.agentTotalSeconds)}s, wall ${number(previous.deltas.wallSeconds)}s, input ${previous.deltas.inputTokens}, output ${previous.deltas.outputTokens}`);

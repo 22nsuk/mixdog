@@ -336,10 +336,7 @@ test('openai-compat (responses) leak guard: benign prose preserved, no synthetic
   assert.ok(out.content.includes('Just some prose'));
 });
 
-// === 7. Reviewer fixes: fence gating, cross-path dedupe, bare-antml ========
-
-// --- Fix 1: code-fence / inline-code gating (Anthropic path) ---------------
-// A complete <invoke> written inside a ```code fence``` or inline `code` span
+// Code-fence / inline-code gating (Anthropic path): a complete <invoke> written inside a ```code fence``` or inline `code` span
 // is a documentation example, not a real call: it must stream as visible text
 // and NOT dispatch. The control (same tag OUTSIDE a fence) still recovers.
 test('anthropic leak guard (fence): <invoke> inside a fenced code block → emitted as text, NOT dispatched', async () => {

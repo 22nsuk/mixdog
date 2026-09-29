@@ -22,86 +22,77 @@ test('the daemon signals shutdown once the last view leaves', async () => {
 });
 
 test('resuming a session another view already holds converges on one owner', async () => {
-  await withDaemon(
-    async ({ service }) => {
-      const terminal = await createSession({ cwd: process.cwd() });
-      const desktop = await createSession({ cwd: process.cwd() });
-      assert.equal(service.size, 2, 'each new-task view starts with a reserved session');
+  await withDaemon(async ({ service }) => {
+    const terminal = await createSession({ cwd: process.cwd() });
+    const desktop = await createSession({ cwd: process.cwd() });
+    assert.equal(service.size, 2, 'each new-task view starts with a reserved session');
 
-      await terminal.resume('shared-session');
-      await waitFor(
-        () => terminal.getState().sessionId === 'shared-session',
-        'the terminal view holds the resumed session'
-      );
+    await terminal.resume('shared-session');
+    await waitFor(
+      () => terminal.getState().sessionId === 'shared-session',
+      'the terminal view holds the resumed session'
+    );
 
-      // The desktop resumes the SAME session: it joins the same daemon owner.
-      await desktop.resume('shared-session');
-      assert.equal(desktop.getState().sessionId, terminal.getState().sessionId);
-      await waitFor(() => service.size === 1, 'unclaimed reservations are reclaimed internally');
+    // The desktop resumes the SAME session: it joins the same daemon owner.
+    await desktop.resume('shared-session');
+    assert.equal(desktop.getState().sessionId, terminal.getState().sessionId);
+    await waitFor(() => service.size === 1, 'unclaimed reservations are reclaimed internally');
 
-      await desktop.submit('typed in the desktop');
-      await waitFor(
-        () => terminal.getState().items.some((item) => item.text === 'typed in the desktop'),
-        'the terminal view sees the desktop edit on the shared runtime'
-      );
+    await desktop.submit('typed in the desktop');
+    await waitFor(
+      () => terminal.getState().items.some((item) => item.text === 'typed in the desktop'),
+      'the terminal view sees the desktop edit on the shared runtime'
+    );
 
-      await terminal.submit('typed in the terminal');
-      await waitFor(
-        () => desktop.getState().items.some((item) => item.text === 'typed in the terminal'),
-        'the desktop view sees the terminal edit on the shared runtime'
-      );
+    await terminal.submit('typed in the terminal');
+    await waitFor(
+      () => desktop.getState().items.some((item) => item.text === 'typed in the terminal'),
+      'the desktop view sees the terminal edit on the shared runtime'
+    );
 
-      await desktop.dispose('test');
-      await terminal.dispose('test');
-    },
-    { sessionFactory: async () => createStubSessionRuntime('') }
-  );
+    await desktop.dispose('test');
+    await terminal.dispose('test');
+  });
 });
 
 test('a method return leaves the view consistent immediately', async () => {
-  await withDaemon(
-    async () => {
-      const view = await createSession({ cwd: process.cwd() });
-      // No await on a frame: the session projection is consistent the instant
-      // the method returns.
-      await view.resume('immediate-session');
-      assert.equal(view.getState().sessionId, 'immediate-session');
-      // submit is part of the SYNCHRONOUS store surface: it accepts inline and
-      // the transcript follows, exactly like the in-process store.
-      assert.equal(view.submit('immediate'), true);
-      await waitFor(() => view.getState().items.at(-1)?.text === 'immediate', 'the submitted item lands in the view');
-      await view.dispose('test');
-    },
-    { sessionFactory: async () => createStubSessionRuntime('') }
-  );
+  await withDaemon(async () => {
+    const view = await createSession({ cwd: process.cwd() });
+    // No await on a frame: the session projection is consistent the instant
+    // the method returns.
+    await view.resume('immediate-session');
+    assert.equal(view.getState().sessionId, 'immediate-session');
+    // submit is part of the SYNCHRONOUS store surface: it accepts inline and
+    // the transcript follows, exactly like the in-process store.
+    assert.equal(view.submit('immediate'), true);
+    await waitFor(() => view.getState().items.at(-1)?.text === 'immediate', 'the submitted item lands in the view');
+    await view.dispose('test');
+  });
 });
 
 test('a working runtime outlives its last view and the next one rejoins it', async () => {
-  await withDaemon(
-    async ({ service }) => {
-      const before = await createSession({ cwd: process.cwd() });
-      await before.resume('long-running');
-      await before.setProgressHint('working');
-      assert.equal(before.getState().busy, true, 'the runtime is mid-turn');
+  await withDaemon(async ({ service }) => {
+    const before = await createSession({ cwd: process.cwd() });
+    await before.resume('long-running');
+    await before.setProgressHint('working');
+    assert.equal(before.getState().busy, true, 'the runtime is mid-turn');
 
-      // The app quits / the terminal is restarted while the turn runs.
-      await before.dispose('app restart');
-      assert.equal(service.size, 1, 'the daemon keeps running the turn with no views attached');
+    // The app quits / the terminal is restarted while the turn runs.
+    await before.dispose('app restart');
+    assert.equal(service.size, 1, 'the daemon keeps running the turn with no views attached');
 
-      // The client comes back and resumes the same session.
-      const after = await createSession({ cwd: process.cwd() });
-      await after.resume('long-running');
-      assert.equal(after.getState().busy, true, 'the returning view rejoins the live turn');
-      assert.ok(
-        after.getState().items.some((item) => item.text === 'working'),
-        'the transcript produced while nobody watched is still there'
-      );
-      assert.equal(service.size, 1, 'no second runtime was created for the same session');
+    // The client comes back and resumes the same session.
+    const after = await createSession({ cwd: process.cwd() });
+    await after.resume('long-running');
+    assert.equal(after.getState().busy, true, 'the returning view rejoins the live turn');
+    assert.ok(
+      after.getState().items.some((item) => item.text === 'working'),
+      'the transcript produced while nobody watched is still there'
+    );
+    assert.equal(service.size, 1, 'no second runtime was created for the same session');
 
-      await after.dispose('test');
-    },
-    { sessionFactory: async () => createStubSessionRuntime('') }
-  );
+    await after.dispose('test');
+  });
 });
 
 test('an unwatched runtime retains its CC-style background task until completion', async () => {
@@ -147,7 +138,6 @@ test('an unwatched runtime retains its CC-style background task until completion
       {
         idleEvictMs: 15,
         evictSweepMs: 5,
-        sessionFactory: async () => createStubSessionRuntime(''),
       }
     );
   } finally {
@@ -180,12 +170,9 @@ test('auto-background task elapsed time includes its foreground phase', () => {
 });
 
 test('session retention exposes no RSS growth ceiling', async () => {
-  await withDaemon(
-    async ({ service }) => {
-      assert.equal(Object.hasOwn(service.status, 'softRssBytes'), false);
-    },
-    { sessionFactory: async () => createStubSessionRuntime('') }
-  );
+  await withDaemon(async ({ service }) => {
+    assert.equal(Object.hasOwn(service.status, 'softRssBytes'), false);
+  });
 });
 
 test('repeated idle session churn releases runtimes, projections, and its sweep timer', async () => {
@@ -257,115 +244,103 @@ test('repeated idle session churn releases runtimes, projections, and its sweep 
 });
 
 test('one client leaving never ends the runtime another client is watching', async () => {
-  await withDaemon(
-    async ({ discovery, service }) => {
-      // Two SEPARATE clients (terminal process + desktop process), not two views
-      // in one process: the mirror refcount inside a client cannot see the peer.
-      const terminal = await attachSession({ discovery, cwd: process.cwd() });
-      const desktop = await attachSession({
-        discovery,
-        cwd: process.cwd(),
-      });
-      const { sessionId } = await terminal.call('session.create', { cwd: process.cwd() });
-      await desktop.call('session.subscribe', { sessionId });
+  await withDaemon(async ({ discovery, service }) => {
+    // Two SEPARATE clients (terminal process + desktop process), not two views
+    // in one process: the mirror refcount inside a client cannot see the peer.
+    const terminal = await attachSession({ discovery, cwd: process.cwd() });
+    const desktop = await attachSession({
+      discovery,
+      cwd: process.cwd(),
+    });
+    const { sessionId } = await terminal.call('session.create', { cwd: process.cwd() });
+    await desktop.call('session.subscribe', { sessionId });
 
-      // The terminal quits.
-      await terminal.close('terminal exit');
-      assert.equal(service.size, 1, 'the session survives the terminal exit');
+    // The terminal quits.
+    await terminal.close('terminal exit');
+    assert.equal(service.size, 1, 'the session survives the terminal exit');
 
-      // …and the desktop keeps working on the same session.
-      await desktop.call('session.submit', { sessionId, prompt: 'after terminal exit' });
-      const read = await desktop.call('session.read', { sessionId });
-      assert.equal(read.full.items.at(-1).text, 'after terminal exit');
+    // …and the desktop keeps working on the same session.
+    await desktop.call('session.submit', { sessionId, prompt: 'after terminal exit' });
+    const read = await desktop.call('session.read', { sessionId });
+    assert.equal(read.full.items.at(-1).text, 'after terminal exit');
 
-      // The last viewer leaving still does not end a materialized session.
-      await desktop.call('session.unsubscribe', { sessionId });
-      assert.equal(service.size, 1, 'a session-carrying runtime outlives every view');
+    // The last viewer leaving still does not end a materialized session.
+    await desktop.call('session.unsubscribe', { sessionId });
+    assert.equal(service.size, 1, 'a session-carrying runtime outlives every view');
 
-      await desktop.close('test');
-    },
-    { sessionFactory: async () => createStubSessionRuntime('') }
-  );
+    await desktop.close('test');
+  });
 });
 
 test('a client that disappears releases its view without killing the runtime', async () => {
-  await withDaemon(
-    async ({ discovery, service }) => {
-      const terminal = await attachSession({ discovery, cwd: process.cwd() });
-      const desktop = await attachSession({ discovery, cwd: process.cwd() });
-      const { sessionId } = await terminal.call('session.create', { cwd: process.cwd() });
-      await desktop.call('session.subscribe', { sessionId });
+  await withDaemon(async ({ discovery, service }) => {
+    const terminal = await attachSession({ discovery, cwd: process.cwd() });
+    const desktop = await attachSession({ discovery, cwd: process.cwd() });
+    const { sessionId } = await terminal.call('session.create', { cwd: process.cwd() });
+    await desktop.call('session.subscribe', { sessionId });
 
-      // Terminal window closed with no dispose at all (deregister only).
-      await terminal.close('terminal closed');
-      assert.equal(service.size, 1, 'a vanished client never takes the session from another viewer');
-      const read = await desktop.call('session.read', { sessionId });
-      assert.equal(read.sessionId, sessionId);
+    // Terminal window closed with no dispose at all (deregister only).
+    await terminal.close('terminal closed');
+    assert.equal(service.size, 1, 'a vanished client never takes the session from another viewer');
+    const read = await desktop.call('session.read', { sessionId });
+    assert.equal(read.sessionId, sessionId);
 
-      // An unclaimed reservation is reclaimed by daemon policy, not client dispose.
-      await desktop.call('session.unsubscribe', { sessionId });
-      assert.equal(service.size, 0, 'an unclaimed reservation is reclaimed on unsubscribe');
-      await desktop.close('test');
-    },
-    { sessionFactory: async () => createStubSessionRuntime('') }
-  );
+    // An unclaimed reservation is reclaimed by daemon policy, not client dispose.
+    await desktop.call('session.unsubscribe', { sessionId });
+    assert.equal(service.size, 0, 'an unclaimed reservation is reclaimed on unsubscribe');
+    await desktop.close('test');
+  });
 });
 
 test('closing every view never ends a live session runtime', async () => {
-  await withDaemon(
-    async ({ service }) => {
-      const terminal = await createSession({ cwd: process.cwd() });
-      await terminal.resume('kept-alive');
-      await terminal.submit('half of a conversation');
-      await waitFor(() => terminal.getState().items.length === 2, 'the session has content');
+  await withDaemon(async ({ service }) => {
+    const terminal = await createSession({ cwd: process.cwd() });
+    await terminal.resume('kept-alive');
+    await terminal.submit('half of a conversation');
+    await waitFor(() => terminal.getState().items.length === 2, 'the session has content');
 
-      // Idle, not busy, nobody watching — the old contract destroyed it here and
-      // that is what cut a turn short when the other surface was still using it.
-      await terminal.dispose('terminal exit');
-      assert.equal(service.size, 1, 'the runtime belongs to the daemon, not to the view');
+    // Idle, not busy, nobody watching — the old contract destroyed it here and
+    // that is what cut a turn short when the other surface was still using it.
+    await terminal.dispose('terminal exit');
+    assert.equal(service.size, 1, 'the runtime belongs to the daemon, not to the view');
 
-      // Coming back rejoins the SAME live runtime, in-memory state intact.
-      const desktop = await createSession({ cwd: process.cwd() });
-      await desktop.resume('kept-alive');
-      assert.equal(service.size, 1, 'no second runtime was loaded for the session');
-      assert.ok(
-        desktop.getState().items.some((item) => item.text === 'half of a conversation'),
-        'the returning view sees the live transcript, not a disk reload'
-      );
-      await desktop.dispose('test');
-    },
-    { sessionFactory: async () => createStubSessionRuntime('') }
-  );
+    // Coming back rejoins the SAME live runtime, in-memory state intact.
+    const desktop = await createSession({ cwd: process.cwd() });
+    await desktop.resume('kept-alive');
+    assert.equal(service.size, 1, 'no second runtime was loaded for the session');
+    assert.ok(
+      desktop.getState().items.some((item) => item.text === 'half of a conversation'),
+      'the returning view sees the live transcript, not a disk reload'
+    );
+    await desktop.dispose('test');
+  });
 });
 
 test('a view told its session was unloaded comes back instead of stalling', async () => {
-  await withDaemon(
-    async ({ transport, service }) => {
-      const view = await createSession({ cwd: process.cwd() });
-      await view.resume('recovered-session');
-      // The daemon announces an idle unload. The projection must subscribe again
-      // without exposing or recovering an internal runtime handle.
-      transport.broadcast({
-        type: 'session-gone',
-        key: 'session-state:recovered-session',
-        sessionId: 'recovered-session',
-        reason: 'evicted',
-      });
-      await waitFor(
-        () => view.getState().sessionId === 'recovered-session' && service.size === 1,
-        'the view rejoined the session'
-      );
-      assert.equal(view.disposedView, false, 'the view stays usable');
-      assert.equal(view.getState().sessionId, 'recovered-session', 'the session came back with it');
+  await withDaemon(async ({ transport, service }) => {
+    const view = await createSession({ cwd: process.cwd() });
+    await view.resume('recovered-session');
+    // The daemon announces an idle unload. The projection must subscribe again
+    // without exposing or recovering an internal runtime handle.
+    transport.broadcast({
+      type: 'session-gone',
+      key: 'session-state:recovered-session',
+      sessionId: 'recovered-session',
+      reason: 'evicted',
+    });
+    await waitFor(
+      () => view.getState().sessionId === 'recovered-session' && service.size === 1,
+      'the view rejoined the session'
+    );
+    assert.equal(view.disposedView, false, 'the view stays usable');
+    assert.equal(view.getState().sessionId, 'recovered-session', 'the session came back with it');
 
-      assert.equal(view.submit('after recovery'), true);
-      await waitFor(
-        () => view.getState().items.some((item) => item.text === 'after recovery'),
-        'a prompt sent after the recovery still reaches the runtime'
-      );
+    assert.equal(view.submit('after recovery'), true);
+    await waitFor(
+      () => view.getState().items.some((item) => item.text === 'after recovery'),
+      'a prompt sent after the recovery still reaches the runtime'
+    );
 
-      await view.dispose('test');
-    },
-    { sessionFactory: async () => createStubSessionRuntime('') }
-  );
+    await view.dispose('test');
+  });
 });

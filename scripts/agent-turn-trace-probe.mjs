@@ -76,7 +76,7 @@ try {
         '2) read README.md (first 40 lines)',
         '3) run the shell command: node -v',
         '4) read apps/desktop/package.json',
-        '5) grep the string "createSessionRuntimeHost" under src/standalone (files list only)',
+        '5) grep the string "createInlineSessionRuntimeHost" under src/standalone (files list only)',
         'Then reply with one line: DONE <package name> <node version>. Do not edit anything.',
       ].join('\n'),
     },

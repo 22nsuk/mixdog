@@ -4,23 +4,11 @@ import { spawnSync } from 'node:child_process';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { actionableFailureCount } from './smoke-loop-failure-summary.mjs';
-import { DURATION_UNIT_MS } from './lib/parse-since.mjs';
 import { argValue, hasFlag as argFlag } from './lib/cli-args.mjs';
+import { parseDuration, summarize } from './lib/smoke-loop-shared.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DEFAULT_DURATION_MS = 5 * 60 * 60 * 1000;
-
-function parseDuration(value, fallback) {
-  const raw = String(value || '').trim();
-  if (!raw) return fallback;
-  if (/^\d+$/.test(raw)) return Number(raw);
-  const match = raw.match(/^(\d+(?:\.\d+)?)(ms|s|m|h)$/i);
-  if (!match) throw new Error(`invalid duration: ${raw}`);
-  const n = Number(match[1]);
-  const unit = match[2].toLowerCase();
-  const mult = DURATION_UNIT_MS[unit];
-  return Math.max(1, Math.floor(n * mult));
-}
 
 function resolveOptionalPath(value, fallback) {
   const raw = String(value || '').trim();
@@ -66,18 +54,6 @@ function sleep(ms) {
 
 function rssMb() {
   return Math.round((process.memoryUsage().rss / 1024 / 1024) * 10) / 10;
-}
-
-function summarize(values) {
-  if (!values.length) return { min: 0, max: 0, avg: 0 };
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const avg = values.reduce((sum, value) => sum + value, 0) / values.length;
-  return {
-    min: Math.round(min * 10) / 10,
-    max: Math.round(max * 10) / 10,
-    avg: Math.round(avg * 10) / 10,
-  };
 }
 
 function serializeError(error) {

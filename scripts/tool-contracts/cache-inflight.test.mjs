@@ -214,9 +214,9 @@ test('provider cache strategy tiers and capabilities stay stable', () => {
     publicStrategy.tools === 'none',
     `Anthropic tools must not spend a cache_control BP: ${JSON.stringify(publicStrategy)}`
   );
-  // BP1~3 and the volatile message tail stay 1h; see resolveCacheStrategy.
+  // BP1~3 stay 1h and the agent message tail is 5m; see resolveCacheStrategy.
   assert(
-    publicStrategy.system === '1h' && publicStrategy.tier3 === '1h' && publicStrategy.messages === '1h',
+    publicStrategy.system === '1h' && publicStrategy.tier3 === '1h' && publicStrategy.messages === '5m',
     `public cache tiers changed unexpectedly: ${JSON.stringify(publicStrategy)}`
   );
   assert(

@@ -60,12 +60,9 @@ def main():
     print(f"runtime-priced cost total = ${runtime_total:.2f}")
     if prompts:
         print(
-            "final context: prompt_tokens median=%d | report-formula median=%d | inflation=%.2fx"
-            % (
-                statistics.median(prompts),
-                statistics.median(formulas),
-                statistics.median(formulas) / statistics.median(prompts),
-            )
+            f"final context: prompt_tokens median={int(statistics.median(prompts))} "
+            f"| report-formula median={int(statistics.median(formulas))} "
+            f"| inflation={statistics.median(formulas) / statistics.median(prompts):.2f}x"
         )
 
 

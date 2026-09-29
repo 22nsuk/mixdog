@@ -80,7 +80,7 @@ function assertCoverage(projection, expectedRows) {
 }
 if (simulationLimit) {
   const { callAgentDispatch } = await import('../src/runtime/memory/lib/agent-ipc.mjs');
-  const { resolveMaintenancePreset } = await import('../src/runtime/shared/llm/index.mjs');
+  const { resolveMaintenancePreset } = await import('../src/runtime/agent/orchestrator/maintenance-preset.mjs');
   const options = {
     callLlm: callAgentDispatch,
     request: {

@@ -1,13 +1,5 @@
-#!/usr/bin/env node
-// Regression tests pinning the cross-provider "native tool_call extraction"
-// contract: when a provider's native parser is fed a well-formed tool_call
-// payload, it MUST surface the call in our canonical toolCalls shape
-// ({ id, name, arguments }). Synthetic inputs fed directly to the exported parser, asserting the
-// resulting outcome. No network, no model. Each provider also gets one
-// negative case (no native tool_call → undefined / empty).
-//
-// Parser entry points (file:line at authoring time) and sharing notes are
-// documented inline per provider block below.
+// Shared imports and synthetic stream/response fixtures for the provider
+// tool-call regression tests in this directory. No network, no model.
 import { EventEmitter } from 'node:events';
 import { readFileSync } from 'node:fs';
 import { parse } from 'acorn';
@@ -176,32 +168,13 @@ function textDeltaEvents(chunks, stopReason = 'end_turn') {
   ];
 }
 
-// === 4. openai-oauth / openai-oauth-ws =====================================
-// openai-oauth (HTTP/SSE) and openai-oauth-ws (WebSocket) both consume the
-// Responses event stream inside large stateful stream loops, NOT a standalone
-// parser. The HTTP path's handleEvent is a private closure inside
-// sendViaHttpSse (openai-oauth.mjs:1038) and cannot be exported without
-// extracting it (forbidden: no logic change). The WS path's _streamResponse
-// (openai-oauth-ws.mjs:1190) IS exported but requires a live `entry.socket`
-// EventEmitter and resolves only on response.completed — driving it needs a
-// full fake-socket test rig, well beyond "inject synthetic input to a parser".
-//
-// Their canonical Responses function_call shape (call_id/name/arguments) and
-// custom_tool_call handling are the SAME wire contract already asserted via
-// openai-compat's parseResponsesToolCalls above, and the shared
-// customToolCallFromResponseItem helper (custom-tool-wire.mjs) is imported by
-// all three. We add a focused unit test for that shared custom-tool helper so
-// the OAuth custom_tool_call extraction path has explicit coverage; the
-// function_call path is covered by the openai-compat Responses test.
-
 import { customToolCallFromResponseItem } from '../../src/runtime/agent/orchestrator/providers/custom-tool-wire.mjs';
 import {
   parseToolSearchArgs,
   _warmupContinuityTraceForTest,
 } from '../../src/runtime/agent/orchestrator/providers/openai-oauth-ws.mjs';
 
-// === 6. OpenAI leaked tool-call recovery ===================================
-// The model sometimes emits a tool call as PLAIN TEXT (XML `<invoke>` family
+// OpenAI leaked tool-call recovery: the model sometimes emits a tool call as PLAIN TEXT (XML `<invoke>` family
 // or gpt-oss harmony `<|channel|>...to=functions.NAME...<|call|>`) inside a
 // text delta instead of a native structured tool_call. The stream guards
 // suppress the tags from the visible stream, synthesize a native-shaped call
@@ -223,11 +196,6 @@ function responsesTextStream(textChunks) {
   return compatResponsesEventStream(events);
 }
 
-// === 10. OpenAI transport-policy switch (MIXDOG_OAI_TRANSPORT) ==============
-// One clean knob selects among ws-full | ws-delta | http-sse | auto. The
-// resolver is a pure function over an injected env, and the delta gate
-// (_computeDelta) + transport dispatch both read it, so these unit tests pin
-// the resolution and the delta branching without any network.
 import {
   resolveOpenAiTransportPolicy,
   resolveResponsesTransportPolicy,

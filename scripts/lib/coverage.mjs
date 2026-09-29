@@ -141,10 +141,8 @@ export async function foldCoverage(reports, { root = process.cwd() } = {}) {
     const entries = [...collected.get(path).values()].sort(
       (left, right) => left.startOffset - right.startOffset || left.endOffset - right.endOffset
     );
-    let source;
-    try {
-      source = (await readFile(join(rootPath, path), 'utf8')).replace(/^\uFEFF/, '');
-    } catch {
+    const source = await currentSource(rootPath, path);
+    if (source === null) {
       excluded.set(path, 'source-unreadable');
       continue;
     }

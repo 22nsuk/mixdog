@@ -7,6 +7,21 @@ import test from 'node:test';
 import { NATIVE_ASSET_PLATFORMS, prepareRequiredNativeAssets } from './prepare-native-assets.mjs';
 import { NATIVE_TOOL_FILENAMES, packageNativeToolsDir } from '../src/runtime/shared/native-tool-paths.mjs';
 
+// One installer per native tool; each writes a fixture file and returns its path.
+function fixtureInstallers(root, onCall = () => {}) {
+  return Object.fromEntries(
+    Object.keys(NATIVE_TOOL_FILENAMES).map((name) => [
+      name,
+      async (dataDir) => {
+        onCall(name, dataDir);
+        const source = join(root, `${name}.source`);
+        await writeFile(source, `${name}-fixture`);
+        return source;
+      },
+    ])
+  );
+}
+
 test('native asset host platforms share the published native-tool keys', () => {
   assert.deepEqual(
     [...NATIVE_ASSET_PLATFORMS],
@@ -24,17 +39,7 @@ test('npm postinstall prepares every required release-native asset', async () =>
   const root = await mkdtemp(join(tmpdir(), 'mixdog-native-install-test-'));
   try {
     const calls = [];
-    const installers = Object.fromEntries(
-      Object.keys(NATIVE_TOOL_FILENAMES).map((name) => [
-        name,
-        async (dataDir) => {
-          calls.push([name, dataDir]);
-          const source = join(root, `${name}.source`);
-          await writeFile(source, `${name}-fixture`);
-          return source;
-        },
-      ])
-    );
+    const installers = fixtureInstallers(root, (name, dataDir) => calls.push([name, dataDir]));
     const prepared = await prepareRequiredNativeAssets({ packageRoot: root, installers });
     assert.deepEqual(Object.keys(prepared), ['graph', 'patch', 'spawn']);
     assert.deepEqual(
@@ -54,21 +59,11 @@ test('npm postinstall prepares every required release-native asset', async () =>
 test('Windows on ARM prepares the native assets it runs under x64 emulation', async () => {
   const root = await mkdtemp(join(tmpdir(), 'mixdog-native-install-arm64-'));
   try {
-    const installers = Object.fromEntries(
-      Object.keys(NATIVE_TOOL_FILENAMES).map((name) => [
-        name,
-        async () => {
-          const source = join(root, `${name}.source`);
-          await writeFile(source, `${name}-fixture`);
-          return source;
-        },
-      ])
-    );
     const prepared = await prepareRequiredNativeAssets({
       packageRoot: root,
       platform: 'win32',
       arch: 'arm64',
-      installers,
+      installers: fixtureInstallers(root),
     });
     assert.deepEqual(Object.keys(prepared), ['graph', 'patch', 'spawn']);
   } finally {

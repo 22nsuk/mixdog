@@ -62,8 +62,6 @@ test('openai-oauth-ws (tool_search): valid args / object / empty preserved', () 
   assert.equal(isInvalidToolArgsMarker(parseToolSearchArgs('')), false);
 });
 
-// === 9. OpenAI OAuth WS cache tracing ======================================
-
 test('openai oauth ws delta: default delta safely falls back on request-property mismatch', () => {
   const body = { model: 'gpt-5.5', input: [{ type: 'message', role: 'user', content: 'hi' }] };
   const delta = _computeDelta({

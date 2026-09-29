@@ -64,6 +64,11 @@ const ERROR_CATEGORIES = [
   ['invalid-args', /invalid|must be|expected|unsupported|not allowed|rejected|missing required/i],
 ];
 
+function errorCategory(outcome, output) {
+  if (outcome === 'ok' || outcome === 'skipped') return null;
+  return outcome === 'tool-failure' ? classifyError(output) : outcome;
+}
+
 function classifyError(output) {
   const s = String(output ?? '');
   for (const [cat, re] of ERROR_CATEGORIES) if (re.test(s)) return cat;
@@ -135,8 +140,7 @@ for (const runDir of runDirs) {
         status,
         outcome,
         outChars: output.length,
-        errCat: outcome === 'ok' || outcome === 'skipped' ? null
-          : outcome === 'tool-failure' ? classifyError(output) : outcome,
+        errCat: errorCategory(outcome, output),
         exec: it.timing?.execution_ms ?? null,
         total: it.timing?.total_ms ?? it.duration_ms ?? null,
         batchWait: it.timing?.batch_wait_ms ?? null,

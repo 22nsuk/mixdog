@@ -2,9 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { geminiParseToolCalls, _resolveGeminiCacheUsage } from './_shared.mjs';
 
-// === 2. gemini =============================================================
-// parseToolCalls(parts)   gemini.mjs:946  (exported — `export` keyword only).
-// id is a content hash → assert the `gemini_` prefix, not the exact value.
+// The tool-call id is a content hash → assert the `gemini_` prefix, not the exact value.
 
 test('gemini: native functionCall parts → canonical toolCalls (hashed id)', () => {
   const parts = [{ functionCall: { name: 'read', args: { path: 'a' } } }];

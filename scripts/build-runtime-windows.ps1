@@ -11,6 +11,8 @@ $ErrorActionPreference = 'Stop'
 
 $PG_VERSION = '16.4'
 $PGVECTOR_VERSION = '0.8.2'
+# Commit the pgvector v0.8.2 tag resolves to (git ls-remote refs/tags/v0.8.2).
+$PGVECTOR_COMMIT = 'cab9da72c04353f143bb06b42ab70a403daac64a'
 $TARGET_OS = $env:TARGET_OS ?? 'win32'
 $TARGET_ARCH = $env:TARGET_ARCH ?? 'x64'
 
@@ -65,6 +67,10 @@ Write-Host "==> Using preinstalled PG: $PgRoot"
 & $PgConfig --version
 $RealVersion = (& $PgConfig --version) -replace 'PostgreSQL ', ''
 Write-Host "  pg_config reports version: $RealVersion"
+if ($RealVersion.Trim() -ne $PG_VERSION) {
+    Write-Error "ASSERT FAILED: pg_config version '$($RealVersion.Trim())' != expected PG_VERSION '$PG_VERSION' (asset is named pg$PG_VERSION)"
+    exit 1
+}
 
 if (Test-Path $RuntimeDir) { Remove-Item -Recurse -Force $RuntimeDir }
 New-Item -ItemType Directory -Force -Path $BuildDir, $DistDir,
@@ -79,8 +85,14 @@ if (Test-Path $VectorDllBuilt) {
 }
 else {
     if (Test-Path $PgVectorDir) { Remove-Item -Recurse -Force $PgVectorDir }
-    git clone --branch "v$PGVECTOR_VERSION" --depth 1 `
-        https://github.com/pgvector/pgvector.git $PgVectorDir
+    git clone https://github.com/pgvector/pgvector.git $PgVectorDir
+    if ($LASTEXITCODE -ne 0) { Write-Error "git clone pgvector failed (exit $LASTEXITCODE)"; exit 1 }
+    git -C $PgVectorDir -c advice.detachedHead=false checkout --detach $PGVECTOR_COMMIT
+    if ($LASTEXITCODE -ne 0) { Write-Error "git checkout $PGVECTOR_COMMIT failed (exit $LASTEXITCODE)"; exit 1 }
+    if ((git -C $PgVectorDir rev-parse HEAD).Trim() -ne $PGVECTOR_COMMIT) {
+        Write-Error "ASSERT FAILED: pgvector HEAD != $PGVECTOR_COMMIT"
+        exit 1
+    }
 
     Write-Host "==> Building pgvector (MSVC/nmake against system PG 16)"
     Push-Location $PgVectorDir

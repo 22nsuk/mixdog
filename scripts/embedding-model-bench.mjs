@@ -59,6 +59,11 @@ async function buildSnapshot() {
   const explicitPort = Number(argValue('pg-port'));
   const port = Number.isInteger(explicitPort) && explicitPort > 0 ? explicitPort : Number(advert?.pg_port);
   if (!Number.isInteger(port) || port <= 0) throw new Error('live PostgreSQL advert is unavailable');
+  const { rawRows, rawTargetMatches, databaseSnapshot } = await readDatabaseSnapshot(port, uniqueTargets);
+  return assembleSnapshot({ evaluations, excluded, uniqueTargets, port, rawRows, rawTargetMatches, databaseSnapshot });
+}
+
+async function readDatabaseSnapshot(port, uniqueTargets) {
   const client = new pg.Client({
     host: '127.0.0.1',
     port,
@@ -116,7 +121,18 @@ async function buildSnapshot() {
   } finally {
     await client.end();
   }
+  return { rawRows, rawTargetMatches, databaseSnapshot };
+}
 
+async function assembleSnapshot({
+  evaluations,
+  excluded,
+  uniqueTargets,
+  port,
+  rawRows,
+  rawTargetMatches,
+  databaseSnapshot,
+}) {
   const documents = rawRows.map((row) => {
     const text = documentText(row);
     return {

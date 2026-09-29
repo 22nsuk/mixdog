@@ -129,12 +129,8 @@ test('anthropic SSE exposes refusal stop details and category metadata', async (
   assert.equal(result.content, '');
 });
 
-// === 3. anthropic / anthropic-oauth ========================================
-// tool_use block parser lives in anthropic-oauth.mjs:936 parseSSEStream
-// (content_block_start/delta/stop → toolCalls.push). anthropic.mjs has NO
-// independent tool_use parser: it imports and reuses the SAME parseSSEStream
-// from anthropic-oauth.mjs (anthropic.mjs:12). So a single test covers both
-// providers — shared parser, no duplicate test needed.
+// The tool_use block parser is parseSSEStream in anthropic-oauth.mjs; anthropic.mjs
+// reuses the same parser, so one set of tests covers both providers.
 
 test('anthropic(-oauth): streamed tool_use block → canonical toolCalls', async () => {
   const events = [

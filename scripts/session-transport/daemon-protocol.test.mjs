@@ -20,6 +20,25 @@ import {
   waitFor,
 } from './_shared.mjs';
 
+// Holds every gated call open until releaseAll(); calls gated after the
+// release resolve immediately so late stragglers cannot hang teardown.
+function createStartGates() {
+  const gates = new Map();
+  let released = false;
+  return {
+    gateFor(label) {
+      if (released) return Promise.resolve(label);
+      const gate = Promise.withResolvers();
+      gates.set(label, gate);
+      return gate.promise;
+    },
+    releaseAll() {
+      released = true;
+      for (const gate of gates.values()) gate.resolve();
+    },
+  };
+}
+
 test('protocol stays at 1 while revision then app build chooses the daemon', () => {
   assert.equal(SESSION_PROTOCOL, 1);
   assert.equal(SESSION_REVISION, 6);
@@ -208,10 +227,9 @@ test('revision 0 clients keep read compatibility without retired channel mutatio
 });
 
 test('a higher app build keeps compatible clients live until handoff commits', async () => {
-  let transport;
   let upgrade = null;
   const calls = [];
-  transport = createSessionTransport({
+  const transport = createSessionTransport({
     handleCall: async (name, args) => {
       calls.push({ name, args });
       return { name, args };
@@ -289,9 +307,8 @@ test('a higher app build keeps compatible clients live until handoff commits', a
 });
 
 test('a higher API revision drains the lower-revision daemon at the same app version', async () => {
-  let transport;
   let upgrade = null;
-  transport = createSessionTransport({
+  const transport = createSessionTransport({
     handleCall: async () => null,
     clientGraceMs: 5,
     onClientsEmpty: () => {},
@@ -401,14 +418,7 @@ test('health and registration bypass a burst of synchronous session call starts'
 
 test('independent clients and sessions start without waiting for another backlog', async () => {
   const started = [];
-  const gates = new Map();
-  let releaseAll = false;
-  const gateFor = (label) => {
-    if (releaseAll) return Promise.resolve(label);
-    const gate = Promise.withResolvers();
-    gates.set(label, gate);
-    return gate.promise;
-  };
+  const { gateFor, releaseAll } = createStartGates();
   await withDaemon(
     async ({ discovery }) => {
       const noisy = await attachSession({
@@ -449,8 +459,7 @@ test('independent clients and sessions start without waiting for another backlog
         const victimIndex = started.indexOf('victim');
         assert.equal(victimIndex, noisyWork.length);
       } finally {
-        releaseAll = true;
-        for (const gate of gates.values()) gate.resolve();
+        releaseAll();
         await Promise.allSettled([...noisyWork, ...(victimWork ? [victimWork] : [])]);
         await victim.close('fairness test');
         await noisy.close('fairness test');
@@ -470,14 +479,7 @@ test('independent clients and sessions start without waiting for another backlog
 
 test('channel calls start a second client without a synthetic global permit', async () => {
   const started = [];
-  const gates = new Map();
-  let releaseAll = false;
-  const gateFor = (label) => {
-    if (releaseAll) return Promise.resolve(label);
-    const gate = Promise.withResolvers();
-    gates.set(label, gate);
-    return gate.promise;
-  };
+  const { gateFor, releaseAll } = createStartGates();
   const transport = createChannelTransport({
     handleCall(_name, args) {
       const label = String(args?.label || '');
@@ -518,8 +520,7 @@ test('channel calls start a second client without a synthetic global permit', as
     await waitFor(() => started.includes('channel-victim'), 'channel victim starts without a permit release');
     assert.equal(started.indexOf('channel-victim'), noisyWork.length);
   } finally {
-    releaseAll = true;
-    for (const gate of gates.values()) gate.resolve();
+    releaseAll();
     await Promise.allSettled([...noisyWork, ...(victimWork ? [victimWork] : [])]);
     await transport.stop();
   }

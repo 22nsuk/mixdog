@@ -44,6 +44,17 @@ async function assertSingleShellCompletion(events, taskId, label) {
   }
 }
 
+async function withAutoBackgroundMs(ms, run) {
+  const prior = process.env.MIXDOG_SHELL_AUTO_BACKGROUND_MS;
+  process.env.MIXDOG_SHELL_AUTO_BACKGROUND_MS = String(ms);
+  try {
+    return await run();
+  } finally {
+    if (prior === undefined) delete process.env.MIXDOG_SHELL_AUTO_BACKGROUND_MS;
+    else process.env.MIXDOG_SHELL_AUTO_BACKGROUND_MS = prior;
+  }
+}
+
 test('shell rejects retired args and absorbs timeout edge values', () => {
   for (const retired of [
     'timeout',
@@ -61,7 +72,7 @@ test('shell rejects retired args and absorbs timeout edge values', () => {
       command: 'node --version',
       [retired]: retired === 'mode' ? 'async' : true,
     });
-    if (!/unsupported.*command and timeout_ms/i.test(err || '')) {
+    if (!/unsupported.*command, timeout_ms, and wait_ms/i.test(err || '')) {
       throw new Error(`shell retired arg must be rejected (${retired}): ${err}`);
     }
   }
@@ -276,13 +287,10 @@ test('short shell commands complete inline without tasks or notifications', asyn
 test('task read returns incremental output and task wait returns a settled verdict', async () => {
   const shellCheckEvents = [];
   const shellCheckOptions = shellNotifyOptions(shellCheckEvents, 'snapshot_read');
-  const _priorSnapshotAutoBg = process.env.MIXDOG_SHELL_AUTO_BACKGROUND_MS;
   // The progress line is written well before promotion, so the promotion
   // result always delivers it and every later read must continue after it.
-  process.env.MIXDOG_SHELL_AUTO_BACKGROUND_MS = '1000';
-  let shellCheckOut;
-  try {
-    shellCheckOut = await executeBuiltinTool(
+  const shellCheckOut = await withAutoBackgroundMs(1000, () =>
+    executeBuiltinTool(
       'shell',
       {
         command:
@@ -291,11 +299,8 @@ test('task read returns incremental output and task wait returns a settled verdi
       },
       root,
       shellCheckOptions
-    );
-  } finally {
-    if (_priorSnapshotAutoBg === undefined) delete process.env.MIXDOG_SHELL_AUTO_BACKGROUND_MS;
-    else process.env.MIXDOG_SHELL_AUTO_BACKGROUND_MS = _priorSnapshotAutoBg;
-  }
+    )
+  );
   const shellCheckTaskId = assertBackgroundStart('shell snapshot-read start', shellCheckOut);
   const shellSnapshotRead = await executeBuiltinTool(
     'task',
@@ -345,13 +350,10 @@ test('task read returns incremental output and task wait returns a settled verdi
 test('auto-promotion returns a tracked task with completion guidance', async () => {
   // Auto-promotion: a sync foreground command still running past the soft budget
   // returns a tracked task and completion notification.
-  const _priorAutoBgBudget = process.env.MIXDOG_SHELL_AUTO_BACKGROUND_MS;
-  process.env.MIXDOG_SHELL_AUTO_BACKGROUND_MS = '50';
   const shellAutoNotifyEvents = [];
   const shellAutoNotifyOptions = shellNotifyOptions(shellAutoNotifyEvents, 'auto');
-  let shellAutoPromoteOut;
-  try {
-    shellAutoPromoteOut = await executeBuiltinTool(
+  const shellAutoPromoteOut = await withAutoBackgroundMs(50, () =>
+    executeBuiltinTool(
       'shell',
       {
         command: 'node -e "setTimeout(() => console.log(\'tool-contracts-autopromote-done\'), 600)"',
@@ -359,11 +361,8 @@ test('auto-promotion returns a tracked task with completion guidance', async () 
       },
       root,
       shellAutoNotifyOptions
-    );
-  } finally {
-    if (_priorAutoBgBudget === undefined) delete process.env.MIXDOG_SHELL_AUTO_BACKGROUND_MS;
-    else process.env.MIXDOG_SHELL_AUTO_BACKGROUND_MS = _priorAutoBgBudget;
-  }
+    )
+  );
   if (
     !/auto-backgrounded/i.test(String(shellAutoPromoteOut)) ||
     !/Completion arrives automatically/i.test(String(shellAutoPromoteOut))
@@ -377,22 +376,11 @@ test('auto-promotion returns a tracked task with completion guidance', async () 
 });
 
 test('a promoted task that printed nothing reads back as empty output', async () => {
-  const _priorAutoBgBudget = process.env.MIXDOG_SHELL_AUTO_BACKGROUND_MS;
-  process.env.MIXDOG_SHELL_AUTO_BACKGROUND_MS = '50';
   const events = [];
   const options = shellNotifyOptions(events, 'silent');
-  let startOut;
-  try {
-    startOut = await executeBuiltinTool(
-      'shell',
-      { command: 'node -e "setTimeout(() => {}, 600)"', timeout_ms: 5000 },
-      root,
-      options
-    );
-  } finally {
-    if (_priorAutoBgBudget === undefined) delete process.env.MIXDOG_SHELL_AUTO_BACKGROUND_MS;
-    else process.env.MIXDOG_SHELL_AUTO_BACKGROUND_MS = _priorAutoBgBudget;
-  }
+  const startOut = await withAutoBackgroundMs(50, () =>
+    executeBuiltinTool('shell', { command: 'node -e "setTimeout(() => {}, 600)"', timeout_ms: 5000 }, root, options)
+  );
   const taskId = assertBackgroundStart('silent promoted shell', startOut);
   await assertSingleShellCompletion(events, taskId, 'silent promoted shell');
   const tail = String(

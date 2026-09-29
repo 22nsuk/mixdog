@@ -24,8 +24,11 @@ for (const entry of readdirSync(report.paths.runDir, { withFileTypes: true })) {
       const args = typeof item.arguments === 'string' ? JSON.parse(item.arguments) : item.arguments;
       const output = typeof item.output === 'string' ? item.output
         : (item.output?.content ?? []).filter(c => c.type === 'text').map(c => c.text).join('\n');
+      let argLimit = 650;
+      if (tasks.length) argLimit = 14000;
+      else if (args.patch) argLimit = 220;
       console.log(JSON.stringify({ request, name: item.name, status: item.status,
-        args: clip(JSON.stringify(args), tasks.length ? 14000 : args.patch ? 220 : 650),
+        args: clip(JSON.stringify(args), argLimit),
         output: clip(output, tasks.length ? 1800 : 140) }));
     } else if (item?.type === 'agent_message') {
       console.log(JSON.stringify({ request, final: clip(item.text ?? '', 220) }));

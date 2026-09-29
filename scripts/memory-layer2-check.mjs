@@ -15,7 +15,7 @@ import { loadConfig } from '../src/runtime/agent/orchestrator/config.mjs';
 import { resolveMaintenanceRoute } from '../src/runtime/agent/orchestrator/agent-runtime/maintenance-route.mjs';
 import { initProviders } from '../src/runtime/agent/orchestrator/providers/registry.mjs';
 import { loadScopedRoleInstructions } from '../src/runtime/agent/orchestrator/context/collect.mjs';
-import { resolveMaintenancePreset } from '../src/runtime/shared/llm/index.mjs';
+import { resolveMaintenancePreset } from '../src/runtime/agent/orchestrator/maintenance-preset.mjs';
 
 const { values } = parseArgs({
   options: {

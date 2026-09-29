@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { percentile, sortedFinite } from './lib/trace-stats.mjs';
+import { distribution } from './lib/trace-stats.mjs';
 
 function arg(name, fallback) {
   const prefix = `--${name}=`;
@@ -17,14 +17,6 @@ function load(path) {
 
 function fixed(value, digits = 2) {
   return Number(Number(value || 0).toFixed(digits));
-}
-
-function distribution(values) {
-  const sorted = sortedFinite(values.map(Number));
-  return {
-    p50: percentile(sorted, 50),
-    p95: percentile(sorted, 95),
-  };
 }
 
 const modelPath = arg('model', 'artifacts/computer-use/computer-schema-sequence-guided-full.json');

@@ -7,7 +7,8 @@
 $ErrorActionPreference = 'Stop'
 
 $Tag = if ($env:TAG) { $env:TAG }  else { 'runtime-v0.4.1' }
-$Os = if ($env:OS) { $env:OS }   else { 'win32' }
+# $env:OS is 'Windows_NT' on Windows (not a runtime platform name); map it.
+$Os = if ($env:OS -and $env:OS -ne 'Windows_NT') { $env:OS } else { 'win32' }
 $Arch = if ($env:ARCH) { $env:ARCH } else { 'x64' }
 $ReleaseRepo = if ($env:RUNTIME_RELEASE_REPOSITORY) { $env:RUNTIME_RELEASE_REPOSITORY } else { 'tribgames/mixdog' }
 $PgVer = '16.4'
@@ -30,6 +31,11 @@ try {
     Invoke-WebRequest -Uri $Url -OutFile $TarPath -UseBasicParsing
     $sha = (Get-FileHash -Algorithm SHA256 $TarPath).Hash.ToLower()
     Write-Host "  sha256=$sha"
+    $Sidecar = (Invoke-WebRequest -Uri "$Url.sha256" -UseBasicParsing -ErrorAction Stop).Content
+    if ($Sidecar -is [byte[]]) { $Sidecar = [System.Text.Encoding]::ASCII.GetString($Sidecar) }
+    $expected = ($Sidecar.Trim() -split '\s+')[0].ToLower()
+    if ($sha -ne $expected) { throw "FAIL: sha256 mismatch (got $sha, release sidecar says '$expected')" }
+    Write-Host "  PASS: sha256 matches release sidecar"
 
     Write-Host "==> Test 3: corrupt tarball — flip a byte and ensure tar errors"
     $CorruptPath = "$Work\corrupt.tar.gz"

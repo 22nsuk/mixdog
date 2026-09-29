@@ -51,6 +51,18 @@ function normalizeRows(data, rows, dims) {
   }
 }
 
+function prefixedTexts(spec, texts, inputType) {
+  const prefix = inputType === 'query' ? spec.queryPrefix : spec.documentPrefix;
+  return texts.map((text) => `${prefix}${String(text || '').slice(0, 8000)}`);
+}
+
+function normalizedEmbedding(tensorData, rows) {
+  const dims = tensorData.length / rows;
+  const data = Float32Array.from(tensorData);
+  normalizeRows(data, rows, dims);
+  return { data, dims };
+}
+
 function runtimeRequire(runtimeRoot = '') {
   return runtimeRoot ? createRequire(join(runtimeRoot, 'package.json')) : createRequire(import.meta.url);
 }
@@ -93,17 +105,12 @@ async function loadExtractor(spec, cacheDir, runtimeRoot = '') {
     ]);
     return {
       async embed(texts, inputType) {
-        const prefix = inputType === 'query' ? spec.queryPrefix : spec.documentPrefix;
-        const prepared = texts.map((text) => `${prefix}${String(text || '').slice(0, 8000)}`);
+        const prepared = prefixedTexts(spec, texts, inputType);
         const inputs = await tokenizer(prepared, { padding: true, truncation: true });
         const outputs = await model(inputs);
         const tensor = outputs?.[spec.outputName];
         if (!tensor?.data?.length) throw new Error(`missing output ${spec.outputName}`);
-        const rows = prepared.length;
-        const dims = tensor.data.length / rows;
-        const data = Float32Array.from(tensor.data);
-        normalizeRows(data, rows, dims);
-        return { data, dims };
+        return normalizedEmbedding(tensor.data, prepared.length);
       },
       dispose: () => model.dispose(),
     };
@@ -111,18 +118,13 @@ async function loadExtractor(spec, cacheDir, runtimeRoot = '') {
   const extractor = await pipeline('feature-extraction', spec.modelId, options);
   return {
     async embed(texts, inputType) {
-      const prefix = inputType === 'query' ? spec.queryPrefix : spec.documentPrefix;
-      const prepared = texts.map((text) => `${prefix}${String(text || '').slice(0, 8000)}`);
+      const prepared = prefixedTexts(spec, texts, inputType);
       const tensor = await extractor(prepared, {
         pooling: spec.pooling,
         normalize: true,
         truncation: true,
       });
-      const rows = prepared.length;
-      const dims = tensor.data.length / rows;
-      const data = Float32Array.from(tensor.data);
-      normalizeRows(data, rows, dims);
-      return { data, dims };
+      return normalizedEmbedding(tensor.data, prepared.length);
     },
     dispose: () => extractor.dispose(),
   };

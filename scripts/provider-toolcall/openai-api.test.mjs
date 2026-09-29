@@ -2,8 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { OpenAIDirectProvider, directHandshakeError, directWsEntry } from './_shared.mjs';
 
-// --- Helpers ---------------------------------------------------------------
-
 test('OpenAI API-key request uses model-specific cache contracts under every transport mode', async (t) => {
   const priorTransport = process.env.MIXDOG_OAI_TRANSPORT;
   const priorStore = process.env.MIXDOG_OAI_STORE;

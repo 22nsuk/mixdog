@@ -307,10 +307,8 @@ test('find fuzzy lookup, argument guards, and bounded timeout partial', async ()
 });
 
 // Shared exploration fixture: CC/Grok parity boundaries across all six local
-// retrieval tools. It intentionally combines exact-file operands, glob/type
-// filters, hidden/noise handling, Unicode + spaces, windows, and no-match/ENOENT.
-// The tree every per-tool assertion below reads: exact-file operands, a
-// Unicode + space path, a hidden file, and dependency noise.
+// retrieval tools. The tree every per-tool assertion below reads: exact-file
+// operands, a Unicode + space path, a hidden file, and dependency noise.
 function writeExplorationFixture(fixtureRoot) {
   mkdirSync(join(fixtureRoot, 'src', '공백 폴더'), { recursive: true });
   mkdirSync(join(fixtureRoot, 'node_modules', 'noise'), { recursive: true });
@@ -544,12 +542,9 @@ test('grep pattern shapes, packed paths, and context lead policy', async () => {
   if (!/must be string/.test(String(nonStringPatternEntry))) {
     throw new Error(`grep pattern array with object entry must be rejected: ${nonStringPatternEntry}`);
   }
-  for (const [key, value] of [['glob', ['*.mjs']]]) {
-    const args = { pattern: 'smoke', [key]: value };
-    const err = validateBuiltinArgs('grep', args);
-    if (!/must be string/.test(String(err))) {
-      throw new Error(`grep ${key} array must be rejected: ${err}`);
-    }
+  const globArrayErr = validateBuiltinArgs('grep', { pattern: 'smoke', glob: ['*.mjs'] });
+  if (!/must be string/.test(String(globArrayErr))) {
+    throw new Error(`grep glob array must be rejected: ${globArrayErr}`);
   }
   for (const key of ['path', 'root']) {
     const args = { pattern: 'smoke', [key]: ' ' };

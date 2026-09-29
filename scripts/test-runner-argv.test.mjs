@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { ARG_BUDGET, chunkFileArgs } from './lib/run-node-tests.mjs';
+import { ARG_BUDGET, chunkFileArgs, testConcurrencyArg } from './lib/run-node-tests.mjs';
 import { parseArgs } from './test.mjs';
 
 const runnerPath = fileURLToPath(new URL('./test.mjs', import.meta.url));
@@ -35,6 +35,19 @@ function runNode(cwd, args, timeout = 60_000) {
   assert.equal(result.signal, null);
   return result;
 }
+
+test('test concurrency: share of cores under a shell cap, explicit choices win, standalone untouched', () => {
+  const capped = { MIXDOG_SHELL_CONCURRENCY_CAP: '8' };
+  assert.equal(testConcurrencyArg([], capped, 20), '--test-concurrency=2');
+  assert.equal(testConcurrencyArg([], { MIXDOG_SHELL_CONCURRENCY_CAP: '4' }, 20), '--test-concurrency=5');
+  assert.equal(testConcurrencyArg([], capped, 4), '--test-concurrency=2', 'never below 2');
+  assert.equal(testConcurrencyArg([], {}, 20), null, 'no cap: Node default');
+  assert.equal(testConcurrencyArg([], { MIXDOG_SHELL_CONCURRENCY_CAP: 'x' }, 20), null);
+  assert.equal(testConcurrencyArg([], { ...capped, MIXDOG_TEST_CONCURRENCY: '6' }, 20), '--test-concurrency=6');
+  assert.equal(testConcurrencyArg([], { MIXDOG_TEST_CONCURRENCY: '3' }, 20), '--test-concurrency=3');
+  assert.equal(testConcurrencyArg(['--test-concurrency=9'], { ...capped, MIXDOG_TEST_CONCURRENCY: '6' }, 20), null);
+  assert.equal(testConcurrencyArg(['--test-concurrency', '9'], capped, 20), null);
+});
 
 test('a full-suite file list is batched under the command-line cap, in order', () => {
   const files = Array.from(

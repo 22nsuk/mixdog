@@ -126,7 +126,7 @@ async function providerToolPayload(load, provider, activeTools, session) {
   }
   if (normalized === 'anthropic' || normalized === 'anthropic-oauth') {
     const { snapshotProviderRequestTools } = await load(
-      'src/session-runtime/provider-request-snapshot.mjs',
+      'src/runtime/agent/orchestrator/runtime-core/provider-request-snapshot.mjs',
     );
     const { requestAnthropicTools } = await load(
       'src/runtime/agent/orchestrator/providers/lib/anthropic-request-utils.mjs',
@@ -179,7 +179,7 @@ async function routeToolContract(repoRoot, route) {
   const { filterModelEditTools } = await load('src/runtime/shared/edit-tool-dialect.mjs');
   const { applyDeferredToolSurface } = await load('src/session-runtime/tool-catalog.mjs');
   const { featureDisallowedToolsFor } = await load('src/session-runtime/builtin-features.mjs');
-  const { filterModelToolsForProfile, disallowedModelToolNamesForProfile } = await load('src/session-runtime/tool-profile.mjs');
+  const { filterModelToolsForProfile, disallowedModelToolNamesForProfile } = await load('src/runtime/agent/orchestrator/runtime-core/tool-profile.mjs');
   const pristine = JSON.parse(readFileSync(join(repoRoot, 'src/runtime/shared/pristine-execution-contract.json'), 'utf8'));
   const allTools = [...BUILTIN_TOOLS, ...PATCH_TOOL_DEFS, ...CODE_GRAPH_TOOL_DEFS, TOOL_SEARCH_TOOL, CWD_TOOL];
   const disabledTools = [...new Set([

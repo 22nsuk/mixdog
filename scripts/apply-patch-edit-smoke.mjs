@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import './test-data-dir.mjs';
 import { once } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

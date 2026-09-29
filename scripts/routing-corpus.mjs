@@ -9,6 +9,7 @@ import { basename, resolve, win32 } from 'node:path';
 import { resolvePluginData } from '../src/runtime/shared/plugin-paths.mjs';
 import { parseSince } from './lib/parse-since.mjs';
 import { argValue, hasFlag } from './lib/cli-args.mjs';
+import { field, sessionId } from './lib/trace-row.mjs';
 
 function defaultTracePath() {
   const data = process.env.MIXDOG_DATA_DIR || resolvePluginData() || resolve(homedir(), '.mixdog', 'data');
@@ -27,17 +28,6 @@ function readRows(path) {
     }
   }
   return out;
-}
-function payload(row) {
-  return row?.payload && typeof row.payload === 'object' ? row.payload : {};
-}
-function field(row, name) {
-  if (row && row[name] != null) return row[name];
-  const p = payload(row);
-  return p[name] != null ? p[name] : null;
-}
-function sessionId(row) {
-  return String(row?.session_id || row?.sessionId || field(row, 'session_id') || '');
 }
 function shortId(id) {
   const s = String(id || '');

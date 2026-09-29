@@ -147,8 +147,8 @@ $tar = Join-Path $outDir "mixdog-node-prebake.tar.gz"
 $stamp = [ordered]@{
     schemaVersion = 1
     mixdogVersion = $MixdogVersion
-    image = $Image
-    builtAt = (Get-Date).ToUniversalTime().ToString("o")
+    image         = $Image
+    builtAt       = (Get-Date).ToUniversalTime().ToString("o")
 }
 $stampPath = Join-Path $outDir "prebake.json"
 $stamp | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $stampPath -Encoding utf8

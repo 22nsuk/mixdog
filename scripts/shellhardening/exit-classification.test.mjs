@@ -61,7 +61,6 @@ test('glob empty-result diagnostics reuse settled stat records', async () => {
   }
 });
 
-// ==== from shell-failure-diagnostics-test.mjs ====
 test('shell outcome is read from status markers, never a leading Error: line', () => {
   // Completed process exits are results; control-plane/interruption is failure.
   assert.equal(isShellFailureResult('Error: [shell-run-failed] [exit code: 2]\n\nboom'), false);

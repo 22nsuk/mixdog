@@ -68,11 +68,9 @@ function chart(entry, figures) {
     const oursPct = (score.ours / score.total) * 100;
     const basePct = (score.baseline / score.total) * 100;
     const delta = score.ours - score.baseline;
-    const deltaText = scaled
-        ? `${oursPct >= basePct ? '+' : ''}${(oursPct - basePct).toFixed(1)}pp`
-        : delta === 0
-            ? 'tie'
-            : `${delta > 0 ? '+' : ''}${delta} ${unit}${Math.abs(delta) === 1 ? '' : 's'}`;
+    let deltaText = 'tie';
+    if (scaled) deltaText = `${oursPct >= basePct ? '+' : ''}${(oursPct - basePct).toFixed(1)}pp`;
+    else if (delta !== 0) deltaText = `${delta > 0 ? '+' : ''}${delta} ${unit}${Math.abs(delta) === 1 ? '' : 's'}`;
     const scoreCounts = scaled
         ? `${score.ours}/${score.total} vs ${score.baselinePassed}/${score.baselineTotal}`
         : `${score.ours} vs ${score.baseline} of ${score.total} ${unit}s`;

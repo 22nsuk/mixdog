@@ -22,12 +22,12 @@ import {
 test('shell execution policy matches sync-first background-task parity', () => {
   assert.equal(DEFAULT_SHELL_AUTO_BACKGROUND_MS, 10_000);
   const shellTool = BUILTIN_TOOLS.find((tool) => tool.name === 'shell');
-  assert.deepEqual(Object.keys(shellTool.inputSchema.properties), ['command', 'timeout_ms']);
+  assert.deepEqual(Object.keys(shellTool.inputSchema.properties), ['command', 'timeout_ms', 'wait_ms']);
   assert.equal(shellTool.inputSchema.properties.timeout_ms.minimum, 0);
   assert.equal(shellTool.inputSchema.properties.monitor_interval_ms, undefined);
   assert.match(
     shellTool.description,
-    /10s foreground window \(not a timeout\).*continues under task_id.*task wait, not read polling/i
+    /10s foreground window \(not a timeout.*continues under task_id.*task wait, not read polling/i
   );
   const taskTool = BUILTIN_TOOLS.find((tool) => tool.name === 'task');
   assert.equal(taskTool.title, 'Task');
@@ -44,7 +44,7 @@ test('shell execution policy matches sync-first background-task parity', () => {
     'list all; read next output; wait for completion and next output; cancel task.'
   );
   assert.equal(taskTool.inputSchema.properties.task_id.description, 'Shell task_id; required for read/wait/cancel.');
-}); // PS 7+
+});
 
 test('B: command names and pipelines are not hard-blocked for tool routing', () => {
   const commands = [
@@ -113,7 +113,7 @@ test('B: POSIX host is a strict no-op', () => {
 // ---------------------------------------------------------------------------
 // C) shell command schema PowerShell cheat — platform-branched
 // ---------------------------------------------------------------------------
-test('C: shell surface keeps execution contract separate from the platform command cheat', (_t) => {
+test('C: shell surface keeps execution contract separate from the platform command cheat', () => {
   const shellTool = BUILTIN_TOOLS.find((tool) => tool.name === 'shell');
   assert.ok(shellTool, 'shell tool must exist');
   assert.match(shellTool.description, /^Run programs, builds, tests and computation\./);

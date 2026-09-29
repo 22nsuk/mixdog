@@ -3,8 +3,7 @@
 // official report generator so definitions cannot drift — including the
 // baseline's per-task context and model-call counts, which the report reads
 // from each Codex trial's own trajectory and rollout.
-import { existsSync } from 'node:fs';
-import { readdirSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { generateRunReport } from './run-report.mjs';

@@ -1,25 +1,13 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { DURATION_UNIT_MS } from './lib/parse-since.mjs';
 import { argValue } from './lib/cli-args.mjs';
+import { parseDuration, summarize } from './lib/smoke-loop-shared.mjs';
 
 function parseNumber(value, fallback = null) {
   if (value == null || value === '') return fallback;
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
-}
-
-function parseDuration(value, fallback = null) {
-  const raw = String(value || '').trim();
-  if (!raw) return fallback;
-  if (/^\d+$/.test(raw)) return Number(raw);
-  const match = raw.match(/^(\d+(?:\.\d+)?)(ms|s|m|h)$/i);
-  if (!match) throw new Error(`invalid duration: ${raw}`);
-  const n = Number(match[1]);
-  const unit = match[2].toLowerCase();
-  const mult = DURATION_UNIT_MS[unit];
-  return Math.max(1, Math.floor(n * mult));
 }
 
 function argValues(name) {
@@ -49,18 +37,6 @@ function parseStepCaps(values) {
     caps.set(name, cap);
   }
   return caps;
-}
-
-function summarize(values) {
-  if (!values.length) return { min: 0, max: 0, avg: 0 };
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const avg = values.reduce((sum, value) => sum + value, 0) / values.length;
-  return {
-    min: Math.round(min * 10) / 10,
-    max: Math.round(max * 10) / 10,
-    avg: Math.round(avg * 10) / 10,
-  };
 }
 
 function readRows(path) {

@@ -11,13 +11,9 @@ import {
   normalizeGrokToolSchemas,
 } from './_shared.mjs';
 
-// === 5. grok-oauth =========================================================
-// grok-oauth has NO independent tool_call parser. GrokOAuthProvider delegates
-// all request shaping AND response parsing to an inner OpenAICompatProvider
-// constructed as `new OpenAICompatProvider('xai', ...)` (grok-oauth.mjs:668).
-// Its tool_call extraction therefore goes through the exact
-// parseToolCalls / parseResponsesToolCalls already asserted in block 1 — no
-// duplicate test. (Documented as shared in the report.)
+// grok-oauth has no independent tool_call parser: GrokOAuthProvider delegates
+// request shaping and response parsing to an inner OpenAICompatProvider('xai'),
+// so its tool_call extraction is covered by openai-compat.test.mjs.
 
 test('Grok schema flatten keeps grep pattern required', () => {
   const grep = BUILTIN_TOOLS.find((tool) => tool.name === 'grep');
