@@ -12,6 +12,10 @@ import { createExecutionState } from './execution-state.ts';
 import { createWorkerPool } from '../backend/worker-pool.ts';
 import { waitForComputerWorkerExit } from '../backend/worker-capacity.ts';
 
+// macOS and Linux spawn the native backend: the pool names its binary before
+// handing the spawn to these tests' fakes, which never run it.
+process.env.MIXDOG_COMPUTER_BIN ||= 'mixdog-computer';
+
 test('desktop loss and geometry changes cancel queued work, release simulated held keys, and require explicit resume', async () => {
   const power = new EventEmitter(),
     displays = new EventEmitter();

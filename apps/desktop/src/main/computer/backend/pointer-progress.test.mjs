@@ -8,6 +8,10 @@ import test from 'node:test';
 import { createWorkerPool } from './worker-pool.ts';
 import { RESPONSE_MARKER } from './program.ts';
 
+// macOS and Linux spawn the native backend: the pool names its binary before
+// handing the spawn to these tests' fakes, which never run it.
+process.env.MIXDOG_COMPUTER_BIN ||= 'mixdog-computer';
+
 for (const command of [
   { action: 'sequence_step', step: { action: 'drag', window_id: 'hwnd:0x123' }, delivery: 'background' },
   { action: 'click', ref: 's1:e0', delivery: 'background' },

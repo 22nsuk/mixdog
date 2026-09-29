@@ -485,9 +485,12 @@ test('canonical key chords become IME-safe Windows key sequences', () => {
   assert.equal(normalizeComputerKeySequence('win'), '{LWIN}');
   assert.equal(normalizeComputerKeySequence('PrintScreen'), '{PRTSC}');
   assert.equal(normalizeComputerKeySequence('ContextMenu'), '{APPS}');
+  // cmd names the macOS modifier; elsewhere the refusal names this platform's keys.
   assert.throws(
     () => normalizeComputerKeySequence('cmd-shift-p'),
-    /invalid_key_chord: unsupported modifier 'cmd'; on Windows use ctrl/
+    process.platform === 'win32'
+      ? /invalid_key_chord: unsupported modifier 'cmd'; on Windows use ctrl/
+      : /invalid_key_chord: unsupported modifier 'cmd'; on Linux use ctrl/
   );
   assert.throws(() => assertSafeComputerInput({ action: 'key', keys: 'win+l' }), /blocked_input/);
   assert.throws(() => assertSafeComputerInput({ action: 'key', keys: 'win+shift+l' }), /blocked_input/);

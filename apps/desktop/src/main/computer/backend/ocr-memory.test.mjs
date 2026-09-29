@@ -40,7 +40,8 @@ $available = [Windows.Media.Ocr.OcrEngine]::IsLanguageSupported([Windows.Globali
 $bitmap = [Drawing.Bitmap]::new(240,80)
 $graphics = [Drawing.Graphics]::FromImage($bitmap)
 $graphics.Clear([Drawing.Color]::White)
-$font = [Drawing.Font]::new('Arial',32)
+# Doubled for recognition, 'TEST' is missed at a few sizes (16pt, 32pt); 24pt reads at every neighboring size.
+$font = [Drawing.Font]::new('Arial',24)
 $graphics.DrawString('TEST', $font, [Drawing.Brushes]::Black, 5, 5)
 $memory = [IO.MemoryStream]::new()
 try {

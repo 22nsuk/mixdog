@@ -8,6 +8,10 @@ import test from 'node:test';
 import { createWorkerPool } from './worker-pool.ts';
 import { waitForComputerWorkerExit } from './worker-capacity.ts';
 
+// macOS and Linux spawn the native backend: the pool names its binary before
+// handing the spawn to these tests' fakes, which never run it.
+process.env.MIXDOG_COMPUTER_BIN ||= 'mixdog-computer';
+
 test('a successful kill request is not confused with an observed process exit', async () => {
   const child = Object.assign(new EventEmitter(), { killed: true, exitCode: null, signalCode: null });
   assert.equal(await waitForComputerWorkerExit(child, 1), false);

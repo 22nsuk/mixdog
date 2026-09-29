@@ -12,6 +12,10 @@ import { createSessionLifecycle } from '../host/session-lifecycle.ts';
 import { createExecutionState } from '../host/execution-state.ts';
 import { ComputerUseCoordinator } from '../session/coordinator.ts';
 
+// macOS and Linux spawn the native backend: the pool names its binary before
+// handing the spawn to these tests' fakes, which never run it.
+process.env.MIXDOG_COMPUTER_BIN ||= 'mixdog-computer';
+
 test('retirement distinguishes read, semantic, character and press/release lifetimes', async () => {
   for (const [request, held] of [
     [{ action: 'snapshot' }, false],
