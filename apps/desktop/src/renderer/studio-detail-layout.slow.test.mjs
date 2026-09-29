@@ -93,7 +93,14 @@ const HARNESS = `
 function measureDetail() {
   const box = (node) => {
     const rect = node.getBoundingClientRect();
-    return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, width: rect.width, height: rect.height };
+    return {
+      left: rect.left,
+      top: rect.top,
+      right: rect.right,
+      bottom: rect.bottom,
+      width: rect.width,
+      height: rect.height,
+    };
   };
   const shown = (node) => {
     const style = getComputedStyle(node);
@@ -200,12 +207,16 @@ test('Studio detail keeps media, rail and actions in frame on every surface size
   for (const surface of SURFACES) {
     const scale = surface.scale || 1;
     await page.setViewport({ width: surface.width, height: surface.height });
-    await page.evaluate(({ mobile, top }, deviceScale) => {
-      const root = document.documentElement;
-      root.toggleAttribute('data-mixdog-mobile-tabs', Boolean(mobile));
-      root.style.setProperty('--mx-device-scale', String(deviceScale));
-      root.style.setProperty('--harness-top', `${top || 0}px`);
-    }, surface, scale);
+    await page.evaluate(
+      ({ mobile, top }, deviceScale) => {
+        const root = document.documentElement;
+        root.toggleAttribute('data-mixdog-mobile-tabs', Boolean(mobile));
+        root.style.setProperty('--mx-device-scale', String(deviceScale));
+        root.style.setProperty('--harness-top', `${top || 0}px`);
+      },
+      surface,
+      scale
+    );
     for (const promptOpen of [false, true]) {
       const label = `${surface.name} ${surface.width}x${surface.height}${promptOpen ? ', prompt open' : ''}`;
       await page.evaluate((state) => window.renderDetail(state), {

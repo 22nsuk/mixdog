@@ -328,6 +328,178 @@ function SkillsPanel({ api, data, pending, run, createOpen, closeCreate }: Panel
   );
 }
 
+function pluginSkillRows(data: PanelContext['data'], pluginId: string): RecordValue[] {
+  return rows(record(data.skills), 'skills').filter(
+    (skill) => record(skill.owner).kind === 'plugin' && String(record(skill.owner).id || '') === pluginId
+  );
+}
+
+function pluginMcpServers(data: PanelContext['data'], plugin: RecordValue): RecordValue[] {
+  const base = String(plugin.mcpServerName || '');
+  if (!base) return [];
+  return rows(record(data.mcp), 'servers').filter(
+    (server) => String(server.name) === base || String(server.name).startsWith(`${base}--`)
+  );
+}
+
+function PluginDetailDialog({
+  plugin: open,
+  api,
+  data,
+  busy,
+  run,
+  confirm,
+  openSkillTools,
+  onClose,
+}: Pick<PanelContext, 'api' | 'data' | 'run' | 'confirm'> & {
+  plugin: RecordValue;
+  busy: boolean;
+  openSkillTools(name: string): void;
+  onClose(): void;
+}) {
+  const id = String(open.id || open.name);
+  const skills = pluginSkillRows(data, id);
+  const servers = pluginMcpServers(data, open);
+  const disabledSkills = disabledSkillNames(data);
+  const contents = skills.length + servers.length;
+  // Footer keeps the plugin's real actions only — Remove (parked left),
+  // Update, and Reconfigure MCP when the plugin ships one. The root path and
+  // MCP name sit in Info as selectable text.
+  return (
+    <ExtensionDetailDialog
+      className="extensions-plugin-detail-dialog"
+      title={label(open)}
+      icon={<Blocks size={16} aria-hidden="true" />}
+      tagline={
+        String(open.description || '').trim() ||
+        [String(open.version || '').trim(), String(open.sourceType || '').trim()].filter(Boolean).join(' · ')
+      }
+      enabled={open.enabled !== false}
+      busy={busy}
+      onToggle={(next) => void run('setPluginEnabled', [open, next])}
+      footer={
+        <>
+          <button
+            type="button"
+            className="danger"
+            disabled={busy}
+            onClick={() =>
+              confirm({
+                title: 'Remove plugin?',
+                description: t('{{name}} will be removed from Mixdog.', { name: label(open) }),
+                confirmLabel: 'Remove',
+                danger: true,
+                onConfirm: () => {
+                  onClose();
+                  void run('removePlugin', [open]);
+                },
+              })
+            }
+          >
+            {t('Remove')}
+          </button>
+          {Boolean(open.mcpScript && open.mcpEnabled) && (
+            <button type="button" disabled={busy} onClick={() => void run('enablePluginMcp', [open])}>
+              {t('Reconfigure MCP')}
+            </button>
+          )}
+          <button type="button" disabled={busy} onClick={() => void run('updatePlugin', [open])}>
+            {open.sourceType === 'local' ? t('Update metadata') : t('Update plugin')}
+          </button>
+          <button type="button" className="secondary" onClick={onClose}>
+            {t('Close')}
+          </button>
+        </>
+      }
+      onClose={onClose}
+    >
+      <ExtensionScopeField
+        api={api}
+        run={run}
+        kind="plugins"
+        name={id}
+        {...scopeOf(open)}
+        currentPath={currentProjectPath(data)}
+        busy={busy}
+      />
+      <ExtensionSection title={t('Contents')} count={contents}>
+        {contents > 0 && (
+          <ExtensionItemList>
+            {skills.map((skill) => {
+              const name = String(skill.name);
+              const off = disabledSkills.has(name);
+              return (
+                <ExtensionItemRow
+                  key={`skill:${name}`}
+                  icon={<CapabilityIcon name={name} size={15} />}
+                  title={name}
+                  description={skillDisplayDescription(skill).trim()}
+                  tone={off ? 'off' : 'ok'}
+                  control={
+                    <>
+                      <ExtensionAction disabled={busy} onClick={() => openSkillTools(name)}>
+                        {t('Required tools')}
+                      </ExtensionAction>
+                      <CompactSwitch
+                        label={`${name} · ${t('Enabled')}`}
+                        checked={!off}
+                        disabled={busy}
+                        onChange={(next) => saveSkillEnabled(run, disabledSkills, name, next)}
+                      />
+                    </>
+                  }
+                />
+              );
+            })}
+            {servers.map((server) => {
+              const name = String(server.name);
+              const enabled = server.enabled !== false;
+              const status = mcpStatus(server);
+              return (
+                <ExtensionItemRow
+                  key={`mcp:${name}`}
+                  icon={<Plug size={15} aria-hidden="true" />}
+                  title={name}
+                  description={mcpRowDescription(server)}
+                  status={status.label}
+                  tone={status.tone}
+                  control={
+                    <CompactSwitch
+                      label={`${name} · ${t('Enabled')}`}
+                      checked={enabled}
+                      disabled={busy}
+                      onChange={(next) => void run('setMcpServerEnabled', [name, next])}
+                    />
+                  }
+                />
+              );
+            })}
+          </ExtensionItemList>
+        )}
+        {Boolean(open.mcpScript && !open.mcpEnabled) && (
+          <ExtensionItemList>
+            <ExtensionItemRow
+              icon={<Plug size={15} aria-hidden="true" />}
+              title={String(open.mcpServerName || t('MCP server'))}
+              description={t('This plugin ships an MCP server. Enable MCP to connect it.')}
+              tone="muted"
+              control={
+                <ExtensionAction disabled={busy} onClick={() => void run('enablePluginMcp', [open])}>
+                  {t('Enable MCP')}
+                </ExtensionAction>
+              }
+            />
+          </ExtensionItemList>
+        )}
+        {!contents && !(open.mcpScript && !open.mcpEnabled) && (
+          <ExtensionNote>{t('Nothing installed by this plugin yet.')}</ExtensionNote>
+        )}
+      </ExtensionSection>
+      <PluginInfo plugin={open} />
+    </ExtensionDetailDialog>
+  );
+}
+
 function PluginsPanel({ api, data, pending, run, confirm, createOpen, closeCreate }: PanelContext) {
   const { openSkillTools, skillToolsDialog } = useSkillToolLinks({ data, pending, run });
   const status = record(data.plugins);
@@ -335,18 +507,6 @@ function PluginsPanel({ api, data, pending, run, confirm, createOpen, closeCreat
   const busy = Boolean(pending);
   const [openId, setOpenId] = useState('');
   const open = openId ? plugins.find((plugin) => String(plugin.id || plugin.name) === openId) : undefined;
-  const disabledSkills = disabledSkillNames(data);
-  const ownedSkillRows = (id: string) =>
-    rows(record(data.skills), 'skills').filter(
-      (skill) => record(skill.owner).kind === 'plugin' && String(record(skill.owner).id || '') === id
-    );
-  const ownedMcpServers = (plugin: RecordValue) => {
-    const base = String(plugin.mcpServerName || '');
-    if (!base) return [];
-    return rows(record(data.mcp), 'servers').filter(
-      (server) => String(server.name) === base || String(server.name).startsWith(`${base}--`)
-    );
-  };
   return (
     <Group title="Plugins">
       {skillToolsDialog}
@@ -382,150 +542,18 @@ function PluginsPanel({ api, data, pending, run, confirm, createOpen, closeCreat
           />
         );
       })}
-      {open &&
-        (() => {
-          const id = String(open.id || open.name);
-          const skills = ownedSkillRows(id);
-          const servers = ownedMcpServers(open);
-          const contents = skills.length + servers.length;
-          // Footer keeps the plugin's real actions only — Remove (parked left),
-          // Update, and Reconfigure MCP when the plugin ships one. The Copy
-          // buttons are gone: the root path and MCP name sit in Info as
-          // selectable text (user: 불필요한 표면 정리).
-          return (
-            <ExtensionDetailDialog
-              className="extensions-plugin-detail-dialog"
-              title={label(open)}
-              icon={<Blocks size={16} aria-hidden="true" />}
-              tagline={
-                String(open.description || '').trim() ||
-                [String(open.version || '').trim(), String(open.sourceType || '').trim()].filter(Boolean).join(' · ')
-              }
-              enabled={open.enabled !== false}
-              busy={busy}
-              onToggle={(next) => void run('setPluginEnabled', [open, next])}
-              footer={
-                <>
-                  <button
-                    type="button"
-                    className="danger"
-                    disabled={busy}
-                    onClick={() =>
-                      confirm({
-                        title: 'Remove plugin?',
-                        description: t('{{name}} will be removed from Mixdog.', { name: label(open) }),
-                        confirmLabel: 'Remove',
-                        danger: true,
-                        onConfirm: () => {
-                          setOpenId('');
-                          void run('removePlugin', [open]);
-                        },
-                      })
-                    }
-                  >
-                    {t('Remove')}
-                  </button>
-                  {Boolean(open.mcpScript && open.mcpEnabled) && (
-                    <button type="button" disabled={busy} onClick={() => void run('enablePluginMcp', [open])}>
-                      {t('Reconfigure MCP')}
-                    </button>
-                  )}
-                  <button type="button" disabled={busy} onClick={() => void run('updatePlugin', [open])}>
-                    {open.sourceType === 'local' ? t('Update metadata') : t('Update plugin')}
-                  </button>
-                  <button type="button" className="secondary" onClick={() => setOpenId('')}>
-                    {t('Close')}
-                  </button>
-                </>
-              }
-              onClose={() => setOpenId('')}
-            >
-              <ExtensionScopeField
-                api={api}
-                run={run}
-                kind="plugins"
-                name={id}
-                {...scopeOf(open)}
-                currentPath={currentProjectPath(data)}
-                busy={busy}
-              />
-              <ExtensionSection title={t('Contents')} count={contents}>
-                {contents > 0 && (
-                  <ExtensionItemList>
-                    {skills.map((skill) => {
-                      const name = String(skill.name);
-                      const off = disabledSkills.has(name);
-                      return (
-                        <ExtensionItemRow
-                          key={`skill:${name}`}
-                          icon={<CapabilityIcon name={name} size={15} />}
-                          title={name}
-                          description={skillDisplayDescription(skill).trim()}
-                          tone={off ? 'off' : 'ok'}
-                          control={
-                            <>
-                              <ExtensionAction disabled={busy} onClick={() => openSkillTools(name)}>
-                                {t('Required tools')}
-                              </ExtensionAction>
-                              <CompactSwitch
-                                label={`${name} · ${t('Enabled')}`}
-                                checked={!off}
-                                disabled={busy}
-                                onChange={(next) => saveSkillEnabled(run, disabledSkills, name, next)}
-                              />
-                            </>
-                          }
-                        />
-                      );
-                    })}
-                    {servers.map((server) => {
-                      const name = String(server.name);
-                      const enabled = server.enabled !== false;
-                      const status = mcpStatus(server);
-                      return (
-                        <ExtensionItemRow
-                          key={`mcp:${name}`}
-                          icon={<Plug size={15} aria-hidden="true" />}
-                          title={name}
-                          description={mcpRowDescription(server)}
-                          status={status.label}
-                          tone={status.tone}
-                          control={
-                            <CompactSwitch
-                              label={`${name} · ${t('Enabled')}`}
-                              checked={enabled}
-                              disabled={busy}
-                              onChange={(next) => void run('setMcpServerEnabled', [name, next])}
-                            />
-                          }
-                        />
-                      );
-                    })}
-                  </ExtensionItemList>
-                )}
-                {Boolean(open.mcpScript && !open.mcpEnabled) && (
-                  <ExtensionItemList>
-                    <ExtensionItemRow
-                      icon={<Plug size={15} aria-hidden="true" />}
-                      title={String(open.mcpServerName || t('MCP server'))}
-                      description={t('This plugin ships an MCP server. Enable MCP to connect it.')}
-                      tone="muted"
-                      control={
-                        <ExtensionAction disabled={busy} onClick={() => void run('enablePluginMcp', [open])}>
-                          {t('Enable MCP')}
-                        </ExtensionAction>
-                      }
-                    />
-                  </ExtensionItemList>
-                )}
-                {!contents && !(open.mcpScript && !open.mcpEnabled) && (
-                  <ExtensionNote>{t('Nothing installed by this plugin yet.')}</ExtensionNote>
-                )}
-              </ExtensionSection>
-              <PluginInfo plugin={open} />
-            </ExtensionDetailDialog>
-          );
-        })()}
+      {open && (
+        <PluginDetailDialog
+          plugin={open}
+          api={api}
+          data={data}
+          busy={busy}
+          run={run}
+          confirm={confirm}
+          openSkillTools={openSkillTools}
+          onClose={() => setOpenId('')}
+        />
+      )}
     </Group>
   );
 }

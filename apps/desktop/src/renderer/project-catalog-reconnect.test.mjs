@@ -2,21 +2,14 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 
 test('initial connection keeps its catalog read and paired recovery events issue one authoritative read', async () => {
-  const dom = new JSDOM('<!doctype html><body><main></main></body>', { url: 'https://relay.test/' });
-  const saved = new Map();
-  for (const [key, value] of Object.entries({
-    window: dom.window,
-    document: dom.window.document,
-    navigator: dom.window.navigator,
-    HTMLElement: dom.window.HTMLElement,
-    IS_REACT_ACT_ENVIRONMENT: true,
-  })) {
-    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    Object.defineProperty(globalThis, key, { value, configurable: true, writable: true });
-  }
+  const { restore } = installTestDom(null, {
+    html: '<!doctype html><body><main></main></body>',
+    jsdom: { url: 'https://relay.test/' },
+    expose: ['navigator', 'HTMLElement'],
+  });
   const reads = [];
   window.mixdogDesktop = {
     listProjects: () => {
@@ -54,10 +47,6 @@ test('initial connection keeps its catalog read and paired recovery events issue
     assert.equal(catalog.projectCatalogValidated, false);
   } finally {
     await act(async () => root.unmount());
-    dom.window.close();
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
+    restore();
   }
 });

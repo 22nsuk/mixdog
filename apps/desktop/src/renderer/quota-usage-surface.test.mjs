@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 import { CommandSurface } from './CommandSurface.tsx';
 import { focusQuotaUsage, peekQuotaFocus } from './usage-surface-mode.ts';
 import { prefetchQuotaUsage } from './quota-usage-cache.ts';
@@ -22,12 +22,12 @@ const at = (hours, minutes = 0) => opened + hours * HOUR + minutes * MINUTE;
 const now = at(1, 30);
 
 function harness(context) {
-  const dom = new JSDOM('<!doctype html><html><body><main></main></body></html>', { url: 'https://mixdog.test/' });
-  globalThis.window = dom.window;
-  globalThis.document = dom.window.document;
-  globalThis.HTMLElement = dom.window.HTMLElement;
-  globalThis.Node = dom.window.Node;
-  globalThis.history = dom.window.history;
+  const { dom } = installTestDom(null, {
+    html: '<!doctype html><html><body><main></main></body></html>',
+    jsdom: { url: 'https://mixdog.test/' },
+    expose: ['HTMLElement', 'Node', 'history'],
+    actEnvironment: false,
+  });
   const root = createRoot(document.querySelector('main'));
   context.after(async () => {
     await act(async () => root.unmount());
@@ -169,7 +169,9 @@ test('the usage dialog header switches to subscription usage and opens there nex
   assert.equal(document.querySelectorAll('.stats-card > b')[0].textContent, '12%');
   // The weekly rest, 88 %, spread over the 5 d 3.5 h left: about 17 % a day.
   assert.equal(document.querySelectorAll('.stats-card > b')[1].textContent, t('{{percent}} a day', { percent: '17%' }));
-  await act(async () => [...document.querySelectorAll('.quota-window')].find((node) => node.textContent === '5H').click());
+  await act(async () =>
+    [...document.querySelectorAll('.quota-window')].find((node) => node.textContent === '5H').click()
+  );
   assert.deepEqual(calls.at(-1), { provider: 'anthropic-oauth', account: 'default', window: '5H', view: 'window' });
   assert.deepEqual(texts('.stats-card small'), [
     t('Used'),
@@ -179,7 +181,10 @@ test('the usage dialog header switches to subscription usage and opens there nex
   ]);
   assert.equal(document.querySelectorAll('.stats-card > b')[0].textContent, '30%');
   // 70 % left over the 3.5 h to the 18:00 reset: 20 % an hour.
-  assert.equal(document.querySelectorAll('.stats-card > b')[1].textContent, t('{{percent}} an hour', { percent: '20%' }));
+  assert.equal(
+    document.querySelectorAll('.stats-card > b')[1].textContent,
+    t('{{percent}} an hour', { percent: '20%' })
+  );
   assert.equal(
     document.querySelectorAll('.stats-card')[1].querySelector('em').textContent,
     t('{{time}} left', { time: '3h 30m' })
@@ -378,9 +383,13 @@ test('the window history pages ten windows at a time and opens the one clicked',
   const { calls, pages, api } = usageHost(context, ledger);
   focusQuotaUsage({ provider: 'anthropic-oauth', window: '5H' });
   await render({ surface: 'stats', open: true, onClose() {}, api });
-  const peaks = () => [...document.querySelectorAll('.quota-history-table tbody tr')].map((row) => row.cells[1].textContent);
+  const peaks = () =>
+    [...document.querySelectorAll('.quota-history-table tbody tr')].map((row) => row.cells[1].textContent);
   const pageText = () => document.querySelector('.quota-history-pager span').textContent;
-  assert.ok(document.querySelector('.quota-history-table + .quota-history-pager'), 'past ten windows a pager sits below');
+  assert.ok(
+    document.querySelector('.quota-history-table + .quota-history-pager'),
+    'past ten windows a pager sits below'
+  );
   assert.deepEqual(pages, [{ provider: 'anthropic-oauth', account: 'default', window: '5H', page: 0 }]);
   assert.deepEqual(peaks(), ['12%', '11%', '10%', '9%', '8%', '7%', '6%', '5%', '4%', '3%']);
   assert.equal(pageText(), '1 / 2');
@@ -407,7 +416,7 @@ test('a provider meter opens its own subscription window', async (context) => {
   assert.equal(document.querySelectorAll('.stats-card > b')[0].textContent, '12%');
 });
 
-test("a subscription is listed once and its accounts are picked beside it", async (context) => {
+test('a subscription is listed once and its accounts are picked beside it', async (context) => {
   const render = harness(context);
   const ledger = new UsageLedger(':memory:');
   context.after(() => ledger.close());
@@ -449,7 +458,11 @@ test("a subscription is listed once and its accounts are picked beside it", asyn
   assert.equal(document.querySelector('.quota-subscription .mx-select-value').textContent, 'Claude');
   assert.equal(document.querySelector('.quota-account .mx-select-value').textContent, 'Account 2');
   assert.deepEqual(await options('subscription'), ['Claude', 'Codex'], 'each subscription once');
-  assert.deepEqual(await options('account'), ['Account 2', 'Account 1', 'Account 3'], 'the one shown, then the pool order');
+  assert.deepEqual(
+    await options('account'),
+    ['Account 2', 'Account 1', 'Account 3'],
+    'the one shown, then the pool order'
+  );
 
   await choose('account', 'Account 1');
   assert.deepEqual(calls.at(-1), { provider: 'anthropic-oauth', account: 'default', window: '7D', view: 'window' });

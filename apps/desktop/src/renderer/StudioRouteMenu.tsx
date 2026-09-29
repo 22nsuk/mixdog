@@ -73,6 +73,11 @@ function sheetAnchor(rect: { left: number; top: number; bottom: number }, viewpo
   return { left: rect.left, right: rect.left + width, top: rect.top, bottom: rect.bottom };
 }
 
+function measuredSheet(rect: { left: number; top: number; bottom: number }, sheetHeight: number) {
+  const viewport = viewportBox();
+  return { viewport, sheet: routeSheetBox(sheetAnchor(rect, viewport), sheetHeight, viewport) };
+}
+
 /**
  * Generation menu: one pill that expands
  * to the sheet width; the model and every lane option live as sheet rows
@@ -185,8 +190,7 @@ export function StudioRouteMenu({
   const layout = useCallback(() => {
     const rect = trigger.current?.getBoundingClientRect();
     if (!rect) return;
-    const viewport = viewportBox();
-    const nextSheet = routeSheetBox(sheetAnchor(rect, viewport), sheetHeight, viewport);
+    const { viewport, sheet: nextSheet } = measuredSheet(rect, sheetHeight);
     setSheetBox(nextSheet);
     if (!pane) {
       setFlyoutBox(null);
@@ -207,8 +211,7 @@ export function StudioRouteMenu({
     setClosing(false);
     morphFrom.current = rect ? { width: rect.width, height: rect.height } : null;
     if (rect) {
-      const viewport = viewportBox();
-      const nextSheet = routeSheetBox(sheetAnchor(rect, viewport), sheetHeight, viewport);
+      const { sheet: nextSheet } = measuredSheet(rect, sheetHeight);
       setSheetBox(nextSheet);
       // Two-step width: pin the numeric width first, widen on the next frame.
       setTriggerWidth(rect.width);
@@ -222,8 +225,7 @@ export function StudioRouteMenu({
   const openPane = (id: string) => {
     const rect = trigger.current?.getBoundingClientRect();
     if (rect) {
-      const viewport = viewportBox();
-      const nextSheet = routeSheetBox(sheetAnchor(rect, viewport), sheetHeight, viewport);
+      const { viewport, sheet: nextSheet } = measuredSheet(rect, sheetHeight);
       setSheetBox(nextSheet);
       const nextBox = paneLayout(nextSheet, id, viewport);
       setFlyoutBox(nextBox.box);

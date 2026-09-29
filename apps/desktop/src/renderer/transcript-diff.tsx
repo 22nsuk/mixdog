@@ -8,43 +8,16 @@ import { normalizeApplyPatch, parseUnifiedDiff } from './renderer-logic.mjs';
 import { asRecord } from './text-format';
 import { CopyControl } from './transcript-primitives';
 import { registerIdleReclaim } from './idle-reclaim';
-import { enforceRendererCacheBudget, registerBudgetedCache } from './renderer-cache-budget';
+import { RendererLruCache } from './renderer-lru-cache';
 
-const normalizedPatchCache = new Map<string, string>();
 export const PATCH_CACHE_LIMIT = 24;
-const PATCH_CACHE_MAX_CHARS = 8 * 1024 * 1024;
 const PATCH_CACHE_ENTRY_MAX_CHARS = 1024 * 1024;
-
-function retainedPatchChars(): number {
-  let total = 0;
-  for (const [input, normalized] of normalizedPatchCache) {
-    total += input.length + normalized.length;
-  }
-  return total;
-}
-
-function trimPatchCacheTo(targetChars: number): void {
-  while (retainedPatchChars() > targetChars) {
-    const oldest = normalizedPatchCache.keys().next().value;
-    if (oldest === undefined) break;
-    normalizedPatchCache.delete(oldest);
-  }
-}
-
-registerBudgetedCache({
+const normalizedPatchCache = new RendererLruCache<string, string>({
   name: 'normalized-patch',
-  chars: retainedPatchChars,
-  trim: trimPatchCacheTo,
+  maxEntries: PATCH_CACHE_LIMIT,
+  maxChars: 8 * 1024 * 1024,
+  measure: (normalized, input) => input.length + normalized.length,
 });
-
-function pruneNormalizedPatchCache(): void {
-  while (normalizedPatchCache.size > PATCH_CACHE_LIMIT || retainedPatchChars() > PATCH_CACHE_MAX_CHARS) {
-    const oldest = normalizedPatchCache.keys().next().value;
-    if (oldest === undefined) break;
-    normalizedPatchCache.delete(oldest);
-  }
-  enforceRendererCacheBudget();
-}
 
 // Normalized patches rebuild from the transcript item on demand; an idle drop
 // costs one re-normalize when that diff is next expanded.
@@ -59,11 +32,7 @@ export function findPatch(item: TranscriptItem) {
   for (const value of candidates) {
     if (typeof value !== 'string') continue;
     const cached = normalizedPatchCache.get(value);
-    if (cached !== undefined) {
-      normalizedPatchCache.delete(value);
-      normalizedPatchCache.set(value, cached);
-      return cached;
-    }
+    if (cached !== undefined) return cached;
     if (
       !(
         /^@@/m.test(value) ||
@@ -73,10 +42,7 @@ export function findPatch(item: TranscriptItem) {
     )
       continue;
     const normalized = normalizeApplyPatch(value);
-    if (value.length + normalized.length <= PATCH_CACHE_ENTRY_MAX_CHARS) {
-      normalizedPatchCache.set(value, normalized);
-      pruneNormalizedPatchCache();
-    }
+    if (value.length + normalized.length <= PATCH_CACHE_ENTRY_MAX_CHARS) normalizedPatchCache.set(value, normalized);
     return normalized;
   }
   return undefined;

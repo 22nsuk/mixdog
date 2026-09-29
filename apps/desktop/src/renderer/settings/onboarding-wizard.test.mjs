@@ -23,6 +23,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
 const { createRoot } = await import('react-dom/client');
 const { OnboardingWizard } = await import('./OnboardingWizard.tsx');
+const { readGithubStarred } = await import('./github-star-storage.ts');
 
 test.after(() => dom.window.close());
 
@@ -169,6 +170,17 @@ test('the wizard is profile, providers, Git, and star, and Finish marks onboardi
   await click(button('Finish'));
   assert.deepEqual(calls.at(-1), { capability: 'skipOnboarding', args: [] });
   assert.equal(completed(), 1);
+});
+
+test('a star given from the wizard is remembered like the About panel does', async (t) => {
+  await mount(t, {
+    step: 3,
+    githubStarStatus: async () => ({ available: true, starred: false }),
+    starGithub: async () => ({ starred: true }),
+  });
+  const actions = document.querySelectorAll('.onboarding-card-actions button');
+  await click(actions[actions.length - 1]);
+  assert.equal(readGithubStarred(), true);
 });
 
 test('providers explain the supported local-model installation path', async (t) => {

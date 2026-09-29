@@ -95,9 +95,10 @@ export function ActivityRail({
     ],
     'Activity Bar'
   );
+  const usageVisible = isVisible('usage');
   useEffect(() => {
-    if (!isVisible('usage')) setUsageOpen(false);
-  }, [isVisible('usage')]);
+    if (!usageVisible) setUsageOpen(false);
+  }, [usageVisible]);
   // ABB: the usage flyout closes on hardware back.
   useMobileBack(usageOpen, () => setUsageOpen(false));
   const usageSnapshot = useSyncExternalStore(subscribeUsageDashboard, getUsageDashboardSnapshot);
@@ -181,13 +182,19 @@ export function ActivityRail({
       document.removeEventListener('keydown', keydown);
     };
   }, [usageOpen]);
+  const openUsageStats = onOpenUsageStats
+    ? () => {
+        setUsageOpen(false);
+        onOpenUsageStats();
+      }
+    : undefined;
   return (
     <aside className="activity-rail" aria-label={t('Activity Bar')} ref={railRef} {...menuProps}>
       <nav className="sidebar-primary-nav" aria-label={t('Sidebar')} ref={navRef}>
         {primaryNavigation}
       </nav>
       <div className="activity-rail-spacer" />
-      {desktopFeatureEnabled('usage') && isVisible('usage') && (
+      {desktopFeatureEnabled('usage') && usageVisible && (
         <button
           type="button"
           className={`sidebar-usage-toggle ${usageOpen ? 'is-active' : ''}${usagePinRows.length ? ' is-pinned' : ''}`}
@@ -264,14 +271,7 @@ export function ActivityRail({
                 setUsageOpen(false);
                 (onOpenProviders || onOpenSettings)();
               }}
-              onOpenStats={
-                onOpenUsageStats
-                  ? () => {
-                      setUsageOpen(false);
-                      onOpenUsageStats();
-                    }
-                  : undefined
-              }
+              onOpenStats={openUsageStats}
               pinned={usagePinned}
               onTogglePin={toggleUsagePin}
             />

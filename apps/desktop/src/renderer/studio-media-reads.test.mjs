@@ -2,20 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 import { useStudioMediaJobs } from './studio-media-state.ts';
 
 test('Studio polls every job in bounded batches at the existing cadence and surfaces failures', async (context) => {
-  const dom = new JSDOM('<!doctype html><main></main>', { url: 'https://mixdog.test/' });
-  const originals = new Map(
-    ['window', 'document', 'IS_REACT_ACT_ENVIRONMENT'].map((key) => [
-      key,
-      Object.getOwnPropertyDescriptor(globalThis, key),
-    ])
-  );
-  globalThis.window = dom.window;
-  globalThis.document = dom.window.document;
-  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const { restore } = installTestDom(null, { html: '<!doctype html><main></main>' });
   let poll;
   let delay;
   let cleared = 0;
@@ -71,11 +62,7 @@ test('Studio polls every job in bounded batches at the existing cadence and surf
     await act(async () => root.unmount());
     assert.equal(cleared, 1);
     context.mock.restoreAll();
-    dom.window.close();
-    for (const [key, descriptor] of originals) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
+    restore();
   });
   await act(async () => root.render(React.createElement(Harness)));
   await act(async () => current.setJobs(jobs));

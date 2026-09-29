@@ -105,13 +105,23 @@ test('a conversation folder that is not a registered Project opens its files by 
     resolveLocalPaths: async ([absolutePath]) => {
       resolved.push(absolutePath);
       return [
-        { absolutePath, name: 'deck.pptx', dir: false, size: 1, projectPath: 'C:/Project/mixdog', relPath: 'out/A/deck.pptx' },
+        {
+          absolutePath,
+          name: 'deck.pptx',
+          dir: false,
+          size: 1,
+          projectPath: 'C:/Project/mixdog',
+          relPath: 'out/A/deck.pptx',
+        },
       ];
     },
   });
   const expected = { project: 'C:/Project/mixdog', path: 'out/A/deck.pptx' };
   assert.deepEqual(await resolveLocalLink('C:\\Project\\mixdog\\out\\A', 'deck.pptx'), expected);
-  assert.deepEqual(await resolveLocalLink('C:\\Project\\mixdog\\out\\A', 'C:\\Project\\mixdog\\out\\A\\deck.pptx'), expected);
+  assert.deepEqual(
+    await resolveLocalLink('C:\\Project\\mixdog\\out\\A', 'C:\\Project\\mixdog\\out\\A\\deck.pptx'),
+    expected
+  );
   assert.deepEqual(resolved, ['C:/Project/mixdog/out/A/deck.pptx', 'C:/Project/mixdog/out/A/deck.pptx']);
 });
 

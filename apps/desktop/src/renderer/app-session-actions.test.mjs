@@ -2,15 +2,15 @@ import assert from 'node:assert/strict';
 import test, { after } from 'node:test';
 import React, { act, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 import { useAppSessionActions } from './use-app-session-actions.ts';
 
-const dom = new JSDOM('<!doctype html><html><body></body></html>', {
-  url: 'https://mixdog.test/',
+const { dom } = installTestDom(null, {
+  html: '<!doctype html><html><body></body></html>',
+  jsdom: {
+    url: 'https://mixdog.test/',
+  },
 });
-globalThis.window = dom.window;
-globalThis.document = dom.window.document;
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 after(() => dom.window.close());
 
 async function fixture(t, api) {

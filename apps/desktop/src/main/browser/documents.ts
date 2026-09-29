@@ -20,7 +20,7 @@ export const BROWSER_DOCUMENT_ROOTS = `function() {
   return roots;
 }`;
 
-export const BROWSER_DOCUMENT_TEXT = `(() => {
+const BROWSER_DOCUMENT_TEXT = `(() => {
   const parts = (${BROWSER_DOCUMENT_ROOTS})().map(root => {
     // A <frameset> body holds only the unseen <noframes> fallback; each
     // frame is collected as a document of its own.

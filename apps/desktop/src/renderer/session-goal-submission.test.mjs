@@ -2,13 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 import { GoalSubmissionContext, useGoalAfterSubmission } from './session-goal-submission.ts';
 
-const dom = new JSDOM('<!doctype html><body></body>', { url: 'https://mixdog.test/' });
-globalThis.window = dom.window;
-globalThis.document = dom.window.document;
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+installTestDom(null, { html: '<!doctype html><body></body>', jsdom: { url: 'https://mixdog.test/' } });
 
 test('goal masks restore rejected submissions and admit real goal updates and session navigation', async () => {
   const host = document.createElement('div');

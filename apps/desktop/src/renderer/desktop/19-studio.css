@@ -976,11 +976,6 @@
   opacity: var(--mx-op-disabled);
   cursor: default;
 }
-.studio-generate.is-busy {
-  color: var(--mx-text);
-  background: var(--mx-bg-layer-1);
-  box-shadow: inset 0 0 0 0.5px var(--mx-border-muted);
-}
 .desktop-boot-gate {
   position: relative;
   width: 100%;

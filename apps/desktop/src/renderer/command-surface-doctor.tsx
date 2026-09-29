@@ -3,9 +3,9 @@ import { t } from './i18n';
 import { record } from './record-utils';
 import { resolveDesktopSlashCommand, type SettingsSection } from './slash-commands';
 
-export type DoctorLevel = 'ok' | 'warn' | 'fail';
+type DoctorLevel = 'ok' | 'warn' | 'fail';
 
-export interface DoctorCheck {
+interface DoctorCheck {
   id: string;
   label: string;
   level: DoctorLevel;
@@ -14,7 +14,7 @@ export interface DoctorCheck {
   hint: string;
 }
 
-export interface DoctorReport {
+interface DoctorReport {
   busy: boolean;
   checks: DoctorCheck[];
   summary: Record<DoctorLevel, number>;

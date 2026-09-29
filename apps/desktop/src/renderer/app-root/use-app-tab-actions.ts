@@ -13,6 +13,7 @@ import { useStableEvent } from '../use-stable-event';
 import { desktopFeatureEnabled } from '../desktop-feature-config';
 import type { useAppSideDocks } from '../use-app-side-docks';
 import type { useSessionPaneSurfaces } from '../use-session-pane-surfaces';
+import { cleanDiffTarget, paneSize } from './workspace-targets';
 
 export interface UseAppTabActionsOptions {
   paneWorkspace: ReturnType<typeof usePaneWorkspace>;
@@ -93,16 +94,13 @@ export function useAppTabActions({
   });
 
   const openDiffTab = (project: string, rel: string, request: SourceControlDiffRequest) => {
-    const cleanProject = String(project || '').trim();
-    const cleanRel = String(rel || '')
-      .replace(/\\/g, '/')
-      .replace(/^\/+/, '');
-    if (!cleanProject || !cleanRel) return;
+    const target = cleanDiffTarget(project, rel);
+    if (!target) return;
+    const cleanRel = target.rel;
     void prefetchDiffView().catch(() => {});
     const diffSelection: Extract<WorkspaceSelection, { kind: 'diff' }> = {
       kind: 'diff',
-      project: cleanProject,
-      rel: cleanRel,
+      ...target,
       ...request,
     };
     const key = navigationKey(diffSelection);
@@ -148,12 +146,9 @@ export function useAppTabActions({
     });
     const focusedLeaf = paneWorkspace.focusedLeaf;
     if (toSide && focusedLeaf?.tabs.length) {
-      const paneElement = Array.from(document.querySelectorAll<HTMLElement>('[data-pane-id]')).find(
-        (element) => element.dataset.paneId === focusedLeaf.id
-      );
-      const rect = paneElement?.getBoundingClientRect();
-      if (!rect || canSplitPaneSize('row', rect.width, rect.height)) {
-        splitFocusedPane('row', pullRequestSelection, rect ? { width: rect.width, height: rect.height } : undefined);
+      const size = paneSize(focusedLeaf.id);
+      if (!size || canSplitPaneSize('row', size.width, size.height)) {
+        splitFocusedPane('row', pullRequestSelection, size);
         return;
       }
     }

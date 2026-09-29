@@ -1,19 +1,27 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import test, { mock } from 'node:test';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 
-const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'https://mixdog.test/' });
-globalThis.window = dom.window;
-globalThis.document = dom.window.document;
-globalThis.HTMLElement = dom.window.HTMLElement;
-globalThis.Element = dom.window.Element;
-globalThis.Node = dom.window.Node;
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+const { dom } = installTestDom(null, {
+  html: '<!doctype html><html><body></body></html>',
+  jsdom: { url: 'https://mixdog.test/' },
+  expose: ['HTMLElement', 'Element', 'Node'],
+});
 const { TooltipLayer } = await import('./TooltipLayer.tsx');
 
+// The layer schedules through window.setTimeout/setInterval; route those to
+// node's mock timers so the hover delays advance by tick() instead of real waits.
+dom.window.setTimeout = (...args) => globalThis.setTimeout(...args);
+dom.window.clearTimeout = (...args) => globalThis.clearTimeout(...args);
+dom.window.setInterval = (...args) => globalThis.setInterval(...args);
+dom.window.clearInterval = (...args) => globalThis.clearInterval(...args);
+const wait = (ms) => mock.timers.tick(ms);
+
 async function mount(html, t) {
+  mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+  t.after(() => mock.timers.reset());
   const host = document.createElement('main');
   host.innerHTML = html;
   document.body.append(host);
@@ -33,7 +41,7 @@ async function hover(target) {
   await act(async () => {
     target.dispatchEvent(new window.MouseEvent('pointerover', { bubbles: true }));
     target.dispatchEvent(new window.MouseEvent('pointermove', { bubbles: true }));
-    await new Promise((resolve) => window.setTimeout(resolve, 620));
+    wait(620);
   });
   return document.querySelector('[role="tooltip"]')?.textContent ?? null;
 }
@@ -131,7 +139,7 @@ test('keyboard focus shows help and Escape or activation dismisses it', async (t
     key('keydown', 'Tab');
     button.focus();
     key('keyup', 'Tab');
-    await new Promise((resolve) => window.setTimeout(resolve, 170));
+    wait(170);
   });
   assert.equal(document.querySelector('[role="tooltip"]')?.textContent, 'Open settings');
   await act(async () => button.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
@@ -148,12 +156,12 @@ test('a control that slides under a resting pointer stays silent until the point
   const button = host.firstElementChild;
   await act(async () => {
     button.dispatchEvent(new window.MouseEvent('pointerover', { bubbles: true }));
-    await new Promise((resolve) => window.setTimeout(resolve, 620));
+    wait(620);
   });
   assert.equal(document.querySelector('[role="tooltip"]'), null);
   await act(async () => {
     button.dispatchEvent(new window.MouseEvent('pointermove', { bubbles: true }));
-    await new Promise((resolve) => window.setTimeout(resolve, 620));
+    wait(620);
   });
   assert.equal(document.querySelector('[role="tooltip"]')?.textContent, 'Copy message');
 });
@@ -168,7 +176,7 @@ test('focus that script moves shows no help: a re-activated window, a trigger re
     t
   );
   const [plain, trigger, shortcut] = host.children;
-  const settle = () => new Promise((resolve) => window.setTimeout(resolve, 170));
+  const settle = () => wait(170);
   await act(async () => {
     plain.focus();
     await settle();

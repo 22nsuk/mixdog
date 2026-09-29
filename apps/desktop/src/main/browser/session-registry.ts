@@ -6,7 +6,7 @@
 import type { WebContents } from 'electron';
 
 import { selectAndRefreshActiveBrowserGuest } from './tab-policy';
-import type { BackgroundPage } from './tabs';
+import type { BackgroundPage } from './tabs-contract';
 
 export const DEFAULT_BROWSER_SESSION_ID = 'browser';
 

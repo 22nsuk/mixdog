@@ -17,7 +17,7 @@ import type { BrowserGuestStateStore } from '../guest-state';
 import type { createBrowserInitScripts } from '../init-scripts';
 import type { createBrowserInputDriver } from '../input';
 import type { createBrowserIntercept } from '../intercept';
-import type { createBrowserNetworkReports } from '../network';
+import type { createBrowserNetworkReports } from '../network-report';
 import type { createBrowserPageState } from '../page-state';
 import type { createBrowserPerformanceCommands } from '../performance';
 import type { BrowserPostcondition } from '../postcondition';

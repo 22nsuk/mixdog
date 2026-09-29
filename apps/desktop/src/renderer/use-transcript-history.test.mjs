@@ -2,17 +2,14 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 import { useTranscriptHistory, useTranscriptHistoryFill } from './use-transcript-history.ts';
 import { registerTranscriptScrollGeometry } from './use-transcript-follow.ts';
 
-test('tail windows page older history from transcriptHasOlder, one page per published window', async () => {
-  const dom = new JSDOM("<div id='root'></div>", { url: 'http://localhost/' });
-  const keys = ['window', 'document', 'IS_REACT_ACT_ENVIRONMENT'];
-  const previous = new Map(keys.map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
-  Object.defineProperty(globalThis, 'window', { configurable: true, value: dom.window });
-  Object.defineProperty(globalThis, 'document', { configurable: true, value: dom.window.document });
-  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+/** A DOM whose desktop bridge records each `prefetchSession` request so a test
+ *  can settle it by hand. */
+function installHistoryDom() {
+  const { restore } = installTestDom(null, { jsdom: { url: 'http://localhost/' } });
   const requests = [];
   window.mixdogDesktop = {
     prefetchSession(sessionId, limit) {
@@ -21,6 +18,20 @@ test('tail windows page older history from transcriptHasOlder, one page per publ
       return result.promise;
     },
   };
+  return { restore, requests };
+}
+
+async function restoreHistoryDom({ restore, requests }, root) {
+  await act(async () => {
+    for (const request of requests) request.resolve(false);
+    root.unmount();
+  });
+  restore();
+}
+
+test('tail windows page older history from transcriptHasOlder, one page per published window', async () => {
+  const env = installHistoryDom();
+  const { requests } = env;
   const root = createRoot(document.getElementById('root'));
   const Reader = ({ count, hasOlder }) =>
     React.createElement('button', { type: 'button', onClick: useTranscriptHistory('a', count, hasOlder) }, 'Earlier');
@@ -62,33 +73,13 @@ test('tail windows page older history from transcriptHasOlder, one page per publ
     await earlier();
     assert.equal(requests[3].limit, 1024);
   } finally {
-    await act(async () => {
-      for (const request of requests) request.resolve(false);
-      root.unmount();
-    });
-    dom.window.close();
-    for (const [key, descriptor] of previous) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
+    await restoreHistoryDom(env, root);
   }
 });
 
 test('a first window that does not fill the pane loads older history without a scroll', async () => {
-  const dom = new JSDOM("<div id='root'></div>", { url: 'http://localhost/' });
-  const keys = ['window', 'document', 'IS_REACT_ACT_ENVIRONMENT'];
-  const previous = new Map(keys.map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
-  Object.defineProperty(globalThis, 'window', { configurable: true, value: dom.window });
-  Object.defineProperty(globalThis, 'document', { configurable: true, value: dom.window.document });
-  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-  const requests = [];
-  window.mixdogDesktop = {
-    prefetchSession(sessionId, limit) {
-      const result = Promise.withResolvers();
-      requests.push({ sessionId, limit, ...result });
-      return result.promise;
-    },
-  };
+  const env = installHistoryDom();
+  const { requests } = env;
   // The pane is 900 px tall; the transcript's height is whatever the test says.
   const geometry = { content: 400 };
   const root = createRoot(document.getElementById('root'));
@@ -139,33 +130,13 @@ test('a first window that does not fill the pane loads older history without a s
     await render(30, false);
     assert.equal(requests.length, 2);
   } finally {
-    await act(async () => {
-      for (const request of requests) request.resolve(false);
-      root.unmount();
-    });
-    dom.window.close();
-    for (const [key, descriptor] of previous) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
+    await restoreHistoryDom(env, root);
   }
 });
 
 test('cold history pages load on demand, survive delayed publications and stay session-scoped', async () => {
-  const dom = new JSDOM("<div id='root'></div>", { url: 'http://localhost/' });
-  const keys = ['window', 'document', 'IS_REACT_ACT_ENVIRONMENT'];
-  const previous = new Map(keys.map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
-  Object.defineProperty(globalThis, 'window', { configurable: true, value: dom.window });
-  Object.defineProperty(globalThis, 'document', { configurable: true, value: dom.window.document });
-  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-  const requests = [];
-  window.mixdogDesktop = {
-    prefetchSession(sessionId, limit) {
-      const result = Promise.withResolvers();
-      requests.push({ sessionId, limit, ...result });
-      return result.promise;
-    },
-  };
+  const env = installHistoryDom();
+  const { requests } = env;
   const root = createRoot(document.getElementById('root'));
   const Reader = ({ sessionId, count }) =>
     React.createElement('button', { type: 'button', onClick: useTranscriptHistory(sessionId, count) }, 'Earlier');
@@ -209,14 +180,6 @@ test('cold history pages load on demand, survive delayed publications and stay s
     await earlier();
     assert.equal(requests.length, 5, 'history retains its upper bound');
   } finally {
-    await act(async () => {
-      for (const request of requests) request.resolve(false);
-      root.unmount();
-    });
-    dom.window.close();
-    for (const [key, descriptor] of previous) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
+    await restoreHistoryDom(env, root);
   }
 });

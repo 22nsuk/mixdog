@@ -91,22 +91,38 @@ export function createGitBranchOperations({ run, currentGitOperation, gitStatus 
     return run(cwd, ['branch', '-d', await checkedBranchName(cwd, value)]);
   }
 
-  async function gitMergeBranch(cwd: string, value: string): Promise<string> {
-    const branch = await checkedBranchName(cwd, value);
+  async function assertNoOperationInProgress(cwd: string, action: string): Promise<void> {
     const inFlight = await currentGitOperation(cwd);
     if (inFlight) {
-      throw new Error(`A ${inFlight} is already in progress. Continue or abort it before merging ${branch}.`);
+      throw new Error(`A ${inFlight} is already in progress. Continue or abort it before ${action}.`);
     }
+  }
+
+  async function assertCleanWorktree(cwd: string, action: string): Promise<void> {
     const dirty = (await gitStatus(cwd)).files.map((file) => file.path);
     if (dirty.length) {
       throw new Error(
         [
-          `Uncommitted changes would be overwritten by merging ${branch}`,
+          `Uncommitted changes would be overwritten by ${action}`,
           `: ${dirty.slice(0, 10).join(', ')}`,
           '. Commit or stash them first.',
         ].join('')
       );
     }
+  }
+
+  async function conflictedPaths(cwd: string): Promise<string[]> {
+    const names = await run(cwd, ['diff', '--name-only', '--diff-filter=U']).catch(() => '');
+    return names
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+  }
+
+  async function gitMergeBranch(cwd: string, value: string): Promise<string> {
+    const branch = await checkedBranchName(cwd, value);
+    await assertNoOperationInProgress(cwd, `merging ${branch}`);
+    await assertCleanWorktree(cwd, `merging ${branch}`);
     try {
       return await run(cwd, ['merge', '--no-edit', branch]);
     } catch (reason) {
@@ -117,11 +133,7 @@ export function createGitBranchOperations({ run, currentGitOperation, gitStatus 
           .then((operation) => operation === 'merge')
           .catch(() => false));
       if (!conflicted) throw reason instanceof Error ? reason : new Error(message);
-      const names = await run(cwd, ['diff', '--name-only', '--diff-filter=U']).catch(() => '');
-      const files = names
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter(Boolean);
+      const files = await conflictedPaths(cwd);
       const current = await run(cwd, ['rev-parse', '--abbrev-ref', 'HEAD'])
         .then((name) => name.trim())
         .catch(() => 'HEAD');
@@ -137,6 +149,9 @@ export function createGitBranchOperations({ run, currentGitOperation, gitStatus 
 
   return {
     checkedBranchName,
+    assertNoOperationInProgress,
+    assertCleanWorktree,
+    conflictedPaths,
     gitBranches,
     gitCheckoutBranch,
     gitCreateBranch,

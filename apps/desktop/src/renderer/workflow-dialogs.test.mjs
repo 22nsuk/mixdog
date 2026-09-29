@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import React, { act } from 'react';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 
 // React DOM detects input-event support at import time; initialize the DOM first.
-const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'https://mixdog.test/' });
-globalThis.window = dom.window;
-globalThis.document = dom.window.document;
-globalThis.HTMLElement = dom.window.HTMLElement;
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+const { dom } = installTestDom(null, {
+  html: '<!doctype html><html><body></body></html>',
+  jsdom: { url: 'https://mixdog.test/' },
+  expose: ['HTMLElement'],
+});
 const { createRoot } = await import('react-dom/client');
 const { AgentEditorDialog, RouteEditorDialog, WorkflowEditorDialog } = await import('./workflow-dialogs.tsx');
 test.after(() => dom.window.close());

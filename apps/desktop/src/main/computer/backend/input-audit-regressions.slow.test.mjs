@@ -540,7 +540,7 @@ $rows | ConvertTo-Json -Compress -Depth 5
 });
 
 test('a value write inside a multi-selection is scoped to its own item first', windows, async () => {
-  const rows = await nativeFixture(String.raw`
+  const rows = await nativeFixture(`
 Add-Type -ReferencedAssemblies UIAutomationClient, UIAutomationTypes @'
 using System.Collections.Generic;
 using System.Windows.Automation;

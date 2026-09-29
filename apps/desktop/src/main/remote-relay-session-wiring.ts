@@ -5,7 +5,7 @@ import { createPushNotifier } from './push-notifier';
 import type { PushSubscriptionStore } from './push-subscription-store';
 import type { DesktopService } from './desktop-service-contract';
 import type { RelayCatalogs } from './remote-relay-catalog';
-import type { RelayClientState, RelayClientRegistry } from './remote-relay-clients';
+import type { RelayClientState, RelayClientRegistry, SendEncryptedFrame } from './remote-relay-clients';
 import { createRelayPushLanes } from './remote-relay-push-lanes';
 import type { RelaySessionStateFanout } from './remote-relay-session-state';
 import { synchronizeRelayViews } from './remote-view-sync';
@@ -18,13 +18,7 @@ export interface RelaySessionWiringDeps {
   pushStore: PushSubscriptionStore;
   live(clientId: string, state: RelayClientState): boolean;
   closed(): boolean;
-  sendEncryptedFrame(
-    clientId: string,
-    payload: unknown,
-    droppable?: boolean,
-    onSent?: (bytes: number) => void,
-    requireDelivery?: boolean
-  ): Promise<void>;
+  sendEncryptedFrame: SendEncryptedFrame;
   broadcastEncrypted(payload: unknown, droppable: boolean, include?: (state: RelayClientState) => boolean): void;
   subscribeTerminalData?: (listener: (event: { id: string; data: string }) => void) => () => void;
 }

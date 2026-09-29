@@ -1,31 +1,20 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 
 test('the composer offers only frequent commands and preserves direct command execution', async () => {
-  const dom = new JSDOM('<!doctype html><body><main></main></body>', {
-    url: 'https://mixdog.test/',
-    pretendToBeVisual: true,
-  });
-  const globals = {
-    window: dom.window,
-    document: dom.window.document,
-    navigator: dom.window.navigator,
-    Node: dom.window.Node,
-    Element: dom.window.Element,
-    HTMLElement: dom.window.HTMLElement,
-    MutationObserver: dom.window.MutationObserver,
-    ResizeObserver: class {
-      observe() {}
-      unobserve() {}
-      disconnect() {}
+  const { restore } = installTestDom(null, {
+    html: '<!doctype html><body><main></main></body>',
+    jsdom: { pretendToBeVisual: true },
+    expose: ['navigator', 'Node', 'Element', 'HTMLElement', 'MutationObserver'],
+    globals: {
+      ResizeObserver: class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
     },
-    IS_REACT_ACT_ENVIRONMENT: true,
-  };
-  const saved = new Map(Object.keys(globals).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
-  for (const [key, value] of Object.entries(globals)) {
-    Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
-  }
+  });
   window.matchMedia = () => ({
     matches: false,
     addEventListener() {},
@@ -265,10 +254,6 @@ test('the composer offers only frequent commands and preserves direct command ex
     assert.deepEqual(calls, []);
   } finally {
     await act(async () => root.unmount());
-    dom.window.close();
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
+    restore();
   }
 });

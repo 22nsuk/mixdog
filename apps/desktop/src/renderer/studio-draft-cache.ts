@@ -1,3 +1,4 @@
+import { recordOrNull as record } from './record-utils';
 import { DEFAULT_STUDIO_OPTIONS, type MediaKind, type StudioOptions } from './studio-support';
 
 const DRAFT_METADATA_KEY = 'mixdog.studio-draft.v1';
@@ -28,15 +29,11 @@ export interface StudioReferenceStore {
   remove(key: string): Promise<void>;
 }
 
-function record(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
-}
-
 function boundedString(value: unknown, fallback: string, maximum: number): string {
   return typeof value === 'string' && value.length <= maximum ? value : fallback;
 }
 
-export function normalizeStudioDraftMetadata(value: unknown): StudioDraftMetadata | null {
+function normalizeStudioDraftMetadata(value: unknown): StudioDraftMetadata | null {
   const draft = record(value);
   if (!draft) return null;
   const rawOptions = record(draft.options);
@@ -80,7 +77,7 @@ export function writeStudioDraftMetadata(
   }
 }
 
-export function normalizeStudioReferences(value: unknown): StudioCachedReference[] {
+function normalizeStudioReferences(value: unknown): StudioCachedReference[] {
   const payload = record(value);
   let rows: unknown[] = [];
   if (Array.isArray(value)) rows = value;
@@ -138,6 +135,17 @@ function database(): Promise<IDBDatabase> {
   return databasePromise;
 }
 
+async function mutateReferenceStore(mutate: (store: IDBObjectStore) => void): Promise<void> {
+  const db = await database();
+  await new Promise<void>((resolve, reject) => {
+    const transaction = db.transaction(REFERENCE_STORE, 'readwrite');
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+    transaction.onabort = () => reject(transaction.error);
+    mutate(transaction.objectStore(REFERENCE_STORE));
+  });
+}
+
 const indexedDbReferenceStore: StudioReferenceStore = {
   async read(key) {
     const db = await database();
@@ -147,26 +155,8 @@ const indexedDbReferenceStore: StudioReferenceStore = {
       request.onerror = () => reject(request.error);
     });
   },
-  async write(key, value) {
-    const db = await database();
-    await new Promise<void>((resolve, reject) => {
-      const transaction = db.transaction(REFERENCE_STORE, 'readwrite');
-      transaction.oncomplete = () => resolve();
-      transaction.onerror = () => reject(transaction.error);
-      transaction.onabort = () => reject(transaction.error);
-      transaction.objectStore(REFERENCE_STORE).put(value, key);
-    });
-  },
-  async remove(key) {
-    const db = await database();
-    await new Promise<void>((resolve, reject) => {
-      const transaction = db.transaction(REFERENCE_STORE, 'readwrite');
-      transaction.oncomplete = () => resolve();
-      transaction.onerror = () => reject(transaction.error);
-      transaction.onabort = () => reject(transaction.error);
-      transaction.objectStore(REFERENCE_STORE).delete(key);
-    });
-  },
+  write: (key, value) => mutateReferenceStore((store) => store.put(value, key)),
+  remove: (key) => mutateReferenceStore((store) => store.delete(key)),
 };
 
 function assetReferencesKey(assetId: string): string {

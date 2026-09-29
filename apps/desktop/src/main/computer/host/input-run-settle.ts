@@ -6,7 +6,7 @@
  * mutation's window transition decides which window the reply observes.
  */
 import { filterComputerUseInternalWindows, filterComputerUseWindowListText } from '../overlay/internal-windows';
-import { CHROME_SETUP_SESSION_ID } from '../session/chrome-setup';
+import { CHROME_SETUP_SESSION_ID } from '../shared/common';
 import { computerUseCoordinator } from '../session/coordinator';
 import type { ComputerCommand, ComputerCommandResult, PowerShellResponse } from '../shared/types';
 import type { ComputerWindowRecord, ComputerWindowTransition } from '../shared/window-transition';

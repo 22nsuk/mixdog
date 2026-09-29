@@ -32,7 +32,7 @@ interface SidebarReferenceValues {
 
 export type SidebarReferenceKey = keyof SidebarReferenceValues;
 
-export const SIDEBAR_REFERENCE_KEYS: readonly SidebarReferenceKey[] = [
+const SIDEBAR_REFERENCE_KEYS: readonly SidebarReferenceKey[] = [
   'channelSetup',
   'quickProviderModels',
   'projects',
@@ -255,18 +255,18 @@ export function adoptSidebarReferenceHost(api: SidebarReferenceApi | undefined):
   return true;
 }
 
-export function hasSidebarReference(key: SidebarReferenceKey): boolean {
+function hasSidebarReference(key: SidebarReferenceKey): boolean {
   return entries.has(key);
 }
 
 /** True while `api` is (or can become) the bound host. A completion callback
  *  created for a previous host answers false, which is what keeps a late
  *  mutation refresh from re-adopting the host the app already left. */
-export function isSidebarReferenceHost(api: SidebarReferenceApi | undefined): boolean {
+function isSidebarReferenceHost(api: SidebarReferenceApi | undefined): boolean {
   return !hostBound || boundApi === api;
 }
 
-export function isSidebarReferenceStale(key: SidebarReferenceKey): boolean {
+function isSidebarReferenceStale(key: SidebarReferenceKey): boolean {
   const entry = entries.get(key);
   if (!entry) return true;
   if (entry.invalid) return true;
@@ -278,7 +278,7 @@ export function readSidebarReference<K extends SidebarReferenceKey>(key: K): Sid
   return (entry ? entry.value : DEFAULTS[key]) as SidebarReferenceValues[K];
 }
 
-export function readSidebarReferenceValues<K extends SidebarReferenceKey>(
+function readSidebarReferenceValues<K extends SidebarReferenceKey>(
   keys: readonly K[]
 ): Pick<SidebarReferenceValues, K> {
   const values: Partial<SidebarReferenceValues> = {};
@@ -296,7 +296,7 @@ export function updateSidebarReference<K extends SidebarReferenceKey>(key: K, va
 
 /** Mark keys untrue after a mutation: rows stay visible, the next read-through
  *  refetches them. */
-export function invalidateSidebarReference(...keys: SidebarReferenceKey[]): void {
+function invalidateSidebarReference(...keys: SidebarReferenceKey[]): void {
   for (const key of keys) {
     bumpGeneration(key);
     const entry = entries.get(key);
@@ -403,7 +403,7 @@ export async function loadSidebarReferences(
 
 /** Watch a set of keys; the listener fires on every publication or
  *  invalidation of any of them. */
-export function subscribeSidebarReferences(keys: readonly SidebarReferenceKey[], listener: () => void): () => void {
+function subscribeSidebarReferences(keys: readonly SidebarReferenceKey[], listener: () => void): () => void {
   for (const key of keys) {
     let set = listeners.get(key);
     if (!set) {

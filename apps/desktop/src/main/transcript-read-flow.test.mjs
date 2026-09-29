@@ -9,7 +9,7 @@ import { DesktopStateBridge } from './ipc-state-bridge.ts';
 import { createSnapshotDeltaDecoder } from './state-delta.ts';
 import { viewSyncHost } from './test-support/view-sync-host.mjs';
 
-test('one read id crosses the service, main decoder and renderer IPC while suppressed reads stay observable', async () => {
+test('one read id crosses the service, main decoder and renderer IPC; requested reads pass the visibility filter', async () => {
   const f = await viewSyncHost();
   const diagnostics = [];
   const restore = setTranscriptReadDiagnosticSink((entry) => diagnostics.push(entry));
@@ -100,8 +100,22 @@ test('one read id crosses the service, main decoder and renderer IPC while suppr
       revision: 1,
       snapshot: { ...snapshot, sessionId: 'hidden' },
     });
-    assert.equal(await client.prefetchSession('hidden', undefined, 'read-hidden'), true);
-    assert.ok(diagnostics.some((r) => r.traceId === 'read-hidden' && r.stage === 'service-hidden'));
+    // The window's own read of a session no pane shows yet (an open before its
+    // pane registers, a sidebar prefetch) reaches the window.
+    assert.equal(await handlers.get(DESKTOP_IPC.prefetchSession)({}, 'hidden', undefined, 'read-hidden'), true);
+    assert.equal(deliveries.at(-1).sessionId, 'hidden');
+    assert.equal(deliveries.at(-1).readTraceId, 'read-hidden');
+    assert.equal(deliveries.at(-1).snapshot.items[0].text, 'private conversation');
+    // A frame for a hidden session the window did not ask for stays suppressed.
+    f.records.set('hidden-2', {
+      id: 'hidden-2',
+      revision: 1,
+      snapshot: { ...snapshot, sessionId: 'hidden-2' },
+    });
+    const before = deliveries.length;
+    assert.equal(await client.prefetchSession('hidden-2', undefined, 'read-hidden-2'), true);
+    assert.equal(deliveries.length, before);
+    assert.ok(diagnostics.some((r) => r.traceId === 'read-hidden-2' && r.stage === 'ipc-hidden'));
     assert.equal(JSON.stringify(diagnostics).includes('private conversation'), false);
   } finally {
     bridge?.dispose();

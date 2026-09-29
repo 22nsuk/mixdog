@@ -583,16 +583,6 @@
   pointer-events: none;
   box-shadow: none;
 }
-/* Inline (wide) toggles for ALL three side panels commit the final layout in
-   one frame — the sidebar's slide-in was the last odd one out once the dock
-   and bottom panel went instant (user: 왼쪽도 같은 방식으로). The ≤760px
-   drawer keeps its own transform transition (keyframe reused at the
-   narrow-desktop drawer frame). */
-@keyframes sidebar-slide-in {
-  from {
-    transform: translateX(-100%);
-  }
-}
 /* Phone drawer scrim: only the narrow-viewport media query displays it. */
 .sidebar-backdrop {
   display: none;

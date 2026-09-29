@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { flushSync } from 'react-dom';
@@ -44,22 +44,13 @@ for (const [language, catalog] of catalogs) i18n.addResourceBundle(language, 'tr
 const noop = () => {};
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 function browser() {
-  const dom = new JSDOM('<!doctype html><body></body>', { url: 'https://mixdog.test' });
-  const globals = ['window', 'document', 'Node', 'Element', 'HTMLElement', 'MutationObserver', 'navigator', 'React'];
-  const previous = new Map(globals.map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
-  for (const key of globals)
-    Object.defineProperty(globalThis, key, {
-      value: key === 'React' ? React : dom.window[key],
-      configurable: true,
-      writable: true,
-    });
-  return () => {
-    dom.window.close();
-    for (const [key, descriptor] of previous) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
-  };
+  return installTestDom(null, {
+    html: '<!doctype html><body></body>',
+    jsdom: { url: 'https://mixdog.test' },
+    expose: ['Node', 'Element', 'HTMLElement', 'MutationObserver', 'navigator'],
+    globals: { React },
+    actEnvironment: false,
+  }).restore;
 }
 
 test('all selectable languages render source control and slash labels without a DOM translation pass', async () => {

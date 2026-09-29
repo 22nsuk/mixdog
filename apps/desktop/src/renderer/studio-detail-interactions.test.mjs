@@ -3,25 +3,26 @@ import test from 'node:test';
 
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 
-const dom = new JSDOM('<!doctype html><html><body></body></html>', {
-  url: 'https://mixdog.test/',
+const { dom } = installTestDom(null, {
+  html: '<!doctype html><html><body></body></html>',
+  jsdom: {
+    url: 'https://mixdog.test/',
+  },
+  expose: [
+    'navigator',
+    'Element',
+    'HTMLElement',
+    'HTMLInputElement',
+    'HTMLTextAreaElement',
+    'HTMLSelectElement',
+    'HTMLVideoElement',
+    'Image',
+    'FileReader',
+  ],
+  actEnvironment: false,
 });
-globalThis.window = dom.window;
-globalThis.document = dom.window.document;
-Object.defineProperty(globalThis, 'navigator', {
-  configurable: true,
-  value: dom.window.navigator,
-});
-globalThis.Element = dom.window.Element;
-globalThis.HTMLElement = dom.window.HTMLElement;
-globalThis.HTMLInputElement = dom.window.HTMLInputElement;
-globalThis.HTMLTextAreaElement = dom.window.HTMLTextAreaElement;
-globalThis.HTMLSelectElement = dom.window.HTMLSelectElement;
-globalThis.HTMLVideoElement = dom.window.HTMLVideoElement;
-globalThis.Image = dom.window.Image;
-globalThis.FileReader = dom.window.FileReader;
 // Studio builds reference and share files itself; the jsdom reader accepts
 // only jsdom Blobs.
 globalThis.Blob = dom.window.Blob;
@@ -93,18 +94,7 @@ test('Studio detail opens media, reveals its folder, and navigates with plain ar
   const revealed = [];
   const generations = [];
   const rememberedDefaults = [];
-  const referenceValues = new Map();
-  const referenceStore = {
-    async read(key) {
-      return referenceValues.get(key);
-    },
-    async write(key, value) {
-      referenceValues.set(key, structuredClone(value));
-    },
-    async remove(key) {
-      referenceValues.delete(key);
-    },
-  };
+  const referenceStore = memoryReferenceStore();
   await writeStudioAssetReferences('asset-older', [{ base64: 'cmVmZXJlbmNl', mime: 'image/png' }], referenceStore);
   await writeStudioDraftReferences(
     [
@@ -351,18 +341,7 @@ test('Studio detail keeps an expanded prompt until another asset opens', async (
 test('Studio becomes ready while its first thumbnail is still loading', async () => {
   window.localStorage.clear();
   let readyCount = 0;
-  const referenceValues = new Map();
-  const referenceStore = {
-    async read(key) {
-      return referenceValues.get(key);
-    },
-    async write(key, value) {
-      referenceValues.set(key, structuredClone(value));
-    },
-    async remove(key) {
-      referenceValues.delete(key);
-    },
-  };
+  const referenceStore = memoryReferenceStore();
   const api = {
     mediaUrl: () => '',
     invokeCapability: async ({ capability, args = [] }) => {

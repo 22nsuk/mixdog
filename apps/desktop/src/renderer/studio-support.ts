@@ -267,7 +267,7 @@ export function errorText(reason: unknown): string {
 }
 
 /** '16:9' → 1.78; 'auto' or anything unparsable → 0 (caller picks a default). */
-export function parseAspect(value: string): number {
+function parseAspect(value: string): number {
   const match = /^(\d+)\s*:\s*(\d+)$/.exec(String(value || '').trim());
   if (!match) return 0;
   const width = Number(match[1]);

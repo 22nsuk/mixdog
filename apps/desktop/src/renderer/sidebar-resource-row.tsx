@@ -7,7 +7,7 @@ export type SidebarResourceTag = {
   tone?: SidebarResourceTagTone;
 };
 
-export function SidebarResourceTagBadge({ tag }: { tag?: SidebarResourceTag | null }) {
+function SidebarResourceTagBadge({ tag }: { tag?: SidebarResourceTag | null }) {
   if (!tag?.label) return null;
   return (
     <span className="sidebar-resource-tag" data-tone={tag.tone || 'muted'}>

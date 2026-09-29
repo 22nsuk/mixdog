@@ -3,7 +3,7 @@ import test from 'node:test';
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { act } from 'react';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 
 import { QueueList } from './composer-support.tsx';
 import {
@@ -28,28 +28,10 @@ import {
 import { isQueuedEntryEditable } from '../../../../src/tui/session/queue-helpers.mjs';
 
 function installDom() {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
-    url: 'http://localhost/',
-  });
-  const previous = new Map(
-    ['window', 'document', 'navigator', 'IS_REACT_ACT_ENVIRONMENT'].map((key) => [
-      key,
-      Object.getOwnPropertyDescriptor(globalThis, key),
-    ])
-  );
-  Object.defineProperty(globalThis, 'window', { configurable: true, value: dom.window });
-  Object.defineProperty(globalThis, 'document', { configurable: true, value: dom.window.document });
-  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: dom.window.navigator });
-  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const { restore } = installTestDom(null, { jsdom: { url: 'http://localhost/' }, expose: ['navigator'] });
   return {
     root: createRoot(document.getElementById('root')),
-    close() {
-      dom.window.close();
-      for (const [key, descriptor] of previous) {
-        if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-        else delete globalThis[key];
-      }
-    },
+    close: restore,
   };
 }
 
@@ -215,32 +197,10 @@ test('queued restore paints before a daemon acknowledgement and reconciles witho
 });
 
 test('existing-session Enter does not wait for the previous host acknowledgement', () => {
-  assert.equal(
-    shouldBlockPromptSubmit({
-      submitting: true,
-      draftMode: false,
-      slashCommand: false,
-    }),
-    false
-  );
   // A draft's follow-up joins the session its first submit is minting, so it
   // is queued rather than dropped; useAppSubmitRouting owns the single mint.
-  assert.equal(
-    shouldBlockPromptSubmit({
-      submitting: true,
-      draftMode: true,
-      slashCommand: false,
-    }),
-    false
-  );
-  assert.equal(
-    shouldBlockPromptSubmit({
-      submitting: true,
-      draftMode: false,
-      slashCommand: true,
-    }),
-    true
-  );
+  assert.equal(shouldBlockPromptSubmit({ submitting: true, slashCommand: false }), false);
+  assert.equal(shouldBlockPromptSubmit({ submitting: true, slashCommand: true }), true);
 });
 
 test('an image-only composer submit remains sendable during an active turn', () => {

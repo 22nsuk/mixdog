@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 import { useSessionDiffRefresh } from './use-session-diff-refresh.ts';
 import { createRendererClock } from '../../scripts/test-renderer-clock.mjs';
 
@@ -13,20 +13,11 @@ function Probe(props) {
 }
 
 function harness(t, invokeCapability) {
-  const dom = new JSDOM('<!doctype html><main></main>', {
-    url: 'https://mixdog.test/',
-    pretendToBeVisual: true,
-  });
   const clock = createRendererClock();
-  const saved = new Map(
-    ['window', 'document', 'IS_REACT_ACT_ENVIRONMENT'].map((key) => [
-      key,
-      Object.getOwnPropertyDescriptor(globalThis, key),
-    ])
-  );
-  Object.defineProperty(globalThis, 'window', { configurable: true, value: dom.window });
-  Object.defineProperty(globalThis, 'document', { configurable: true, value: dom.window.document });
-  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const { dom, restore } = installTestDom(null, {
+    html: '<!doctype html><main></main>',
+    jsdom: { pretendToBeVisual: true },
+  });
   let visibility = 'visible';
   Object.defineProperty(dom.window.document, 'visibilityState', { configurable: true, get: () => visibility });
   dom.window.setInterval = clock.win.setInterval;
@@ -35,11 +26,7 @@ function harness(t, invokeCapability) {
   const root = createRoot(dom.window.document.querySelector('main'));
   t.after(async () => {
     await act(async () => root.unmount());
-    dom.window.close();
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
+    restore();
   });
   const base = { sessionId: 'session', active: true, busy: true, revision: 'first' };
   return {

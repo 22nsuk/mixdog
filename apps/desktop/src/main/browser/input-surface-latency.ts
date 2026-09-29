@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import type { WebContents } from 'electron';
 
+/** Nearest-rank percentile of `values`, rounded to one decimal. */
+export function percentileMs(values: number[], fraction: number): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  return Number(sorted[Math.ceil(sorted.length * fraction) - 1].toFixed(1));
+}
+
 /** Measure renderer input through the production IPC/display path, not just
  * host acknowledgement. The marker is independently advanced by guest input. */
 export async function measureBrowserWheelToPixels(
@@ -50,12 +56,11 @@ export async function measureBrowserWheelToPixels(
       );
     }
     assert.equal(await guest.executeJavaScript('window.wheelLatencyCount'), 50);
-    const sorted = [...samples].sort((a, b) => a - b);
     log(
       `renderer wheel-to-pixels benchmark ${JSON.stringify({
         samples: samples.map((value) => Number(value.toFixed(1))),
-        p50Ms: Number(sorted[Math.ceil(sorted.length * 0.5) - 1].toFixed(1)),
-        p95Ms: Number(sorted[Math.ceil(sorted.length * 0.95) - 1].toFixed(1)),
+        p50Ms: percentileMs(samples, 0.5),
+        p95Ms: percentileMs(samples, 0.95),
       })}`
     );
   } finally {

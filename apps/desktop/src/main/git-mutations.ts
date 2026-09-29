@@ -45,7 +45,7 @@ export type { GitIgnoreScope, GitResetMode } from './git-contract.mjs';
 export { publicGitRemoteUrl } from './git-runner';
 
 const branchOperations = createGitBranchOperations({ run, currentGitOperation, gitStatus });
-const { checkedBranchName } = branchOperations;
+const { checkedBranchName, assertNoOperationInProgress, assertCleanWorktree, conflictedPaths } = branchOperations;
 
 export const { gitBranches, gitCheckoutBranch, gitCreateBranch, gitRenameBranch, gitDeleteBranch, gitMergeBranch } =
   branchOperations;
@@ -265,34 +265,6 @@ export async function gitAbortOperation(cwd: string): Promise<string> {
   const operation = await currentGitOperation(cwd);
   if (!operation) throw new Error('There is no Git operation to abort.');
   return run(cwd, [operation, '--abort']);
-}
-
-async function assertNoOperationInProgress(cwd: string, action: string): Promise<void> {
-  const inFlight = await currentGitOperation(cwd);
-  if (inFlight) {
-    throw new Error(`A ${inFlight} is already in progress. Continue or abort it before ${action}.`);
-  }
-}
-
-async function assertCleanWorktree(cwd: string, action: string): Promise<void> {
-  const dirty = (await gitStatus(cwd)).files.map((file) => file.path);
-  if (dirty.length) {
-    throw new Error(
-      [
-        `Uncommitted changes would be overwritten by ${action}`,
-        `: ${dirty.slice(0, 10).join(', ')}`,
-        '. Commit or stash them first.',
-      ].join('')
-    );
-  }
-}
-
-async function conflictedPaths(cwd: string): Promise<string[]> {
-  const names = await run(cwd, ['diff', '--name-only', '--diff-filter=U']).catch(() => '');
-  return names
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
 }
 
 async function checkedCommit(cwd: string, value: string): Promise<string> {

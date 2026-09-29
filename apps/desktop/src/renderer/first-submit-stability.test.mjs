@@ -50,10 +50,7 @@ test('the session after one opened from New Task still takes a normal covered sw
   );
   assert.equal(coverKey, 'session-b');
   assert.equal(promotingFromDraft, false);
-  assert.equal(
-    conversationPresentedSessionId('session-a', 'session-b', { incomingReady: false }),
-    'session-a'
-  );
+  assert.equal(conversationPresentedSessionId('session-a', 'session-b', { incomingReady: false }), 'session-a');
 });
 
 test("a draft's own first submit still promotes without a cover", () => {

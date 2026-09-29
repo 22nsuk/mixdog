@@ -17,7 +17,7 @@ function useMirroredState<T>(initial: T): [T, MutableRefObject<T>, (next: T) => 
 /** The working singletons that always mirror the FOCUSED draft (the submit
  *  path reads them). Every draft pane keeps its own staged entry elsewhere;
  *  these are only what the focused pane currently paints. */
-export type FocusedDraftRoute = {
+type FocusedDraftRoute = {
   projectPath: string;
   projectPathRef: MutableRefObject<string>;
   setProjectPath(next: string): void;

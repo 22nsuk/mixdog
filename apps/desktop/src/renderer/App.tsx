@@ -1,8 +1,7 @@
 import type React from 'react';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { DESKTOP_WORKSPACE_MIN_WIDTH } from '../shared/window-layout';
 import { DesktopTitlebar, type NavigationSelection } from './navigation';
-import { paneActiveSelection } from './pane-layout';
 import { usePaneWorkspace } from './pane-workspace-state';
 import { defaultSessionLaneStore, useSessionLane } from './session-lane-store';
 import type { ExtensionsSection } from './extension-sections';
@@ -10,11 +9,9 @@ import type { ProjectsSection } from './project-sections';
 import type { WorkbenchQuickAccessMode } from './workbench-overlays-loader';
 
 import { desktopBootPrerequisitesReady, markBootStage } from './boot-metrics';
-import { isMobileRemoteSurface } from './MobileTabOverview';
 import { DesktopBootGate } from './PaneSurfaceGate';
 import { usePaneTypingFocus } from './use-composer-focus';
 import { navigationKey } from './text-format';
-import { isMarkdownBodyReady, preloadMarkdownBody } from './markdown-body-loader';
 import { useEditorNavigation } from './use-editor-navigation';
 import { usePaneTabClose, type ConversationHandoff } from './use-pane-tab-close';
 import { usePaneTabNavigation } from './use-pane-tab-navigation';
@@ -34,7 +31,7 @@ import { useAppShellPanels } from './use-app-shell-panels';
 import { useDraftPanePreferences } from './use-draft-pane-preferences';
 import { useAppSubmitRouting } from './use-app-submit-routing';
 import { useAppPersistentPaneSurfaces } from './use-app-persistent-pane-surfaces';
-import { resolveUnreadViewedSessionId, useUnreadSessions } from './app-unread-sessions';
+import { useUnreadSessions } from './app-unread-sessions';
 import { useWorkbenchWorkspace } from './workbench-workspace';
 import { SessionBrowserParkingHost } from './session-browser-surfaces';
 import { useAppSessionOpen } from './app-shell-session-open';
@@ -71,6 +68,10 @@ import { useAppSidebarHub } from './app-root/use-app-sidebar-hub';
 import { useAppWorkbenchNavigationHub } from './app-root/use-app-workbench-navigation-hub';
 import { useAppSessionActivity } from './app-root/use-app-session-activity';
 import { useAppInvocation } from './app-root/use-app-invocation';
+import { useSidebarFocusRestore } from './app-root/use-sidebar-focus-restore';
+import { useStartupPaneSelection } from './app-root/use-startup-pane-selection';
+import { useTranscriptRendererReadiness } from './app-root/use-transcript-renderer-readiness';
+import { useUnreadViewedSession } from './app-root/use-unread-viewed-session';
 
 export function App() {
   markBootStage('app-render');
@@ -144,24 +145,16 @@ export function App() {
   } = projectCatalog;
   // Persisted panes restore synchronously. Session addresses are reconciled
   // incrementally after first paint and remain guarded by exact daemon reads.
-  const startupFocusedPaneSelection = paneWorkspace.focusedLeaf ? paneActiveSelection(paneWorkspace.focusedLeaf) : null;
-  const startupNavigationSelection =
-    paneWorkspace.restoredFromStorage &&
-    startupFocusedPaneSelection &&
-    startupFocusedPaneSelection.kind !== 'studio' &&
-    startupFocusedPaneSelection.kind !== 'terminal' &&
-    startupFocusedPaneSelection.kind !== 'diff' &&
-    startupFocusedPaneSelection.kind !== 'pull-request'
-      ? startupFocusedPaneSelection
-      : null;
+  // File editors are normal tabs in the focused pane. The focused leaf is the
+  // single source of truth for the Files highlight and tab shortcuts; a
+  // separate global editor key made a file take over the whole main panel.
+  const { focusedPaneSelection, startupNavigationSelection } = useStartupPaneSelection(paneWorkspace);
+  const startupFocusedPaneSelection = focusedPaneSelection;
   const editorState = useAppEditorState({ paneWorkspace, startupFocusedPaneSelection, bottomPanel });
   const { dirtyFileKeys, editorSaveHandles, handleFileDirty, registerEditorSaveHandle } = editorState;
 
   const { pinTab: pinPaneTab } = paneWorkspace;
-  // File editors are normal tabs in the focused pane. The focused leaf is the
-  // single source of truth for the Files highlight and tab shortcuts; a
-  // separate global editor key made a file take over the whole main panel.
-  const focusedPaneSelection = paneWorkspace.focusedLeaf ? paneActiveSelection(paneWorkspace.focusedLeaf) : null;
+
   const paneLeavesRef = useRef(paneWorkspace.leaves);
   paneLeavesRef.current = paneWorkspace.leaves;
   const focusedLeafIdRef = useRef(paneWorkspace.focusedLeafId);
@@ -202,7 +195,6 @@ export function App() {
     effectiveDraftProjectPath,
   });
   const [requestedSessionId, setRequestedSessionId] = useState('');
-  const [markdownBodyReadyForTranscript, setMarkdownBodyReadyForTranscript] = useState(isMarkdownBodyReady);
   // Closing a conversation removes its tab model immediately. The existing
   // Conversation owner remains visible but inert until the fallback session
   // is ready, so slow/failed host resumes never make Ctrl+Q feel ignored.
@@ -235,13 +227,7 @@ export function App() {
   useAppSettingsPreload();
   useAppThemePreference();
   const { onboardingOpen, setOnboardingOpen, onboardingReady } = useAppOnboarding(setSettingsOpen);
-  useEffect(() => {
-    if (sidebarOpen) return;
-    const sidebar = document.getElementById('session-sidebar');
-    if (sidebar?.contains(document.activeElement)) {
-      document.querySelector<HTMLButtonElement>('.activity-rail [data-side-view="sessions"]')?.focus();
-    }
-  }, [sidebarOpen]);
+  useSidebarFocusRestore(sidebarOpen);
 
   const { invokeResult, invoke, errors } = useAppInvocation({ error, connected, setError });
 
@@ -452,22 +438,19 @@ export function App() {
     [requestedSessionId, navigationSelection]
   );
   // Viewing a session consumes its unread dot.
-  const viewedSessionId = navigationSelection.kind === 'session' ? navigationSelection.id : '';
-  viewedSessionRef.current = viewedSessionId;
-  const unreadViewedSessionId = resolveUnreadViewedSessionId({
-    viewedSessionId,
+  useUnreadViewedSession({
+    navigationSelection,
     requestedSessionId,
-    mobile: isMobileRemoteSurface(),
     sidebarOpen,
     dockOpen: focusedPaneDockOpen,
     bottomPanelOpen: bottomPanel.open,
     settingsOpen,
+    sessions,
+    windowFocusTick,
+    viewedSessionRef,
+    unreadViewedSessionRef,
+    consumeUnread,
   });
-  unreadViewedSessionRef.current = unreadViewedSessionId;
-  // biome-ignore lint/correctness/useExhaustiveDependencies: Window focus must recheck unread state even when session data is unchanged.
-  useEffect(() => {
-    consumeUnread(unreadViewedSessionId, sessions);
-  }, [consumeUnread, sessions, unreadViewedSessionId, windowFocusTick]);
   const sessionTitle = useAppSessionTitle({
     navigationSelection,
     sessions,
@@ -494,22 +477,10 @@ export function App() {
   });
   const workbenchWorkspace = useWorkbenchWorkspace(toolProjectPath);
   const activeTabKey = navigationKey(navigationSelection);
-  const paneTranscriptRendererPending =
-    paneWorkspace.leaves.some((leaf) => paneActiveSelection(leaf)?.kind === 'session') &&
-    !markdownBodyReadyForTranscript;
-  const transcriptRendererPending = navigationSelection.kind === 'session' && !markdownBodyReadyForTranscript;
-  useEffect(() => {
-    if (markdownBodyReadyForTranscript) return undefined;
-    let active = true;
-    void preloadMarkdownBody()
-      .catch(() => undefined)
-      .finally(() => {
-        if (active) setMarkdownBodyReadyForTranscript(true);
-      });
-    return () => {
-      active = false;
-    };
-  }, [markdownBodyReadyForTranscript]);
+  const { paneTranscriptRendererPending, transcriptRendererPending } = useTranscriptRendererReadiness(
+    paneWorkspace.leaves,
+    navigationSelection
+  );
   // Subscribe to a requested session while its lane is being opened.
   useSessionLane(requestedSessionId, defaultSessionLaneStore, () => true);
   const {
@@ -910,4 +881,5 @@ export function App() {
 
 export { ApprovalCard } from './ApprovalCard';
 export { DesktopUpdateDialog } from './notifications';
-export { ContextUsageIndicator, TranscriptRow } from './TranscriptView';
+export { TranscriptRow } from './transcript-row';
+export { ContextUsageIndicator } from './transcript-status';

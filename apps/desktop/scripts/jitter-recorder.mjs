@@ -11,6 +11,7 @@
 // tool card's width and visible text — then reports only OSCILLATIONS (a
 // value that moves and comes back), which is what a reader perceives as
 // shaking, plus the text swaps that make a card change width.
+import { CdpClient } from './cdp-client.mjs';
 import { optionValue } from './cli-args.mjs';
 
 const argumentsList = process.argv.slice(2);
@@ -20,38 +21,9 @@ const mode = argumentsList.find((argument) => !argument.startsWith('--')) || 'in
 const targets = await fetch(`http://127.0.0.1:${port}/json/list`).then((response) => response.json());
 const target = targets.find((candidate) => candidate.type === 'page');
 if (!target?.webSocketDebuggerUrl) throw new Error('No debuggable page target found.');
-const socket = new WebSocket(target.webSocketDebuggerUrl);
-await new Promise((resolve, reject) => {
-  socket.addEventListener('open', resolve, { once: true });
-  socket.addEventListener('error', () => reject(new Error('CDP websocket failed.')), { once: true });
-});
-let nextId = 1;
-const pending = new Map();
-socket.addEventListener('message', (event) => {
-  const message = JSON.parse(String(event.data));
-  if (!message.id || !pending.has(message.id)) return;
-  const entry = pending.get(message.id);
-  pending.delete(message.id);
-  if (message.error) entry.reject(new Error(message.error.message));
-  else entry.resolve(message.result);
-});
-const evaluate = async (expression) => {
-  const id = nextId++;
-  const result = await new Promise((resolve, reject) => {
-    pending.set(id, { resolve, reject });
-    socket.send(
-      JSON.stringify({
-        id,
-        method: 'Runtime.evaluate',
-        params: { expression, awaitPromise: true, returnByValue: true },
-      })
-    );
-  });
-  if (result.exceptionDetails) {
-    throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text);
-  }
-  return result.result?.value;
-};
+const client = new CdpClient(target.webSocketDebuggerUrl);
+await client.connect();
+const evaluate = (expression) => client.evaluate(expression);
 
 const installer = `(() => {
   if (window.__mixdogJitter) window.__mixdogJitter.stop = true;
@@ -157,7 +129,7 @@ const installer = `(() => {
 
 if (mode === 'install') {
   console.log(await evaluate(installer));
-  socket.close();
+  client.close();
   process.exit(0);
 }
 
@@ -178,7 +150,7 @@ if (mode === 'now') {
       1
     )
   );
-  socket.close();
+  client.close();
   process.exit(0);
 }
 
@@ -193,7 +165,7 @@ const data = await evaluate(`(() => {
 })()`);
 if (!data) {
   console.log('recorder not installed');
-  socket.close();
+  client.close();
   process.exit(0);
 }
 
@@ -282,5 +254,5 @@ for (const shift of data.shifts.slice(0, 20)) {
     console.log(`    dy=${source.dy} dh=${source.dh} dw=${source.dw}  ${source.node}`);
   }
 }
-socket.close();
+client.close();
 process.exit(0);

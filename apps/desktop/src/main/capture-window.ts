@@ -819,11 +819,11 @@ async function captureWindow(): Promise<void> {
     const image: NativeImage = await withCaptureTimeout(window.webContents.capturePage(), 'capturePage');
     const sourceSize = image.getSize();
     if (finalBounds.width !== targetSize.width || finalBounds.height !== targetSize.height) {
-      throw new Error(`BrowserWindow bounds are ${finalBounds.width}x${finalBounds.height}, expected 1113x687.`);
+      throw new Error(`BrowserWindow bounds are ${finalBounds.width}x${finalBounds.height}, expected ${targetSize.width}x${targetSize.height}.`);
     }
     if (sourceSize.width !== targetSize.width || sourceSize.height !== targetSize.height) {
       throw new Error(
-        `Desktop capture source is ${sourceSize.width}x${sourceSize.height}, expected 1113x687; refusing to resize evidence.`
+        `Desktop capture source is ${sourceSize.width}x${sourceSize.height}, expected ${targetSize.width}x${targetSize.height}; refusing to resize evidence.`
       );
     }
     const dictationSmoke = await runCaptureDictationSmoke(window);

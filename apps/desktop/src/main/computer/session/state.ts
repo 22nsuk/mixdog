@@ -12,6 +12,7 @@ import type {
   ElementAliasTarget,
   ObservedWindowScope,
 } from '../shared/types';
+import type { CaptureBaseline } from '../observation/capture-baseline';
 import { elementTarget, resolveElementAliases, visualPointForRef } from './element-aliases';
 import { elementTargetsFromRecords, normalizeElementRecords } from './element-records';
 import { assertFrameSurfaceUnchanged } from './frame-validity';
@@ -32,21 +33,14 @@ export interface SessionStateHost {
   }>;
 }
 
-/** Last semantic capture per session. It outlives the ref/frame invalidation a
- *  mutation triggers, so the fresh capture that follows can report what
- *  changed instead of making the model re-read the whole tree. */
-interface LastCapture {
-  windowId: string;
-  baselineKey: string;
-  elements: Map<string, string>;
-  refIdentities: Map<string, string>;
-}
-
 export function createSessionState(host: SessionStateHost) {
   const framesBySession = new Map<string, Map<string, CaptureFrame>>();
   const elementTargetsBySession = new Map<string, Map<number, ElementAliasTarget>>();
   const observedWindowBySession = new Map<string, ObservedWindowScope>();
-  const lastCaptureBySession = new Map<string, LastCapture>();
+  // Last semantic capture per session. It outlives the ref/frame invalidation a
+  // mutation triggers, so the fresh capture that follows can report what
+  // changed instead of making the model re-read the whole tree.
+  const lastCaptureBySession = new Map<string, CaptureBaseline>();
 
   /** Frame ids are per host, so a stale id from another session is refused
    *  by lookup rather than by chance. */

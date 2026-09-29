@@ -19,18 +19,24 @@ function decodedUrlCandidates(raw: string): string[] {
   return values;
 }
 
+/** Credential shapes recognised anywhere in text, with the marker each one is
+ *  replaced by. */
+const TOKEN_REDACTIONS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{12,}/gi, '[REDACTED_AUTH]'],
+  [/\b(?:sk|rk|pk)-(?:proj-)?[A-Za-z0-9_-]{16,}\b/g, '[REDACTED_KEY]'],
+  [/\bgh(?:p|o|u|s|r)_[A-Za-z0-9]{20,}\b/g, '[REDACTED_GITHUB_TOKEN]'],
+  [/\bgithub_pat_[A-Za-z0-9_]{20,}\b/g, '[REDACTED_GITHUB_TOKEN]'],
+  [/\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, '[REDACTED_SLACK_TOKEN]'],
+  [/\bAKIA[0-9A-Z]{16}\b/g, '[REDACTED_AWS_KEY]'],
+  [/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, '[REDACTED_JWT]'],
+];
+
+// A global pattern keeps match state between tests; a non-global copy does not.
+const TOKEN_TESTS = TOKEN_REDACTIONS.map(([pattern]) => new RegExp(pattern.source, pattern.flags.replace('g', '')));
+
 export function browserUrlContainsSecret(raw: string): boolean {
   const candidates = decodedUrlCandidates(raw);
-  const tokenPatterns = [
-    /\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{12,}/i,
-    /\b(?:sk|rk|pk)-(?:proj-)?[A-Za-z0-9_-]{16,}\b/,
-    /\bgh(?:p|o|u|s|r)_[A-Za-z0-9]{20,}\b/,
-    /\bgithub_pat_[A-Za-z0-9_]{20,}\b/,
-    /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/,
-    /\bAKIA[0-9A-Z]{16}\b/,
-    /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/,
-  ];
-  if (candidates.some((candidate) => tokenPatterns.some((pattern) => pattern.test(candidate)))) {
+  if (candidates.some((candidate) => TOKEN_TESTS.some((pattern) => pattern.test(candidate)))) {
     return true;
   }
   try {
@@ -66,13 +72,7 @@ export function redactBrowserText(value: unknown): string {
     /((?:"|')?(?:access[_-]?token|api[_-]?key|apikey|authorization|id[_-]?token|password|passwd|refresh[_-]?token|secret|session[_-]?(?:id|token)|token)(?:"|')?\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^,\s;&}\]\r\n]+)/gi,
     '$1[REDACTED]'
   );
-  text = text.replace(/\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{12,}/gi, '[REDACTED_AUTH]');
-  text = text.replace(/\b(?:sk|rk|pk)-(?:proj-)?[A-Za-z0-9_-]{16,}\b/g, '[REDACTED_KEY]');
-  text = text.replace(/\bgh(?:p|o|u|s|r)_[A-Za-z0-9]{20,}\b/g, '[REDACTED_GITHUB_TOKEN]');
-  text = text.replace(/\bgithub_pat_[A-Za-z0-9_]{20,}\b/g, '[REDACTED_GITHUB_TOKEN]');
-  text = text.replace(/\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, '[REDACTED_SLACK_TOKEN]');
-  text = text.replace(/\bAKIA[0-9A-Z]{16}\b/g, '[REDACTED_AWS_KEY]');
-  text = text.replace(/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, '[REDACTED_JWT]');
+  for (const [pattern, marker] of TOKEN_REDACTIONS) text = text.replace(pattern, marker);
   text = text.replace(/^((?:set-)?cookie\s*:\s*).+$/gim, '$1[REDACTED]');
   return text;
 }

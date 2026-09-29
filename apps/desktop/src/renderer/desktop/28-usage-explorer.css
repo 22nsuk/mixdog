@@ -1318,10 +1318,9 @@ button.quota-chart-slot[aria-expanded="true"] {
   --quota-slot-lit: color-mix(in srgb, var(--mx-text) 6%, transparent);
   --quota-slot-hatch: color-mix(in srgb, var(--mx-text) 10%, transparent);
   background:
-    linear-gradient(var(--quota-slot-lit), var(--quota-slot-lit)) left / var(--quota-slot-elapsed, 100%) 100%
-      no-repeat,
+    linear-gradient(var(--quota-slot-lit), var(--quota-slot-lit)) left / var(--quota-slot-elapsed, 100%) 100% no-repeat,
     repeating-linear-gradient(135deg, var(--quota-slot-hatch) 0 1px, transparent 1px 5px) right /
-      calc(100% - var(--quota-slot-elapsed, 100%)) 100% no-repeat;
+    calc(100% - var(--quota-slot-elapsed, 100%)) 100% no-repeat;
 }
 /* A running slot's card: what was read up to now, then the forecast. */
 .stats-trend-detail .quota-slot-split {

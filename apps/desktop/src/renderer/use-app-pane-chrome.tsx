@@ -90,7 +90,9 @@ export function useAppPaneChrome({
     if (paneSelection.kind === 'session') {
       try {
         window.localStorage.setItem(lastSessionStorageKey, paneSelection.id);
-      } catch {}
+      } catch {
+        // Remembering the last session is a convenience; storage may be unavailable.
+      }
       selectionRef.current = paneSelection;
       viewedSessionRef.current = paneSelection.id;
       unreadViewedSessionRef.current = paneSelection.id;

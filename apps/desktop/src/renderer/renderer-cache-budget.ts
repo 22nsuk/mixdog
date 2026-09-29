@@ -13,7 +13,7 @@
 //
 // Chars, not bytes: probes count JS string length and V8 stores these as
 // UTF-16, so the real cost is roughly twice the number below.
-export const RENDERER_CACHE_BUDGET_CHARS = 24 * 1024 * 1024;
+const RENDERER_CACHE_BUDGET_CHARS = 24 * 1024 * 1024;
 
 interface BudgetedCache {
   /** Stable identity; re-registering the same name replaces the entry. */

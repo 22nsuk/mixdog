@@ -408,11 +408,6 @@
     transform: scale(1);
   }
 }
-@keyframes transcript-live-pulse {
-  50% {
-    opacity: var(--mx-op-dim);
-  }
-}
 /* Reduced motion: this layer is the shell's most animated surface — entrance
    slides, two looping glyph animations, the verb sweep and the milestone
    pops — and it carried NO reduce path at all. None of it reports state the

@@ -113,8 +113,7 @@ test('native capture replies preserve cleanup evidence and retire only unconfirm
   timeout: 200_000,
 }, async () => {
   const loop = PS_RUNTIME.slice(PS_RUNTIME.indexOf('[Console]::OutputEncoding'));
-  const script =
-    `
+  const script = `
 Add-Type @'
 public static class MixWin32 { public static int PointerEventsGenerated, PointerEventsFailed; public static object PointerProgress; }
 public static class MixNativeInput { public static void InitializeOwnership(int value) {} }
@@ -126,7 +125,7 @@ function Handle($req) {
   $error.Data['CaptureCleanup'] = @{status=$req.cleanup}
   throw $error
 }
-` + loop;
+${loop}`;
   for (const status of ['confirmed', 'failed', 'unconfirmed']) {
     const input = `${[1, 2].map((id) => JSON.stringify({ id, action: 'window_capture', cleanup: status })).join('\n')}\n`;
     const stdout = await run(script, input);

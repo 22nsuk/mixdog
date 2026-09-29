@@ -1,13 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 
-const dom = new JSDOM('<!doctype html><html><body></body></html>', {
-  url: 'https://mixdog.test/',
+const { dom } = installTestDom(null, {
+  html: '<!doctype html><html><body></body></html>',
+  jsdom: {
+    url: 'https://mixdog.test/',
+  },
+  actEnvironment: false,
 });
-globalThis.window = dom.window;
-globalThis.document = dom.window.document;
 
 let visibilityState = 'visible';
 Object.defineProperty(dom.window.document, 'visibilityState', {

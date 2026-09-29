@@ -1,32 +1,27 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import React, { act } from 'react';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 import { build } from 'esbuild';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 test('/goal and the add menu open the same goal editor without creating or failing a goal', async () => {
-  const dom = new JSDOM('<!doctype html><body><div id="root"></div></body>', {
-    url: 'https://mixdog.test/',
-    pretendToBeVisual: true,
+  const { dom } = installTestDom(null, {
+    html: '<!doctype html><body><div id="root"></div></body>',
+    jsdom: { pretendToBeVisual: true },
+    expose: [
+      'Node',
+      'HTMLElement',
+      'HTMLInputElement',
+      'HTMLTextAreaElement',
+      'Event',
+      'CustomEvent',
+      'MutationObserver',
+      'getComputedStyle',
+    ],
   });
-  for (const key of [
-    'window',
-    'document',
-    'Node',
-    'HTMLElement',
-    'HTMLInputElement',
-    'HTMLTextAreaElement',
-    'Event',
-    'CustomEvent',
-    'MutationObserver',
-    'getComputedStyle',
-  ]) {
-    globalThis[key] = dom.window[key];
-  }
-  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   globalThis.requestAnimationFrame = window.requestAnimationFrame.bind(window);
   globalThis.cancelAnimationFrame = window.cancelAnimationFrame.bind(window);
   globalThis.ResizeObserver = class {

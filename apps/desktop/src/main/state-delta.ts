@@ -50,14 +50,42 @@ export function releaseHiddenSessionStateEntries(
   return released;
 }
 
-/** Pane transports publish only mounted/observed sessions. A null frame is
+/** Sessions this window is explicitly reading right now. A read publishes its
+ *  frame before it returns, so the frame lands inside the read's window. */
+export interface SessionReadWindow {
+  has(sessionId: string): boolean;
+  run<T>(sessionId: string, read: () => Promise<T>): Promise<T>;
+}
+
+export function createSessionReadWindow(): SessionReadWindow {
+  const pending = new Map<string, number>();
+  return {
+    has: (sessionId) => pending.has(sessionId),
+    async run(sessionId, read) {
+      pending.set(sessionId, (pending.get(sessionId) || 0) + 1);
+      try {
+        return await read();
+      } finally {
+        const left = (pending.get(sessionId) || 1) - 1;
+        if (left > 0) pending.set(sessionId, left);
+        else pending.delete(sessionId);
+      }
+    },
+  };
+}
+
+/** Pane transports publish only mounted/observed sessions, plus the answer to
+ * a read this window requested: an open reads before its pane registers as
+ * visible, and a sidebar prefetch reads a session no pane shows yet. Dropping
+ * those frames left the lane empty until a second read. A null frame is
  * always forwarded because it releases a baseline retained by every hop. */
 export function shouldPublishSessionState(
   sessionId: string,
   snapshot: unknown,
-  visibleSessionIds: ReadonlySet<string>
+  visibleSessionIds: ReadonlySet<string>,
+  requestedReads: Pick<SessionReadWindow, 'has'>
 ): boolean {
-  return snapshot === null || visibleSessionIds.has(sessionId);
+  return snapshot === null || visibleSessionIds.has(sessionId) || requestedReads.has(sessionId);
 }
 
 const STREAMING_TAIL_TEXT_EPOCH = Symbol.for('mixdog.streaming-tail-text-epoch');

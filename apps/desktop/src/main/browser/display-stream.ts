@@ -11,7 +11,7 @@ export function createBrowserDisplayStream(
     viewport?: { width: number; height: number };
     latest?: NativeImage;
     encoded?: BrowserScreenshotCapture;
-    waiting?: { resolve(image: NativeImage): void; reject(error: Error): void };
+    waiting?: { resolve(image: NativeImage): void; reject(error: Error): void; promise: Promise<NativeImage> };
     idle?: ReturnType<typeof setTimeout>;
     close(): void;
   };
@@ -82,10 +82,17 @@ export function createBrowserDisplayStream(
     if (stream.encoded) return stream.encoded;
     let image = stream.latest;
     if (!image) {
-      const next = new Promise<NativeImage>((resolve, reject) => {
-        stream!.waiting = { resolve, reject };
-      });
-      guest.invalidate();
+      // Concurrent callers for one guest share the pending frame instead of
+      // overwriting (and orphaning) each other's waiter.
+      let next = stream.waiting?.promise;
+      if (!next) {
+        const entry = stream;
+        next = new Promise<NativeImage>((resolve, reject) => {
+          entry.waiting = { resolve, reject, promise: undefined as unknown as Promise<NativeImage> };
+        });
+        stream.waiting!.promise = next;
+        guest.invalidate();
+      }
       image = await next;
     }
     if (stream.key !== key) throw new Error('Browser page changed during capture.');

@@ -113,11 +113,15 @@ export function createBrowserSessionStore(host: BrowserSessionStoreHost) {
   const now = host.now || Date.now;
   const file = join(host.directory, FILE_NAME);
   let saving: Promise<number> | null = null;
+  let restoring: Promise<unknown> | null = null;
 
   /** Write the current session cookies; the number written is returned. */
   function save(): Promise<number> {
     if (saving) return saving;
     saving = (async () => {
+      // Until the stored cookies are back in the jar, an empty jar says
+      // nothing about the user's sign-ins; never overwrite or delete first.
+      await restoring;
       const records = serializeSessionCookies(await host.cookies.get({}));
       if (!records.length) {
         await rm(file, { force: true });
@@ -138,7 +142,13 @@ export function createBrowserSessionStore(host: BrowserSessionStoreHost) {
 
   /** Put the stored cookies back; the number restored is returned. A stale
    *  or unreadable file is discarded rather than trusted. */
-  async function restore(): Promise<number> {
+  function restore(): Promise<number> {
+    const run = restoreFromFile();
+    restoring = run.catch(() => undefined);
+    return run;
+  }
+
+  async function restoreFromFile(): Promise<number> {
     let sealed: Buffer;
     try {
       sealed = await readFile(file);

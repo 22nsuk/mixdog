@@ -3,7 +3,7 @@ import test from 'node:test';
 import { registerHooks } from 'node:module';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 
 registerHooks({
   resolve(specifier, context, next) {
@@ -43,28 +43,17 @@ const status = {
 
 async function mount(t, commit, overrides = {}) {
   const renderedStatus = overrides.status || status;
-  const dom = new JSDOM('<!doctype html><body><main></main></body>', {
-    url: 'https://mixdog.test/',
-    pretendToBeVisual: true,
-  });
-  const saved = new Map();
-  for (const [key, value] of Object.entries({
-    window: dom.window,
-    document: dom.window.document,
-    navigator: dom.window.navigator,
-    HTMLElement: dom.window.HTMLElement,
-    Node: dom.window.Node,
-    Event: dom.window.Event,
-    CustomEvent: dom.window.CustomEvent,
-    ResizeObserver: class {
-      observe() {}
-      disconnect() {}
+  const { restore } = installTestDom(null, {
+    html: '<!doctype html><body><main></main></body>',
+    jsdom: { pretendToBeVisual: true },
+    expose: ['navigator', 'HTMLElement', 'Node', 'Event', 'CustomEvent'],
+    globals: {
+      ResizeObserver: class {
+        observe() {}
+        disconnect() {}
+      },
     },
-    IS_REACT_ACT_ENVIRONMENT: true,
-  })) {
-    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
-  }
+  });
   window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
   window.HTMLElement.prototype.attachEvent = () => {};
   window.HTMLElement.prototype.detachEvent = () => {};
@@ -97,11 +86,7 @@ async function mount(t, commit, overrides = {}) {
     await act(async () => root.unmount());
     window.removeEventListener(DESKTOP_TOAST_EVENT, receiveToast);
     window.removeEventListener(DESKTOP_TOAST_DISMISS_EVENT, receiveDismiss);
-    dom.window.close();
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
+    restore();
   });
   await act(async () =>
     root.render(

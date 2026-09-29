@@ -10,7 +10,7 @@ export function captureRowMenuAnchor(element: HTMLElement) {
 }
 
 /* Same ceiling as .mx-menu so every popup menu shares one width grammar. */
-export const ROW_MENU_MAX_WIDTH = 368;
+const ROW_MENU_MAX_WIDTH = 368;
 
 // The panel sizes itself to its labels (user: ⋯ 팝업 너비가 제각각), so the
 // caller never knows the width. Anchoring the RIGHT edge to the trigger keeps

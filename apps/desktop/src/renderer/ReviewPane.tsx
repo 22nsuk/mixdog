@@ -2,7 +2,7 @@ import { ChevronDown, FileDiff } from 'lucide-react';
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { t, uiFormatLocale } from './i18n';
 import { useMobileBack } from './mobile-back';
-import { DiffBoundary } from './TranscriptView';
+import { DiffBoundary } from './transcript-diff';
 import { REVIEW_DIFF_STYLE_KEY } from './desktop-types';
 import { DiffView } from './lazy-widgets';
 import { ProgressSpinner } from './ProgressSpinner';

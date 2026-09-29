@@ -10,45 +10,13 @@ import { fileURLToPath } from 'node:url';
 // The `electron` package resolves the platform's binary (same as electron-harness).
 import electron from 'electron';
 
+import { CdpClient, evaluateStable, waitForTarget } from './cdp-client.mjs';
+
 const desktopDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const projectPath = resolve(desktopDir, '..', '..');
 const artifactDir = join(desktopDir, 'artifacts', 'tab-focus-probe');
 const profilePath = join(artifactDir, `profile-${Date.now()}`);
 const port = 9333;
-
-class Cdp {
-  constructor(url) {
-    this.socket = new WebSocket(url);
-    this.next = 1;
-    this.pending = new Map();
-  }
-  connect() {
-    this.socket.addEventListener('message', (event) => {
-      const message = JSON.parse(String(event.data));
-      const pending = message.id && this.pending.get(message.id);
-      if (!pending) return;
-      this.pending.delete(message.id);
-      if (message.error) pending.reject(new Error(message.error.message));
-      else pending.resolve(message.result);
-    });
-    return new Promise((ok, fail) => {
-      this.socket.addEventListener('open', ok, { once: true });
-      this.socket.addEventListener('error', () => fail(new Error('cdp failed')), { once: true });
-    });
-  }
-  request(method, params = {}) {
-    const id = this.next++;
-    return new Promise((ok, fail) => {
-      this.pending.set(id, { resolve: ok, reject: fail });
-      this.socket.send(JSON.stringify({ id, method, params }));
-    });
-  }
-  async evaluate(expression) {
-    const r = await this.request('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
-    if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text);
-    return r.result?.value;
-  }
-}
 
 const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
 
@@ -56,37 +24,6 @@ async function click(client, { x, y }) {
   for (const type of ['mousePressed', 'mouseReleased']) {
     await client.request('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1 });
   }
-}
-
-async function waitForTarget(child) {
-  const deadline = Date.now() + 30_000;
-  while (Date.now() < deadline) {
-    if (child.exitCode !== null) throw new Error(`electron exited ${child.exitCode}`);
-    try {
-      const targets = await fetch(`http://127.0.0.1:${port}/json/list`).then((r) => r.json());
-      const target = targets.find((t) => t.type === 'page' && t.url?.includes('/out/renderer/index.html'));
-      if (target?.webSocketDebuggerUrl) return target.webSocketDebuggerUrl;
-    } catch {
-      /* not yet */
-    }
-    await sleep(50);
-  }
-  throw new Error('no cdp target');
-}
-
-async function evaluateStable(client, expression, timeoutMs = 30_000) {
-  const deadline = Date.now() + timeoutMs;
-  let last = null;
-  while (Date.now() < deadline) {
-    try {
-      return await client.evaluate(expression);
-    } catch (error) {
-      last = error;
-      if (!/Execution context was destroyed|Cannot find context|localStorage/i.test(String(error.message))) throw error;
-      await sleep(100);
-    }
-  }
-  throw last;
 }
 
 const SETTLE = `(async () => {
@@ -153,11 +90,11 @@ async function main() {
     stdio: 'ignore',
     windowsHide: false,
   });
-  const client = new Cdp(await waitForTarget(child));
+  const client = new CdpClient(await waitForTarget(port, child), { defaultTimeoutMs: 45_000 });
   await client.connect();
   const report = {};
   try {
-    await evaluateStable(client, SETTLE);
+    await evaluateStable(client, SETTLE, 30_000);
     const seeded = await client.evaluate(`(async () => {
       await window.mixdogDesktop.addProject(${JSON.stringify(projectPath)});
       await window.mixdogDesktop.invokeCapability({ capability: 'skipOnboarding', args: [] }).catch(() => undefined);
@@ -240,7 +177,8 @@ async function main() {
       while ((performance.timeOrigin === previous || !window.__mixdogStartupSettled) && performance.now() < deadline) await new Promise((r) => setTimeout(r, 25));
       if (performance.timeOrigin === previous || !window.__mixdogStartupSettled) throw new Error('no restore');
       return true;
-    })()`
+    })()`,
+      30_000
     );
     // The desktop bridge has no maximize call; the launch's --window-size sets the geometry.
     await sleep(3_000);

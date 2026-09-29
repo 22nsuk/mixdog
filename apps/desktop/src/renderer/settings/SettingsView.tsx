@@ -25,6 +25,7 @@ import { setRemoteClaimPromptActive } from '../remote-claim-prompt-state';
 import { acquireTitleBarDim, refreshTitleBarDim } from '../titlebar-dim';
 import { CapabilitySettings, getCachedCapabilitySettings, preloadCapabilitySettings } from './CapabilitySettings';
 import { preloadConnectionInfo } from './connection-info';
+import { FOCUSABLE_SELECTOR, inertBackground, portaledMenuOpen, trapTab } from './dialog-modality';
 import { preloadGitPanelInfo } from './git-panel-info';
 import {
   type SETTINGS_ITEMS,
@@ -70,15 +71,6 @@ const CATEGORY_ICONS = {
   about: Heart,
 } satisfies Record<SettingsCategory, typeof Settings>;
 
-const FOCUSABLE = [
-  'a[href]',
-  'button:not([disabled])',
-  'input:not([disabled])',
-  'select:not([disabled])',
-  'textarea:not([disabled])',
-  '[tabindex]:not([tabindex="-1"])',
-].join(',');
-
 export function SettingsView({
   api = (window as unknown as { mixdogDesktop: DesktopApi }).mixdogDesktop,
   open = true,
@@ -97,9 +89,6 @@ export function SettingsView({
   const bodyRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const priorFocus = useRef<HTMLElement | null>(null);
-  // The settings shell is navigation chrome, not data: it must open
-  // immediately while individual rows quietly adopt the shared cache.
-  const coldHydrating = false;
   useEffect(() => {
     if (!open || getCachedCapabilitySettings(api)) return;
     void preloadCapabilitySettings(api).catch(() => undefined);
@@ -118,14 +107,12 @@ export function SettingsView({
     if (!open) return undefined;
     return acquireTitleBarDim();
   }, [open]);
-  // The cold backplate and the mounted dialog paint different scrims: the
-  // claim above samples whichever is live, so re-sample when the dialog
-  // replaces the overlay (and jsdom tests see the composited color without
-  // relying on the rAF follow window).
+  // Re-sample once the mounted dialog's scrim is live (and let jsdom tests see
+  // the composited color without relying on the rAF follow window).
   useEffect(() => {
-    if (!open || coldHydrating) return;
+    if (!open) return;
     refreshTitleBarDim();
-  }, [open, coldHydrating]);
+  }, [open]);
   // Warm the Connection pairing card as soon as the dialog opens (one cached
   // IPC): entering Connection later paints the complete QR card instead of
   // flashing the empty placeholder square first (user: 커넥션 들어갈 때 빈
@@ -155,46 +142,22 @@ export function SettingsView({
   };
 
   useLayoutEffect(() => {
-    // While the cold overlay is up there is no dialog to trap focus in; the
-    // trap arms when the populated dialog actually mounts.
-    if (!open || coldHydrating) return undefined;
+    if (!open) return undefined;
     priorFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const dialog = dialogRef.current;
-    const background = Array.from(document.body.children)
-      .filter(
-        (element): element is HTMLElement =>
-          element instanceof HTMLElement &&
-          !element.matches('.mx-toast-region') &&
-          element !== dialog &&
-          !element.contains(dialog)
-      )
-      .map((element) => ({
-        element,
-        inert: element.inert,
-        ariaHidden: element.getAttribute('aria-hidden'),
-      }));
-    for (const { element } of background) {
-      element.inert = true;
-      element.setAttribute('aria-hidden', 'true');
-    }
+    const restoreBackground = inertBackground((element) => element !== dialog && !element.contains(dialog));
     closeRef.current?.focus();
     return () => {
-      for (const { element, inert, ariaHidden } of background) {
-        element.inert = inert;
-        if (ariaHidden === null) element.removeAttribute('aria-hidden');
-        else element.setAttribute('aria-hidden', ariaHidden);
-      }
+      restoreBackground();
       restoreFocus();
     };
-  }, [open, coldHydrating]);
+  }, [open]);
 
   // Perf diagnostics: report request→first-paint for the settings dialog
   // (opener stamps __mixdogSettingsOpenAt; main drops lines unless
   // MIXDOG_DESKTOP_PERF=1).
   useEffect(() => {
-    // The stamp is consumed at CONTENT paint, so cold opens report the full
-    // overlay wait instead of the overlay's own first frame.
-    if (!open || coldHydrating) return;
+    if (!open) return;
     const stamped = (window as unknown as Record<string, unknown>).__mixdogSettingsOpenAt;
     if (typeof stamped !== 'number') return;
     delete (window as unknown as Record<string, unknown>).__mixdogSettingsOpenAt;
@@ -203,7 +166,7 @@ export function SettingsView({
         window.mixdogDesktop?.perfLog?.(`settings-open paint=${(performance.now() - stamped).toFixed(0)}ms`);
       })
     );
-  }, [open, coldHydrating]);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -211,13 +174,7 @@ export function SettingsView({
       const dialog = dialogRef.current;
       const nestedDialog = dialog?.querySelector<HTMLElement>('[data-settings-nested-dialog]') || null;
       if (event.key === 'Escape') {
-        const openPortaledMenu = Array.from(
-          dialog?.querySelectorAll<HTMLElement>('[role="combobox"][aria-expanded="true"][aria-controls]') || []
-        ).some((trigger) => {
-          const menu = document.getElementById(trigger.getAttribute('aria-controls') || '');
-          return menu?.matches('.mx-menu[role="listbox"]');
-        });
-        if (openPortaledMenu) return;
+        if (portaledMenuOpen(dialog)) return;
         event.preventDefault();
         event.stopPropagation();
         if (nestedDialog) {
@@ -232,25 +189,12 @@ export function SettingsView({
       if (event.key !== 'Tab') return;
       if (!dialog) return;
       const focusRoot = nestedDialog || dialog;
-      const queried = Array.from(focusRoot.querySelectorAll<HTMLElement>(FOCUSABLE));
+      const queried = Array.from(focusRoot.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
       const controls =
         !nestedDialog && closeRef.current
           ? [closeRef.current, ...queried.filter((control) => control !== closeRef.current)]
           : queried;
-      if (!controls.length) {
-        event.preventDefault();
-        focusRoot.focus();
-        return;
-      }
-      const first = controls[0];
-      const last = controls[controls.length - 1];
-      if (event.shiftKey && (document.activeElement === first || !focusRoot.contains(document.activeElement))) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && (document.activeElement === last || !focusRoot.contains(document.activeElement))) {
-        event.preventDefault();
-        first.focus();
-      }
+      trapTab(event, focusRoot, controls);
     };
     document.addEventListener('keydown', handleKey, true);
     return () => document.removeEventListener('keydown', handleKey, true);

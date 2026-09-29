@@ -4,6 +4,7 @@ export const VIEW_BASELINE_EVENT = 'viewBaseline';
 export const MAX_VIEW_BASELINES = 132;
 export const MAX_VIEW_BASELINE_BYTES = 8 * 1024 * 1024;
 const VIEW_BASELINE_TTL_MS = 5 * 60_000;
+const BASELINE_KEY_PATTERN = /^[a-f0-9]{64}$/;
 
 export function readViewBaselineOffer(value: unknown): Set<string> | null {
   if (!value || typeof value !== 'object') return null;
@@ -12,7 +13,7 @@ export function readViewBaselineOffer(value: unknown): Set<string> | null {
     offer.version !== 1 ||
     !Array.isArray(offer.keys) ||
     offer.keys.length > MAX_VIEW_BASELINES ||
-    offer.keys.some((key) => typeof key !== 'string' || !/^[a-f0-9]{64}$/.test(key))
+    offer.keys.some((key) => typeof key !== 'string' || !BASELINE_KEY_PATTERN.test(key))
   )
     return null;
   return new Set(offer.keys as string[]);
@@ -46,7 +47,7 @@ export function createRemoteViewBaselineCache(maxBytes = MAX_VIEW_BASELINE_BYTES
     restore(payload: unknown): Record<string, unknown> {
       if (!payload || typeof payload !== 'object') throw new Error('Invalid view baseline.');
       const value = payload as { key?: unknown; frame?: unknown };
-      if (typeof value.key !== 'string' || !/^[a-f0-9]{64}$/.test(value.key)) {
+      if (typeof value.key !== 'string' || !BASELINE_KEY_PATTERN.test(value.key)) {
         throw new Error('Invalid view baseline key.');
       }
       let text: string;

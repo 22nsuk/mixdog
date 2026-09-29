@@ -1,12 +1,11 @@
-// Explorer name grammar regression cover: the rules the pane's rename, "New
-// file/folder" and paste paths depend on. Every case pins the PLATFORM flag
+// Explorer name grammar regression cover: the rules the pane's rename and "New
+// file/folder" paths depend on. Every case pins the PLATFORM flag
 // explicitly so the suite reads the same on Windows and on CI Linux.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
   compareExplorerNames,
-  explorerPasteName,
   explorerTypeAheadIndex,
   isValidExplorerBasename,
   sortExplorerEntries,
@@ -105,12 +104,4 @@ test('type-ahead advances past the focused row and wraps', () => {
   assert.equal(explorerTypeAheadIndex(names, 0, 'zz'), -1);
   assert.equal(explorerTypeAheadIndex(names, 0, ''), -1);
   assert.equal(explorerTypeAheadIndex([], 0, 'a'), -1);
-});
-
-test('paste naming walks the Explorer copy sequence', () => {
-  assert.equal(explorerPasteName('report.txt', false, new Set()), 'report.txt');
-  assert.equal(explorerPasteName('report.txt', false, new Set(['report.txt'])), 'report copy.txt');
-  assert.equal(explorerPasteName('report.txt', false, new Set(['report.txt', 'report copy.txt'])), 'report copy 2.txt');
-  // A folder has no extension to preserve, even with a dot in its name.
-  assert.equal(explorerPasteName('notes.v2', true, new Set(['notes.v2'])), 'notes.v2 copy');
 });

@@ -40,7 +40,7 @@ export function boundedTextOf(value: unknown, maxLength = 100_000) {
   }
 }
 
-export function toolResultText(item: TranscriptItem) {
+function toolResultText(item: TranscriptItem) {
   return [item.result, item.rawResult]
     .filter((value, index, values) => value != null && (index === 0 || value !== values[0]))
     .map(String)

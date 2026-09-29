@@ -78,6 +78,23 @@ export function useAppSideDocks({ paneWorkspace, sessionSurfaces, applySidebarOp
     if (sidebarDiff && activeSideViews.left !== sidebarDiff.view) setSidebarDiff(null);
   }, [activeSideViews.left, sidebarDiff]);
 
+  const dismissDockEntry = (
+    leafId: string,
+    sessionId: string,
+    entry: ReturnType<typeof sessionSideDockEntryForSession>
+  ) => {
+    if ((entry.surface === 'browser' || entry.surface === 'terminal') && sessionId) {
+      if (entry.surface === 'browser') dismissBrowserSurface(sessionId);
+      else setSessionSideSurface(sessionId, null);
+    }
+    if (entry.diff?.source === 'session' && sessionId) {
+      setSessionDiff(sessionId, null);
+    }
+    if (entry.view === 'session-diff' && entry.surface === '' && sessionId) {
+      setSessionPanelView(sessionId, null);
+    }
+    paneSideDocks.setOpen(leafId, false);
+  };
   const togglePaneRightRegion = useStableEvent((leafId: string) => {
     const rawEntry = paneSideDocks.entryFor(leafId);
     const leaf = paneWorkspace.leaves.find((candidate) => candidate.id === leafId);
@@ -93,17 +110,7 @@ export function useAppSideDocks({ paneWorkspace, sessionSurfaces, applySidebarOp
       selectedPanelView
     );
     if (displayedEntry.open) {
-      if ((displayedEntry.surface === 'browser' || displayedEntry.surface === 'terminal') && sessionId) {
-        if (displayedEntry.surface === 'browser') dismissBrowserSurface(sessionId);
-        else setSessionSideSurface(sessionId, null);
-      }
-      if (displayedEntry.diff?.source === 'session' && sessionId) {
-        setSessionDiff(sessionId, null);
-      }
-      if (displayedEntry.view === 'session-diff' && displayedEntry.surface === '' && sessionId) {
-        setSessionPanelView(sessionId, null);
-      }
-      paneSideDocks.setOpen(leafId, false);
+      dismissDockEntry(leafId, sessionId, displayedEntry);
       return;
     }
     if (sessionId && selectedSurface === null && (rawEntry.surface === 'browser' || rawEntry.surface === 'terminal')) {
@@ -138,17 +145,7 @@ export function useAppSideDocks({ paneWorkspace, sessionSurfaces, applySidebarOp
       sessionDiffs.get(sessionId) ?? null,
       sessionPanelViews.get(sessionId) ?? null
     );
-    if ((entry.surface === 'browser' || entry.surface === 'terminal') && sessionId) {
-      if (entry.surface === 'browser') dismissBrowserSurface(sessionId);
-      else setSessionSideSurface(sessionId, null);
-    }
-    if (entry.diff?.source === 'session' && sessionId) {
-      setSessionDiff(sessionId, null);
-    }
-    if (entry.view === 'session-diff' && entry.surface === '' && sessionId) {
-      setSessionPanelView(sessionId, null);
-    }
-    paneSideDocks.setOpen(leafId, false);
+    dismissDockEntry(leafId, sessionId, entry);
   });
   const openDockTab = useStableEvent((tab: UtilityDockTab) => {
     if (!desktopUtilityDockTabEnabled(tab)) return;

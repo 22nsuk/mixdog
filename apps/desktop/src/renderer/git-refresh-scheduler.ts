@@ -10,6 +10,15 @@ interface GitRefreshScheduler {
   dispose(): void;
 }
 
+const DEFAULT_MAX_INTERVAL_MS = 5 * 60_000;
+
+/** Cadence for the surfaces that follow one file's diff (editor gutter, diff pane). */
+export const FILE_DIFF_REFRESH_OPTIONS = {
+  safetyIntervalMs: 30_000,
+  activityDebounceMs: 125,
+  activityMinGapMs: 1_000,
+} as const;
+
 export function createGitRefreshScheduler(
   task: (reason: GitRefreshReason) => Promise<void>,
   options: {
@@ -39,14 +48,14 @@ export function createGitRefreshScheduler(
     if (safetyTimer) globalThis.clearTimeout(safetyTimer);
     safetyTimer = 0;
   };
-  const requiredIdleMs = () =>
-    Math.min(options.maxIntervalMs ?? 5 * 60_000, Math.max(options.activityMinGapMs, lastRunDurationMs));
+  const maxIntervalMs = options.maxIntervalMs ?? DEFAULT_MAX_INTERVAL_MS;
+  const requiredIdleMs = () => Math.min(maxIntervalMs, Math.max(options.activityMinGapMs, lastRunDurationMs));
   const scheduleSafety = () => {
     if (!enabled || disposed) return;
     clearSafety();
     const delay = Math.max(
       options.safetyIntervalMs,
-      Math.min(options.maxIntervalMs ?? 5 * 60_000, lastRunDurationMs * (options.slowTaskMultiplier ?? 5))
+      Math.min(maxIntervalMs, lastRunDurationMs * (options.slowTaskMultiplier ?? 5))
     );
     safetyTimer = globalThis.setTimeout(() => {
       safetyTimer = 0;

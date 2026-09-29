@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { BrowserWindow, nativeImage, type WebContents } from 'electron';
 import type { BrowserHost } from './host';
 import { createPolling } from '../host-harness-poll';
-import { measureBrowserWheelToPixels } from './input-surface-latency';
+import { measureBrowserWheelToPixels, percentileMs } from './input-surface-latency';
 
 /** A full-size, changing page exercises encoding and input together. The
  * isolated fixture is disposable; neither a user page nor OS input is used. */
@@ -125,14 +125,12 @@ export async function measureBrowserSurfaceLoad(
         'keep editing 사용자 입력'
       );
       const frames = await shell.executeJavaScript('window.loadFrames');
-      const p95 = (values: number[]) =>
-        Number([...values].sort((a, b) => a - b)[Math.ceil(values.length * 0.95) - 1].toFixed(1));
       log(
         `full-size scrolling benchmark ${JSON.stringify({
           width: 1366,
           decodedFramesPerSecond: Number(((frames * 1000) / (performance.now() - started)).toFixed(2)),
-          wheelDispatchP95Ms: p95(acknowledgement),
-          frameCaptureP95Ms: p95(frameTimes),
+          wheelDispatchP95Ms: percentileMs(acknowledgement, 0.95),
+          frameCaptureP95Ms: percentileMs(frameTimes, 0.95),
           clickAndTyping: 'passed',
         })}`
       );

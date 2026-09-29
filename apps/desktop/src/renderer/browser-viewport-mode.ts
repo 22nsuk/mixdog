@@ -143,7 +143,7 @@ export const BROWSER_VIEWPORT_PRESETS: readonly BrowserViewportPreset[] = [
   },
 ];
 
-export const DEFAULT_BROWSER_VIEWPORT_PRESET = BROWSER_VIEWPORT_PRESETS[0];
+const DEFAULT_BROWSER_VIEWPORT_PRESET = BROWSER_VIEWPORT_PRESETS[0];
 
 /** Choices stored under the retired device-named ids keep their size class. */
 const LEGACY_PRESET_IDS: Readonly<Record<string, BrowserViewportPresetId>> = {

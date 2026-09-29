@@ -16,7 +16,7 @@ export type PaneDragSession = {
 
 /** What follows the pointer: 'tab' paints the compact tab ghost, 'frame'
  *  carries a clone of the dragged item's own frame. */
-export type PaneDragImage = 'tab' | 'frame';
+type PaneDragImage = 'tab' | 'frame';
 
 export type PaneDragFrame = PaneDragSession & {
   phase: 'move' | 'drop' | 'cancel';

@@ -7,7 +7,7 @@ import { BrowserWindow, screen } from 'electron';
 
 import { computerUseCoordinator, type ComputerUseSnapshot } from '../session/coordinator';
 import { recordCursorDiagnostic } from './cursor-diagnostics';
-import { dipPoint, hardenOverlayWindow, overlayWindowOptions } from './cursor-surface';
+import { dipPoint, ensureSurfaceWindow, hardenOverlayWindow, overlayWindowOptions } from './cursor-surface';
 import { registerComputerUseInternalWindow } from './internal-windows';
 import { KEYBOARD_HEIGHT, KEYBOARD_WIDTH, keyboardHtml, keyboardScript } from './keyboard-art';
 import { SESSION_COLORS, sessionColor } from './model';
@@ -61,18 +61,6 @@ async function openBoardWindow(surface: BoardSurface, isCurrent: () => boolean):
   }
 }
 
-async function ensureBoardWindow(surface: BoardSurface, isCurrent: () => boolean): Promise<BrowserWindow> {
-  if (surface.creating) return await surface.creating;
-  if (surface.window && !surface.window.isDestroyed()) return surface.window;
-  const creating = openBoardWindow(surface, isCurrent);
-  surface.creating = creating;
-  try {
-    return await creating;
-  } finally {
-    if (surface.creating === creating) surface.creating = null;
-  }
-}
-
 export interface ComputerUseKeyboardOverlay {
   dispose(): void;
 }
@@ -94,7 +82,7 @@ export function createComputerUseKeyboardOverlay(): ComputerUseKeyboardOverlay {
     if (!surface || surface.lastEventId !== keystroke.eventId) return;
     const isCurrent = (): boolean =>
       !disposed && surfaces.get(keystroke.sessionId) === surface && surface.lastEventId === keystroke.eventId;
-    const window = await ensureBoardWindow(surface, isCurrent);
+    const window = await ensureSurfaceWindow(surface, () => openBoardWindow(surface, isCurrent));
     if (!isCurrent() || window.isDestroyed()) return;
     window.setBounds(boardBounds(keystroke), false);
     const multipleSessions = latestSnapshot.activities.length > 1;

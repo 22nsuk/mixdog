@@ -295,7 +295,7 @@ export const TranscriptRow = memo(
                 {(attachedImages.length > 0 || markerChips.length > 0 || pastedFold.chips.length > 0) && (
                   <div className="message-image-chips" aria-label={t('Attachments')}>
                     {attachedImages.map((image, index) => {
-                      const preview = imagePreviewCache.get(imagePreviewKey(image.id, image.bytes));
+                      const preview = imagePreviewCache.peek(imagePreviewKey(image.id, image.bytes));
                       const name = image.name || t('Attached image');
                       return preview ? (
                         <button

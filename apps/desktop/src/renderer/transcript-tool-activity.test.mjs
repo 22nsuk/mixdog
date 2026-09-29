@@ -444,7 +444,10 @@ test('desktop activity lists every call as one row under the summary, without ca
       );
     });
     const group = document.querySelector('.tool-activity');
-    assert.equal(group?.querySelector('.tool-activity-title')?.textContent?.trim(), 'Content search 2 · Command execution');
+    assert.equal(
+      group?.querySelector('.tool-activity-title')?.textContent?.trim(),
+      'Content search 2 · Command execution'
+    );
     assert.equal(group?.querySelector('.tool-activity-failed')?.textContent, '1 failed');
 
     await act(async () => {

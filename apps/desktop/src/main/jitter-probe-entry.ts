@@ -8,6 +8,7 @@ import { dirname } from 'node:path';
 import type { BrowserWindow } from 'electron';
 import { coldHistoryItems } from './jitter-probe-fixtures';
 import {
+  sleep,
   TOOL_DISCLOSURE,
   TOOL_DISCLOSURE_HEADERS,
   TOOL_DISCLOSURE_OPEN,
@@ -22,8 +23,6 @@ interface EntryProbeDeps {
   send(state: Record<string, unknown>): void;
   outPath: string;
 }
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export async function runEntryProbe({
   window,
@@ -355,21 +354,24 @@ diff --git a/src/probe.ts b/src/probe.ts
   // Re-entry: leave the session and come back. Everything the first visit
   // resolved asynchronously (worker review bar, row heights) must now be
   // known up front, so the second entry may not move at all.
-  await window.webContents.executeJavaScript(`(async () => {
+  const reenterColdSession = async (settleMs: number) => {
+    await window.webContents.executeJavaScript(`(async () => {
   const link = document.querySelector('button[aria-label="New task"]');
   if (link instanceof HTMLElement) link.click();
   await new Promise((resolve) => setTimeout(resolve, 700));
   return true;
 })()`);
-  await window.webContents.executeJavaScript(install);
-  await window.webContents.executeJavaScript(`(async () => {
+    await window.webContents.executeJavaScript(install);
+    await window.webContents.executeJavaScript(`(async () => {
   const row = ${waitForProbeSessionRow('probe_session_cold', 'Missing cold probe session row')};
   row.click();
   await new Promise((resolve) => setTimeout(resolve, 400));
   return true;
 })()`);
-  send(delayedReviewSnapshot);
-  await sleep(2_000);
+    send(delayedReviewSnapshot);
+    await sleep(settleMs);
+  };
+  await reenterColdSession(2_000);
   const reentrySamples = (await window.webContents.executeJavaScript(stop)) as RowSample[];
   const reentry = contentMotion(reentrySamples);
 
@@ -502,21 +504,7 @@ diff --git a/src/probe.ts b/src/probe.ts
   // Pinned pass first (the common case: the newest tool card at the bottom of
   // a followed transcript), then the scrolled-up reading case.
   const pinnedExpand = await toggle('pinned-expand', true, true);
-  await window.webContents.executeJavaScript(`(async () => {
-  const link = document.querySelector('button[aria-label="New task"]');
-  if (link instanceof HTMLElement) link.click();
-  await new Promise((resolve) => setTimeout(resolve, 700));
-  return true;
-})()`);
-  await window.webContents.executeJavaScript(install);
-  await window.webContents.executeJavaScript(`(async () => {
-  const row = ${waitForProbeSessionRow('probe_session_cold', 'Missing cold probe session row')};
-  row.click();
-  await new Promise((resolve) => setTimeout(resolve, 400));
-  return true;
-})()`);
-  send(delayedReviewSnapshot);
-  await sleep(1_200);
+  await reenterColdSession(1_200);
   const expandedReentrySamples = (await window.webContents.executeJavaScript(stop)) as RowSample[];
   const expandedReentry = contentMotion(expandedReentrySamples);
   const expandedReentryOpenTools = (await window.webContents.executeJavaScript(

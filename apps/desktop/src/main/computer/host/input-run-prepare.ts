@@ -7,8 +7,7 @@
  */
 import { backgroundDialogInputError } from '../input/background-dialog-input';
 import { prepareCursorFeedback } from '../overlay/cursor-readiness';
-import { CHROME_SETUP_SESSION_ID } from '../session/chrome-setup';
-import { elapsedMs } from '../shared/common';
+import { CHROME_SETUP_SESSION_ID, elapsedMs } from '../shared/common';
 import type { ComputerCommand } from '../shared/types';
 import type { ComputerWindowRecord } from '../shared/window-transition';
 import type { CommandRouterHost } from './command-router';

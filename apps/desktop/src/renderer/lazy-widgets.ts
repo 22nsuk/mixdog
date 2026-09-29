@@ -27,38 +27,29 @@ export async function disposeTerminalPane(id: string): Promise<void> {
 // a session always lags the FIRST time). A real session resume warms ONLY that
 // transcript dependency; editor and terminal stay behind their own navigation
 // intent so a chat never retains Monaco/xterm without using them.
-let diffPrefetch: Promise<unknown> | null = null;
-let terminalPrefetch: Promise<unknown> | null = null;
-let editorPrefetch: Promise<unknown> | null = null;
-export function prefetchDiffView(): Promise<unknown> {
-  diffPrefetch ||= importDiffView().catch((error) => {
-    diffPrefetch = null;
-    throw error;
-  });
-  return diffPrefetch;
+/** One shared in-flight import per chunk; a failed import clears itself so the
+ *  next call retries. */
+function createChunkPrefetch(load: () => Promise<unknown>) {
+  let pending: Promise<unknown> | null = null;
+  return {
+    started: () => pending !== null,
+    run(): Promise<unknown> {
+      pending ||= load().catch((error) => {
+        pending = null;
+        throw error;
+      });
+      return pending;
+    },
+  };
 }
-export function prefetchTerminalPane(): Promise<unknown> {
-  terminalPrefetch ||= importTerminalPane().catch((error) => {
-    terminalPrefetch = null;
-    throw error;
-  });
-  return terminalPrefetch;
-}
-let browserPrefetch: Promise<unknown> | null = null;
-export function prefetchBrowserPane(): Promise<unknown> {
-  browserPrefetch ||= importBrowserPane().catch((error) => {
-    browserPrefetch = null;
-    throw error;
-  });
-  return browserPrefetch;
-}
-export function prefetchEditorPane(): Promise<unknown> {
-  editorPrefetch ||= importEditorPane().catch((error) => {
-    editorPrefetch = null;
-    throw error;
-  });
-  return editorPrefetch;
-}
+const diffPrefetch = createChunkPrefetch(importDiffView);
+const terminalPrefetch = createChunkPrefetch(importTerminalPane);
+const browserPrefetch = createChunkPrefetch(importBrowserPane);
+const editorPrefetch = createChunkPrefetch(importEditorPane);
+export const prefetchDiffView = (): Promise<unknown> => diffPrefetch.run();
+export const prefetchTerminalPane = (): Promise<unknown> => terminalPrefetch.run();
+export const prefetchBrowserPane = (): Promise<unknown> => browserPrefetch.run();
+export const prefetchEditorPane = (): Promise<unknown> => editorPrefetch.run();
 
 /**
  * Start the chunk a selection is about to need, without waiting for it.
@@ -99,7 +90,7 @@ const EDITOR_INTENT_QUIET_MS = 150;
  * merges into the normal load.
  */
 export function scheduleEditorPanePrefetch(): void {
-  if (editorIntentScheduled || editorPrefetch || typeof window === 'undefined') return;
+  if (editorIntentScheduled || editorPrefetch.started() || typeof window === 'undefined') return;
   const host = window as EditorIntentHost;
   // Only the Electron main process emits the window-shown handshake, so
   // requiring it here excluded every relay-served browser and phone from this

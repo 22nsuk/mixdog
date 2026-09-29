@@ -79,3 +79,16 @@ export function legacyCommonInstructionsFile(): string {
 export function projectInstructionsFile(projectDirectory: string): string {
   return resolve(projectDirectory, '.mixdog', 'instructions.md');
 }
+
+/** The file an instructions request addresses, plus the legacy fallback that
+ *  only the common file has: null/'' names the common instructions, anything
+ *  else a project whose directory the caller resolves (and validates). */
+export async function instructionsFilesFor(
+  projectPath: unknown,
+  projectDirectory: (projectPath: unknown) => Promise<string>
+): Promise<{ file: string; legacyFile: string }> {
+  if (projectPath == null || projectPath === '') {
+    return { file: commonInstructionsFile(), legacyFile: legacyCommonInstructionsFile() };
+  }
+  return { file: projectInstructionsFile(await projectDirectory(projectPath)), legacyFile: '' };
+}

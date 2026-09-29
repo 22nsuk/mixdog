@@ -64,18 +64,21 @@ function partStats(part: SessionDiffPart): { additions: number; deletions: numbe
   return { additions, deletions };
 }
 
+function parsePatchParts(patch: string): SessionDiffPart[] {
+  if (!patch) return [];
+  try {
+    return parseUnifiedDiff(patch);
+  } catch {
+    return [];
+  }
+}
+
 /** The slice of a session review patch that belongs to ONE file (its parts
  *  re-joined as a unified diff), or "" when the patch has no part for it. */
 export function sessionDiffFilePatch(patch: string, rel: string): string {
   const target = cleanPath(rel);
-  if (!patch || !target) return '';
-  let parsed: SessionDiffPart[] = [];
-  try {
-    parsed = parseUnifiedDiff(patch);
-  } catch {
-    return '';
-  }
-  return parsed
+  if (!target) return '';
+  return parsePatchParts(patch)
     .filter(
       (part) =>
         partPath(part) === target ||
@@ -87,14 +90,8 @@ export function sessionDiffFilePatch(patch: string, rel: string): string {
 
 export function buildSessionDiffRows(result: SessionDiffResult | null): SessionDiffRow[] {
   const patch = typeof result?.patch === 'string' ? result.patch : '';
-  let parsed: SessionDiffPart[] = [];
-  try {
-    parsed = patch ? parseUnifiedDiff(patch) : [];
-  } catch {
-    parsed = [];
-  }
   const partsByPath = new Map<string, SessionDiffPart[]>();
-  for (const part of parsed) {
+  for (const part of parsePatchParts(patch)) {
     const path = partPath(part);
     if (!path) continue;
     const parts = partsByPath.get(path) || [];

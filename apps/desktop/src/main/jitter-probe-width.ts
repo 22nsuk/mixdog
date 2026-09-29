@@ -7,7 +7,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { BrowserWindow } from 'electron';
 import { paragraph, probeItems } from './jitter-probe-fixtures';
-import { waitForProbeSessionRow } from './jitter-probe-session';
+import { sleep, waitForProbeSessionRow } from './jitter-probe-session';
 import { WIDTH_TRACE_COLLECT_SCRIPT, WIDTH_TRACE_INSTALL_SCRIPT } from './jitter-probe-width-scripts';
 import { dragProbeSash, readProbeSash } from './jitter-probe-sash';
 
@@ -19,7 +19,6 @@ interface WidthProbeDeps {
   outPath: string;
 }
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export async function runWidthProbe({
   window,
@@ -163,7 +162,7 @@ export async function runWidthProbe({
   if (!initialSash || initialSash.maxX - initialSash.minX < 480) {
     throw new Error(`width probe: real pane sash unavailable ${JSON.stringify(initialSash)}`);
   }
-  const dragSash = () => dragProbeSash(window, initialSash, sleep);
+  const dragSash = () => dragProbeSash(window, initialSash);
   const sashSweep = async (label: string, prepare: string) => {
     await window.webContents.executeJavaScript(prepare);
     await sleep(400);

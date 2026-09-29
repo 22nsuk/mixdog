@@ -1,5 +1,5 @@
 import type { ComputerCommand } from '../shared/types';
-import { CHROME_SETUP_SESSION_ID } from '../session/chrome-setup';
+import { CHROME_SETUP_SESSION_ID } from '../shared/common';
 import { OBSERVE_ONLY_ALLOWED_ACTIONS } from './action-sets';
 
 /** Recheck the live setting at admission and immediately before each input transport. */

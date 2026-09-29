@@ -187,6 +187,32 @@ export function useEditorLspSession({
     }
   }, [codeGraph, readModel, graphContextRef, publishOutline, relPath, requestLsp]);
 
+  /** Detaches the open document and tells the server to close it once any
+   *  in-flight open has settled. */
+  const closeAttachedDocument = useCallback(
+    (model: import('monaco-editor').editor.ITextModel) => {
+      lspAttached.current = false;
+      lspAttachmentEpoch.current += 1;
+      const pendingOpen = lspOpenPromise.current;
+      lspOpenPromise.current = null;
+      lspReady.current = false;
+      lspLastVersion.current = -1;
+      void Promise.resolve(pendingOpen)
+        .catch(() => undefined)
+        .then(() =>
+          api?.lspDocument?.({
+            kind: 'close',
+            projectPath,
+            relPath,
+            languageId: lspLanguageId.current || model.getLanguageId(),
+            version: model.getVersionId(),
+          })
+        )
+        .catch(() => undefined);
+    },
+    [api, projectPath, relPath]
+  );
+
   useEffect(() => {
     const model = readModel();
     if (!model || !api?.lspDocument) return;
@@ -218,25 +244,8 @@ export function useEditorLspSession({
       return;
     }
     if (!lspAttached.current) return;
-    lspAttached.current = false;
-    lspAttachmentEpoch.current += 1;
-    const pendingOpen = lspOpenPromise.current;
-    lspOpenPromise.current = null;
-    lspReady.current = false;
-    lspLastVersion.current = -1;
-    void Promise.resolve(pendingOpen)
-      .catch(() => undefined)
-      .then(() =>
-        api.lspDocument!({
-          kind: 'close',
-          projectPath,
-          relPath,
-          languageId: lspLanguageId.current || languageId,
-          version: model.getVersionId(),
-        })
-      )
-      .catch(() => undefined);
-  }, [acceptLspState, active, api, readModel, modelUri, projectPath, relPath, updateOutline]);
+    closeAttachedDocument(model);
+  }, [acceptLspState, active, api, closeAttachedDocument, readModel, modelUri, projectPath, relPath, updateOutline]);
 
   const disposeLsp = useCallback(
     (model: import('monaco-editor').editor.ITextModel | null | undefined) => {
@@ -246,26 +255,9 @@ export function useEditorLspSession({
       if (!model) return;
       clearActiveEditorDocument(model.uri.toString());
       if (!lspAttached.current || !api?.lspDocument) return;
-      lspAttached.current = false;
-      lspAttachmentEpoch.current += 1;
-      const pendingOpen = lspOpenPromise.current;
-      lspOpenPromise.current = null;
-      lspReady.current = false;
-      lspLastVersion.current = -1;
-      void Promise.resolve(pendingOpen)
-        .catch(() => undefined)
-        .then(() =>
-          api.lspDocument!({
-            kind: 'close',
-            projectPath,
-            relPath,
-            languageId: lspLanguageId.current || model.getLanguageId(),
-            version: model.getVersionId(),
-          })
-        )
-        .catch(() => undefined);
+      closeAttachedDocument(model);
     },
-    [api, projectPath, relPath]
+    [api, closeAttachedDocument]
   );
 
   return {

@@ -99,7 +99,8 @@ export function createBrowserNativeViews(host: BrowserNativeViewHost) {
   const follow = () => {
     for (const entry of presented.values()) place(entry);
   };
-  for (const event of ['move', 'resize', 'show', 'restore', 'hide', 'minimize'] as const) shell.on(event as 'move', follow);
+  for (const event of ['move', 'resize', 'show', 'restore', 'hide', 'minimize'] as const)
+    shell.on(event as 'move', follow);
 
   return {
     /** Show the session's current page at `rect` (shell CSS pixels), or park

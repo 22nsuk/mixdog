@@ -4,15 +4,15 @@ import { registerHooks } from 'node:module';
 import test from 'node:test';
 
 import React, { act, useLayoutEffect } from 'react';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 
-const dom = new JSDOM('<!doctype html><html><body></body></html>', {
-  url: 'https://mixdog.test/',
+const { dom } = installTestDom(null, {
+  html: '<!doctype html><html><body></body></html>',
+  jsdom: {
+    url: 'https://mixdog.test/',
+  },
+  expose: ['HTMLElement'],
 });
-globalThis.window = dom.window;
-globalThis.document = dom.window.document;
-globalThis.HTMLElement = dom.window.HTMLElement;
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 // React DOM detects input-event support at import time.
 const { createRoot } = await import('react-dom/client');
 dom.window.HTMLElement.prototype.getBoundingClientRect = function getBoundingClientRect() {

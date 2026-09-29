@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 import { SidebarUsage, usagePinEntries } from './SidebarUsage.tsx';
 import { applyAccountUsageWindows, publishUsageDashboard } from './usage-dashboard-store.ts';
 
@@ -93,10 +93,12 @@ test('other providers retain their existing quota-window selection', () => {
 function renderUsage(t, windows) {
   const now = Date.now;
   Date.now = () => NOW;
-  const dom = new JSDOM('<!doctype html><html><body><main></main></body></html>', { url: 'https://mixdog.test/' });
-  globalThis.window = dom.window;
-  globalThis.document = dom.window.document;
-  globalThis.HTMLElement = dom.window.HTMLElement;
+  const { dom } = installTestDom(null, {
+    html: '<!doctype html><html><body><main></main></body></html>',
+    jsdom: { url: 'https://mixdog.test/' },
+    expose: ['HTMLElement'],
+    actEnvironment: false,
+  });
   globalThis.ResizeObserver = class {
     observe() {}
     disconnect() {}

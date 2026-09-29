@@ -5,6 +5,7 @@
  * saying so, so the caller knows the earlier frame still describes the screen.
  */
 import { createHash } from 'node:crypto';
+import { evictOldest } from '../shared/common';
 
 export function createCaptureImageDedupStore(maxEntries = 64) {
   const digestByTarget = new Map<string, string>();
@@ -17,11 +18,7 @@ export function createCaptureImageDedupStore(maxEntries = 64) {
       const repeat = digestByTarget.get(targetKey) === digest;
       digestByTarget.delete(targetKey);
       digestByTarget.set(targetKey, digest);
-      while (digestByTarget.size > maxEntries) {
-        const oldestKey = digestByTarget.keys().next().value;
-        if (oldestKey === undefined) break;
-        digestByTarget.delete(oldestKey);
-      }
+      evictOldest(digestByTarget, maxEntries);
       return repeat;
     },
     forget(targetKey: string): void {

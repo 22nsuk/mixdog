@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 
 import type { ExtensionsSection } from './extension-sections';
 import { t } from './i18n';
-import { SidebarPanelAction } from './session-sidebar';
+import { SidebarPanelAction } from './session-sidebar-sections';
 import { SidebarSectionToolbar, type SidebarToolbarSection } from './sidebar-section-toolbar';
 import { CapabilitySettings } from './settings/CapabilitySettings';
 import { useSurfaceNavigationReset } from './surface-activity';

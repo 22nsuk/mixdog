@@ -2,24 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 import { useAppSessionTitle } from './app-shell-session-title.ts';
 
 test('useAppSessionTitle handles edit modal, draft changes, commit, and whitespace rejection', async () => {
-  const dom = new JSDOM('<!doctype html><div id="root"></div>');
-  const prior = new Map(
-    ['window', 'document', 'IS_REACT_ACT_ENVIRONMENT'].map((key) => [
-      key,
-      Object.getOwnPropertyDescriptor(globalThis, key),
-    ])
-  );
-
-  for (const [key, value] of Object.entries({
-    window: dom.window,
-    document: dom.window.document,
-    IS_REACT_ACT_ENVIRONMENT: true,
-  }))
-    Object.defineProperty(globalThis, key, { configurable: true, value });
+  const { dom, restore } = installTestDom(null, {
+    html: '<!doctype html><div id="root"></div>',
+    jsdom: { url: 'about:blank' },
+  });
 
   let renamed = null;
   const sessions = [{ id: 's1', title: 'Original Title', prompt: 'Hello' }];
@@ -79,10 +69,6 @@ test('useAppSessionTitle handles edit modal, draft changes, commit, and whitespa
     await act(async () => {
       root.unmount();
     });
-    dom.window.close();
-    for (const [key, descriptor] of prior) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
+    restore();
   }
 });

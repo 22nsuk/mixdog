@@ -4,7 +4,7 @@ import type { Shell } from 'electron';
 import { isAbsolute as pathIsAbsolute } from 'node:path';
 import { DESKTOP_IPC } from '../shared/contract';
 import type { DesktopService } from './desktop-service-contract';
-import { commonInstructionsFile, legacyCommonInstructionsFile, projectInstructionsFile } from './instructions-file';
+import { instructionsFilesFor } from './instructions-file';
 import { openLocalFileLink } from './local-file-links';
 import {
   projectDisplayName,
@@ -87,22 +87,17 @@ export function registerProjectIpc({
   // legacy user-workflow.md is read as a fallback so old installs surface
   // their existing guidance); a project path → `<project>/.mixdog/
   // instructions.md` (injected once per session after the `# Session` block).
-  const instructionsFilePath = async (projectPath: unknown): Promise<string> => {
-    if (projectPath == null || projectPath === '') return commonInstructionsFile();
-    const directory = await host.projectDirectory(requiredString(projectPath, 'projectPath'));
-    return projectInstructionsFile(directory);
-  };
-  const legacyInstructionsFile = (projectPath: unknown) =>
-    projectPath == null || projectPath === '' ? legacyCommonInstructionsFile() : '';
+  const instructionsFiles = (projectPath: unknown) =>
+    instructionsFilesFor(projectPath, (project) => host.projectDirectory(requiredString(project, 'projectPath')));
   handle(DESKTOP_IPC.readInstructions, async (_event, projectPath) => {
-    const file = await instructionsFilePath(projectPath);
-    return invokeDesktopOperation('readInstructions', [file, legacyInstructionsFile(projectPath)]);
+    const { file, legacyFile } = await instructionsFiles(projectPath);
+    return invokeDesktopOperation('readInstructions', [file, legacyFile]);
   });
   handle(DESKTOP_IPC.writeInstructions, async (_event, projectPath, content, expectedContent) => {
     const text = requiredInstructionsContent(content);
-    const file = await instructionsFilePath(projectPath);
+    const { file, legacyFile } = await instructionsFiles(projectPath);
     const expected = expectedContent === undefined ? undefined : requiredInstructionsContent(expectedContent);
-    return invokeDesktopOperation('writeInstructions', [file, text, expected, legacyInstructionsFile(projectPath)]);
+    return invokeDesktopOperation('writeInstructions', [file, text, expected, legacyFile]);
   });
   handle(DESKTOP_IPC.searchProjectFiles, (_event, projectIdOrWorkspaceId, query, limit, includeIgnored) => {
     if (typeof query !== 'string' || query.length > 1_024) {

@@ -1122,12 +1122,6 @@ html.mx-window-resizing .panel-backdrop {
   .studio-tile {
     transition: none;
   }
-  html.mx-open-sidebar .sidebar-drawer-frame {
-    animation: none;
-  }
-  html.mx-open-sidebar .sidebar.session-sidebar {
-    animation: none;
-  }
   .bottom-panel:not([data-settled="true"]) {
     animation: none;
   }

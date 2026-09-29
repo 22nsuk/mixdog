@@ -1,16 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import React, { act } from 'react';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from '../test-support/test-dom.mjs';
 
-const dom = new JSDOM('<!doctype html><html><body></body></html>', {
-  url: 'https://mixdog.test/',
-  pretendToBeVisual: true,
+const { dom } = installTestDom(null, {
+  html: '<!doctype html><html><body></body></html>',
+  jsdom: {
+    url: 'https://mixdog.test/',
+    pretendToBeVisual: true,
+  },
+  expose: ['HTMLElement', 'Event'],
+  actEnvironment: false,
 });
-globalThis.window = dom.window;
-globalThis.document = dom.window.document;
-globalThis.HTMLElement = dom.window.HTMLElement;
-globalThis.Event = dom.window.Event;
 globalThis.getComputedStyle = dom.window.getComputedStyle.bind(dom.window);
 globalThis.requestAnimationFrame = dom.window.requestAnimationFrame.bind(dom.window);
 globalThis.cancelAnimationFrame = dom.window.cancelAnimationFrame.bind(dom.window);

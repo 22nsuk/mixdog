@@ -22,7 +22,7 @@ export interface TranscriptSnapshotDecorator {
   clear(): void;
 }
 
-export function createTranscriptSnapshotDecorator(): TranscriptSnapshotDecorator {
+function createTranscriptSnapshotDecorator(): TranscriptSnapshotDecorator {
   let identity = createTranscriptIdentityReconciler();
   const scopes = new Map<string, FailureScope>();
   return {

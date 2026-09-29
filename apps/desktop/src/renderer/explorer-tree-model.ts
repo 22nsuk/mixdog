@@ -156,7 +156,7 @@ export function explorerVisibleRows(dirs: ExplorerDirs): ExplorerRow[] {
     if (!state.entries) return;
     for (const entry of sortExplorerEntries(state.entries)) {
       const childRel = explorerChildRel(rel, entry.name);
-      const expanded = entry.dir && dirs.get(childRel)?.expanded === true;
+      const expanded = entry.dir && Boolean(dirs.get(childRel)?.expanded);
       out.push({ rel: childRel, name: entry.name, dir: entry.dir, level, parentRel: rel, expanded });
       if (entry.dir && expanded) walk(childRel, level + 1);
     }

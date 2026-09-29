@@ -14,7 +14,7 @@ import { useLayoutEffect, useRef, useState } from 'react';
 
 /** Middle ellipsis — the fallback when not even
  *  `…/name` fits the available width. */
-export function truncateMid(value: string, length: number): string {
+function truncateMid(value: string, length: number): string {
   if (value.length <= length) return value;
   if (length <= 0) return '';
   if (length === 1) return '…';
@@ -26,7 +26,7 @@ export function truncateMid(value: string, length: number): string {
 
 /** Truncate a path to exactly `length` CHARACTERS,
  *  spending them on the file name first and the directory prefix last. */
-export function truncateScmPath(path: string, length: number): string {
+function truncateScmPath(path: string, length: number): string {
   if (path.length <= length) return path;
   if (length <= 0) return '';
   if (length === 1) return '…';
@@ -45,7 +45,7 @@ export function truncateScmPath(path: string, length: number): string {
  *  directory prefix and its bright file name by matching the untruncated
  *  directory character by character; a `…` (and the `/` right after it) counts
  *  towards the directory, purely for looks. */
-export function splitScmPath(
+function splitScmPath(
   truncated: string,
   directory: string
 ): {

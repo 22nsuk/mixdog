@@ -6,14 +6,6 @@ import {
 } from './transcript-history';
 import { transcriptScrollExtent, transcriptScrollGeometryRegistered } from './use-transcript-follow';
 
-/** Read completion and transcript publication are separate transport events.
- * Track the requested window, not the count one animation frame after an ACK.
- * A cold mount with no rows must also remain eligible once its page arrives.
- *
- * `hasOlder` is the snapshot's `transcriptHasOlder`: a host that serves tail
- * windows says whether older history exists, and each page asks for the
- * current count plus one page. Without it (an older host) the count-based
- * 512-item paging applies. */
 /** Distance from the top of the transcript at which older history loads. */
 export const TRANSCRIPT_HISTORY_TOP_PX = 320;
 
@@ -77,6 +69,14 @@ export function useTranscriptHistoryFill(
   }, [viewport, ready]);
 }
 
+/** Read completion and transcript publication are separate transport events.
+ * Track the requested window, not the count one animation frame after an ACK.
+ * A cold mount with no rows must also remain eligible once its page arrives.
+ *
+ * `hasOlder` is the snapshot's `transcriptHasOlder`: a host that serves tail
+ * windows says whether older history exists, and each page asks for the
+ * current count plus one page. Without it (an older host) the count-based
+ * 512-item paging applies. */
 export function useTranscriptHistory(sessionId: string, itemCount: number, hasOlder?: boolean): () => void {
   const countRef = useRef(itemCount);
   countRef.current = itemCount;

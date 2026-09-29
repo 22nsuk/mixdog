@@ -244,6 +244,70 @@ export function useComposerKeyboard({
     [runtime.escapeClearAt, selector]
   );
 
+  const applyHistoryEntry = useCallback(
+    (entry: ComposerHistoryEntry | undefined): string => {
+      const value = entry?.text || '';
+      history.replaceAttachments((entry?.attachments || []).map((attachment) => ({ ...attachment })));
+      draft.ref.current = value;
+      draft.set(value);
+      return value;
+    },
+    [draft, history]
+  );
+
+  const handleEscape = useCallback(
+    (event: TextareaKeyEvent) => {
+      const element = event.currentTarget;
+      const escapeIntent = classifyPromptEscape({
+        interruptActive: shouldInterruptPrompt({
+          turnBusy: runtime.turnBusy,
+          pendingSubmissionId: queue.pendingSubmissionId,
+          draftMode: runtime.draftMode,
+        }),
+        hasSelection: element.selectionStart !== element.selectionEnd,
+        hasQueuedMessages: queue.hasRestorableMessages(),
+        hasMessages: selector.messages.length > 0,
+        value: draft.value || (runtime.attachments.length ? 'attachment' : ''),
+        lastClearPressAt: runtime.escapeClearAt.current,
+      });
+      runtime.escapeClearAt.current = escapeIntent.nextClearPressAt;
+      if (escapeIntent.action === 'interrupt') {
+        event.preventDefault();
+        void actions.stop(
+          Boolean(draft.value || runtime.attachments.length),
+          runtime.turnBusy ? '' : queue.pendingSubmissionId
+        );
+      } else if (escapeIntent.action === 'collapse-selection') {
+        event.preventDefault();
+        const end = element.selectionEnd;
+        window.setTimeout(() => element.setSelectionRange(end, end), 0);
+      } else if (escapeIntent.action === 'restore-queue') {
+        event.preventDefault();
+        queue.restore('escape');
+      } else if (escapeIntent.action === 'arm-clear') {
+        event.preventDefault();
+        runtime.showNotice('Esc again to clear', PROMPT_ESCAPE_HINT_TIMEOUT_MS);
+      } else if (escapeIntent.action === 'clear') {
+        event.preventDefault();
+        draft.set('');
+        actions.clearAttachments();
+        runtime.showNotice('');
+        history.navigation.current = { index: -1, seed: '' };
+      } else if (escapeIntent.action === 'arm-select') {
+        // Silent arm: the first Esc on an empty composer used to announce
+        // "Esc again to pick a message", which read as noise for a key that
+        // otherwise does nothing (user: ESC 아무것도 없을 때 UI 없어도 될 듯).
+        // The second press still opens the picker.
+        event.preventDefault();
+      } else if (escapeIntent.action === 'message-selector') {
+        event.preventDefault();
+        runtime.showNotice('');
+        selector.openSelector();
+      }
+    },
+    [actions, draft, history, queue, runtime, selector]
+  );
+
   const onKeyUp = useCallback(
     (event: TextareaKeyEvent) => {
       ime.shiftLatch.current = nextComposerShiftLatch(ime.shiftLatch.current, {
@@ -317,53 +381,7 @@ export function useComposerKeyboard({
       if (navigateSlashPalette(event)) return;
       if (navigateMentionPalette(event)) return;
       if (event.key === 'Escape') {
-        const element = event.currentTarget;
-        const escapeIntent = classifyPromptEscape({
-          interruptActive: shouldInterruptPrompt({
-            turnBusy: runtime.turnBusy,
-            pendingSubmissionId: queue.pendingSubmissionId,
-            draftMode: runtime.draftMode,
-          }),
-          hasSelection: element.selectionStart !== element.selectionEnd,
-          hasQueuedMessages: queue.hasRestorableMessages(),
-          hasMessages: selector.messages.length > 0,
-          value: draft.value || (runtime.attachments.length ? 'attachment' : ''),
-          lastClearPressAt: runtime.escapeClearAt.current,
-        });
-        runtime.escapeClearAt.current = escapeIntent.nextClearPressAt;
-        if (escapeIntent.action === 'interrupt') {
-          event.preventDefault();
-          void actions.stop(
-            Boolean(draft.value || runtime.attachments.length),
-            runtime.turnBusy ? '' : queue.pendingSubmissionId
-          );
-        } else if (escapeIntent.action === 'collapse-selection') {
-          event.preventDefault();
-          const end = element.selectionEnd;
-          window.setTimeout(() => element.setSelectionRange(end, end), 0);
-        } else if (escapeIntent.action === 'restore-queue') {
-          event.preventDefault();
-          queue.restore('escape');
-        } else if (escapeIntent.action === 'arm-clear') {
-          event.preventDefault();
-          runtime.showNotice('Esc again to clear', PROMPT_ESCAPE_HINT_TIMEOUT_MS);
-        } else if (escapeIntent.action === 'clear') {
-          event.preventDefault();
-          draft.set('');
-          actions.clearAttachments();
-          runtime.showNotice('');
-          history.navigation.current = { index: -1, seed: '' };
-        } else if (escapeIntent.action === 'arm-select') {
-          // Silent arm: the first Esc on an empty composer used to announce
-          // "Esc again to pick a message", which read as noise for a key that
-          // otherwise does nothing (user: ESC 아무것도 없을 때 UI 없어도 될 듯).
-          // The second press still opens the picker.
-          event.preventDefault();
-        } else if (escapeIntent.action === 'message-selector') {
-          event.preventDefault();
-          runtime.showNotice('');
-          selector.openSelector();
-        }
+        handleEscape(event);
         return;
       }
       const queueAvailable = queue.hasRestorableMessages();
@@ -392,12 +410,7 @@ export function useComposerKeyboard({
           history.seedAttachments.current = history.attachmentsRef.current.map((attachment) => ({ ...attachment }));
         }
         navigation.index = Math.min(history.entries.length - 1, navigation.index + 1);
-        const entry = history.entries[navigation.index];
-        const value = entry?.text || '';
-        const nextAttachments = (entry?.attachments || []).map((attachment) => ({ ...attachment }));
-        history.replaceAttachments(nextAttachments);
-        draft.ref.current = value;
-        draft.set(value);
+        applyHistoryEntry(history.entries[navigation.index]);
         window.setTimeout(() => draft.textarea.current?.setSelectionRange(0, 0), 0);
         return;
       }
@@ -409,11 +422,7 @@ export function useComposerKeyboard({
           navigation.index < 0
             ? { text: navigation.seed, attachments: history.seedAttachments.current }
             : history.entries[navigation.index];
-        const value = entry?.text || '';
-        const nextAttachments = (entry?.attachments || []).map((attachment) => ({ ...attachment }));
-        history.replaceAttachments(nextAttachments);
-        draft.ref.current = value;
-        draft.set(value);
+        const value = applyHistoryEntry(entry);
         window.setTimeout(() => draft.textarea.current?.setSelectionRange(value.length, value.length), 0);
         return;
       }
@@ -425,17 +434,17 @@ export function useComposerKeyboard({
     },
     [
       actions,
+      applyHistoryEntry,
       draft,
+      handleEscape,
       history,
       ime,
       insertNewline,
-      mention,
       navigateMentionPalette,
       navigateMessageSelector,
       navigateSlashPalette,
       queue,
       runtime,
-      selector,
     ]
   );
 

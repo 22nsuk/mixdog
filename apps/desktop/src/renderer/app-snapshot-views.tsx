@@ -44,7 +44,7 @@ import {
   conversationMarkdownPending,
 } from './first-submit-stability';
 import { readTranscriptVirtualSnapshot } from './transcript-virtual-cache';
-import { ContextUsageIndicator } from './TranscriptView';
+import { ContextUsageIndicator } from './transcript-status';
 import { TranscriptAssistantRow, type TranscriptAssistantRowProps } from './TranscriptAssistantRow';
 
 let utilityDockModulePromise: Promise<typeof import('./UtilityDock')> | null = null;

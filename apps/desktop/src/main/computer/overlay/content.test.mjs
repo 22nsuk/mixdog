@@ -131,9 +131,10 @@ test('a pointer press on Stop is reported without sending a control request', as
 test('the pill carries the desktop face inline, and its policy admits no other font source', () => {
   const html = overlayHtml('ko');
   assert.match(html, /content="default-src 'none'; style-src 'unsafe-inline'; font-src data:; script-src 'none'"/);
-  const face = /@font-face\{font-family:"Mixdog Overlay";font-weight:500;[^}]*src:url\(data:font\/woff2;base64,([A-Za-z0-9+/]+=*)\)/.exec(
-    html
-  );
+  const face =
+    /@font-face\{font-family:"Mixdog Overlay";font-weight:500;[^}]*src:url\(data:font\/woff2;base64,([A-Za-z0-9+/]+=*)\)/.exec(
+      html
+    );
   assert.ok(face, 'the pill declares its own face');
   const shipped = createRequire(import.meta.url).resolve(
     'pretendard/dist/web/static/woff2-subset/Pretendard-Medium.subset.woff2'

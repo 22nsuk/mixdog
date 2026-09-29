@@ -11,6 +11,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { screen, type BrowserWindow } from 'electron';
 import { paragraph, probeItems } from './jitter-probe-fixtures';
+import { sleep } from './jitter-probe-session';
 import { RealMouse } from './jitter-probe-real-mouse';
 
 type Snapshot = Record<string, unknown>;
@@ -23,8 +24,6 @@ interface SelectionProbeDeps {
   send(state: Snapshot): void;
   outPath: string;
 }
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Installs the observer once; `sample(label)` reads the live state. */
 const INSTALL_SCRIPT = `(() => {
@@ -121,6 +120,17 @@ const GEOMETRY_SCRIPT = `(() => {
     textarea: ta ? { x: ta.left + ta.width / 2, y: ta.top + ta.height / 2, top: ta.top, bottom: ta.bottom } : null,
     inner: { width: window.innerWidth, height: window.innerHeight },
   };
+})()`;
+
+/** Reset between scenarios: collapse any range, blur the composer, re-centre
+ *  the transcript. */
+const RESET_SCRIPT = `(() => {
+  window.getSelection()?.removeAllRanges();
+  if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+  const node = document.querySelector(window.__selProbeTranscript);
+  node.scrollTop = Math.round((node.scrollHeight - node.clientHeight) * 0.5);
+  node.dispatchEvent(new Event('scroll', { bubbles: true }));
+  return true;
 })()`;
 
 export async function runSelectionProbe({
@@ -289,15 +299,7 @@ export async function runSelectionProbe({
     name: string,
     drive: (g: NonNullable<Awaited<ReturnType<typeof geometry>>>, out: unknown[]) => Promise<void>
   ) => {
-    // Reset: collapse any range, blur the composer, re-centre the transcript.
-    await window.webContents.executeJavaScript(`(() => {
-      window.getSelection()?.removeAllRanges();
-      if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
-      const node = document.querySelector(window.__selProbeTranscript);
-      node.scrollTop = Math.round((node.scrollHeight - node.clientHeight) * 0.5);
-      node.dispatchEvent(new Event('scroll', { bubbles: true }));
-      return true;
-    })()`);
+    await window.webContents.executeJavaScript(RESET_SCRIPT);
     await sleep(400);
     await window.webContents.executeJavaScript(INSTALL_SCRIPT);
     const g = await geometry();
@@ -426,14 +428,7 @@ export async function runSelectionProbe({
       name: string,
       exit: (g: NonNullable<Awaited<ReturnType<typeof geometry>>>) => { edge: Point; outside: Point }
     ) => {
-      await window.webContents.executeJavaScript(`(() => {
-        window.getSelection()?.removeAllRanges();
-        if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
-        const node = document.querySelector(window.__selProbeTranscript);
-        node.scrollTop = Math.round((node.scrollHeight - node.clientHeight) * 0.5);
-        node.dispatchEvent(new Event('scroll', { bubbles: true }));
-        return true;
-      })()`);
+      await window.webContents.executeJavaScript(RESET_SCRIPT);
       await sleep(400);
       await window.webContents.executeJavaScript(INSTALL_SCRIPT);
       const g = await geometry();

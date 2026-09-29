@@ -209,8 +209,6 @@ test("resources the browser's own components load never surface as the page's fa
   assert.equal(diagnostics.networkFailures.length, 1);
   assert.match(diagnostics.networkFailures[0], /app\.css/);
   // The host's own request policy is the only client that blocks here, so
-  // the refusal says so instead of reading like a fault of the page.
-  // The host's own request policy is the only client that blocks here, so
   // the refusal says so, with the rule's reason, instead of a bare code.
   const explained = `ERR_BLOCKED_BY_CLIENT (Browser Use network policy: ${refusal})`;
   assert.ok(diagnostics.networkFailures[0].endsWith(explained), diagnostics.networkFailures[0]);

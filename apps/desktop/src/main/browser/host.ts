@@ -32,7 +32,8 @@ import {
 } from '../../shared/contract';
 import { createBrowserActionApproval, type BrowserApprovalRequest } from './action-approval';
 import { requestBrowserApproval } from './approval-dialog';
-import { browserActionHandler, type BrowserActionServices } from './actions';
+import type { BrowserActionServices } from './actions';
+import { createBrowserCommandRunner } from './command-runner';
 import { createBrowserTaskLifecycle } from './task-lifecycle';
 import { bridgeDiscoveryDirectory } from '../bridge/discovery-file';
 import { BrowserBridgeServer } from './bridge-server';
@@ -44,20 +45,15 @@ import {
   ACTION_SETTLE_QUIET_MS,
   BACKGROUND_RECLAIM_INTERVAL_MS,
   type BrowserCommand,
-  type BrowserCommandResult,
   COMMAND_TIMEOUT_MS,
   CUSTOM_DROPDOWN_POLL_MS,
   CUSTOM_DROPDOWN_TIMEOUT_MS,
-  DIALOG_TOLERANT_ACTIONS,
   DOWNLOAD_ATTACH_MAX_BYTES,
-  normalizeBrowserAction,
-  POSTCONDITION_ACTIONS,
   READ_MAX_CHARS,
   READ_ONLY_ACTIONS,
   SCREENSHOT_FALLBACK_TIMEOUT_MS,
   SCREENSHOT_TIMEOUT_MS,
   SNAPSHOT_MAX_ELEMENTS,
-  TABLESS_ACTIONS,
   snapshotTextLimit,
 } from './command';
 import { createBrowserCommandQueue } from './command-queue';
@@ -73,7 +69,7 @@ import { browserDocumentId, BrowserGuestStateStore } from './guest-state';
 import { createBrowserInitScripts } from './init-scripts';
 import { createBrowserInputDriver } from './input';
 import { createBrowserIntercept } from './intercept';
-import { createBrowserNetworkReports } from './network';
+import { createBrowserNetworkReports } from './network-report';
 import { createBrowserPageState } from './page-state';
 import { createBrowserPageSurface } from './page-surface';
 import { createBrowserLocalPrompts } from './local-prompts';
@@ -87,7 +83,6 @@ import { createBrowserDisplayCapture } from './display-capture';
 import { createBrowserDisplayTextures } from './display-textures';
 import { createBrowserPartition } from './partition';
 import { createBrowserPerformanceCommands } from './performance';
-import { normalizeBrowserPostcondition, normalizeBrowserSettleMs } from './postcondition';
 import {
   BrowserProfileImportService,
   defaultNativeBrowserImporterPath,
@@ -104,7 +99,7 @@ import { createBrowserRemoteControl } from './remote-control';
 import { createBrowserReply } from './reply';
 import { createBrowserScreenshotService } from './screenshot';
 import { BrowserSessionRegistry, DEFAULT_BROWSER_SESSION_ID, browserSessionId } from './session-registry';
-import { createBrowserSettle, pause, throwIfBrowserCancelled } from './settle';
+import { createBrowserSettle, pause } from './settle';
 import { createBrowserSessionStore } from './browser-session-store';
 import { createBrowserSnapshotCapture } from './snapshot-capture';
 import { createBrowserTabs } from './tabs';
@@ -158,35 +153,6 @@ function browserUrlPolicyFromEnvironment(): BrowserUrlPolicy {
       .map((domain) => domain.trim())
       .filter(Boolean),
   };
-}
-
-/** Validate and normalize one command before any page work: the action and the
- *  session that owns it, whether screenshot options are allowed here, the
- *  postcondition, and where it runs (visible tab vs named background page). */
-function prepareBrowserCommand(command: BrowserCommand): {
-  action: string;
-  ownerSessionId: string;
-  hasScreenshotOptions: boolean;
-  expected: ReturnType<typeof normalizeBrowserPostcondition>;
-  background: BrowserCommand['background'];
-  tab: string;
-} {
-  const action = normalizeBrowserAction(command);
-  if (!action) throw new Error('browser command requires action');
-  const ownerSessionId = browserSessionId(command.session_id);
-  const hasScreenshotOptions = ['fullPage', 'format', 'quality'].some((name) => Object.hasOwn(command, name));
-  if (action !== 'snapshot' && hasScreenshotOptions && command.includeScreenshot !== true) {
-    throw new Error(`${action} screenshot options require includeScreenshot=true`);
-  }
-  normalizeBrowserSettleMs(command.settleMs);
-  const expected = normalizeBrowserPostcondition(command.expect);
-  if (expected && !POSTCONDITION_ACTIONS.has(action)) {
-    throw new Error(`expect is not supported for browser action "${action}"`);
-  }
-  // Foreground drives and reveals the visible tab; background drives a
-  // hidden offscreen page on the same partition without taking the screen.
-  const background = action === 'open' && command.background !== true ? false : command.background;
-  return { action, ownerSessionId, hasScreenshotOptions, expected, background, tab: String(command.tab || '').trim() };
 }
 
 /** A fixed pane viewport becomes a full emulation command; a cleared one resets
@@ -667,114 +633,17 @@ export function createBrowserHost(
     runCommand: (command, signal) => runCommand(command, signal),
   };
 
-  async function runCommand(command: BrowserCommand, signal?: AbortSignal): Promise<BrowserCommandResult> {
-    const { action, ownerSessionId, hasScreenshotOptions, expected, background, tab } = prepareBrowserCommand(command);
-    // Tab-less bookkeeping actions never open or create a page.
-    if (TABLESS_ACTIONS.has(action)) {
-      await approvals.approve(command, () => ({ url: '', identity: ownerSessionId }), signal);
-    }
-    if (!['hide', 'downloads'].includes(action)) await lifecycle.restoreSession(ownerSessionId);
-    if (action === 'list_tabs') return tabs.listTabs(ownerSessionId);
-    if (action === 'downloads') return downloads.listDownloads(ownerSessionId, command, signal);
-    if (action === 'close_tab') return tabs.closeBackgroundTab(ownerSessionId, tab);
-    if (action === 'hide') {
-      lifecycle.requestBrowserSurface(ownerSessionId, 'hide');
-      return { text: 'Browser panel hide requested; tabs and page state are preserved.' };
-    }
-    const handler = browserActionHandler(action);
-    if (!handler) throw new Error(`unknown browser action "${action}"`);
-    const turnId = Number(command.turn_id) || 0;
-    taskLifecycle.begin(ownerSessionId, turnId);
-    const previousGuest = browserSessions.liveGuest(ownerSessionId);
-    const target = tabs.resolveTargetGuest(ownerSessionId, background, tab);
-    const targetIsBackground = target?.background === true;
-    if (!target && !previousGuest && action !== 'navigate' && action !== 'open') {
-      throw new Error('No browser page is open; navigate or use background:true.');
-    }
-    const guest = target?.guest ?? (await lifecycle.ensureGuest(ownerSessionId, { reveal: false }));
-    const backgroundPage = browserSessions.backgroundPageForGuest(ownerSessionId, guest);
-    taskLifecycle.use(
-      ownerSessionId,
-      turnId,
-      guest,
-      backgroundPage ? backgroundPage.kind === 'agent' && !backgroundPage.keepAlive : !previousGuest
-    );
-    if (action === 'open' && !targetIsBackground) {
-      retainGuest(guest);
-      lifecycle.requestBrowserSurface(ownerSessionId, true);
-    } else if (
-      !targetIsBackground &&
-      (action === 'navigate' || command.background === false) &&
-      !taskLifecycle.reveal(ownerSessionId, turnId, guest)
-    ) {
-      lifecycle.requestBrowserSurface(ownerSessionId, true);
-    }
-    await lifecycle.recoverCrashedGuest(guest, signal);
-    throwIfBrowserCancelled(signal);
-    // Explicit navigation and dialog handling can release a blocked execution.
-    // Other commands, including non-CDP storage mutations, wait for cleanup.
-    if (!['navigate', 'handle_dialog', 'status'].includes(action)) {
-      await cdp.waitForIdle(guest, signal);
-    }
-    // A blocked page accepts no gesture: CDP would queue the input behind the
-    // dialog and replay it after handle_dialog, which nobody asked for.
-    if (!DIALOG_TOLERANT_ACTIONS.has(action)) {
-      const blocked = reply.dialogResult(guest, false);
-      if (blocked) return blocked;
-    }
-    const refRecovery = reply.refRecoveryFor(guest);
-    const reportBaseline = state.peek(guest)?.refSet;
-    // The latest observation of this page is what the gesture starts from; a
-    // target resolution inside the handler moves it to the fresher one.
-    const effectBaseline = { current: state.peek(guest)?.refSet };
-    const preexistingPostcondition = Boolean(
-      expected &&
-        action !== 'navigate' &&
-        !state.for(guest).pendingDialog &&
-        (await settle.postconditionMatchesGuest(guest, expected, signal))
-    );
-    const actionSnapshot = () =>
-      command.internalStep === true
-        ? settle.stepSettleResult(guest, signal, targetIsBackground)
-        : reply.snapshotResult(guest, command, signal, {
-            expected,
-            preexistingPostcondition,
-            settleAction: true,
-            targetIsBackground,
-            baseline: effectBaseline.current,
-            reportBaseline,
-          });
-    try {
-      if (!command.internalStep) {
-        await approvals.approve(
-          command,
-          () => ({
-            url: guest.getURL(),
-            identity: browserDocumentId(state, guest),
-          }),
-          signal
-        );
-      }
-      const result = await handler({
-        guest,
-        command,
-        action,
-        signal,
-        ownerSessionId,
-        targetIsBackground,
-        expected,
-        preexistingPostcondition,
-        hasScreenshotOptions,
-        refRecovery,
-        effectBaseline,
-        actionSnapshot,
-        services,
-      });
-      return { ...result, text: state.redactText(guest, result.text) };
-    } catch (error) {
-      throw new Error(state.redactText(guest, (error as Error).message || String(error)));
-    }
-  }
+  const runCommand = createBrowserCommandRunner({
+    state,
+    approvals,
+    browserSessions,
+    lifecycle,
+    tabs,
+    downloads,
+    taskLifecycle,
+    retainGuest,
+    services,
+  });
 
   const { executeSerialized, executeLocal, releaseLocal, interruptForLocal, holdLocal } = createBrowserCommandQueue({
     chains: commandChains,

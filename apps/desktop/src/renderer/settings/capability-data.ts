@@ -211,9 +211,7 @@ async function readAllCapabilitySettings(
     onPartial?.({ ...next });
   };
   const prepared = SECTION_READS.map(([key, capability, args = []]) => {
-    let readArgs: unknown[] = [...args];
-    if (force && capability === 'listWebSearchModels') readArgs = [{ ...record(args[0]), force: true }];
-    else if (force && capability === 'getProviderSetup') readArgs = [{ refresh: true }];
+    const readArgs: unknown[] = force && capability === 'getProviderSetup' ? [{ refresh: true }] : [...args];
     return {
       key,
       request: {

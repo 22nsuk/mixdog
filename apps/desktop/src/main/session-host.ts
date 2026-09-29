@@ -312,8 +312,7 @@ export class SessionHost implements DesktopService {
   }
 
   private callOptions(callId: string = randomUUID(), timeoutMs?: number): SessionCallOptions {
-    if (this.disposed) throw new Error('Mixdog service host is disposed.');
-    return { callId, ...(timeoutMs ? { timeoutMs } : {}) };
+    return this.transport.callOptions(callId, timeoutMs);
   }
 
   private async taskWorkspace(): Promise<string> {

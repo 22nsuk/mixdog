@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 import { transcriptArtifacts } from './transcript-artifacts.ts';
 import { ToolActivityGroup } from './transcript-tool-ui.tsx';
 import { MarkdownProjectContext } from './MarkdownLink.tsx';
@@ -58,20 +58,11 @@ test('input paths, lookup, pending, failed and executable outputs never become r
 });
 
 test('collapsed activity exposes image, playable video, a document that opens in its conversation Project, and a deleted one as deleted', async () => {
-  const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'http://localhost/' });
-  const previous = new Map(
-    ['window', 'document', 'navigator', 'IS_REACT_ACT_ENVIRONMENT'].map((key) => [
-      key,
-      Object.getOwnPropertyDescriptor(globalThis, key),
-    ])
-  );
-  for (const key of ['window', 'document', 'navigator']) {
-    Object.defineProperty(globalThis, key, {
-      configurable: true,
-      value: key === 'window' ? dom.window : dom.window[key],
-    });
-  }
-  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const { dom, restore } = installTestDom(null, {
+    html: '<!doctype html><div id="root"></div>',
+    jsdom: { url: 'http://localhost/' },
+    expose: ['navigator'],
+  });
   const opened = [];
   dom.window.mixdogDesktop = {
     mediaUrl: (id, variant) => `http://localhost/media/${id}/${variant}`,
@@ -123,10 +114,6 @@ test('collapsed activity exposes image, playable video, a document that opens in
     assert.deepEqual(opened, [['C:/work', 'report%20%231.docx']]);
   } finally {
     await act(async () => root.unmount());
-    dom.window.close();
-    for (const [key, descriptor] of previous) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
+    restore();
   }
 });

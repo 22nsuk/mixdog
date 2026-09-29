@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 import {
   PROJECT_CATALOG_CACHE_KEY,
   acceptedProjectCatalog,
@@ -184,39 +185,27 @@ function assertPhoneBoot(dom, { ios = false } = {}) {
   assert.equal(dom.window.document.documentElement.hasAttribute('data-mixdog-ios-web'), ios);
 }
 
-test('Android Pixel boot preserves device-width like iOS', () => {
-  const dom = new JSDOM(
-    '<!doctype html><html><head><meta name="viewport" content="width=device-width"></head><body></body></html>',
-    { runScripts: 'outside-only', url: 'https://mixdog.test/' }
-  );
-  Object.defineProperty(dom.window.navigator, 'userAgent', {
-    configurable: true,
-    value: 'Mozilla/5.0 (Linux; Android 15; Pixel 8) AppleWebKit/537.36 Chrome/131 Mobile',
+for (const [device, model] of [
+  ['Pixel', 'Pixel 8'],
+  ['Samsung', 'SM-S928N'],
+]) {
+  test(`Android ${device} boot preserves device-width like iOS`, () => {
+    const dom = new JSDOM(
+      '<!doctype html><html><head><meta name="viewport" content="width=device-width"></head><body></body></html>',
+      { runScripts: 'outside-only', url: 'https://mixdog.test/' }
+    );
+    Object.defineProperty(dom.window.navigator, 'userAgent', {
+      configurable: true,
+      value: `Mozilla/5.0 (Linux; Android 15; ${model}) AppleWebKit/537.36 Chrome/131 Mobile`,
+    });
+    try {
+      dom.window.eval(bootSource);
+      assertPhoneBoot(dom);
+    } finally {
+      dom.window.close();
+    }
   });
-  try {
-    dom.window.eval(bootSource);
-    assertPhoneBoot(dom);
-  } finally {
-    dom.window.close();
-  }
-});
-
-test('Android Samsung boot preserves device-width like iOS', () => {
-  const dom = new JSDOM(
-    '<!doctype html><html><head><meta name="viewport" content="width=device-width"></head><body></body></html>',
-    { runScripts: 'outside-only', url: 'https://mixdog.test/' }
-  );
-  Object.defineProperty(dom.window.navigator, 'userAgent', {
-    configurable: true,
-    value: 'Mozilla/5.0 (Linux; Android 15; SM-S928N) AppleWebKit/537.36 Chrome/131 Mobile',
-  });
-  try {
-    dom.window.eval(bootSource);
-    assertPhoneBoot(dom);
-  } finally {
-    dom.window.close();
-  }
-});
+}
 
 test('installed phone boot promotes only its locale and preserves asset priority', () => {
   const dom = new JSDOM(
@@ -447,12 +436,11 @@ test('desktop Chrome boot retains the canonical projection', () => {
 });
 
 test('iOS web surfaces keep native scale through landscape rotation', async () => {
-  const dom = new JSDOM('<!doctype html><html><body></body></html>', {
-    url: 'https://mixdog.test/',
+  const { dom, restore } = installTestDom(null, {
+    html: '<!doctype html><html><body></body></html>',
+    expose: ['navigator'],
+    actEnvironment: false,
   });
-  const previous = new Map(
-    ['window', 'document', 'navigator'].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)])
-  );
   Object.defineProperty(dom.window.navigator, 'userAgent', {
     configurable: true,
     value: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15',
@@ -469,9 +457,6 @@ test('iOS web surfaces keep native scale through landscape rotation', async () =
     configurable: true,
     value: 844,
   });
-  Object.defineProperty(globalThis, 'window', { configurable: true, value: dom.window });
-  Object.defineProperty(globalThis, 'document', { configurable: true, value: dom.window.document });
-  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: dom.window.navigator });
 
   try {
     const {
@@ -497,21 +482,16 @@ test('iOS web surfaces keep native scale through landscape rotation', async () =
     assert.equal(document.documentElement.style.getPropertyValue('--mx-device-scale'), '1');
     remove();
   } finally {
-    for (const [key, descriptor] of previous) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
-    dom.window.close();
+    restore();
   }
 });
 
 test('a desktop-installed PWA never becomes a remote work surface', async () => {
-  const dom = new JSDOM('<!doctype html><html><body></body></html>', {
-    url: 'https://mixdog.test/',
+  const { dom, restore } = installTestDom(null, {
+    html: '<!doctype html><html><body></body></html>',
+    expose: ['navigator'],
+    actEnvironment: false,
   });
-  const previous = new Map(
-    ['window', 'document', 'navigator'].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)])
-  );
   Object.defineProperty(dom.window.navigator, 'userAgent', {
     configurable: true,
     value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131',
@@ -520,9 +500,6 @@ test('a desktop-installed PWA never becomes a remote work surface', async () => 
     configurable: true,
     value: true,
   });
-  Object.defineProperty(globalThis, 'window', { configurable: true, value: dom.window });
-  Object.defineProperty(globalThis, 'document', { configurable: true, value: dom.window.document });
-  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: dom.window.navigator });
 
   try {
     const { isInstalledMobileWebAppSurface, isInstalledWebAppSurface, isMobileRemoteSurface } = await import(
@@ -532,30 +509,22 @@ test('a desktop-installed PWA never becomes a remote work surface', async () => 
     assert.equal(isMobileRemoteSurface(), false);
     assert.equal(isInstalledMobileWebAppSurface(), false);
   } finally {
-    for (const [key, descriptor] of previous) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
-    dom.window.close();
+    restore();
   }
 });
 
 test('remote web surfaces clear and block renderer and browser zoom', async () => {
-  const dom = new JSDOM('<!doctype html><html><body></body></html>', {
-    url: 'https://mixdog.test/',
+  const { dom, restore } = installTestDom(null, {
+    html: '<!doctype html><html><body></body></html>',
+    expose: ['navigator'],
+    actEnvironment: false,
   });
-  const previous = new Map(
-    ['window', 'document', 'navigator'].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)])
-  );
   Object.defineProperty(dom.window.navigator, 'userAgent', {
     configurable: true,
     value: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15',
   });
   dom.window.localStorage.setItem('mixdog.web-zoom', '1.8');
   dom.window.document.documentElement.style.zoom = '1.8';
-  Object.defineProperty(globalThis, 'window', { configurable: true, value: dom.window });
-  Object.defineProperty(globalThis, 'document', { configurable: true, value: dom.window.document });
-  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: dom.window.navigator });
 
   try {
     const { zoomIn } = await import(`./webview-zoom.ts?remote-zoom=${Date.now()}`);
@@ -583,21 +552,16 @@ test('remote web surfaces clear and block renderer and browser zoom', async () =
     dom.window.document.dispatchEvent(gesture);
     assert.equal(gesture.defaultPrevented, true);
   } finally {
-    for (const [key, descriptor] of previous) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
-    dom.window.close();
+    restore();
   }
 });
 
 test('Android phones keep native scale on Pixel and Samsung screens', async () => {
-  const dom = new JSDOM('<!doctype html><html><body></body></html>', {
-    url: 'https://mixdog.test/',
+  const { dom, restore } = installTestDom(null, {
+    html: '<!doctype html><html><body></body></html>',
+    expose: ['navigator'],
+    actEnvironment: false,
   });
-  const previous = new Map(
-    ['window', 'document', 'navigator'].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)])
-  );
   Object.defineProperty(dom.window.navigator, 'userAgent', {
     configurable: true,
     value: 'Mozilla/5.0 (Linux; Android 15; Pixel 8) AppleWebKit/537.36 Chrome/131 Mobile',
@@ -612,9 +576,6 @@ test('Android phones keep native scale on Pixel and Samsung screens', async () =
     configurable: true,
     value: 412,
   });
-  Object.defineProperty(globalThis, 'window', { configurable: true, value: dom.window });
-  Object.defineProperty(globalThis, 'document', { configurable: true, value: dom.window.document });
-  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: dom.window.navigator });
 
   try {
     const { installMobileSurfaceMarker, isMobileRemoteSurface, mobileSurfaceScale } = await import(
@@ -628,11 +589,7 @@ test('Android phones keep native scale on Pixel and Samsung screens', async () =
     assert.equal(document.documentElement.style.getPropertyValue('--mx-device-scale'), '1');
     remove();
   } finally {
-    for (const [key, descriptor] of previous) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
-    dom.window.close();
+    restore();
   }
 });
 
@@ -640,12 +597,11 @@ test('Android phones keep native scale on Pixel and Samsung screens', async () =
 // must counter-scale it instead of assuming device-width, or the phone paints
 // dp-sized chrome into a canvas the browser shrinks onto a 412px screen.
 test('a stale projected boot keeps phone chrome at native size', async () => {
-  const dom = new JSDOM('<!doctype html><html data-mixdog-projection="desktop"><body></body></html>', {
-    url: 'https://mixdog.test/',
+  const { dom, restore } = installTestDom(null, {
+    html: '<!doctype html><html data-mixdog-projection="desktop"><body></body></html>',
+    expose: ['navigator'],
+    actEnvironment: false,
   });
-  const previous = new Map(
-    ['window', 'document', 'navigator'].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)])
-  );
   Object.defineProperty(dom.window.navigator, 'userAgent', {
     configurable: true,
     value: 'Mozilla/5.0 (Linux; Android 15; Pixel 8) AppleWebKit/537.36 Chrome/131 Mobile',
@@ -660,9 +616,6 @@ test('a stale projected boot keeps phone chrome at native size', async () => {
     configurable: true,
     value: 1040,
   });
-  Object.defineProperty(globalThis, 'window', { configurable: true, value: dom.window });
-  Object.defineProperty(globalThis, 'document', { configurable: true, value: dom.window.document });
-  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: dom.window.navigator });
 
   try {
     const { installMobileSurfaceMarker, mobileSurfaceScale } = await import(
@@ -674,11 +627,7 @@ test('a stale projected boot keeps phone chrome at native size', async () => {
     assert.equal(document.documentElement.style.getPropertyValue('--mx-device-scale'), '2.52');
     remove();
   } finally {
-    for (const [key, descriptor] of previous) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
-    dom.window.close();
+    restore();
   }
 });
 

@@ -6,8 +6,7 @@ import { createComputerUserWait } from '../session/user-wait';
 import type { ComputerCommand, PowerShellResponse } from '../shared/types';
 import type { SessionLifecycle } from './session-lifecycle';
 import { assertSafeComputerSessionId } from '../input/guards';
-
-export const USER_WAIT_SESSION_ID = '__computer_user_wait__';
+import { USER_WAIT_SESSION_ID } from '../shared/common';
 
 export function createUserWaitService(options: {
   directory: string;

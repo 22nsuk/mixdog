@@ -8,19 +8,15 @@ import test from 'node:test';
 
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 
-const dom = new JSDOM('<!doctype html><html><body></body></html>', {
-  url: 'https://mixdog.test/',
+const { dom } = installTestDom(null, {
+  html: '<!doctype html><html><body></body></html>',
+  jsdom: {
+    url: 'https://mixdog.test/',
+  },
+  expose: ['history', 'navigator'],
 });
-globalThis.window = dom.window;
-globalThis.document = dom.window.document;
-globalThis.history = dom.window.history;
-Object.defineProperty(globalThis, 'navigator', {
-  configurable: true,
-  value: dom.window.navigator,
-});
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 const { useHoverPopover } = await import('./hover-popover.ts');
 

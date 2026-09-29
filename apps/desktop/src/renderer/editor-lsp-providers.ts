@@ -16,7 +16,7 @@ import {
   monacoRange,
   recordOf,
 } from './editor-lsp-conversion';
-import { graphContextsByModel, preparePeekModels } from './editor-monaco-providers';
+import { graphContextsByModel, preparePeekModels } from './editor-graph-context';
 
 const lspProviderFeaturesByLanguage = new Map<string, Set<string>>();
 let lspWorkspaceEditCommandInstalled = false;
@@ -487,10 +487,7 @@ function registerLspEditProviders(languageId: string, capabilities: LspCapabilit
           const diagnostics = actionContext.markers.map((marker) => {
             const code = typeof marker.code === 'object' ? marker.code.value : marker.code;
             return {
-              range: {
-                start: { line: marker.startLineNumber - 1, character: marker.startColumn - 1 },
-                end: { line: marker.endLineNumber - 1, character: marker.endColumn - 1 },
-              },
+              range: lspRange(marker),
               severity: lspDiagnosticSeverity(marker.severity),
               message: marker.message,
               ...(marker.source ? { source: marker.source } : {}),
@@ -499,10 +496,7 @@ function registerLspEditProviders(languageId: string, capabilities: LspCapabilit
           });
           const only = actionContext.only;
           const result = await context.requestLsp('textDocument/codeAction', {
-            range: {
-              start: { line: range.startLineNumber - 1, character: range.startColumn - 1 },
-              end: { line: range.endLineNumber - 1, character: range.endColumn - 1 },
-            },
+            range: lspRange(range),
             context: {
               diagnostics,
               ...(only ? { only: [only] } : {}),
@@ -554,10 +548,7 @@ function registerLspEditProviders(languageId: string, capabilities: LspCapabilit
         const context = graphContextsByModel.get(model.uri.toString())?.current;
         if (!context?.requestLsp || !context.lspCapabilities?.rangeFormatting) return [];
         const result = await context.requestLsp('textDocument/rangeFormatting', {
-          range: {
-            start: { line: range.startLineNumber - 1, character: range.startColumn - 1 },
-            end: { line: range.endLineNumber - 1, character: range.endColumn - 1 },
-          },
+          range: lspRange(range),
           options,
         });
         return (Array.isArray(result) ? result : []).flatMap((item) => {

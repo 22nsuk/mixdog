@@ -15,7 +15,7 @@ import {
 import { sessionSummaryTitle } from '../shared/session-title.mjs';
 import { t } from './i18n';
 import { modelDisplayName, ModelRouteLabel } from './provider-display';
-import { formatWorkElapsed, timeMs } from './TranscriptView';
+import { formatWorkElapsed, timeMs } from './transcript-primitives';
 import { TextShimmer } from './transcript-primitives';
 import {
   AGENT_POOL_RECONCILE_MS,

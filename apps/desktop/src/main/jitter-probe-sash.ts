@@ -1,4 +1,5 @@
 import type { BrowserWindow } from 'electron';
+import { sleep } from './jitter-probe-session';
 
 type SashGeometry = {
   x: number;
@@ -26,11 +27,7 @@ export async function readProbeSash(window: BrowserWindow): Promise<SashGeometry
   })()`) as Promise<SashGeometry | null>;
 }
 
-export async function dragProbeSash(
-  window: BrowserWindow,
-  initialSash: SashGeometry,
-  sleep: (ms: number) => Promise<unknown>
-): Promise<void> {
+export async function dragProbeSash(window: BrowserWindow, initialSash: SashGeometry): Promise<void> {
   const debug = window.webContents.debugger;
   const wasAttached = debug.isAttached();
   if (!wasAttached) debug.attach('1.3');

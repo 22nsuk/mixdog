@@ -1,10 +1,12 @@
 import type {
   DesktopApi,
+  DesktopLspCapabilities,
   DesktopLspDiagnostic,
   DesktopLspDiagnosticEvent,
   DesktopLspServerState,
   DesktopLspStatusEvent,
 } from '../shared/contract';
+import { recordOrNull } from './record-utils';
 
 export interface EditorProblem {
   key: string;
@@ -120,41 +122,29 @@ function markerCode(value: NativeMarker['code'] | DesktopLspDiagnostic['code']):
   return value == null ? '' : String(value);
 }
 
+const COMMAND_CAPABILITY_KEYS = Object.keys(EMPTY_COMMAND_CAPABILITIES) as Array<keyof EditorCommandCapabilities>;
+
+function commandCapabilitiesOf(capabilities: DesktopLspCapabilities): EditorCommandCapabilities {
+  const next = { ...EMPTY_COMMAND_CAPABILITIES };
+  for (const key of COMMAND_CAPABILITY_KEYS) next[key] = capabilities[key];
+  return next;
+}
+
+/** A server's status is keyed by project and language, and by file too when
+ *  the server answered for one document. */
+function statusKey(projectPath: string, languageId: string, relPath?: string): string {
+  const suffix = relPath ? `\0${relPath.replace(/\\/g, '/').toLocaleLowerCase()}` : '';
+  return `${projectPath}\0${languageId}${suffix}`;
+}
+
 function publish(): void {
   const status = active
-    ? (statuses.get(
-        `${active.projectPath}\0${active.languageId}\0${active.relPath.replace(/\\/g, '/').toLocaleLowerCase()}`
-      ) ?? statuses.get(`${active.projectPath}\0${active.languageId}`))
+    ? (statuses.get(statusKey(active.projectPath, active.languageId, active.relPath)) ??
+      statuses.get(statusKey(active.projectPath, active.languageId)))
     : undefined;
   const capabilities = status?.available ? status.capabilities : undefined;
-  const nextCommandCapabilities = capabilities
-    ? {
-        declaration: capabilities.declaration,
-        definition: capabilities.definition,
-        typeDefinition: capabilities.typeDefinition,
-        implementation: capabilities.implementation,
-        references: capabilities.references,
-        signatureHelp: capabilities.signatureHelp,
-        rename: capabilities.rename,
-        codeAction: capabilities.codeAction,
-        formatting: capabilities.formatting,
-        rangeFormatting: capabilities.rangeFormatting,
-        callHierarchy: capabilities.callHierarchy,
-      }
-    : EMPTY_COMMAND_CAPABILITIES;
-  if (
-    commandCapabilities.declaration !== nextCommandCapabilities.declaration ||
-    commandCapabilities.definition !== nextCommandCapabilities.definition ||
-    commandCapabilities.typeDefinition !== nextCommandCapabilities.typeDefinition ||
-    commandCapabilities.implementation !== nextCommandCapabilities.implementation ||
-    commandCapabilities.references !== nextCommandCapabilities.references ||
-    commandCapabilities.signatureHelp !== nextCommandCapabilities.signatureHelp ||
-    commandCapabilities.rename !== nextCommandCapabilities.rename ||
-    commandCapabilities.codeAction !== nextCommandCapabilities.codeAction ||
-    commandCapabilities.formatting !== nextCommandCapabilities.formatting ||
-    commandCapabilities.rangeFormatting !== nextCommandCapabilities.rangeFormatting ||
-    commandCapabilities.callHierarchy !== nextCommandCapabilities.callHierarchy
-  ) {
+  const nextCommandCapabilities = capabilities ? commandCapabilitiesOf(capabilities) : EMPTY_COMMAND_CAPABILITIES;
+  if (COMMAND_CAPABILITY_KEYS.some((key) => commandCapabilities[key] !== nextCommandCapabilities[key])) {
     commandCapabilities = nextCommandCapabilities;
   }
   revision += 1;
@@ -202,8 +192,7 @@ export function ensureEditorLanguageStore(): void {
   unsubscribeDiagnostics = api?.subscribeLspDiagnostics?.(acceptLspDiagnostics) ?? null;
   unsubscribeStatus =
     api?.subscribeLspStatus?.((event) => {
-      const suffix = event.relPath ? `\0${event.relPath.replace(/\\/g, '/').toLocaleLowerCase()}` : '';
-      statuses.set(`${event.projectPath}\0${event.languageId}${suffix}`, event);
+      statuses.set(statusKey(event.projectPath, event.languageId, event.relPath), event);
       publish();
     }) ?? null;
 }
@@ -219,7 +208,7 @@ export function acceptEditorLspState(
   state: DesktopLspServerState
 ): void {
   ensureEditorLanguageStore();
-  const key = `${projectPath}\0${languageId}\0${relPath.replace(/\\/g, '/').toLocaleLowerCase()}`;
+  const key = statusKey(projectPath, languageId, relPath);
   const previous = statuses.get(key);
   if (
     previous &&
@@ -322,12 +311,8 @@ export function setEditorOutline(uri: string, rows: readonly EditorOutlineItem[]
   if (active?.uri === uri) publish();
 }
 
-function objectRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
-}
-
 function textOffset(content: string, rawPosition: unknown): number {
-  const position = objectRecord(rawPosition);
+  const position = recordOrNull(rawPosition);
   const line = Math.max(0, Number(position?.line) || 0);
   const character = Math.max(0, Number(position?.character) || 0);
   let start = 0;
@@ -347,7 +332,7 @@ function textOffset(content: string, rawPosition: unknown): number {
 export function applyLspTextEdits(content: string, edits: readonly Record<string, unknown>[]): string {
   const offsets = edits
     .map((edit) => {
-      const range = objectRecord(edit.range);
+      const range = recordOrNull(edit.range);
       return {
         start: textOffset(content, range?.start),
         end: textOffset(content, range?.end),

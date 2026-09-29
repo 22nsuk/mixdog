@@ -10,6 +10,15 @@ export const COLLAPSED_SESSIONS_TOGGLE = '.app-shell.sidebar-collapsed .activity
 /** The active rail destination, which re-inks to full text in every theme. */
 export const ACTIVE_RAIL_ICON = '.activity-rail .workbench-side-icon-bar.is-vertical > button.active';
 
+/** In-page `rect(element)` helper shared by every measurement script below. */
+const RECT_HELPER = `const rect = (element) => {
+      const value = element.getBoundingClientRect();
+      return {
+        left: value.left, top: value.top, right: value.right, bottom: value.bottom,
+        width: value.width, height: value.height,
+      };
+    };`;
+
 export async function withCaptureTimeout<T>(
   promise: Promise<T>,
   label: string,
@@ -222,13 +231,7 @@ export async function readDesktopAssertions(window: BrowserWindow): Promise<Live
       if (!(element instanceof HTMLElement)) throw new Error('Missing capture element: ' + selector);
       return element;
     };
-    const rect = (element) => {
-      const value = element.getBoundingClientRect();
-      return {
-        left: value.left, top: value.top, right: value.right, bottom: value.bottom,
-        width: value.width, height: value.height,
-      };
-    };
+    ${RECT_HELPER}
     const visible = (element) => {
       const style = getComputedStyle(element);
       const box = element.getBoundingClientRect();
@@ -302,13 +305,7 @@ export async function readSettingsPlacement(window: BrowserWindow): Promise<Sett
       || !(firstRailButton instanceof HTMLElement)) {
       throw new Error('Settings dialog is missing from the capture renderer.');
     }
-    const rect = (element) => {
-      const value = element.getBoundingClientRect();
-      return {
-        left: value.left, top: value.top, right: value.right, bottom: value.bottom,
-        width: value.width, height: value.height,
-      };
-    };
+    ${RECT_HELPER}
     const layerRect = rect(layer);
     const dialogRect = rect(dialog);
     const railRect = rect(rail);
@@ -386,13 +383,7 @@ export async function readPhoneSettingsAssertions(window: BrowserWindow): Promis
       || !(body instanceof HTMLElement) || !(close instanceof HTMLElement)) {
       throw new Error('Phone settings surface is missing from the capture renderer.');
     }
-    const rect = (element) => {
-      const value = element.getBoundingClientRect();
-      return {
-        left: value.left, top: value.top, right: value.right, bottom: value.bottom,
-        width: value.width, height: value.height,
-      };
-    };
+    ${RECT_HELPER}
     const visible = (element) => {
       const style = getComputedStyle(element);
       const value = element.getBoundingClientRect();
@@ -582,13 +573,7 @@ export async function readMobileOpenAssertions(
     if (!(sidebar instanceof HTMLElement) || !(backdrop instanceof HTMLElement) || !(rail instanceof HTMLElement)) {
       throw new Error('Mobile sidebar, backdrop or rail is missing.');
     }
-    const rect = (element) => {
-      const value = element.getBoundingClientRect();
-      return {
-        left: value.left, top: value.top, right: value.right, bottom: value.bottom,
-        width: value.width, height: value.height,
-      };
-    };
+    ${RECT_HELPER}
     const state = (element) => {
       const style = getComputedStyle(element);
       const box = element.getBoundingClientRect();
@@ -649,13 +634,7 @@ export async function readMobileClosedAssertions(
       if (!(element instanceof HTMLElement)) throw new Error('Missing mobile capture element: ' + selector);
       return element;
     };
-    const rect = (element) => {
-      const value = element.getBoundingClientRect();
-      return {
-        left: value.left, top: value.top, right: value.right, bottom: value.bottom,
-        width: value.width, height: value.height,
-      };
-    };
+    ${RECT_HELPER}
     const visible = (element) => {
       const style = getComputedStyle(element);
       const box = element.getBoundingClientRect();

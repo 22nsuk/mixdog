@@ -6,7 +6,7 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { childEnvironment } from './child-environment';
-import { run } from './cli-run';
+import { installWithPackageManager, run } from './cli-run';
 
 import type {
   DesktopGithubCliAccount,
@@ -115,43 +115,14 @@ export async function installGitCli(): Promise<DesktopGitCliStatus> {
   // package as an upgrade request (0x8A15002B when none applies).
   const existing = await gitCliStatus(true);
   if (existing.installed) return existing;
-  if (process.platform === 'win32') {
-    const result = await run(
-      'winget',
-      [
-        'install',
-        '--id',
-        'Git.Git',
-        '--exact',
-        '--source',
-        'winget',
-        '--accept-package-agreements',
-        '--accept-source-agreements',
-        '--disable-interactivity',
-      ],
-      INSTALL_TIMEOUT_MS
-    );
-    if (result.code === -1) {
-      throw new Error('winget is unavailable. Install Git from https://git-scm.com and try again.');
-    }
-    if (result.code !== 0) {
-      const detail = (result.stderr || result.stdout).trim().split('\n').filter(Boolean).pop();
-      throw new Error(`winget could not install Git: ${detail || `exit code ${result.code}`}`);
-    }
-  } else if (process.platform === 'darwin') {
-    const result = await run('brew', ['install', 'git'], INSTALL_TIMEOUT_MS);
-    if (result.code === -1) {
-      throw new Error('Homebrew is unavailable. Install Git from https://git-scm.com and try again.');
-    }
-    if (result.code !== 0) {
-      const detail = (result.stderr || result.stdout).trim().split('\n').filter(Boolean).pop();
-      throw new Error(`brew could not install Git: ${detail || `exit code ${result.code}`}`);
-    }
-  } else {
-    throw new Error(
-      'Automatic Git installation is not supported on this platform. Install Git from https://git-scm.com.'
-    );
-  }
+  await installWithPackageManager({
+    label: 'Git',
+    homepage: 'https://git-scm.com',
+    wingetId: 'Git.Git',
+    brewArgs: ['install', 'git'],
+    timeoutMs: INSTALL_TIMEOUT_MS,
+    unsupported: 'Automatic Git installation is not supported on this platform. Install Git from https://git-scm.com.',
+  });
   const status = await gitCliStatus(true);
   if (!status.installed) {
     throw new Error('Git installed, but the executable was not found yet. Restart Mixdog Desktop to pick it up.');
@@ -160,43 +131,14 @@ export async function installGitCli(): Promise<DesktopGitCliStatus> {
 }
 
 export async function installGithubCli(): Promise<DesktopGithubCliStatus> {
-  if (process.platform === 'win32') {
-    const result = await run(
-      'winget',
-      [
-        'install',
-        '--id',
-        'GitHub.cli',
-        '--exact',
-        '--source',
-        'winget',
-        '--accept-package-agreements',
-        '--accept-source-agreements',
-        '--disable-interactivity',
-      ],
-      INSTALL_TIMEOUT_MS
-    );
-    if (result.code === -1) {
-      throw new Error('winget is unavailable. Install GitHub CLI from https://cli.github.com and try again.');
-    }
-    if (result.code !== 0) {
-      const detail = (result.stderr || result.stdout).trim().split('\n').filter(Boolean).pop();
-      throw new Error(`winget could not install GitHub CLI: ${detail || `exit code ${result.code}`}`);
-    }
-  } else if (process.platform === 'darwin') {
-    const result = await run('brew', ['install', 'gh'], INSTALL_TIMEOUT_MS);
-    if (result.code === -1) {
-      throw new Error('Homebrew is unavailable. Install GitHub CLI from https://cli.github.com and try again.');
-    }
-    if (result.code !== 0) {
-      const detail = (result.stderr || result.stdout).trim().split('\n').filter(Boolean).pop();
-      throw new Error(`brew could not install GitHub CLI: ${detail || `exit code ${result.code}`}`);
-    }
-  } else {
-    throw new Error(
-      'Automatic install is not supported on this platform. Install GitHub CLI from https://cli.github.com.'
-    );
-  }
+  await installWithPackageManager({
+    label: 'GitHub CLI',
+    homepage: 'https://cli.github.com',
+    wingetId: 'GitHub.cli',
+    brewArgs: ['install', 'gh'],
+    timeoutMs: INSTALL_TIMEOUT_MS,
+    unsupported: 'Automatic install is not supported on this platform. Install GitHub CLI from https://cli.github.com.',
+  });
   const status = await githubCliStatus(true);
   if (!status.installed) {
     throw new Error(

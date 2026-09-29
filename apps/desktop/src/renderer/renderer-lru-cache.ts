@@ -36,6 +36,11 @@ export class RendererLruCache<K, V> {
     return this.retained;
   }
 
+  /** Read without refreshing recency. */
+  peek(key: K): V | undefined {
+    return this.entries.get(key)?.value;
+  }
+
   get(key: K): V | undefined {
     const entry = this.entries.get(key);
     if (!entry) return undefined;

@@ -18,6 +18,7 @@ import {
   updateSidebarReference,
 } from '../../src/renderer/sidebar-reference-cache';
 import { initUiLanguage, setUiLanguagePreference } from '../../src/renderer/i18n';
+import { settleFrames } from '../probe-settle';
 
 const root = createRoot(document.getElementById('root')!);
 const noop = () => {};
@@ -300,14 +301,7 @@ function Scene({ view, railWidth }: { view: string; railWidth: number }) {
     </div>
   );
 }
-async function settle() {
-  await new Promise((resolve) => setTimeout(resolve, 80));
-  await document.fonts.ready;
-  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-  for (const animation of document.getAnimations()) {
-    if (Number.isFinite(animation.effect?.getTiming().iterations)) animation.finish();
-  }
-}
+const settle = () => settleFrames(80);
 function click(selector: string) {
   const element = document.querySelector<HTMLElement>(selector);
   if (!element) throw new Error(`Missing fixture target: ${selector}`);

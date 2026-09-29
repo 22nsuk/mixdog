@@ -60,12 +60,7 @@ export async function buildActionReply(
     );
     const payload: Record<string, unknown> = {
       ...unverifiedPayload(context, text),
-      capture_after: {
-        ...capture.metadata,
-        target_reason:
-          capture.metadata.capture_target_reason || windowTransition?.next_target_reason || 'original_target',
-        ...previousWindow,
-      },
+      capture_after: captureAfterEntry(capture, previousWindow, windowTransition),
     };
     applyObservationOutcome(payload, capture.metadata);
     return {
@@ -92,6 +87,20 @@ async function capturePostAction(
   const previousWindow =
     originalWindowId && captureWindowId !== originalWindowId ? { previous_window_id: originalWindowId } : {};
   return { capture, previousWindow };
+}
+
+/** The `capture_after` block of a reply: the observation's metadata, why that
+ *  target was chosen, and the original window when the capture moved away. */
+function captureAfterEntry(
+  capture: Awaited<ReturnType<CaptureAfterAction>>,
+  previousWindow: { previous_window_id?: string },
+  windowTransition: ComputerWindowTransition | null
+): Record<string, unknown> {
+  return {
+    ...capture.metadata,
+    target_reason: capture.metadata.capture_target_reason || windowTransition?.next_target_reason || 'original_target',
+    ...previousWindow,
+  };
 }
 
 // A reply the host could not verify: the caller re-observes before acting on it.
@@ -189,11 +198,7 @@ async function captureAfterSemanticAction(
     return undefined;
   }
   const { capture, previousWindow } = await capturePostAction(captureAfterAction, context, originalWindowId);
-  payload.capture_after = {
-    ...capture.metadata,
-    target_reason: capture.metadata.capture_target_reason || windowTransition?.next_target_reason || 'original_target',
-    ...previousWindow,
-  };
+  payload.capture_after = captureAfterEntry(capture, previousWindow, windowTransition);
   applyObservationOutcome(payload, capture.metadata);
   if (capture.image && captureAfterImageIsRedundant(command, capture.metadata, semanticTargetIdentity)) {
     (payload.capture_after as Record<string, unknown>).image_omitted = 'semantic_change_reported';

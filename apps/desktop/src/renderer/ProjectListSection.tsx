@@ -5,7 +5,7 @@ import type { DesktopProjectSummary } from '../shared/contract';
 import { t } from './i18n';
 import { ErrorNotice } from './ErrorNotice';
 import { InitialSurface } from './InitialSurface';
-import { projectIdentity, SidebarPanelAction } from './session-sidebar';
+import { projectIdentity, SidebarPanelAction } from './session-sidebar-sections';
 import { ExtensionDetailDialog, ExtensionField, ExtensionSection } from './settings/extension-detail';
 import { useSidebarPanelDismiss } from './sidebar-panel-surface';
 import './desktop/extension-dialog.css';
@@ -674,17 +674,14 @@ export function ProjectListSection({
             const alias = editName.trim();
             setEditBusy(true);
             setEditError('');
-            const save = Promise.resolve();
-            void save
-              .then(() => {
-                if (path !== null && alias && alias !== title) onRename(path, alias);
-                setEditBusy(false);
-                resetEdit();
-              })
-              .catch((reason) => {
-                setEditBusy(false);
-                setEditError(reason instanceof Error ? reason.message : String(reason));
-              });
+            try {
+              if (path !== null && alias && alias !== title) onRename(path, alias);
+              setEditBusy(false);
+              resetEdit();
+            } catch (reason) {
+              setEditBusy(false);
+              setEditError(reason instanceof Error ? reason.message : String(reason));
+            }
           }}
           footer={projectEditFooter({
             editTarget,

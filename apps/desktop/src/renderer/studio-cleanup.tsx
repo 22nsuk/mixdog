@@ -5,7 +5,7 @@ import { t } from './i18n';
 import { useMobileBack } from './mobile-back';
 
 /** A bulk-delete request; the Studio adds the current kind. */
-export interface StudioCleanupFilter {
+interface StudioCleanupFilter {
   ids?: string[];
   before?: number;
   missing?: boolean;
@@ -47,17 +47,17 @@ export function StudioCleanupBar({
     const dismiss = (event: PointerEvent) => {
       if (open && !menuNode.current?.contains(event.target as Node)) setOpen(false);
     };
-    const escape = (event: KeyboardEvent) => {
+    const onEscape = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       event.stopPropagation();
       if (open) setOpen(false);
       else onExitSelection();
     };
     window.addEventListener('pointerdown', dismiss, true);
-    window.addEventListener('keydown', escape, true);
+    window.addEventListener('keydown', onEscape, true);
     return () => {
       window.removeEventListener('pointerdown', dismiss, true);
-      window.removeEventListener('keydown', escape, true);
+      window.removeEventListener('keydown', onEscape, true);
     };
   }, [open, selecting, onExitSelection]);
 

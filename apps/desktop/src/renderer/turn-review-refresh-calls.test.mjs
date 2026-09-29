@@ -1,46 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import React, { act } from 'react';
-import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
 import { TurnReviewBar } from './TurnReview';
+import { installReviewDom } from './turn-review-test-support.mjs';
 import { _runIdleReclaimForTest } from './idle-reclaim';
 
 function mount(t, sessionId = 'sess-review-calls') {
-  const dom = new JSDOM('<!doctype html><div id="root"></div>', {
-    url: 'https://mixdog.test/',
-    pretendToBeVisual: true,
-  });
-  const previous = new Map(
-    ['window', 'document', 'IS_REACT_ACT_ENVIRONMENT'].map((key) => [
-      key,
-      Object.getOwnPropertyDescriptor(globalThis, key),
-    ])
-  );
-  Object.defineProperty(globalThis, 'window', { configurable: true, value: dom.window });
-  Object.defineProperty(globalThis, 'document', { configurable: true, value: dom.window.document });
-  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   const pending = [];
   const requests = [];
-  dom.window.mixdogDesktop = {
-    invokeCapability(request) {
-      requests.push(request);
-      return new Promise((resolve) => pending.push(resolve));
+  const { dom, root } = installReviewDom(t, {
+    desktop: {
+      invokeCapability(request) {
+        requests.push(request);
+        return new Promise((resolve) => pending.push(resolve));
+      },
     },
-  };
-  const root = createRoot(dom.window.document.getElementById('root'));
-  t.after(async () => {
-    await act(async () => root.unmount());
-    dom.window.close();
-    for (const [key, descriptor] of previous) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
   });
   const render = (items, busy) =>
-    act(async () =>
-      root.render(React.createElement(TurnReviewBar, { items, sessionId, active: true, busy }))
-    );
+    act(async () => root.render(React.createElement(TurnReviewBar, { items, sessionId, active: true, busy })));
   const answer = (value = {}) =>
     act(async () =>
       pending.shift()({

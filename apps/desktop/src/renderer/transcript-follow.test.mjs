@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import { nextTranscriptHistoryLimit } from './transcript-history.ts';
 import { shouldDeferTranscriptScrollAdjustment } from './TranscriptList.tsx';
+import { installTestDom } from './test-support/test-dom.mjs';
 import {
   clampTranscriptSelectionPoint,
   nearestTranscriptSelectionRow,
@@ -266,19 +267,16 @@ test('a burst of programmatic writes stays attributable to the timeline', () => 
 // then "stayed down" until the next touch, and every row size deferred for
 // reader motion stayed deferred with the rows drawn over each other.
 test('a touch whose row is virtualized away stops owning the transcript once its fling idles', async () => {
-  const [{ JSDOM }, React, { createRoot }, { useTranscriptFollow }] = await Promise.all([
-    import('jsdom'),
+  const [React, { createRoot }, { useTranscriptFollow }] = await Promise.all([
     import('react'),
     import('react-dom/client'),
     import('./use-transcript-follow.ts'),
   ]);
-  const dom = new JSDOM("<div id='root'></div>", { url: 'http://localhost/', pretendToBeVisual: true });
-  const keys = ['window', 'document', 'Element', 'IS_REACT_ACT_ENVIRONMENT'];
-  const previous = new Map(keys.map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
-  Object.defineProperty(globalThis, 'window', { configurable: true, value: dom.window });
-  Object.defineProperty(globalThis, 'document', { configurable: true, value: dom.window.document });
-  Object.defineProperty(globalThis, 'Element', { configurable: true, value: dom.window.Element });
-  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const { restore } = installTestDom(null, {
+    html: "<div id='root'></div>",
+    jsdom: { url: 'http://localhost/', pretendToBeVisual: true },
+    expose: ['Element'],
+  });
   const realNow = Date.now;
   let now = 100_000;
   Date.now = () => now;
@@ -308,10 +306,6 @@ test('a touch whose row is virtualized away stops owning the transcript once its
   } finally {
     Date.now = realNow;
     await React.act(async () => root.unmount());
-    dom.window.close();
-    for (const [key, descriptor] of previous) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
+    restore();
   }
 });

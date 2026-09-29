@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
+import { settle, until, withShim } from './remote-shim-test-harness.mjs';
 import { TerminalLocalEcho } from './terminal-local-echo.ts';
 
 function makeEcho(anchor = 10) {
@@ -108,11 +109,18 @@ test('cursor-moving output is a mismatch, never consumed', () => {
 });
 
 test('remote reconnect re-ensures mounted terminals without duplicate attempts', async () => {
-  const [shim, pane] = await Promise.all([
-    readFile(new URL('./remote-shim.ts', import.meta.url), 'utf8'),
-    readFile(new URL('./TerminalPane.tsx', import.meta.url), 'utf8'),
-  ]);
-  assert.match(shim, /dispatchEvent\(\s*new\s+Event\(\s*['"]mixdog:remote-reconnected['"]\s*\)\s*\)/);
+  const pane = await readFile(new URL('./TerminalPane.tsx', import.meta.url), 'utf8');
+  // The shim announces a completed REconnection to mounted terminal panes —
+  // and only a reconnection, never the first connect.
+  await withShim({ secure: true }, async (h) => {
+    const reconnected = () => h.events.filter((event) => event.type === 'mixdog:remote-reconnected').length;
+    const first = await h.dial();
+    await settle();
+    assert.equal(reconnected(), 0);
+    first.ws.onclose({ code: 1006 });
+    await h.dial();
+    await until(() => reconnected() === 1, 'the reconnect announcement');
+  });
   assert.match(pane, /if\s*\(\s*disposed\s*\|\|\s*ensureInFlight\s*\)\s*return;/);
   assert.match(pane, /addEventListener\(\s*['"]mixdog:remote-reconnected['"],\s*onRemoteReconnected\s*\)/);
   assert.match(pane, /removeEventListener\(\s*['"]mixdog:remote-reconnected['"],\s*onRemoteReconnected\s*\)/);

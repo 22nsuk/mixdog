@@ -60,7 +60,8 @@ function installedEngineDescription(
   installEngine?: DesktopTidyInstallEngine | null
 ): string {
   const parts: string[] = [];
-  if (engine.languages?.length) parts.push(engine.languages.join(', '));
+  const languages = engineLanguages(engine);
+  if (languages) parts.push(languages);
   const version = engine.version || installEngine?.version;
   if (version) parts.push(version);
   const bytes = typeof engine.bytes === 'number' && engine.bytes > 0 ? engine.bytes : installEngine?.bytes;

@@ -12,6 +12,7 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 
 import { parseMarkdownToHast } from './markdown-ast';
 import { parseStreamingMarkdownAst } from './markdown-worker-client';
@@ -174,18 +175,7 @@ test('source fallback keeps fenced code in its final card grammar', () => {
 });
 
 test('streaming markdown never exposes source while its first AST is pending', async () => {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
-    url: 'http://localhost/',
-  });
-  const previous = new Map(
-    ['window', 'document', 'IS_REACT_ACT_ENVIRONMENT'].map((key) => [
-      key,
-      Object.getOwnPropertyDescriptor(globalThis, key),
-    ])
-  );
-  Object.defineProperty(globalThis, 'window', { configurable: true, value: dom.window });
-  Object.defineProperty(globalThis, 'document', { configurable: true, value: dom.window.document });
-  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const { dom, restore } = installTestDom(null, { jsdom: { url: 'http://localhost/' } });
   const root = createRoot(dom.window.document.getElementById('root'));
   const CopyControl = () => null;
   try {
@@ -213,11 +203,7 @@ test('streaming markdown never exposes source while its first AST is pending', a
     assert.equal(dom.window.document.getElementById('root').textContent, '');
   } finally {
     await act(async () => root.unmount());
-    dom.window.close();
-    for (const [key, descriptor] of previous) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
+    restore();
   }
 });
 
@@ -239,18 +225,7 @@ test('a partially arrived closing fence never parses as a code line', () => {
 });
 
 test('a block cut from the live tail keeps its last parse until its own parse lands', async () => {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
-    url: 'http://localhost/',
-  });
-  const previous = new Map(
-    ['window', 'document', 'IS_REACT_ACT_ENVIRONMENT'].map((key) => [
-      key,
-      Object.getOwnPropertyDescriptor(globalThis, key),
-    ])
-  );
-  Object.defineProperty(globalThis, 'window', { configurable: true, value: dom.window });
-  Object.defineProperty(globalThis, 'document', { configurable: true, value: dom.window.document });
-  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const { dom, restore } = installTestDom(null, { jsdom: { url: 'http://localhost/' } });
   const host = dom.window.document.getElementById('root');
   const root = createRoot(host);
   const render = (text) => root.render(React.createElement(StreamingMarkdownBody, { text, copyControl: () => null }));
@@ -275,27 +250,12 @@ test('a block cut from the live tail keeps its last parse until its own parse la
     assert.equal(host.querySelector('strong')?.textContent, 'block');
   } finally {
     await act(async () => root.unmount());
-    dom.window.close();
-    for (const [key, descriptor] of previous) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
+    restore();
   }
 });
 
 test('streaming fenced scripts keep final card geometry while their first AST is pending', async () => {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
-    url: 'http://localhost/',
-  });
-  const previous = new Map(
-    ['window', 'document', 'IS_REACT_ACT_ENVIRONMENT'].map((key) => [
-      key,
-      Object.getOwnPropertyDescriptor(globalThis, key),
-    ])
-  );
-  Object.defineProperty(globalThis, 'window', { configurable: true, value: dom.window });
-  Object.defineProperty(globalThis, 'document', { configurable: true, value: dom.window.document });
-  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const { dom, restore } = installTestDom(null, { jsdom: { url: 'http://localhost/' } });
   const host = dom.window.document.getElementById('root');
   const root = createRoot(host);
   const CopyControl = () => null;
@@ -327,10 +287,6 @@ test('streaming fenced scripts keep final card geometry while their first AST is
     assert.equal(host.querySelector('.markdown-code-fallback code')?.textContent, 'const answer = 42;');
   } finally {
     await act(async () => root.unmount());
-    dom.window.close();
-    for (const [key, descriptor] of previous) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
+    restore();
   }
 });

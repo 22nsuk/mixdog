@@ -22,7 +22,9 @@ const RECOVERED_AFTER_MS = 3_000;
 export function RemoteConnectionBanner({ boot = false }: { boot?: boolean } = {}) {
   const state = useSyncExternalStore(subscribeRemoteConnectionState, currentRemoteConnectionState, () => null);
   const waiting = state === 'reconnecting' || state === 'syncing' || (boot && state === 'connecting');
-  const recovery = state === null ? 'cleared' : state === 'connected' ? 'connected' : 'lost';
+  let recovery: 'cleared' | 'connected' | 'lost' = 'lost';
+  if (state === null) recovery = 'cleared';
+  else if (state === 'connected') recovery = 'connected';
   // 'due' is an elapsed countdown that surfaces as soon as the link is not
   // connected; 'shown' stays up until the connection is proven restored.
   const [overlay, setOverlay] = useState<'hidden' | 'due' | 'shown'>('hidden');

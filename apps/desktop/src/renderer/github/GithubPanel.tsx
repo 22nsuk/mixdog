@@ -195,6 +195,26 @@ export function GithubPanel({
       setBusy(false);
     }
   };
+  const loadMoreComments = (issue: GithubRecord) => {
+    setBusy(true);
+    const generation = epoch.current;
+    void request({
+      action: 'issue.comments',
+      number: Number(issue.number),
+      page: commentPage + 1,
+      limit: 30,
+    })
+      .then((result) => {
+        if (generation !== epoch.current) return;
+        setComments((current) => [...current, ...githubRows(result.data)]);
+        setCommentPage((value) => value + 1);
+        setMoreComments(result.hasMore === true);
+      })
+      .catch((reason) => {
+        if (generation === epoch.current) setError(String(reason.message || reason));
+      })
+      .finally(() => setBusy(false));
+  };
   return (
     <div className="github-panel">
       <form
@@ -308,26 +328,7 @@ export function GithubPanel({
             <button
               type="button"
               disabled={busy}
-              onClick={() => {
-                setBusy(true);
-                const generation = epoch.current;
-                void request({
-                  action: 'issue.comments',
-                  number: Number(detail.number),
-                  page: commentPage + 1,
-                  limit: 30,
-                })
-                  .then((result) => {
-                    if (generation !== epoch.current) return;
-                    setComments((current) => [...current, ...githubRows(result.data)]);
-                    setCommentPage((value) => value + 1);
-                    setMoreComments(result.hasMore === true);
-                  })
-                  .catch((reason) => {
-                    if (generation === epoch.current) setError(String(reason.message || reason));
-                  })
-                  .finally(() => setBusy(false));
-              }}
+              onClick={() => loadMoreComments(detail)}
             >
               {t('Load more comments')}
             </button>

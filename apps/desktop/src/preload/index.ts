@@ -3,22 +3,16 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron';
 
 import {
   DESKTOP_IPC,
-  type DesktopAgentPoolRow,
   type DesktopApi,
   type DesktopBootContext,
-  type DesktopRemoteClientClaim,
-  type DesktopSessionSummary,
   type DesktopSessionStateUpdate,
   type DesktopSessionStateWireUpdate,
-  type DesktopLspDiagnosticEvent,
-  type DesktopLspStatusEvent,
   type DesktopStateFieldsPatch,
   type DesktopStateItemsPatch,
   type DesktopStateStreamingTailPatch,
   type DesktopStateWire,
   type DesktopTranscriptItem,
   type SessionSnapshot,
-  type DesktopUpdaterState,
 } from '../shared/contract';
 import { createSnapshotDeltaDecoder } from '../main/state-delta';
 import { createBrowserTextureBridge } from './browser-texture';
@@ -50,6 +44,15 @@ const STATE_WIRE_CONTROL_KEYS = new Set([
 
 function streamingTailFrom(value: unknown): DesktopTranscriptItem | null {
   return value && typeof value === 'object' ? (value as DesktopTranscriptItem) : null;
+}
+
+/** Forwards every argument of `channel` to `listener`; returns the unsubscribe. */
+function subscribeIpc<Args extends unknown[]>(channel: string, listener: (...args: Args) => void): () => void {
+  const receive = (_event: Electron.IpcRendererEvent, ...args: Args): void => listener(...args);
+  ipcRenderer.on(channel, receive);
+  return () => {
+    ipcRenderer.removeListener(channel, receive);
+  };
 }
 
 const api: DesktopApi = {
@@ -162,45 +165,21 @@ const api: DesktopApi = {
   lspRequest: (input) => ipcRenderer.invoke(DESKTOP_IPC.lspRequest, input),
   lspApplyWorkspaceEdit: (projectPath, writes) =>
     ipcRenderer.invoke(DESKTOP_IPC.lspApplyWorkspaceEdit, projectPath, writes),
-  subscribeLspDiagnostics: (listener) => {
-    const receive = (_event: Electron.IpcRendererEvent, payload: DesktopLspDiagnosticEvent): void => listener(payload);
-    ipcRenderer.on(DESKTOP_IPC.lspDiagnostics, receive);
-    return () => ipcRenderer.removeListener(DESKTOP_IPC.lspDiagnostics, receive);
-  },
-  subscribeLspStatus: (listener) => {
-    const receive = (_event: Electron.IpcRendererEvent, payload: DesktopLspStatusEvent): void => listener(payload);
-    ipcRenderer.on(DESKTOP_IPC.lspStatus, receive);
-    return () => ipcRenderer.removeListener(DESKTOP_IPC.lspStatus, receive);
-  },
+  subscribeLspDiagnostics: (listener) => subscribeIpc(DESKTOP_IPC.lspDiagnostics, listener),
+  subscribeLspStatus: (listener) => subscribeIpc(DESKTOP_IPC.lspStatus, listener),
   listSessions: () => ipcRenderer.invoke(DESKTOP_IPC.listSessions),
   markSessionRead: (sessionId, messageCount, consumedUnread) =>
     ipcRenderer.invoke(DESKTOP_IPC.markSessionRead, sessionId, messageCount, consumedUnread),
-  subscribeSessions: (listener) => {
-    const receive = (_event: Electron.IpcRendererEvent, sessions: DesktopSessionSummary[]): void => {
-      listener(sessions);
-    };
-    ipcRenderer.on(DESKTOP_IPC.sessionsChanged, receive);
-    return () => ipcRenderer.removeListener(DESKTOP_IPC.sessionsChanged, receive);
-  },
+  subscribeSessions: (listener) => subscribeIpc(DESKTOP_IPC.sessionsChanged, listener),
   listAgentPool: () => ipcRenderer.invoke(DESKTOP_IPC.listAgentPool),
-  subscribeAgentPool: (listener) => {
-    const receive = (_event: Electron.IpcRendererEvent, agents: DesktopAgentPoolRow[]): void => {
-      listener(agents);
-    };
-    ipcRenderer.on(DESKTOP_IPC.agentPoolChanged, receive);
-    return () => ipcRenderer.removeListener(DESKTOP_IPC.agentPoolChanged, receive);
-  },
+  subscribeAgentPool: (listener) => subscribeIpc(DESKTOP_IPC.agentPoolChanged, listener),
   renameSession: (sessionId, title) => ipcRenderer.invoke(DESKTOP_IPC.renameSession, sessionId, title),
   setSessionArchived: (sessionId, archived) => ipcRenderer.invoke(DESKTOP_IPC.setSessionArchived, sessionId, archived),
   deleteSession: (sessionId) => ipcRenderer.invoke(DESKTOP_IPC.deleteSession, sessionId),
   getRemoteAccessInfo: () => ipcRenderer.invoke(DESKTOP_IPC.remoteAccessInfo),
   rotateRemoteAccess: () => ipcRenderer.invoke(DESKTOP_IPC.rotateRemoteAccess),
   revokeRemoteAccessClient: (clientId) => ipcRenderer.invoke(DESKTOP_IPC.revokeRemoteAccessClient, clientId),
-  subscribeRemoteClientClaim: (listener) => {
-    const receive = (_event: Electron.IpcRendererEvent, claim: DesktopRemoteClientClaim): void => listener(claim);
-    ipcRenderer.on(DESKTOP_IPC.remoteClientClaim, receive);
-    return () => ipcRenderer.removeListener(DESKTOP_IPC.remoteClientClaim, receive);
-  },
+  subscribeRemoteClientClaim: (listener) => subscribeIpc(DESKTOP_IPC.remoteClientClaim, listener),
   listRemoteClientClaims: () => ipcRenderer.invoke(DESKTOP_IPC.listRemoteClientClaims),
   resolveRemoteClientClaim: (claimId, approved) =>
     ipcRenderer.invoke(DESKTOP_IPC.resolveRemoteClientClaim, claimId, approved),
@@ -373,13 +352,7 @@ const api: DesktopApi = {
     }
   },
   termDispose: (id) => ipcRenderer.invoke(DESKTOP_IPC.termDispose, id),
-  subscribeTermData: (listener) => {
-    const receive = (_event: Electron.IpcRendererEvent, payload: { id: string; data: string }): void => {
-      listener(payload);
-    };
-    ipcRenderer.on(DESKTOP_IPC.termData, receive);
-    return () => ipcRenderer.removeListener(DESKTOP_IPC.termData, receive);
-  },
+  subscribeTermData: (listener) => subscribeIpc(DESKTOP_IPC.termData, listener),
   gitStatus: (cwd, options) => ipcRenderer.invoke(DESKTOP_IPC.gitStatus, cwd, options),
   gitBranches: (cwd) => ipcRenderer.invoke(DESKTOP_IPC.gitBranches, cwd),
   gitCheckoutBranch: (cwd, branch, remote) =>
@@ -444,13 +417,7 @@ const api: DesktopApi = {
   openFilePath: (cwd, path, accessToken) => ipcRenderer.invoke(DESKTOP_IPC.openFilePath, cwd, path, accessToken),
   openAttachmentImage: (dataUrl, name) => ipcRenderer.invoke(DESKTOP_IPC.openAttachmentImage, dataUrl, name),
   getUpdaterState: () => ipcRenderer.invoke(DESKTOP_IPC.getUpdaterState),
-  subscribeUpdaterState: (listener) => {
-    const receive = (_event: Electron.IpcRendererEvent, state: DesktopUpdaterState): void => {
-      listener(state);
-    };
-    ipcRenderer.on(DESKTOP_IPC.updaterState, receive);
-    return () => ipcRenderer.removeListener(DESKTOP_IPC.updaterState, receive);
-  },
+  subscribeUpdaterState: (listener) => subscribeIpc(DESKTOP_IPC.updaterState, listener),
   checkForDesktopUpdate: () => ipcRenderer.invoke(DESKTOP_IPC.checkForDesktopUpdate),
   showDesktopUpdate: () => ipcRenderer.invoke(DESKTOP_IPC.showDesktopUpdate),
   submitNewTask: (prompt, options, draft) => ipcRenderer.invoke(DESKTOP_IPC.submitNewTask, prompt, options, draft),
@@ -508,23 +475,9 @@ const api: DesktopApi = {
   applyTitleBarTheme: (theme, systemPreference) =>
     ipcRenderer.invoke(DESKTOP_IPC.applyTitleBarTheme, theme, systemPreference === true),
   setTitleBarDim: (dim) => ipcRenderer.invoke(DESKTOP_IPC.setTitleBarDim, dim),
-  onZoomFactorChanged: (listener) => {
-    const receive = (_event: Electron.IpcRendererEvent, factor: number): void => listener(factor);
-    ipcRenderer.on(DESKTOP_IPC.zoomFactorChanged, receive);
-    return () => ipcRenderer.removeListener(DESKTOP_IPC.zoomFactorChanged, receive);
-  },
-  onBrowserOpenRequested: (listener) => {
-    const receive = (_event: Electron.IpcRendererEvent, request: Parameters<typeof listener>[0]): void =>
-      listener(request);
-    ipcRenderer.on(DESKTOP_IPC.browserOpenRequested, receive);
-    return () => ipcRenderer.removeListener(DESKTOP_IPC.browserOpenRequested, receive);
-  },
-  onBrowserSessionReleased: (listener) => {
-    const receive = (_event: Electron.IpcRendererEvent, sessionId: string, reason?: 'unloaded' | 'gone'): void =>
-      listener(sessionId, reason);
-    ipcRenderer.on(DESKTOP_IPC.browserSessionReleased, receive);
-    return () => ipcRenderer.removeListener(DESKTOP_IPC.browserSessionReleased, receive);
-  },
+  onZoomFactorChanged: (listener) => subscribeIpc(DESKTOP_IPC.zoomFactorChanged, listener),
+  onBrowserOpenRequested: (listener) => subscribeIpc(DESKTOP_IPC.browserOpenRequested, listener),
+  onBrowserSessionReleased: (listener) => subscribeIpc(DESKTOP_IPC.browserSessionReleased, listener),
   browserSetActiveGuest: (sessionId, webContentsId, active) =>
     ipcRenderer.invoke(DESKTOP_IPC.browserSetActiveGuest, sessionId, webContentsId, active),
   ...createBrowserTextureBridge(),
@@ -533,26 +486,11 @@ const api: DesktopApi = {
   browserPresentNative: (sessionId, rect) => ipcRenderer.invoke(DESKTOP_IPC.browserPresentNative, sessionId, rect),
   browserConfigureGuestViewport: (sessionId, webContentsId, config) =>
     ipcRenderer.invoke(DESKTOP_IPC.browserConfigureGuestViewport, sessionId, webContentsId, config),
-  onBrowserGuestViewportChanged: (listener) => {
-    const receive = (_event: Electron.IpcRendererEvent, change: Parameters<typeof listener>[0]): void =>
-      listener(change);
-    ipcRenderer.on(DESKTOP_IPC.browserGuestViewportChanged, receive);
-    return () => ipcRenderer.removeListener(DESKTOP_IPC.browserGuestViewportChanged, receive);
-  },
-  onBrowserRemoteViewerChanged: (listener) => {
-    const receive = (_event: Electron.IpcRendererEvent, change: Parameters<typeof listener>[0]): void =>
-      listener(change);
-    ipcRenderer.on(DESKTOP_IPC.browserRemoteViewerChanged, receive);
-    return () => ipcRenderer.removeListener(DESKTOP_IPC.browserRemoteViewerChanged, receive);
-  },
+  onBrowserGuestViewportChanged: (listener) => subscribeIpc(DESKTOP_IPC.browserGuestViewportChanged, listener),
+  onBrowserRemoteViewerChanged: (listener) => subscribeIpc(DESKTOP_IPC.browserRemoteViewerChanged, listener),
   browserProfileImportSources: () => ipcRenderer.invoke(DESKTOP_IPC.browserProfileImportSources),
   browserProfileImportStart: (request) => ipcRenderer.invoke(DESKTOP_IPC.browserProfileImportStart, request),
-  onBrowserProfileImportProgress: (listener) => {
-    const receive = (_event: Electron.IpcRendererEvent, progress: Parameters<typeof listener>[0]): void =>
-      listener(progress);
-    ipcRenderer.on(DESKTOP_IPC.browserProfileImportProgress, receive);
-    return () => ipcRenderer.removeListener(DESKTOP_IPC.browserProfileImportProgress, receive);
-  },
+  onBrowserProfileImportProgress: (listener) => subscribeIpc(DESKTOP_IPC.browserProfileImportProgress, listener),
   browserHistorySearch: (query) => ipcRenderer.invoke(DESKTOP_IPC.browserHistorySearch, query),
   browserCredentialSuggestions: (sessionId) => ipcRenderer.invoke(DESKTOP_IPC.browserCredentialSuggestions, sessionId),
   browserCredentialFill: (sessionId, credentialId) =>

@@ -5,6 +5,7 @@ import { computerUseCoordinator as coordinator } from '../../session/coordinator
 import { createComputerUseCursorOverlay } from '../cursor-overlay';
 import { prepareCursorFeedback } from '../cursor-readiness';
 import { CURSOR_HOTSPOT } from '../cursor-art';
+import { sleep } from '../../shared/common';
 
 app.disableHardwareAcceleration();
 // This fixture has no main app window; removing an effect must not end the test.
@@ -21,7 +22,7 @@ void app
     const rendered = async (effectWindow: BrowserWindow) => {
       const deadline = Date.now() + 2000;
       while (!effectWindow.isVisible() && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 10));
+        await sleep(10);
       }
       assert.equal(effectWindow.isVisible(), true);
     };
@@ -51,13 +52,13 @@ void app
           });
           const deadline = Date.now() + 2000;
           while (!window.isVisible() && Date.now() < deadline) {
-            await new Promise((resolve) => setTimeout(resolve, 10));
+            await sleep(10);
           }
           assert.equal(window.isVisible(), true);
           // Wait for the render started by showCursor to apply this display's bounds.
           const expected = screen.screenToDipPoint(point);
           while (Math.abs(window.getBounds().x + CURSOR_HOTSPOT - expected.x) > 1 && Date.now() < deadline) {
-            await new Promise((resolve) => setTimeout(resolve, 10));
+            await sleep(10);
           }
           const bounds = window.getBounds();
           assert.ok(Math.abs(bounds.x + CURSOR_HOTSPOT - expected.x) <= 1);
@@ -127,7 +128,7 @@ void app
       coordinator.showCursor({ sessionId: 'next', action: 'move', mode: 'foreground', effect: 'move', x: 300, y: 100 });
       await rendered(replacement);
       const pointerSample = screen.getCursorScreenPoint();
-      await new Promise((resolve) => setTimeout(resolve, 30));
+      await sleep(30);
       const pointerBeforeTakeover = screen.getCursorScreenPoint();
       // Only a settled pointer can show that takeover left it alone; while the
       // user physically moves the mouse, its position proves nothing about this code.

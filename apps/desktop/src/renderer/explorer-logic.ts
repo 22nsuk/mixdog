@@ -1,5 +1,5 @@
-// Explorer name/sort grammar: name validation, well-formed name cleanup,
-// the default sort order, and paste-collision naming. Pure logic module:
+// Explorer name/sort grammar: name validation, well-formed name cleanup and
+// the default sort order. Pure logic module:
 // unit-tested directly by explorer-logic.test.mjs.
 
 export interface ExplorerNameProblem {
@@ -19,9 +19,7 @@ const runtimeIsWindows: boolean =
 /** Well-formed name: trim tabs, drop trailing slashes. */
 export function wellFormedExplorerName(name: string): string {
   if (!name) return '';
-  return String(name)
-    .replace(/^\t+|\t+$/g, '')
-    .replace(/[\\/]+$/, '');
+  return name.replace(/^\t+|\t+$/g, '').replace(/[\\/]+$/, '');
 }
 
 /** Basename validity: invalid chars, reserved device names, length. */
@@ -123,19 +121,4 @@ export function explorerTypeAheadIndex(names: readonly string[], fromIndex: numb
     if (names[index].toLowerCase().startsWith(lowered)) return index;
   }
   return -1;
-}
-
-/** Paste naming: "name copy", then "name copy 2", ... */
-export function explorerPasteName(name: string, dir: boolean, takenLowercase: ReadonlySet<string>): string {
-  if (!takenLowercase.has(name.toLowerCase())) return name;
-  const dot = dir ? -1 : name.lastIndexOf('.');
-  const stem = dot > 0 ? name.slice(0, dot) : name;
-  const extension = dot > 0 ? name.slice(dot) : '';
-  let candidate = name;
-  let counter = 0;
-  while (takenLowercase.has(candidate.toLowerCase())) {
-    counter += 1;
-    candidate = counter === 1 ? `${stem} copy${extension}` : `${stem} copy ${counter}${extension}`;
-  }
-  return candidate;
 }

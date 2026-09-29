@@ -18,7 +18,12 @@ import {
 } from './capture-target';
 import { createInputObservationReader, foregroundInputState } from './capture-input-observation';
 import { createVisualOnlyCache, visualOnlyCapabilityKey, visualOnlyEligible } from './capture-visual-only';
-import { applyAccessibilityRead, readAccessibilitySnapshot, readScreenshotCapture } from './capture-reads';
+import {
+  type AccessibilityRead,
+  applyAccessibilityRead,
+  readAccessibilitySnapshot,
+  readScreenshotCapture,
+} from './capture-reads';
 import { type CaptureBaseline, recordCaptureBaseline } from './capture-baseline';
 import { applyFrameImage, persistCaptureImage } from './capture-image-output';
 
@@ -136,15 +141,28 @@ export function createCaptureEngine(host: CaptureEngineHost) {
       // Complete accessibility before pixels. If its read worker is replaced,
       // bind the pixel fallback to the replacement's input observation, not the
       // obsolete worker or a concurrently queued bounds request.
-      const accessibilityRead = await readAccessibilitySnapshot(host, {
-        command,
-        mode,
-        replacementRead,
-        windowId,
-        totalElementBudget,
-        visualOnlyCacheHit,
-        cachedAccessibilityError,
-      });
+      // Both reads see the window id current at their call, which the first
+      // applied read may have replaced.
+      const readAccessibility = () =>
+        readAccessibilitySnapshot(host, {
+          command,
+          mode,
+          replacementRead,
+          windowId,
+          totalElementBudget,
+          visualOnlyCacheHit,
+          cachedAccessibilityError,
+        });
+      const applyRead = (read: AccessibilityRead) =>
+        applyAccessibilityRead(host, read, {
+          mode,
+          command,
+          windowId,
+          cachedAccessibilityError,
+          visualOnlyCacheHit,
+          timings,
+        });
+      const accessibilityRead = await readAccessibility();
       if (!visualOnlyCacheHit && (accessibilityRead?.error || accessibilityRead?.response?.ok === false)) {
         inputObservation = await readInputObservation();
       }
@@ -161,16 +179,9 @@ export function createCaptureEngine(host: CaptureEngineHost) {
       let generation: unknown = null;
       let accessibilityError = '';
       if (accessibilityRead) {
-        let applied: ReturnType<typeof applyAccessibilityRead>;
+        let applied: ReturnType<typeof applyRead>;
         try {
-          applied = applyAccessibilityRead(host, accessibilityRead, {
-            mode,
-            command,
-            windowId,
-            cachedAccessibilityError,
-            visualOnlyCacheHit,
-            timings,
-          });
+          applied = applyRead(accessibilityRead);
         } catch (error) {
           // A read that refuses still taught the session that this provider
           // stalls; recording it here keeps the next observation cheap.
@@ -205,24 +216,9 @@ export function createCaptureEngine(host: CaptureEngineHost) {
         )
       ) {
         const accessibilityMsBeforeReread = timings.accessibility_ms || 0;
-        const contentRead = await readAccessibilitySnapshot(host, {
-          command,
-          mode,
-          replacementRead,
-          windowId,
-          totalElementBudget,
-          visualOnlyCacheHit,
-          cachedAccessibilityError,
-        });
+        const contentRead = await readAccessibility();
         if (contentRead) {
-          const reread = applyAccessibilityRead(host, contentRead, {
-            mode,
-            command,
-            windowId,
-            cachedAccessibilityError,
-            visualOnlyCacheHit,
-            timings,
-          });
+          const reread = applyRead(contentRead);
           timings.accessibility_reread_ms = contentRead.elapsed;
           timings.accessibility_ms = accessibilityMsBeforeReread + contentRead.elapsed;
           if (!reread.accessibilityError && hasSemanticAccessibilityTarget(reread.rawElements, screenshot?.frame)) {

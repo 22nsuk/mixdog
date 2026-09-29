@@ -1,9 +1,8 @@
 import { createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { basename, dirname, join, resolve, sep } from 'node:path';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { basename, join, resolve, sep } from 'node:path';
 import { execFile, spawn } from 'node:child_process';
-import { DatabaseSync, backup } from 'node:sqlite';
 import { promisify } from 'node:util';
 import { app, safeStorage, type Session } from 'electron';
 import type { BrowserCookieJar } from './cookie-jar';
@@ -13,15 +12,15 @@ import {
   type NativeBrowserImporter,
 } from './profile-import-native';
 import { CookieImportError, importBrowserCookies, parseBrowserCookieReport } from './profile-import-cookies';
+import { type BrowserHistoryEntry, importChromeHistory } from './profile-import-history';
 export type { BrowserImportCookie } from './profile-import-cookies';
+export type { BrowserHistoryEntry } from './profile-import-history';
 
 const CHROME_SOURCE_ID = 'chrome';
-const HISTORY_LIMIT = 10_000;
 const HISTORY_SEARCH_LIMIT = 12;
 const NATIVE_OUTPUT_LIMIT = 64 * 1024 * 1024;
 const NATIVE_IMPORT_TIMEOUT_MS = 120_000;
 const CHROME_CLOSE_TIMEOUT_MS = 30_000;
-const CHROME_EPOCH_OFFSET_MS = 11_644_473_600_000;
 const execFileAsync = promisify(execFile);
 
 export type BrowserImportItem = 'passwords' | 'cookies' | 'history';
@@ -62,13 +61,6 @@ export interface BrowserImportResult {
   jobId: string;
   counts: Record<BrowserImportItem, number>;
   errors: Partial<Record<BrowserImportItem, string>>;
-}
-
-export interface BrowserHistoryEntry {
-  url: string;
-  title: string;
-  lastVisitAt: number;
-  visitCount: number;
 }
 
 export interface BrowserCredentialSuggestion {
@@ -290,26 +282,6 @@ function exactTemporaryJob(root: string, jobId: string): string {
   const target = resolve(base, `job-${jobId}`);
   if (!target.startsWith(`${base}${sep}`)) throw new Error('Import job escaped its temporary root.');
   return target;
-}
-
-async function snapshotSqlite(source: string, destination: string): Promise<void> {
-  await mkdir(dirname(destination), { recursive: true });
-  const database = new DatabaseSync(source, { readOnly: true });
-  try {
-    await backup(database, destination);
-  } finally {
-    database.close();
-  }
-}
-
-function chromeTimeToUnixMilliseconds(value: unknown): number {
-  if (typeof value === 'bigint') {
-    if (value <= 0n) return 0;
-    return Math.max(0, Number(value / 1_000n) - CHROME_EPOCH_OFFSET_MS);
-  }
-  const micros = Number(value);
-  if (!Number.isFinite(micros) || micros <= 0) return 0;
-  return Math.max(0, Math.trunc(micros / 1_000 - CHROME_EPOCH_OFFSET_MS));
 }
 
 async function readEncryptedChildJson(executable: string, args: string[], expectedSha256: string): Promise<unknown> {
@@ -685,55 +657,7 @@ export class BrowserProfileImportService {
     const sourceHistory = join(sourceProfile, 'History');
     if (!existsSync(sourceHistory)) return 0;
     const jobRoot = exactTemporaryJob(this.options.temporaryDirectory, `${jobId}-history`);
-    const snapshot = join(jobRoot, 'History');
-    try {
-      await rm(jobRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
-      await snapshotSqlite(sourceHistory, snapshot);
-      const database = new DatabaseSync(snapshot, { readOnly: true });
-      let imported: BrowserHistoryEntry[];
-      try {
-        const statement = database.prepare(`
-          SELECT url, title, last_visit_time, visit_count
-          FROM urls
-          WHERE hidden = 0 AND (url LIKE 'http://%' OR url LIKE 'https://%')
-          ORDER BY last_visit_time DESC
-          LIMIT ?
-        `);
-        statement.setReadBigInts(true);
-        const rows = statement.all(BigInt(HISTORY_LIMIT)) as Array<Record<string, unknown>>;
-        imported = rows
-          .map((row) => ({
-            url: String(row.url || ''),
-            title: String(row.title || ''),
-            lastVisitAt: chromeTimeToUnixMilliseconds(row.last_visit_time),
-            visitCount: Math.max(0, Number(row.visit_count) || 0),
-          }))
-          .filter((entry) => Boolean(entry.url));
-      } finally {
-        database.close();
-      }
-      let existing: BrowserHistoryEntry[] = [];
-      try {
-        existing = JSON.parse(await readFile(this.historyFile, 'utf8')) as BrowserHistoryEntry[];
-      } catch {
-        existing = [];
-      }
-      const merged = new Map<string, BrowserHistoryEntry>();
-      for (const entry of [...imported, ...existing]) {
-        const current = merged.get(entry.url);
-        if (!current || entry.lastVisitAt > current.lastVisitAt) merged.set(entry.url, entry);
-      }
-      const history = [...merged.values()]
-        .sort((left, right) => right.lastVisitAt - left.lastVisitAt)
-        .slice(0, HISTORY_LIMIT);
-      const temporary = `${this.historyFile}.tmp-${randomUUID()}`;
-      await mkdir(dirname(this.historyFile), { recursive: true });
-      await writeFile(temporary, `${JSON.stringify(history)}\n`, { encoding: 'utf8', mode: 0o600 });
-      await rename(temporary, this.historyFile);
-      return imported.length;
-    } finally {
-      await rm(jobRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 150 });
-    }
+    return await importChromeHistory(sourceHistory, jobRoot, this.historyFile);
   }
 
   private async importPasswords(profileId: string): Promise<number> {

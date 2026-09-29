@@ -2,39 +2,28 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import React, { act, useLayoutEffect, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 import { createRendererClock } from '../../scripts/test-renderer-clock.mjs';
 
 function harness(t, { globalTimers = false } = {}) {
-  const dom = new JSDOM('<!doctype html><body><main></main></body>', {
-    url: 'https://mixdog.test/',
-    pretendToBeVisual: true,
-  });
-  const saved = new Map();
   const clock = createRendererClock();
-  for (const [key, value] of Object.entries({
-    window: dom.window,
-    document: dom.window.document,
-    navigator: dom.window.navigator,
-    HTMLElement: dom.window.HTMLElement,
-    Node: dom.window.Node,
-    Event: dom.window.Event,
-    CustomEvent: dom.window.CustomEvent,
-    ResizeObserver: class {
-      observe() {}
-      disconnect() {}
+  const { dom, restore } = installTestDom(null, {
+    html: '<!doctype html><body><main></main></body>',
+    jsdom: { pretendToBeVisual: true },
+    expose: ['navigator', 'HTMLElement', 'Node', 'Event', 'CustomEvent'],
+    globals: {
+      ResizeObserver: class {
+        observe() {}
+        disconnect() {}
+      },
+      ...(globalTimers
+        ? {
+            setTimeout: clock.win.setTimeout,
+            clearTimeout: clock.win.clearTimeout,
+          }
+        : {}),
     },
-    IS_REACT_ACT_ENVIRONMENT: true,
-    ...(globalTimers
-      ? {
-          setTimeout: clock.win.setTimeout,
-          clearTimeout: clock.win.clearTimeout,
-        }
-      : {}),
-  })) {
-    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
-  }
+  });
   Object.assign(window, {
     setTimeout: clock.win.setTimeout,
     clearTimeout: clock.win.clearTimeout,
@@ -57,11 +46,7 @@ function harness(t, { globalTimers = false } = {}) {
     await act(async () => root.unmount());
     if (globalTimers) Date.now = originalNow;
     clock.timers.clear();
-    dom.window.close();
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
+    restore();
   });
   return {
     host,

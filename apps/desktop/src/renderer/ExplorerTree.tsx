@@ -682,7 +682,7 @@ export const FilesRootPane = memo(function FilesRootPane({
       .replace(/[\\/]+$/, '')
       .split(/[\\/]/)
       .at(-1) || projectPath;
-  const rootExpanded = dirs.get('')?.expanded === true;
+  const rootExpanded = Boolean(dirs.get('')?.expanded);
   const rootVisible = !showRootHeader || rootExpanded;
   const headerPortal =
     headerSlot &&

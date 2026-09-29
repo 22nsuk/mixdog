@@ -105,9 +105,7 @@ function builtinTheme(resolved: string): boolean {
 
 // Android standalone browsers reuse theme-color for both system bars. Keep
 // those OS-owned bars black independently of the selected in-app surface ramp.
-function pwaSystemBarColor(): string {
-  return '#000000';
-}
+const PWA_SYSTEM_BAR_COLOR = '#000000';
 
 // 'system' | 'dark' | 'white' are the desktop surface modes; any TUI registry
 // theme id (nord, dracula, …) is also accepted as a desktop-local preference.
@@ -188,7 +186,7 @@ function applyDesktopTheme(value: unknown): string {
   suppressThemeSwapTransitions(root);
   root.dataset.mixdogTheme = resolved;
   root.style.colorScheme = resolved === 'light' ? 'light' : 'dark';
-  document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')?.setAttribute('content', pwaSystemBarColor());
+  document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')?.setAttribute('content', PWA_SYSTEM_BAR_COLOR);
   // The Windows caption overlay (min/max/close) is native chrome: its symbol
   // color lives in the MAIN process. Without this notification a light theme
   // kept white symbols on a near-white band — the buttons "disappeared".

@@ -56,14 +56,14 @@ export type PaneSideDockEntry = {
   diff: PaneSideDockDiff | null;
 };
 
-export const PANE_SIDE_DOCK_KEY = 'mixdog.desktop.pane-side-dock.v1';
+const PANE_SIDE_DOCK_KEY = 'mixdog.desktop.pane-side-dock.v1';
 /** One shared width preference for every pane dock: resizing any pane's panel
  *  sets the width the next opened panel starts from. */
-export const PANE_SIDE_DOCK_WIDTH_KEY = 'mixdog.desktop.pane-side-dock-width.v1';
+const PANE_SIDE_DOCK_WIDTH_KEY = 'mixdog.desktop.pane-side-dock-width.v1';
 /** Diff pair column: floors at the classic panel size but OPENS readable
  *  (user: 디프 보기에 너무 작지 않냐 — 기본 480), expanding by drag to 800;
  *  its width is a preference separate from the browser's. */
-export const PANE_SIDE_DOCK_DIFF_WIDTH_KEY = 'mixdog.desktop.pane-side-dock-diff-width.v1';
+const PANE_SIDE_DOCK_DIFF_WIDTH_KEY = 'mixdog.desktop.pane-side-dock-diff-width.v1';
 export const PANE_SIDE_DOCK_DIFF_MIN_WIDTH = 320;
 export const PANE_SIDE_DOCK_DIFF_MAX_WIDTH = 800;
 export const PANE_SIDE_DOCK_DIFF_DEFAULT_WIDTH = 480;
@@ -71,12 +71,12 @@ export const PANE_SIDE_DOCK_DIFF_DEFAULT_WIDTH = 480;
  *  responsive sites reflow like a phone, and the floor drops to 320 — a
  *  phone-frame preview for mobile web-app work (user: 모바일 웹앱 개발이면
  *  브라우저는 더 작아져도). */
-export const PANE_SIDE_DOCK_BROWSER_WIDTH_KEY = 'mixdog.desktop.pane-side-dock-browser-width.v1';
-export const PANE_SIDE_DOCK_BROWSER_MIN_WIDTH = 320;
-export const PANE_SIDE_DOCK_BROWSER_MAX_WIDTH = 1160;
-export const PANE_SIDE_DOCK_BROWSER_DEFAULT_WIDTH = 720;
+const PANE_SIDE_DOCK_BROWSER_WIDTH_KEY = 'mixdog.desktop.pane-side-dock-browser-width.v1';
+const PANE_SIDE_DOCK_BROWSER_MIN_WIDTH = 320;
+const PANE_SIDE_DOCK_BROWSER_MAX_WIDTH = 1160;
+const PANE_SIDE_DOCK_BROWSER_DEFAULT_WIDTH = 720;
 /** Classic panel column ceiling (window-level right panel grammar). */
-export const PANE_SIDE_DOCK_PANEL_MAX_WIDTH = 560;
+const PANE_SIDE_DOCK_PANEL_MAX_WIDTH = 560;
 export const PANE_DOCK_BROWSER_SURFACE = 'browser';
 export const PANE_DOCK_TERMINAL_SURFACE = 'terminal';
 export const PANE_DOCK_DIFF_SURFACE = 'diff';
@@ -91,7 +91,7 @@ export function paneDiffShowing(entry: Pick<PaneSideDockEntry, 'open' | 'surface
  *  the same length, before its tree is dropped: the unmount commit of a
  *  large diff is one uninterruptible task, so it must not land between two
  *  keystrokes. */
-export const PANE_DOCK_DIFF_RETAIN_MS = 1_500;
+const PANE_DOCK_DIFF_RETAIN_MS = 1_500;
 export function useRetainedDiff(diff: PaneSideDockDiff | null): PaneSideDockDiff | null {
   const [retained, setRetained] = useState<PaneSideDockDiff | null>(diff);
   useEffect(() => {

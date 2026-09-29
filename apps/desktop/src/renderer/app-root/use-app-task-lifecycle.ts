@@ -22,6 +22,7 @@ import type { useAppProjectCatalog } from '../use-app-project-catalog';
 import type { Snapshot } from '../desktop-types';
 import type { useDesktopState } from '../app-desktop-state';
 import type { useAppShellPanels } from '../use-app-shell-panels';
+import { paneSize } from './workspace-targets';
 
 export const LAST_SESSION_KEY = 'mixdog.desktop-last-session.v1';
 
@@ -180,12 +181,9 @@ export function useAppTaskLifecycle({
       event.preventDefault();
       const fresh = newDraftSelection();
       const direction = event.shiftKey ? 'column' : 'row';
-      const paneElement = Array.from(document.querySelectorAll<HTMLElement>('[data-pane-id]')).find(
-        (element) => element.dataset.paneId === paneWorkspace.focusedLeafId
-      );
-      const rect = paneElement?.getBoundingClientRect();
-      if (rect && !canSplitPaneSize(direction, rect.width, rect.height)) return;
-      splitFocusedPane(direction, fresh, rect ? { width: rect.width, height: rect.height } : undefined);
+      const size = paneSize(paneWorkspace.focusedLeafId);
+      if (size && !canSplitPaneSize(direction, size.width, size.height)) return;
+      splitFocusedPane(direction, fresh, size);
       activateSelection(fresh, 'New task');
     };
     window.addEventListener('keydown', onPaneSplitKey);
@@ -296,9 +294,8 @@ export function useAppTaskLifecycle({
     const state = actual && typeof actual === 'object' ? (actual as Snapshot) : null;
     const actualProject = String(state?.currentProject || state?.project || '');
     const actualSessionId = String(state?.sessionId || '');
-    const knownActualSession = actualSessionId && sessions.some((session) => session?.id === actualSessionId);
-    if (knownActualSession) {
-      const actualSession = sessions.find((session) => session?.id === actualSessionId);
+    const actualSession = actualSessionId ? sessions.find((session) => session?.id === actualSessionId) : undefined;
+    if (actualSession) {
       activateSelection({ kind: 'session', id: actualSessionId }, sessionSummaryTitle(actualSession));
     } else if (actualProject) {
       const project = projects.find((item) => item.path === actualProject);

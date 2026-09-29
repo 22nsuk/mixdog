@@ -9,7 +9,7 @@ import type { SVGProps } from 'react';
 // with round joins, drawn inside the 3…21 frame so no per-icon transform is
 // needed, and at most one quiet plate (fillOpacity .14) for silhouette. Keep
 // navigation/status glyphs in MxIcon.
-export const CAPABILITY_ARTWORK = {
+const CAPABILITY_ARTWORK = {
   git: '#f05033',
   memory: '#b49bf2',
   browser: '#4a8df8',

@@ -4,49 +4,11 @@ import { createPaneConversationRenderer } from './app-conversation-pane-renderer
 type RendererOptions = Parameters<typeof createPaneConversationRenderer>[0];
 
 export function usePaneConversationRenderer(options: RendererOptions) {
+  // The dependency list names every RendererOptions field, so a rerender that
+  // changes none of them keeps the same renderer.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: see above
   return useMemo(
-    () =>
-      createPaneConversationRenderer({
-        conversationHandoff: options.conversationHandoff,
-        resolvedDraftPrefsFor: options.resolvedDraftPrefsFor,
-        sessions: options.sessions,
-        registeredProjectPath: options.registeredProjectPath,
-        projectChromeLabel: options.projectChromeLabel,
-        selectedSession: options.selectedSession,
-        headerTitleEditingSessionId: options.headerTitleEditingSessionId,
-        headerTitleDraft: options.headerTitleDraft,
-        headerTitleInvalid: options.headerTitleInvalid,
-        openHeaderTitleEditor: options.openHeaderTitleEditor,
-        setHeaderTitleDraft: options.setHeaderTitleDraft,
-        commitHeaderTitleEditor: options.commitHeaderTitleEditor,
-        closeHeaderTitleEditor: options.closeHeaderTitleEditor,
-        paneTranscriptRendererPending: options.paneTranscriptRendererPending,
-        requestedSessionId: options.requestedSessionId,
-        invokeResult: options.invokeResult,
-        errors: options.errors,
-        paneSubmitFor: options.paneSubmitFor,
-        paneDraftSubmitFor: options.paneDraftSubmitFor,
-        submit: options.submit,
-        applySessionLaneResult: options.applySessionLaneResult,
-        applySnapshot: options.applySnapshot,
-        composerFocusRequest: options.composerFocusRequest,
-        conversationNewTask: options.conversationNewTask,
-        conversationClearToNewTask: options.conversationClearToNewTask,
-        conversationClearProject: options.conversationClearProject,
-        conversationResumeSession: options.conversationResumeSession,
-        openSidebar: options.openSidebar,
-        conversationOpenProjects: options.conversationOpenProjects,
-        openSettings: options.openSettings,
-        projects: options.projects,
-        stageNewTaskModelSelection: options.stageNewTaskModelSelection,
-        rememberSessionRouteForNextTask: options.rememberSessionRouteForNextTask,
-        stageNewTaskWorkflow: options.stageNewTaskWorkflow,
-        stageNewTaskOrchestrationMode: options.stageNewTaskOrchestrationMode,
-        conversationSelectProject: options.conversationSelectProject,
-        openConversationCommandSurface: options.openConversationCommandSurface,
-        openFileTab: options.openFileTab,
-        replaceWithInheritedSession: options.replaceWithInheritedSession,
-      }),
+    () => createPaneConversationRenderer(options),
     [
       options.conversationHandoff,
       options.resolvedDraftPrefsFor,

@@ -14,14 +14,14 @@ import {
   graphTargetUri,
   lspLocations,
   lspPosition,
-  normalizedFilePath,
+  projectRelativePath,
 } from './editor-lsp-conversion';
 import {
   graphContextsByEditor,
   graphContextsByModel,
   lspDocumentSymbols,
   preparePeekModels,
-} from './editor-monaco-providers';
+} from './editor-graph-context';
 
 const graphProviderLanguages = new Set<string>();
 let graphEditorOpenerInstalled = false;
@@ -128,14 +128,7 @@ export function ensureGraphEditorOpener(): void {
     openCodeEditor(source, resource, selectionOrPosition) {
       const context = graphContextsByEditor.get(source)?.current;
       if (!context?.onOpenAt) return false;
-      const root = normalizedFilePath(context.projectPath);
-      const target = normalizedFilePath(resource.fsPath);
-      const comparableRoot = root.toLowerCase();
-      const comparableTarget = target.toLowerCase();
-      if (comparableTarget !== comparableRoot && !comparableTarget.startsWith(`${comparableRoot}/`)) {
-        return false;
-      }
-      const rel = target.slice(root.length).replace(/^\/+/, '');
+      const rel = projectRelativePath(resource.fsPath, context.projectPath);
       if (!rel) return false;
       let line = 1;
       if (selectionOrPosition) {

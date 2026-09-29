@@ -26,6 +26,7 @@ import type { useAppShellPanels } from '../use-app-shell-panels';
 import type { useSessionCatalog } from '../app-session-catalog';
 import type { useSideViewReordering } from '../app-shell-side-views';
 import type { useEditorNavigation } from '../use-editor-navigation';
+import { cleanDiffTarget } from './workspace-targets';
 
 export interface UseAppWorkbenchViewsOptions {
   sessions: ReturnType<typeof useSessionCatalog>['sessions'];
@@ -240,11 +241,8 @@ export function useAppWorkbenchViews({
                 paneSideDocks.openDiff(pane.leafId, project, rel, request);
               }
             : (project, rel, request) => {
-                const cleanProject = String(project || '').trim();
-                const cleanRel = String(rel || '')
-                  .replace(/\\/g, '/')
-                  .replace(/^\/+/, '');
-                if (!cleanProject || !cleanRel) return;
+                const target = cleanDiffTarget(project, rel);
+                if (!target) return;
                 if (!sidebarDiffColumnAvailable()) {
                   dockOpenDiff(project, rel, request);
                   return;
@@ -252,7 +250,7 @@ export function useAppWorkbenchViews({
                 void prefetchDiffView().catch(() => {});
                 setSidebarDiff({
                   view: id,
-                  diff: { kind: 'diff', project: cleanProject, rel: cleanRel, ...request },
+                  diff: { kind: 'diff', ...target, ...request },
                 });
               }
         }

@@ -2,22 +2,16 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
+
+/** A fresh jsdom window installed as the globals the sidebar reads; `restore`
+ *  puts the previous globals back and closes the window. */
+function installDom() {
+  return installTestDom(null, { jsdom: { url: 'http://localhost/' }, expose: ['navigator', 'CustomEvent'] });
+}
 
 test('the fixed launcher rows lead the session list and open a task or a Studio tab', async () => {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
-    url: 'http://localhost/',
-  });
-  const globals = ['window', 'document', 'navigator', 'CustomEvent', 'IS_REACT_ACT_ENVIRONMENT'];
-  const previous = new Map(globals.map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
-  Object.defineProperty(globalThis, 'window', { configurable: true, value: dom.window });
-  Object.defineProperty(globalThis, 'document', { configurable: true, value: dom.window.document });
-  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: dom.window.navigator });
-  Object.defineProperty(globalThis, 'CustomEvent', {
-    configurable: true,
-    value: dom.window.CustomEvent,
-  });
-  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const { dom, restore } = installDom();
 
   const { SessionSidebar } = await import('./session-sidebar.tsx');
   const root = createRoot(document.getElementById('root'));
@@ -82,27 +76,12 @@ test('the fixed launcher rows lead the session list and open a task or a Studio 
     assert.deepEqual(calls, ['task', 'studio']);
   } finally {
     await act(async () => root.unmount());
-    for (const [key, descriptor] of previous) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
+    restore();
   }
 });
 
 test('native sidebar drag preserves the existing session title in the pane selection', async () => {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
-    url: 'http://localhost/',
-  });
-  const globals = ['window', 'document', 'navigator', 'CustomEvent', 'IS_REACT_ACT_ENVIRONMENT'];
-  const previous = new Map(globals.map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
-  Object.defineProperty(globalThis, 'window', { configurable: true, value: dom.window });
-  Object.defineProperty(globalThis, 'document', { configurable: true, value: dom.window.document });
-  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: dom.window.navigator });
-  Object.defineProperty(globalThis, 'CustomEvent', {
-    configurable: true,
-    value: dom.window.CustomEvent,
-  });
-  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const { dom, restore } = installDom();
 
   const [{ SessionSidebar }, { currentPaneDrag }] = await Promise.all([
     import('./session-sidebar.tsx'),
@@ -178,28 +157,12 @@ test('native sidebar drag preserves the existing session title in the pane selec
     assert.equal(currentPaneDrag(), null);
   } finally {
     await act(async () => root.unmount());
-    dom.window.close();
-    for (const [key, descriptor] of previous) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
+    restore();
   }
 });
 
 test('double-clicking a captured session row starts rename without action-button spillover', async () => {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
-    url: 'http://localhost/',
-  });
-  const globals = ['window', 'document', 'navigator', 'CustomEvent', 'IS_REACT_ACT_ENVIRONMENT'];
-  const previous = new Map(globals.map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
-  Object.defineProperty(globalThis, 'window', { configurable: true, value: dom.window });
-  Object.defineProperty(globalThis, 'document', { configurable: true, value: dom.window.document });
-  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: dom.window.navigator });
-  Object.defineProperty(globalThis, 'CustomEvent', {
-    configurable: true,
-    value: dom.window.CustomEvent,
-  });
-  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const { dom, restore } = installDom();
 
   const { SessionSidebar } = await import('./session-sidebar.tsx');
   const root = createRoot(document.getElementById('root'));
@@ -251,28 +214,12 @@ test('double-clicking a captured session row starts rename without action-button
     assert.equal(document.activeElement, input);
   } finally {
     await act(async () => root.unmount());
-    dom.window.close();
-    for (const [key, descriptor] of previous) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
+    restore();
   }
 });
 
 test('the Recent actions menu archives recent sessions and confirms archived deletion', async () => {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
-    url: 'http://localhost/',
-  });
-  const globals = ['window', 'document', 'navigator', 'CustomEvent', 'IS_REACT_ACT_ENVIRONMENT'];
-  const previous = new Map(globals.map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
-  Object.defineProperty(globalThis, 'window', { configurable: true, value: dom.window });
-  Object.defineProperty(globalThis, 'document', { configurable: true, value: dom.window.document });
-  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: dom.window.navigator });
-  Object.defineProperty(globalThis, 'CustomEvent', {
-    configurable: true,
-    value: dom.window.CustomEvent,
-  });
-  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const { restore } = installDom();
 
   const { SessionSidebar } = await import('./session-sidebar.tsx');
   const root = createRoot(document.getElementById('root'));
@@ -387,10 +334,6 @@ test('the Recent actions menu archives recent sessions and confirms archived del
     assert.ok(archivedSection.querySelector('.row-overflow-trigger'));
   } finally {
     await act(async () => root.unmount());
-    dom.window.close();
-    for (const [key, descriptor] of previous) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
+    restore();
   }
 });

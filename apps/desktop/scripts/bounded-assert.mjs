@@ -157,7 +157,7 @@ const SPECS = {
   },
   notStrictEqual: {
     passes: (actual, expected) => !Object.is(actual, expected),
-    message: (actual, expected) => `Expected "actual" to be strictly unequal to:\n\n${summarise(expected)}\n`,
+    message: (_actual, expected) => `Expected "actual" to be strictly unequal to:\n\n${summarise(expected)}\n`,
   },
   deepStrictEqual: {
     passes: isDeepStrictEqual,
@@ -177,7 +177,7 @@ const SPECS = {
     valid: (string, regexp) => typeof string === 'string' && regexp instanceof RegExp,
     passes: (string, regexp) => !matchesOnce(string, regexp),
     message: (string, regexp) =>
-      'The input was expected to not match the regular expression ' + `${regexp}. Input:\n\n${summarise(string)}\n`,
+      `The input was expected to not match the regular expression ${regexp}. Input:\n\n${summarise(string)}\n`,
   },
 };
 

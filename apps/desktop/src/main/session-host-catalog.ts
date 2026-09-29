@@ -15,6 +15,9 @@ export const STORE_REFRESH_MIN_GAP_MS = 2_000;
 const CATALOG_STORE_ENTRIES = new Set([
   'sessions',
   'session-summaries.json',
+  // Per-session delta log of the summary index; an update appends here and
+  // only touches the .json on compaction.
+  'session-summaries.log',
   'agent-workers.json',
   'lead-workers.json',
   'turn-checkpoints',

@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
 import test, { mock } from 'node:test';
 import React, { act } from 'react';
-import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from '../test-support/test-dom.mjs';
 
 mock.module('../use-shell-update-reload.ts', {
   namedExports: { useShellUpdateReload() {} },
@@ -21,15 +20,11 @@ const { useAppSessionActivity } = await import('./use-app-session-activity.ts');
 const { usePaneConversationRenderer } = await import('./use-pane-conversation-renderer.ts');
 
 async function mountHook(t, useHook, initialOptions) {
-  const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'https://mixdog.test/' });
-  const saved = new Map();
-  for (const key of ['window', 'document', 'navigator', 'HTMLElement', 'Event', 'CustomEvent']) {
-    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    Object.defineProperty(globalThis, key, { configurable: true, value: dom.window[key] });
-  }
-  saved.set('IS_REACT_ACT_ENVIRONMENT', Object.getOwnPropertyDescriptor(globalThis, 'IS_REACT_ACT_ENVIRONMENT'));
-  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-  const root = createRoot(dom.window.document.getElementById('root'));
+  const { dom, root } = installTestDom(t, {
+    html: '<!doctype html><div id="root"></div>',
+    expose: ['navigator', 'HTMLElement', 'Event', 'CustomEvent'],
+    rootId: 'root',
+  });
   let options = initialOptions;
   let result;
   function Harness() {
@@ -40,14 +35,6 @@ async function mountHook(t, useHook, initialOptions) {
     options = nextOptions;
     await act(async () => root.render(React.createElement(Harness)));
   };
-  t.after(async () => {
-    await act(async () => root.unmount());
-    dom.window.close();
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
-  });
   await render(options);
   return {
     get current() {

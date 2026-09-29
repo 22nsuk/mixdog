@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, type MutableRefObject } from 'react';
 import type { DesktopUpdaterState } from '../shared/contract';
 import { isMobileRemoteSurface } from './MobileTabOverview';
-import { registerMobileBack } from './mobile-back';
+import { registerMobileBack, useMobileBack } from './mobile-back';
 import type { WorkbenchQuickAccessMode } from './workbench-overlays-loader';
 
 interface MobileBackProps {
@@ -63,26 +63,9 @@ export function useAppMobileBack({
   // inactive outside the projected phone surface.
   // Closures are stored in refs to prevent re-registration and history thrash
   // when snapshots cause renders while a layer stays open.
-  const closeSidebarRef = useRef(() => applySidebarOpen(false));
-  closeSidebarRef.current = () => applySidebarOpen(false);
-  useEffect(() => {
-    if (!sidebarOpen) return undefined;
-    return registerMobileBack(() => closeSidebarRef.current());
-  }, [sidebarOpen]);
-
-  const closeBottomPanelRef = useRef(() => setBottomPanelOpen(false));
-  closeBottomPanelRef.current = () => setBottomPanelOpen(false);
-  useEffect(() => {
-    if (!bottomPanelOpen) return undefined;
-    return registerMobileBack(() => closeBottomPanelRef.current());
-  }, [bottomPanelOpen]);
-
-  const closeFocusedPaneDockRef = useRef(closeFocusedPaneDock);
-  closeFocusedPaneDockRef.current = closeFocusedPaneDock;
-  useEffect(() => {
-    if (!focusedPaneDockOpen) return undefined;
-    return registerMobileBack(() => closeFocusedPaneDockRef.current());
-  }, [focusedPaneDockOpen]);
+  useMobileBack(sidebarOpen, () => applySidebarOpen(false));
+  useMobileBack(bottomPanelOpen, () => setBottomPanelOpen(false));
+  useMobileBack(focusedPaneDockOpen, closeFocusedPaneDock);
 
   const closeSettingsRef = useRef(() => setSettingsOpen(false));
   closeSettingsRef.current = () => setSettingsOpen(false);
@@ -98,12 +81,7 @@ export function useAppMobileBack({
     return registerMobileBack(() => closeCommandSurfaceRef.current());
   }, [commandSurface]);
 
-  const closeOnboardingRef = useRef(() => setOnboardingOpen(false));
-  closeOnboardingRef.current = () => setOnboardingOpen(false);
-  useEffect(() => {
-    if (!onboardingOpen) return undefined;
-    return registerMobileBack(() => closeOnboardingRef.current());
-  }, [onboardingOpen]);
+  useMobileBack(onboardingOpen, () => setOnboardingOpen(false));
 
   const closeQuickAccessRef = useRef(closeQuickAccess);
   closeQuickAccessRef.current = closeQuickAccess;
@@ -112,20 +90,8 @@ export function useAppMobileBack({
     return registerMobileBack(() => closeQuickAccessRef.current());
   }, [quickAccessMode]);
 
-  const cancelPendingTabCloseRef = useRef(cancelPendingTabClose);
-  cancelPendingTabCloseRef.current = cancelPendingTabClose;
-  useEffect(() => {
-    if (!pendingUnsavedClose) return undefined;
-    return registerMobileBack(() => cancelPendingTabCloseRef.current());
-  }, [pendingUnsavedClose]);
-
-  const closeDesktopUpdateRef = useRef(closeDesktopUpdate);
-  closeDesktopUpdateRef.current = closeDesktopUpdate;
-  const updateReady = updateDialogOpen && updaterState.status === 'ready';
-  useEffect(() => {
-    if (!updateReady) return undefined;
-    return registerMobileBack(() => closeDesktopUpdateRef.current());
-  }, [updateReady]);
+  useMobileBack(pendingUnsavedClose, cancelPendingTabClose);
+  useMobileBack(updateDialogOpen && updaterState.status === 'ready', closeDesktopUpdate);
 }
 
 export function useAppMobileInitialClose({

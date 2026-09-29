@@ -4,7 +4,7 @@
  * samples or the budget ends. It reads predicate state only, so it never
  * invalidates the refs the caller is holding and never returns pixels.
  */
-import { elapsedMs } from '../shared/common';
+import { elapsedMs, sleep } from '../shared/common';
 import type { ComputerCommand, ComputerCommandResult } from '../shared/types';
 import { evaluateVerifyPredicate, screenshotInteger, type VerifyStatus } from './analysis';
 import { verifyUnknownReason } from './verify-predicate';
@@ -166,9 +166,7 @@ export async function verifyWindowState(host: VerifyHost, command: ComputerComma
       break;
     }
     if (performance.now() >= deadline) break;
-    await new Promise((resolve) =>
-      setTimeout(resolve, Math.min(VERIFY_POLL_INTERVAL_MS, Math.max(1, deadline - performance.now())))
-    );
+    await sleep(Math.min(VERIFY_POLL_INTERVAL_MS, Math.max(1, deadline - performance.now())));
   }
   let decision: VerifyStatus = 'unsatisfied';
   if (state.consecutive >= stableSamples) decision = 'satisfied';

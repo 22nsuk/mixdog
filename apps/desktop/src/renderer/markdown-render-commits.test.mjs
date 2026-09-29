@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 
 import { parseMarkdownToHast } from './markdown-ast';
 import { markdownComponents } from './markdown-components';
@@ -20,29 +20,14 @@ import MarkdownAstBody from './MarkdownAstBody';
 import StreamingMarkdownBody from './StreamingMarkdownBody';
 
 async function withDom(run) {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
-    url: 'http://localhost/',
-  });
-  const previous = new Map(
-    ['window', 'document', 'IS_REACT_ACT_ENVIRONMENT'].map((key) => [
-      key,
-      Object.getOwnPropertyDescriptor(globalThis, key),
-    ])
-  );
-  Object.defineProperty(globalThis, 'window', { configurable: true, value: dom.window });
-  Object.defineProperty(globalThis, 'document', { configurable: true, value: dom.window.document });
-  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const { dom, restore } = installTestDom(null, { jsdom: { url: 'http://localhost/' } });
   const host = dom.window.document.getElementById('root');
   const root = createRoot(host);
   try {
     await run({ host, root });
   } finally {
     await act(async () => root.unmount());
-    dom.window.close();
-    for (const [key, descriptor] of previous) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
+    restore();
   }
 }
 

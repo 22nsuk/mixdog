@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import React, { act, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 import {
   selectableComposerSkills,
   withSelectedSkill,
@@ -12,12 +12,11 @@ import {
 import { useComposerSubmission } from './use-composer-submission.ts';
 import { selectedSkillName } from '../../../../src/runtime/shared/skill-selection.mjs';
 
-const dom = new JSDOM('<html><body></body></html>', { url: 'https://mixdog.test/' });
-globalThis.window = dom.window;
-globalThis.document = dom.window.document;
-globalThis.sessionStorage = dom.window.sessionStorage;
-Object.defineProperty(globalThis, 'navigator', { configurable: true, value: dom.window.navigator });
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+const { dom } = installTestDom(null, {
+  html: '<html><body></body></html>',
+  jsdom: { url: 'https://mixdog.test/' },
+  expose: ['sessionStorage', 'navigator'],
+});
 window.mixdogDesktop = { rendererDiagnostic() {} };
 dom.window.HTMLElement.prototype.attachEvent ??= () => {};
 dom.window.HTMLElement.prototype.detachEvent ??= () => {};

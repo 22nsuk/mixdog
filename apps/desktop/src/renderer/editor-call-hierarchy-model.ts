@@ -6,6 +6,7 @@ import {
   lspCallHierarchyItem,
   monacoRange,
   normalizedFilePath,
+  projectRelativePath,
   recordOf,
   type EditorCallHierarchyItem,
 } from './editor-lsp-conversion';
@@ -23,17 +24,6 @@ export interface CallHierarchyState {
   selectedIndex: number;
   loading: boolean;
   error: string;
-}
-
-/** A server location as a project-relative path, or null when it leaves the
- *  project — including the project directory itself, which names no file. */
-export function projectRelativePath(fsPath: string, projectPath: string): string | null {
-  const root = normalizedFilePath(projectPath);
-  const path = normalizedFilePath(fsPath);
-  const rootComparable = root.toLocaleLowerCase();
-  const pathComparable = path.toLocaleLowerCase();
-  if (pathComparable === rootComparable || !pathComparable.startsWith(`${rootComparable}/`)) return null;
-  return path.slice(root.length + 1);
 }
 
 /** The rows of one direction. Each carries where its call sites are, so the
@@ -102,7 +92,7 @@ export function failureText(reason: unknown): string {
   return reason instanceof Error ? reason.message : String(reason);
 }
 
-export interface CallHierarchyPreviewTarget {
+interface CallHierarchyPreviewTarget {
   relPath: string;
   line: number;
   ranges: import('monaco-editor').Range[];

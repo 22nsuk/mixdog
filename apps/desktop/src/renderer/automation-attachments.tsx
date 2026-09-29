@@ -14,7 +14,7 @@ export type AutomationAttachment = {
   data: string; // base64 for image/pdf, plain text for text files
 };
 
-export const MAX_AUTOMATION_ATTACHMENTS = 8;
+const MAX_AUTOMATION_ATTACHMENTS = 8;
 const MAX_BINARY_TOTAL = 8_000_000;
 const MAX_TEXT_TOTAL = 200_000;
 const attachmentDomKeys = new WeakMap<AutomationAttachment, string>();

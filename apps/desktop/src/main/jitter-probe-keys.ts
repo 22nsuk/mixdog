@@ -10,7 +10,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { BrowserWindow } from 'electron';
 import { assistantMarkdown, coldHistoryItems, paragraph } from './jitter-probe-fixtures';
-import { TOOL_DISCLOSURE_HEADERS, waitForProbeSessionRow } from './jitter-probe-session';
+import { sleep, TOOL_DISCLOSURE_HEADERS, waitForProbeSessionRow } from './jitter-probe-session';
 
 interface KeysProbeDeps {
   window: BrowserWindow;
@@ -20,7 +20,6 @@ interface KeysProbeDeps {
   outPath: string;
 }
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export async function runKeysProbe({
   window,

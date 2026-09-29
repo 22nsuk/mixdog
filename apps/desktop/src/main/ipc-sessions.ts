@@ -13,7 +13,6 @@ import {
   requiredString,
   requiredSubmitOptions,
   requiredSessionMessageCount,
-  requiredTranscriptItemLimit,
   requiredToolApprovalDecision,
   sessionDisplayName,
 } from './ipc-validation';
@@ -80,13 +79,6 @@ export function registerSessionIpc({
     browserHost?.releaseSession(ownerSessionId);
     return snapshot;
   });
-  handle(DESKTOP_IPC.prefetchSession, (_event, sessionId, itemLimit, readTraceId) =>
-    host.prefetchSession(
-      requiredSessionId(sessionId),
-      requiredTranscriptItemLimit(itemLimit),
-      typeof readTraceId === 'string' ? readTraceId : undefined
-    )
-  );
   handle(DESKTOP_IPC.submitNewTask, (_event, prompt, options, draft) =>
     host.submitNewTask(requiredPromptContent(prompt), requiredSubmitOptions(options), requiredNewTaskDraft(draft))
   );

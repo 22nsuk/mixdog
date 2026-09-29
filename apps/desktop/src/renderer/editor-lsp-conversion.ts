@@ -1,5 +1,6 @@
 import { monaco } from './monaco-setup';
 import type { EditorGraphLocation } from './editor-code-graph';
+import { recordOrNull as recordOf } from './record-utils';
 
 interface EditorPathContext {
   projectPath: string;
@@ -11,6 +12,17 @@ export function normalizedFilePath(value: string): string {
     .replace(/\\/g, '/')
     .replace(/^\/([A-Za-z]:\/)/, '$1')
     .replace(/\/+$/, '');
+}
+
+/** A server location as a project-relative path, or null when it leaves the
+ *  project — including the project directory itself, which names no file. */
+export function projectRelativePath(fsPath: string, projectPath: string): string | null {
+  const root = normalizedFilePath(projectPath);
+  const path = normalizedFilePath(fsPath);
+  const rootComparable = root.toLocaleLowerCase();
+  const pathComparable = path.toLocaleLowerCase();
+  if (pathComparable === rootComparable || !pathComparable.startsWith(`${rootComparable}/`)) return null;
+  return path.slice(root.length + 1);
 }
 
 export function graphTargetUri(
@@ -92,9 +104,7 @@ export function lspSymbolKind(value: unknown): import('monaco-editor').languages
   }
 }
 
-export function recordOf(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
-}
+export { recordOf };
 
 export function lspPosition(position: import('monaco-editor').Position): Record<string, number> {
   return { line: position.lineNumber - 1, character: position.column - 1 };
@@ -175,10 +185,10 @@ export function lspCallHierarchyItem(value: unknown, context: EditorPathContext)
 export function markupText(value: unknown): string {
   if (typeof value === 'string') return value;
   const record = recordOf(value);
-  if (typeof record?.value === 'string') return record.value;
   if (typeof record?.language === 'string' && typeof record?.value === 'string') {
     return `\`\`\`${record.language}\n${record.value}\n\`\`\``;
   }
+  if (typeof record?.value === 'string') return record.value;
   if (Array.isArray(value)) return value.map(markupText).filter(Boolean).join('\n\n');
   return '';
 }

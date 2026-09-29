@@ -180,81 +180,26 @@ export async function mergeCaptureOcr(
     elements.splice(totalElementBudget - reservedOcrBudget);
   }
   const returnedAccessibilityElements = elements.length;
-  let ocrPayload: Record<string, unknown> | undefined;
-  let ocrElements: ComputerElementRecord[] = [];
   const remainingElementBudget = Math.max(0, totalElementBudget - returnedAccessibilityElements);
   const shouldRunOcr = Boolean(screenshot?.image && screenshot.frame && runOcrForCapture && remainingElementBudget > 0);
-  const marksOcr = mode === 'som' || mode === 'state';
   if (shouldRunOcr && screenshot?.image && screenshot.frame) {
-    const frame = screenshot.frame;
-    const ocrStartedAt = performance.now();
-    try {
-      const ocr = await host.callPowerShell(
-        {
-          action: 'ocr_image',
-          image_base64: screenshot.ocrImage?.data || screenshot.image.data,
-          ocr_language: command.ocr_language ?? null,
-          max_ocr_words: Math.min(requestedOcrLimit, remainingElementBudget),
-          session_id: host.sessionIdFor(command),
-          read_only: true,
-        },
-        5_000
-      );
-      if (!ocr.ok) throw new Error(ocr.error || 'Windows OCR failed');
-      const { frameBounds, ocrWords: recognizedWords } = projectOcrWords(
-        ocr,
-        screenshot,
-        frame,
-        elements,
-        remainingElementBudget
-      );
-      // The accessibility snapshot applies query/role itself; recognized words
-      // never passed through it, so the same narrowing is applied here. A role
-      // other than static text cannot be answered from pixels at all.
-      const queryText = String(command.query || '').toLocaleLowerCase();
-      const requestedRole = String(command.role || '').toLocaleLowerCase();
-      const matchesRequest = (text: unknown) =>
-        (!requestedRole || requestedRole === 'text') &&
-        (!queryText ||
-          String(text || '')
-            .toLocaleLowerCase()
-            .includes(queryText));
-      const ocrWords = recognizedWords.filter((word) => matchesRequest(word.text));
-      if (marksOcr) {
-        ocrElements = appendOcrElements({
-          mode,
-          ocrWords,
-          rawElements,
-          elements,
-          frame,
-          frameId: screenshot.frameId,
-          observationWindowId,
-        });
-      }
-      ocrPayload = {
-        ok: true,
-        mode: 'fallback',
-        automatic: command.include_ocr !== true,
-        language: String(ocr.result?.language || ''),
-        // Lines carry the same text as the words, so a narrowed read narrows
-        // them too instead of handing back the whole window as prose.
-        lines: Array.isArray(ocr.result?.lines)
-          ? ocr.result.lines
-              .filter((line) => matchesRequest(line.text))
-              .map((line) => ({ ...line, ...frameBounds(line) }))
-          : [],
-        // A marked word is already an element carrying its ref, name, bounds and
-        // actions, so repeating it here would send the same list twice. Only a
-        // mode that returns no elements still owes the words themselves.
-        ...(marksOcr ? {} : { words: ocrWords }),
-        total_words: Number(ocr.result?.total_words) || 0,
-        truncated_words: Number(ocr.result?.truncated_words) || 0,
-      };
-    } catch (error) {
-      ocrPayload = { ok: false, error: (error as Error).message || String(error) };
-    }
-    timings.ocr_ms = elapsedMs(ocrStartedAt);
-  } else if (ocrFallbackEnabled) {
+    const { ocrPayload, ocrElements } = await recognizeCaptureOcr(host, {
+      command,
+      mode,
+      screenshot,
+      image: screenshot.image,
+      frame: screenshot.frame,
+      rawElements,
+      elements,
+      observationWindowId,
+      timings,
+      ocrLimit: Math.min(requestedOcrLimit, remainingElementBudget),
+      remainingElementBudget,
+    });
+    return { ocrPayload, ocrElements, returnedAccessibilityElements };
+  }
+  let ocrPayload: Record<string, unknown> | undefined;
+  if (ocrFallbackEnabled) {
     ocrPayload = {
       ok: true,
       mode: 'fallback',
@@ -267,5 +212,110 @@ export async function mergeCaptureOcr(
       truncated_words: 0,
     };
   }
-  return { ocrPayload, ocrElements, returnedAccessibilityElements };
+  return { ocrPayload, ocrElements: [] as ComputerElementRecord[], returnedAccessibilityElements };
+}
+
+/** One OCR pass over the captured frame: recognize, project into frame pixels,
+ *  narrow to the requested query/role, and mark the words as elements in modes
+ *  that list them. A failed recognition is reported in the payload, never thrown. */
+async function recognizeCaptureOcr(
+  host: Pick<CaptureEngineHost, 'callPowerShell' | 'sessionIdFor'>,
+  input: {
+    command: ComputerCommand;
+    mode: ReturnType<typeof captureMode>;
+    screenshot: ScreenshotCapture;
+    image: NonNullable<ScreenshotCapture['image']>;
+    frame: CaptureFrame;
+    rawElements: ComputerElementRecord[];
+    elements: ReturnType<typeof frameElements>;
+    observationWindowId: string;
+    timings: Record<string, number>;
+    ocrLimit: number;
+    remainingElementBudget: number;
+  }
+): Promise<{ ocrPayload: Record<string, unknown>; ocrElements: ComputerElementRecord[] }> {
+  const {
+    command,
+    mode,
+    screenshot,
+    image,
+    frame,
+    rawElements,
+    elements,
+    observationWindowId,
+    timings,
+    ocrLimit,
+    remainingElementBudget,
+  } = input;
+  const marksOcr = mode === 'som' || mode === 'state';
+  let ocrElements: ComputerElementRecord[] = [];
+  let ocrPayload: Record<string, unknown>;
+  const ocrStartedAt = performance.now();
+  try {
+    const ocr = await host.callPowerShell(
+      {
+        action: 'ocr_image',
+        image_base64: screenshot.ocrImage?.data || image.data,
+        ocr_language: command.ocr_language ?? null,
+        max_ocr_words: ocrLimit,
+        session_id: host.sessionIdFor(command),
+        read_only: true,
+      },
+      5_000
+    );
+    if (!ocr.ok) throw new Error(ocr.error || 'Windows OCR failed');
+    const { frameBounds, ocrWords: recognizedWords } = projectOcrWords(
+      ocr,
+      screenshot,
+      frame,
+      elements,
+      remainingElementBudget
+    );
+    // The accessibility snapshot applies query/role itself; recognized words
+    // never passed through it, so the same narrowing is applied here. A role
+    // other than static text cannot be answered from pixels at all.
+    const queryText = String(command.query || '').toLocaleLowerCase();
+    const requestedRole = String(command.role || '').toLocaleLowerCase();
+    const matchesRequest = (text: unknown) =>
+      (!requestedRole || requestedRole === 'text') &&
+      (!queryText ||
+        String(text || '')
+          .toLocaleLowerCase()
+          .includes(queryText));
+    const ocrWords = recognizedWords.filter((word) => matchesRequest(word.text));
+    if (marksOcr) {
+      ocrElements = appendOcrElements({
+        mode,
+        ocrWords,
+        rawElements,
+        elements,
+        frame,
+        frameId: screenshot.frameId,
+        observationWindowId,
+      });
+    }
+    ocrPayload = {
+      ok: true,
+      mode: 'fallback',
+      automatic: command.include_ocr !== true,
+      language: String(ocr.result?.language || ''),
+      // Lines carry the same text as the words, so a narrowed read narrows
+      // them too instead of handing back the whole window as prose.
+      lines: Array.isArray(ocr.result?.lines)
+        ? ocr.result.lines
+            .filter((line) => matchesRequest(line.text))
+            .map((line) => ({ ...line, ...frameBounds(line) }))
+        : [],
+      // A marked word is already an element carrying its ref, name, bounds and
+      // actions, so repeating it here would send the same list twice. Only a
+      // mode that returns no elements still owes the words themselves.
+      ...(marksOcr ? {} : { words: ocrWords }),
+      total_words: Number(ocr.result?.total_words) || 0,
+      truncated_words: Number(ocr.result?.truncated_words) || 0,
+    };
+  } catch (error) {
+    ocrPayload = { ok: false, error: (error as Error).message || String(error) };
+  }
+  timings.ocr_ms = elapsedMs(ocrStartedAt);
+  return { ocrPayload, ocrElements };
 }

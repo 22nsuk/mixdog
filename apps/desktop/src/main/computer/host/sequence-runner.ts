@@ -76,19 +76,20 @@ const CONTINUATION_REF_STEP_ACTIONS = [
 const ROOT_ONLY_FIELDS = ['window_id', 'window', 'app', 'screen', 'session_id', 'delivery'];
 // Marks and coordinates belong to a frame the first step already invalidated.
 const CONTINUATION_FRAME_FIELDS = ['element', 'frame_id', 'x', 'y', 'to', 'to_element', 'to_x', 'to_y', 'waypoints'];
+const POINT_STEP_FIELDS = ['action', 'ref', 'element', 'frame_id', 'x', 'y', 'modifiers'];
 const ALLOWED_STEP_FIELDS: Record<string, Set<string>> = {
   invoke: new Set(['action', 'ref', 'modifiers']),
   // A value is written through the element, so it carries a semantic target and
   // its replacement text, never a pixel or a modifier.
   set_value: new Set(['action', 'ref', 'element', 'text']),
-  click: new Set(['action', 'ref', 'element', 'frame_id', 'x', 'y', 'modifiers']),
-  right_click: new Set(['action', 'ref', 'element', 'frame_id', 'x', 'y', 'modifiers']),
-  middle_click: new Set(['action', 'ref', 'element', 'frame_id', 'x', 'y', 'modifiers']),
-  double_click: new Set(['action', 'ref', 'element', 'frame_id', 'x', 'y', 'modifiers']),
-  triple_click: new Set(['action', 'ref', 'element', 'frame_id', 'x', 'y', 'modifiers']),
-  mouse_down: new Set(['action', 'ref', 'element', 'frame_id', 'x', 'y', 'modifiers']),
-  mouse_up: new Set(['action', 'ref', 'element', 'frame_id', 'x', 'y', 'modifiers']),
-  mouse_move: new Set(['action', 'ref', 'element', 'frame_id', 'x', 'y', 'modifiers']),
+  click: new Set(POINT_STEP_FIELDS),
+  right_click: new Set(POINT_STEP_FIELDS),
+  middle_click: new Set(POINT_STEP_FIELDS),
+  double_click: new Set(POINT_STEP_FIELDS),
+  triple_click: new Set(POINT_STEP_FIELDS),
+  mouse_down: new Set(POINT_STEP_FIELDS),
+  mouse_up: new Set(POINT_STEP_FIELDS),
+  mouse_move: new Set(POINT_STEP_FIELDS),
   drag: new Set([
     'action',
     'ref',

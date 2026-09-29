@@ -91,8 +91,6 @@ type PaneDropIntent = {
 
 type PaneLeafModel = PaneWorkspaceModel['leaves'][number];
 
-// A drop on a workspace edge band: the dragged tab (or group) becomes a new
-// pane beside the hierarchy node under the band.
 type RectBox = { left: number; top: number; width: number; height: number };
 
 function rectBox({ left, top, width, height }: RectBox): RectBox {
@@ -140,6 +138,8 @@ function leafDropRect(rect: DOMRect, paneScope: Element | null | undefined) {
   };
 }
 
+// A drop on a workspace edge band: the dragged tab (or group) becomes a new
+// pane beside the hierarchy node under the band.
 function hierarchyDropIntent(input: {
   frame: PaneDragFrame;
   current: PaneWorkspaceModel;

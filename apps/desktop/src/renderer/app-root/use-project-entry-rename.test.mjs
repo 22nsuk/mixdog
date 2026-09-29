@@ -2,15 +2,15 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from '../test-support/test-dom.mjs';
 
-const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
-  url: 'https://mixdog.test/',
+installTestDom(null, {
+  html: '<!doctype html><html><body><div id="root"></div></body></html>',
+  jsdom: {
+    url: 'https://mixdog.test/',
+  },
+  expose: ['navigator', 'HTMLElement', 'Event', 'CustomEvent'],
 });
-for (const key of ['window', 'document', 'navigator', 'HTMLElement', 'Event', 'CustomEvent']) {
-  Object.defineProperty(globalThis, key, { configurable: true, value: dom.window[key] });
-}
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 const { useProjectEntryRename } = await import('./use-project-entry-rename.ts');
 const { navigationKey } = await import('../text-format.ts');

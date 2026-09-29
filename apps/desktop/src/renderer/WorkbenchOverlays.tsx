@@ -1,5 +1,5 @@
 import { Braces, Command as CommandIcon, FileText, Search } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent } from 'react';
 import { createPortal } from 'react-dom';
 
 import {
@@ -328,23 +328,25 @@ export function WorkbenchQuickAccess({
       });
       return;
     }
-    if (row.kind === 'symbol') {
-      onClose();
-      onOpenFile(row.item.relPath, row.item.line);
-      return;
-    }
-    if (row.kind === 'project-symbol') {
-      onClose();
-      onOpenFile(row.relPath, row.line);
-      return;
-    }
-    if (row.kind === 'line') {
-      onClose();
-      onOpenFile(row.relPath, row.line);
-      return;
-    }
     onClose();
-    onOpenFile(row.path, fileQuery.line);
+    if (row.kind === 'file') {
+      onOpenFile(row.path, fileQuery.line);
+      return;
+    }
+    const target = row.kind === 'symbol' ? row.item : row;
+    onOpenFile(target.relPath, target.line);
+  };
+  const optionProps = (row: QuickAccessRow, index: number) => {
+    const active = index === selectedIndex;
+    return {
+      type: 'button' as const,
+      role: 'option',
+      'aria-selected': active,
+      className: active ? 'active' : '',
+      onMouseEnter: () => setSelectedIndex(index),
+      onMouseDown: (event: MouseEvent) => event.preventDefault(),
+      onClick: () => runRow(row),
+    };
   };
   const selected = rows[selectedIndex];
   const emptyListMessage = () => {
@@ -414,20 +416,9 @@ export function WorkbenchQuickAccess({
         <div className="workbench-quick-results" role="listbox" aria-label={commandMode ? t('Commands') : t('Files')}>
           {rows.length === 0 && <p role="status">{listMessage}</p>}
           {rows.map((row, index) => {
-            const active = index === selectedIndex;
             if (row.kind === 'command') {
               return (
-                <button
-                  type="button"
-                  role="option"
-                  key={row.key}
-                  aria-selected={active}
-                  aria-disabled={row.command.enabled === false}
-                  className={active ? 'active' : ''}
-                  onMouseEnter={() => setSelectedIndex(index)}
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => runRow(row)}
-                >
+                <button key={row.key} aria-disabled={row.command.enabled === false} {...optionProps(row, index)}>
                   <CommandIcon size={14} aria-hidden="true" />
                   <span>
                     <small>{row.command.category}</small>
@@ -439,16 +430,7 @@ export function WorkbenchQuickAccess({
             }
             if (row.kind === 'project-symbol') {
               return (
-                <button
-                  type="button"
-                  role="option"
-                  key={row.key}
-                  aria-selected={active}
-                  className={active ? 'active' : ''}
-                  onMouseEnter={() => setSelectedIndex(index)}
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => runRow(row)}
-                >
+                <button key={row.key} {...optionProps(row, index)}>
                   <Braces size={14} aria-hidden="true" />
                   <span>
                     <b>{row.name}</b>
@@ -459,16 +441,7 @@ export function WorkbenchQuickAccess({
             }
             if (row.kind === 'symbol') {
               return (
-                <button
-                  type="button"
-                  role="option"
-                  key={row.key}
-                  aria-selected={active}
-                  className={active ? 'active' : ''}
-                  onMouseEnter={() => setSelectedIndex(index)}
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => runRow(row)}
-                >
+                <button key={row.key} {...optionProps(row, index)}>
                   <Braces size={14} aria-hidden="true" />
                   <span>
                     <b>{row.item.name}</b>
@@ -480,16 +453,7 @@ export function WorkbenchQuickAccess({
             }
             if (row.kind === 'line') {
               return (
-                <button
-                  type="button"
-                  role="option"
-                  key={row.key}
-                  aria-selected={active}
-                  className={active ? 'active' : ''}
-                  onMouseEnter={() => setSelectedIndex(index)}
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => runRow(row)}
-                >
+                <button key={row.key} {...optionProps(row, index)}>
                   <Search size={14} aria-hidden="true" />
                   <span>{t('Go to line {{line}}', { line: row.line })}</span>
                 </button>
@@ -500,16 +464,7 @@ export function WorkbenchQuickAccess({
             const name = split >= 0 ? normalized.slice(split + 1) : normalized;
             const parent = split >= 0 ? normalized.slice(0, split) : '';
             return (
-              <button
-                type="button"
-                role="option"
-                key={row.key}
-                aria-selected={active}
-                className={active ? 'active' : ''}
-                onMouseEnter={() => setSelectedIndex(index)}
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => runRow(row)}
-              >
+              <button key={row.key} {...optionProps(row, index)}>
                 <FileText size={14} aria-hidden="true" />
                 <span>
                   <b>{name}</b>

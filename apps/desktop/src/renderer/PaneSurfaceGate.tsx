@@ -70,7 +70,7 @@ export function DeferredPersistentSurface({
 }) {
   const startupReady = useStartupSurfaceReady(startupDelayMs);
   if (!active) return null;
-  return startupReady ? <>{children}</> : <>{fallback}</>;
+  return startupReady ? children : fallback;
 }
 
 function scheduleStableSurfaceCommit(commit: () => void): () => void {

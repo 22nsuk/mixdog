@@ -2,15 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from '../test-support/test-dom.mjs';
 import { useAppSidebarHub } from './use-app-sidebar-hub.ts';
 
 test('useAppSidebarHub wires sidebar surface, side views descriptors, and reordering', async () => {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>');
-  for (const key of ['window', 'document', 'navigator', 'HTMLElement', 'Event', 'CustomEvent']) {
-    Object.defineProperty(globalThis, key, { configurable: true, value: dom.window[key] });
-  }
-  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const { dom } = installTestDom(null, {
+    jsdom: { url: 'about:blank' },
+    expose: ['navigator', 'HTMLElement', 'Event', 'CustomEvent'],
+  });
 
   let hookResult = null;
   const leavesRef = { current: [] };

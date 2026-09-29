@@ -455,7 +455,10 @@ const TOOL_TARGETS = byToolName<ToolTargetsFormatter>([
   ],
   [
     ['code_graph'],
-    (args) => [toolActivityValues(args.symbols ?? args.symbol), toolActivityValues(args.files ?? args.file ?? args.path)],
+    (args) => [
+      toolActivityValues(args.symbols ?? args.symbol),
+      toolActivityValues(args.files ?? args.file ?? args.path),
+    ],
   ],
   [['list', 'ls'], (args) => [toolActivityValues(args.path ?? args.dir ?? args.cwd)]],
   [

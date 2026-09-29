@@ -226,7 +226,7 @@ test('host types load from a per-build assembly cache with an inline fallback', 
 });
 
 test('post-mutation settle waits out its budget instead of exiting on a transition start', () => {
-  const settle = hostSource.indexOf('if (settleDelayMs > 0) await new Promise');
+  const settle = hostSource.indexOf('if (settleDelayMs > 0) await sleep(');
   assert.ok(settle > 0);
   // A window opening or closing is where the move begins: the successor still
   // needs this budget to build its tree, and cutting it returned empty trees.

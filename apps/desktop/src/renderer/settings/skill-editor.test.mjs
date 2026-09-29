@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import React, { act } from 'react';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from '../test-support/test-dom.mjs';
 
-const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'https://mixdog.test/' });
-globalThis.window = dom.window;
-globalThis.document = dom.window.document;
-globalThis.HTMLElement = dom.window.HTMLElement;
-globalThis.FormData = dom.window.FormData;
+const { dom } = installTestDom(null, {
+  html: '<!doctype html><html><body></body></html>',
+  jsdom: { url: 'https://mixdog.test/' },
+  expose: ['HTMLElement', 'FormData'],
+  actEnvironment: false,
+});
 globalThis.React = React;
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 Object.defineProperty(globalThis, 'navigator', { configurable: true, value: dom.window.navigator });

@@ -1,5 +1,6 @@
 import type { TranscriptItem } from './desktop-types';
-import { completionTone, isVisibleTranscriptItem } from './TranscriptView';
+import { completionTone } from './transcript-primitives';
+import { isVisibleTranscriptItem } from './transcript-row';
 // @ts-expect-error The shared runtime module is plain ESM and has no declaration file.
 import { isTranscriptCancelledStatusText } from '../../../../src/runtime/shared/tool-execution-contract.mjs';
 

@@ -137,7 +137,9 @@ export const ToolActivityGroup = React.memo(function ToolActivityGroup({
           </b>
         </span>
         {failedCount > 0 && (
-          <span className="tool-state failed tool-activity-failed">{t('{{count}} failed', { count: failedCount })}</span>
+          <span className="tool-state failed tool-activity-failed">
+            {t('{{count}} failed', { count: failedCount })}
+          </span>
         )}
         {pending && (
           <span className="sr-only" role="status">
@@ -608,7 +610,7 @@ export function ToolCard({ item, disclosureScope = '' }: { item: TranscriptItem;
   );
 }
 
-export function toolIcon(category: unknown) {
+function toolIcon(category: unknown) {
   if (category === 'Patch') return <Code2 size={16} />;
   if (category === 'Read') return <MxIcon name="open-file" size={16} />;
   if (category === 'Search' || category === 'Web Research') return <MxIcon name="magnifying-glass" size={16} />;

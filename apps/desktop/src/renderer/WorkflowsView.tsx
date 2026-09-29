@@ -1,7 +1,7 @@
 import { ChevronRight, Layers3, Plus } from 'lucide-react';
 import { useMemo, useRef, useState } from 'react';
 
-import type { DesktopApi, DesktopCapability, DesktopModelOption } from '../shared/contract';
+import type { DesktopApi, DesktopModelOption } from '../shared/contract';
 import { t } from './i18n';
 import { InitialSurface } from './InitialSurface';
 import { filterConfiguredModels } from './model-catalog';
@@ -14,6 +14,7 @@ import { useSidebarPanelDismiss } from './sidebar-panel-surface';
 import { SidebarResourceTitle } from './sidebar-resource-row';
 import { useSidebarReferences, type SidebarReferenceKey } from './sidebar-reference-cache';
 import { usePersistedListOrder } from './use-persisted-list-order';
+import { useSidebarCapabilityRunner } from './use-sidebar-capability-runner';
 import { AgentEditorDialog, RouteEditorDialog, WorkflowEditorDialog, type RouteEditorTarget } from './workflow-dialogs';
 import type { RecordValue } from './desktop-types';
 
@@ -102,8 +103,11 @@ export function WorkflowsPane({ api = window.mixdogDesktop, active = true }: { a
     () => filterConfiguredModels(normalizeModelOptions(values.webSearchModels.map(routeOption)), providerSetup),
     [values.webSearchModels, providerSetup]
   );
-  const [pending, setPending] = useState('');
-  const [error, setError] = useState('');
+  const { pending, error, setError, run } = useSidebarCapabilityRunner({
+    api,
+    completeMutation,
+    toastScope: 'workflow',
+  });
   const [editor, setEditor] = useState<{ pack: RecordValue | null; deletable: boolean } | null>(null);
   const [agentEditor, setAgentEditor] = useState<{ agent: RecordValue | null; deletable: boolean } | null>(null);
   const [routeEditor, setRouteEditor] = useState<RouteEditorTarget | null>(null);
@@ -120,29 +124,6 @@ export function WorkflowsPane({ api = window.mixdogDesktop, active = true }: { a
     setRouteEditor(null);
   });
   const busy = Boolean(pending) || loading || loadingEditor !== null;
-  const run = async (
-    capability: DesktopCapability,
-    args: unknown[] = [],
-    errorMode: 'inline' | 'toast' = 'inline'
-  ): Promise<unknown> => {
-    if (!api?.invokeCapability || pending) return undefined;
-    setPending(capability);
-    setError('');
-    try {
-      const result = await api.invokeCapability({ capability, args });
-      // Host-scoped completion boundary (see the cache module): never re-adopt
-      // a host the app already left.
-      await completeMutation(capability);
-      return result?.value ?? true;
-    } catch (reason) {
-      const message = reason instanceof Error ? reason.message : String(reason);
-      if (errorMode === 'toast') showDesktopToast(message, 'error', { scope: `workflow:${capability}` });
-      else setError(message);
-      return undefined;
-    } finally {
-      setPending('');
-    }
-  };
 
   const openEditor = async (id: string, title: string, deletable: boolean) => {
     if (!api?.invokeCapability) return;

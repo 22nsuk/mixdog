@@ -9,7 +9,8 @@ import { useHoverPopover } from './hover-popover';
 import { t } from './i18n';
 import { MxIcon } from './MxIcon';
 import { showDesktopToast } from './notifications';
-import { ContextUsageIndicator, formatWorkElapsed } from './TranscriptView';
+import { formatWorkElapsed } from './transcript-primitives';
+import { ContextUsageIndicator } from './transcript-status';
 import { useClock } from './use-clock';
 
 // A background shell's argv is not a label: `pwsh -NoProfile -Command "npm run

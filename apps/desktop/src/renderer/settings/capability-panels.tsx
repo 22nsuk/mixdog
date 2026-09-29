@@ -99,12 +99,12 @@ const SHORTCUT_GROUPS: ReadonlyArray<readonly [string, ReadonlyArray<readonly [s
 function ShortcutsPanel() {
   return (
     <>
-      {SHORTCUT_GROUPS.map(([title, rows]) => (
+      {SHORTCUT_GROUPS.map(([title, shortcuts]) => (
         <Group key={title} title={title}>
           <div className="settings-shortcut-list">
-            {rows.map(([keys, label]) => (
+            {shortcuts.map(([keys, action]) => (
               <div className="settings-shortcut-row" key={keys}>
-                <span>{t(label)}</span>
+                <span>{t(action)}</span>
                 <kbd>{keys}</kbd>
               </div>
             ))}
@@ -245,59 +245,53 @@ function ContextPanel({ data, pending, run }: PanelContext) {
   const providerDefaults = rows(autoClear.providerDefaults);
   const busy = Boolean(pending);
   return (
-    <>
-      <Group title="Session lifecycle">
-        <ToggleRow
-          title="Auto-compact"
-          description="Compact automatically as the active context reaches its limit."
-          checked={compaction.auto !== false}
+    <Group title="Session lifecycle">
+      <ToggleRow
+        title="Auto-compact"
+        description="Compact automatically as the active context reaches its limit."
+        checked={compaction.auto !== false}
+        disabled={busy}
+        onChange={(enabled) => void run('setCompactionSettings', [{ auto: enabled }])}
+      />
+      <ToggleRow
+        title="Auto-clear"
+        description={`Clear idle sessions after ${formatDuration(autoClear.idleMs) || 'the provider default'}.`}
+        checked={autoClear.enabled !== false}
+        disabled={busy}
+        onChange={(enabled) => void run('setAutoClear', [{ enabled }])}
+      />
+      {providerDefaults.map((entry) => (
+        <AutoSaveRow
+          key={String(entry.provider)}
+          title={`${providerDisplayName(String(entry.provider || 'default'))} idle window`}
+          name="duration"
+          value={durationTextInput(entry.idleMs)}
+          placeholder={durationTextInput(entry.builtInMs)}
+          required
           disabled={busy}
-          onChange={(enabled) => void run('setCompactionSettings', [{ auto: enabled }])}
+          onSave={(duration) =>
+            void run('setAutoClear', [{ provider: entry.provider, duration }], `autoclear-${entry.provider}`)
+          }
+          actions={
+            Boolean(entry.custom) && (
+              <ActionButton
+                disabled={busy}
+                onClick={() =>
+                  void run(
+                    'setAutoClear',
+                    [{ provider: entry.provider, resetProvider: true }],
+                    `autoclear-reset-${entry.provider}`
+                  )
+                }
+              >
+                Reset
+              </ActionButton>
+            )
+          }
         />
-        <ToggleRow
-          title="Auto-clear"
-          description={`Clear idle sessions after ${formatDuration(autoClear.idleMs) || 'the provider default'}.`}
-          checked={autoClear.enabled !== false}
-          disabled={busy}
-          onChange={(enabled) => void run('setAutoClear', [{ enabled }])}
-        />
-        {providerDefaults.map((entry) => (
-          <AutoSaveRow
-            key={String(entry.provider)}
-            title={`${providerDisplayName(String(entry.provider || 'default'))} idle window`}
-            name="duration"
-            value={durationTextInput(entry.idleMs)}
-            placeholder={durationTextInput(entry.builtInMs)}
-            required
-            disabled={busy}
-            onSave={(duration) =>
-              void run('setAutoClear', [{ provider: entry.provider, duration }], `autoclear-${entry.provider}`)
-            }
-            actions={
-              Boolean(entry.custom) && (
-                <ActionButton
-                  disabled={busy}
-                  onClick={() =>
-                    void run(
-                      'setAutoClear',
-                      [{ provider: entry.provider, resetProvider: true }],
-                      `autoclear-reset-${entry.provider}`
-                    )
-                  }
-                >
-                  Reset
-                </ActionButton>
-              )
-            }
-          />
-        ))}
-      </Group>
-    </>
+      ))}
+    </Group>
   );
-}
-
-function SystemPanel(context: PanelContext) {
-  return SystemPanelBody(context);
 }
 
 // Desktop-local power setting (main-process powerSaveBlocker): rides the
@@ -336,25 +330,18 @@ function DesktopPowerGroup() {
   );
 }
 
-function SystemPanelBody(context: PanelContext) {
+function SystemPanel(context: PanelContext) {
   return (
     <>
-      {/* The remote runtime toggle moved to the session header (user decision):
-        a persistent on/off button next to the context indicator. */}
       <UpdatePanel {...context} />
       <DesktopPowerGroup />
       <Group title="Doctor">
         <ResourceRow
           title="Diagnostics"
           description="Check the runtime, providers, integrations, and local installation."
-          actions={
-            <ActionButton onClick={requestOpenDoctor}>Run doctor</ActionButton>
-          }
+          actions={<ActionButton onClick={requestOpenDoctor}>Run doctor</ActionButton>}
         />
       </Group>
     </>
   );
 }
-
-// Schedules and webhook endpoints both moved to dedicated main-pane pages
-// (sidebar → Schedules / Webhooks); the Channels settings page is retired.

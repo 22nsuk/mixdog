@@ -1,8 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import React, { act } from 'react';
-import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 import MarkdownBody from './MarkdownBody';
 import MarkdownAstBody from './MarkdownAstBody';
 import { parseMarkdownToHast } from './markdown-ast';
@@ -27,25 +26,7 @@ const renderers = {
 };
 
 async function mount(t, render, text, project = 'C:/Project/conversation', configure = () => {}) {
-  const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'https://mixdog.test/' });
-  const previous = new Map(
-    ['window', 'document', 'IS_REACT_ACT_ENVIRONMENT'].map((key) => [
-      key,
-      Object.getOwnPropertyDescriptor(globalThis, key),
-    ])
-  );
-  Object.defineProperty(globalThis, 'window', { configurable: true, value: dom.window });
-  Object.defineProperty(globalThis, 'document', { configurable: true, value: dom.window.document });
-  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-  const root = createRoot(dom.window.document.getElementById('root'));
-  t.after(async () => {
-    await act(async () => root.unmount());
-    dom.window.close();
-    for (const [key, descriptor] of previous) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
-  });
+  const { dom, root } = installTestDom(t, { rootId: 'root' });
   const local = [];
   const external = [];
   const popups = [];
@@ -126,7 +107,9 @@ function installProjectFiles(f, entries) {
     const relPath = root ? target.slice(root.length + 1) : '';
     if (!root || !entries[root].includes(relPath)) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
     if (absolutePath.endsWith('/')) return [{ absolutePath: target, dir: true, name: relPath, size: 0 }];
-    return [{ absolutePath: target, dir: false, name: relPath.split('/').at(-1), size: 10, projectPath: root, relPath }];
+    return [
+      { absolutePath: target, dir: false, name: relPath.split('/').at(-1), size: 10, projectPath: root, relPath },
+    ];
   };
 }
 

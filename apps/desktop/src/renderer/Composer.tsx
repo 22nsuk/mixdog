@@ -1,5 +1,3 @@
-import { X } from 'lucide-react';
-import { ErrorNotice, errorSummary } from './ErrorNotice';
 import React, {
   memo,
   useCallback,
@@ -13,18 +11,14 @@ import React, {
   type ReactNode,
   type SetStateAction,
 } from 'react';
-import { createPortal } from 'react-dom';
 import type {
   DesktopAbortOptions,
-  DesktopCapability,
   DesktopModelSelection,
   DesktopPromptContent,
   DesktopSubmitOptions,
   SessionSnapshot,
 } from '../shared/contract';
 import { t } from './i18n';
-import { ModelSelector } from './model-controls';
-import { MxIcon } from './MxIcon';
 import { shouldStopComposerGeneration } from './renderer-logic.mjs';
 import type { CommandSurface as CommandSurfaceName, SettingsSection } from './slash-commands';
 import { touchPrimaryPointer } from './surface-input-focus';
@@ -42,7 +36,8 @@ import {
 } from './composer-draft';
 import { useComposerDictation } from './use-composer-dictation';
 import { useComposerAttachments } from './use-composer-attachments';
-import { useComposerShareIntake } from './use-composer-share-intake';
+import { useComposerCapability } from './use-composer-capability';
+import { useComposerExternalDraft } from './use-composer-external-draft';
 import { useComposerQueue } from './use-composer-queue';
 import { useComposerSubmission } from './use-composer-submission';
 import { useComposerKeyboard } from './use-composer-keyboard';
@@ -55,16 +50,14 @@ import { useComposerPalettes } from './use-composer-palettes';
 import { createSlashExecutor } from './composer-slash-executor';
 import {
   AttachmentChips,
-  DictationButton,
   DictationOverlay,
   MentionPalette,
   MessageSelectorPalette,
-  SendButton,
   SlashPalette,
   composerPlaceholder,
 } from './composer-surfaces';
-import { ComposerAddMenu } from './ComposerAddMenu';
-import { ComposerGoalDialog } from './ComposerGoalDialog';
+import { ComposerBanners } from './ComposerBanners';
+import { ComposerFooter } from './ComposerFooter';
 import { CapabilityIcon } from './CapabilityIcon';
 import { shouldRemoveSelectedSkill, skillTitle, useComposerSkill } from './composer-skill';
 
@@ -209,7 +202,7 @@ function switchComposerIdentity({
   historyNavigation.current = { index: -1, seed: '' };
 }
 
-type ComposerProps = {
+export type ComposerProps = {
   turnBusy: boolean;
   commandBusy: boolean;
   transitioning: boolean;
@@ -379,50 +372,19 @@ export const Composer = memo(function Composer(props: ComposerProps) {
     submissionRecoveryVersion,
     dropTargetRef,
   });
-  // A shared link or note arrives as text: it JOINS the draft instead of
-  // replacing whatever the user already typed.
-  const appendSharedText = useCallback(
-    (text: string) => {
-      setDraft((current) => {
-        const next = current.trim() ? `${current.replace(/\s+$/, '')}\n${text}` : text;
-        draftRef.current = next;
-        return next;
-      });
-      window.setTimeout(() => {
-        textarea.current?.focus();
-      }, 0);
-    },
-    [draftRef, setDraft, textarea]
-  );
-  useComposerShareIntake({
-    active: paneActive && !transitioning,
+  useComposerExternalDraft({
+    draftRef,
+    setDraft,
+    textarea,
+    historyNavigation: history.navigation,
     attachFiles,
-    appendText: appendSharedText,
+    shareActive: paneActive && !transitioning,
   });
-  const invokeCapabilityResult = useCallback(
-    async <T,>(capability: DesktopCapability, args: unknown[] = []) => {
-      // Every command this composer issues belongs to the session IT paints —
-      // the queue ×/Edit, /clear, /compact. Focus decides nothing.
-      const result = await invokeResult(() =>
-        window.mixdogDesktop.invokeCapability<T>({
-          capability,
-          args,
-          ...(sessionId ? { sessionId } : {}),
-        })
-      );
-      // Session commands already publish through the ordered session lane.
-      // Their unversioned reply snapshot can arrive after a newer live frame;
-      // replaying it here resurrected /compact's finished command spinner.
-      if (!sessionId && result?.snapshot !== undefined) applySnapshot(result.snapshot);
-      return result;
-    },
-    [applySnapshot, invokeResult, sessionId]
-  );
-  const invokeCapability = useCallback(
-    async <T,>(capability: DesktopCapability, args: unknown[] = []) =>
-      (await invokeCapabilityResult<T>(capability, args))?.value,
-    [invokeCapabilityResult]
-  );
+  const { invokeCapabilityResult, invokeCapability } = useComposerCapability({
+    invokeResult,
+    applySnapshot,
+    sessionId,
+  });
   const queue = useComposerQueue({
     queued,
     hiddenQueueIds,
@@ -498,22 +460,6 @@ export const Composer = memo(function Composer(props: ComposerProps) {
     setDraggingFiles(false);
   }, [transitioning]);
   useComposerFocus({ textarea, transitioning, focusRequest, paneActive });
-  useEffect(() => {
-    const receiveDraft = (event: Event) => {
-      const text = String((event as CustomEvent<unknown>).detail || '');
-      if (!text) return;
-      setDraft((current) => {
-        const next = `${current}${current && !/\s$/.test(current) ? ' ' : ''}${text}`;
-        draftRef.current = next;
-        return next;
-      });
-      history.navigation.current = { index: -1, seed: '' };
-      window.setTimeout(() => textarea.current?.focus(), 0);
-    };
-    window.addEventListener('mixdog:composer-draft', receiveDraft);
-    return () => window.removeEventListener('mixdog:composer-draft', receiveDraft);
-  }, []);
-
   const [goalDialogOpen, setGoalDialogOpen] = useState(false);
   useEffect(() => setGoalDialogOpen(false), [identityScope, paneActive]);
   const executeSlash = createSlashExecutor({
@@ -692,32 +638,15 @@ export const Composer = memo(function Composer(props: ComposerProps) {
         onSteer={(id) => void queue.steerQueuedNow(id)}
         onRemove={(id) => void queue.discardQueued(id)}
       />
-      {/* Error/notice banners float ABOVE the input card (user-flagged: they
-          previously rendered inside the pill and read as composer content). */}
-      {attachmentError && <ErrorNotice error={attachmentError} onDismiss={() => setAttachmentError('')} />}
-      {composerNotice && (
-        <p className="composer-notice" role="status">
-          <span>{errorSummary(composerNotice)}</span>
-          <button
-            type="button"
-            className="composer-banner-close"
-            aria-label={t('Dismiss notice')}
-            onClick={() => showComposerNotice('')}
-          >
-            <X size={14} />
-          </button>
-        </p>
-      )}
-      {draggingFiles &&
-        !transitioning &&
-        dropTargetRef.current &&
-        createPortal(
-          <div className="task-drop-overlay" role="status">
-            <MxIcon name="photo" size={16} />
-            <span>{t('Drop files or paths')}</span>
-          </div>,
-          dropTargetRef.current
-        )}
+      <ComposerBanners
+        attachmentError={attachmentError}
+        notice={composerNotice}
+        draggingFiles={draggingFiles}
+        transitioning={transitioning}
+        dropTarget={dropTargetRef.current}
+        onDismissAttachmentError={() => setAttachmentError('')}
+        onDismissNotice={() => showComposerNotice('')}
+      />
       <form
         ref={paletteAnchor}
         className="composer"
@@ -799,93 +728,46 @@ export const Composer = memo(function Composer(props: ComposerProps) {
             aria-label={t('Message Mixdog')}
           />
         </div>
-        <div className="composer-footer">
-          <input
-            ref={fileInput}
-            type="file"
-            hidden
-            multiple
-            accept={ATTACHMENT_ACCEPT}
-            onChange={(event) => {
-              if (event.currentTarget.files) void attachFiles(event.currentTarget.files);
-              event.currentTarget.value = '';
-            }}
-          />
-          {goalDialogOpen && (
-            <ComposerGoalDialog
-              anchor={textarea}
-              disabled={goalDisabled}
-              onStart={executeSlash}
-              onClose={() => setGoalDialogOpen(false)}
-              returnFocus={() => textarea.current?.focus()}
-            />
-          )}
-          <ComposerAddMenu
-            key={recoveryScope}
-            anchor={paletteAnchor}
-            sessionId={sessionId}
-            disabled={transitioning || !paneActive}
-            goalDisabled={goalDisabled}
-            onAttach={() => fileInput.current?.click()}
-            onSkill={(name) => {
-              skillSelection.select(name);
-              mention.setDismissed(mention.signature);
-              queueMicrotask(() => textarea.current?.focus());
-            }}
-            onGoal={executeSlash}
-            onMore={() => onOpenSettings('skills')}
-          />
-          <ModelSelector
-            provider={provider}
-            model={model}
-            effort={effort}
-            fast={fast}
-            fastCapable={fastCapable}
-            modelParameters={modelParameters}
-            contextPercent={contextPercent}
-            sessionId={sessionId}
-            // Model writes are queued by the session API. A preceding write must
-            // not disable the next selection while its acknowledgement travels.
-            modelDisabled={transitioning}
-            // Effort/Fast stay live during a turn: the running turn already
-            // captured its own effort/fast at turn start, so a change here lands
-            // on the NEXT turn instead of being locked out. Only session-command
-            // churn still disables the controls.
-            tuningDisabled={commandBusy || transitioning}
-            invokeResult={invokeResult}
-            applySnapshot={applySnapshot}
-            onOpenSettings={onOpenSettings}
-            onDraftSelection={onDraftModelSelection}
-            onRoutePreferenceApplied={onRoutePreferenceApplied}
-          />
-          {modelAside && <span className="composer-model-aside">{modelAside}</span>}
-          <span className="composer-primary-actions">
-            {/* The mic appears only once the voice runtime is installed
-            (Extensions → Voice transcription): an uninstalled feature never
-            advertises itself in the composer. */}
-            {dictation.dictationInstalled && (
-              <DictationButton
-                state={dictation.dictationState}
-                disabled={transitioning || dictation.dictationState === 'transcribing'}
-                onToggle={() => void dictation.toggleDictation()}
-              />
-            )}
-            <SendButton
-              stopOnly={stopOnly}
-              voiceSend={voiceSend}
-              submitting={submitting}
-              turnBusy={turnBusy}
-              commandBusy={commandBusy}
-              transitioning={transitioning}
-              hasConversation={hasConversation}
-              dictationState={dictation.dictationState}
-              draft={draft}
-              attachments={attachments}
-              onStop={() => void stop()}
-              onStopDictationAndSend={() => void dictation.stopDictationAndSend()}
-            />
-          </span>
-        </div>
+        <ComposerFooter
+          attachAccept={ATTACHMENT_ACCEPT}
+          fileInput={fileInput}
+          onFilesChosen={(files) => void attachFiles(files)}
+          textarea={textarea}
+          paletteAnchor={paletteAnchor}
+          recoveryScope={recoveryScope}
+          goalDialogOpen={goalDialogOpen}
+          setGoalDialogOpen={setGoalDialogOpen}
+          goalDisabled={goalDisabled}
+          executeSlash={executeSlash}
+          transitioning={transitioning}
+          commandBusy={commandBusy}
+          turnBusy={turnBusy}
+          paneActive={paneActive}
+          hasConversation={hasConversation}
+          submitting={submitting}
+          skillSelection={skillSelection}
+          mention={mention}
+          dictation={dictation}
+          stopOnly={stopOnly}
+          voiceSend={voiceSend}
+          draft={draft}
+          attachments={attachments}
+          onStop={() => void stop()}
+          modelAside={modelAside}
+          provider={provider}
+          model={model}
+          effort={effort}
+          fast={fast}
+          fastCapable={fastCapable}
+          modelParameters={modelParameters}
+          contextPercent={contextPercent}
+          sessionId={sessionId}
+          invokeResult={invokeResult}
+          applySnapshot={applySnapshot}
+          onOpenSettings={onOpenSettings}
+          onDraftModelSelection={onDraftModelSelection}
+          onRoutePreferenceApplied={onRoutePreferenceApplied}
+        />
       </form>
     </>
   );

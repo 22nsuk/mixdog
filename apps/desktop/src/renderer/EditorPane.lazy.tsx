@@ -4,7 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import SharedEditorSurface from './SharedEditorSurface';
 import { t } from './i18n';
 import { ErrorNotice } from './ErrorNotice';
-import { createGitRefreshScheduler, watchGitRefreshEvidence } from './git-refresh-scheduler';
+import { createGitRefreshScheduler, FILE_DIFF_REFRESH_OPTIONS, watchGitRefreshEvidence } from './git-refresh-scheduler';
 import { monaco, resolveThemeColor } from './monaco-setup';
 import { EditorBreadcrumbs } from './editor-breadcrumbs';
 import { useEditorCallHierarchy } from './editor-call-hierarchy';
@@ -161,11 +161,7 @@ function startEditorQuickDiff({
   };
   const stopWatching = watchGitRefreshEvidence(
     projectPath,
-    createGitRefreshScheduler(refresh, {
-      safetyIntervalMs: 30_000,
-      activityDebounceMs: 125,
-      activityMinGapMs: 1_000,
-    })
+    createGitRefreshScheduler(refresh, FILE_DIFF_REFRESH_OPTIONS)
   );
   return () => {
     live = false;

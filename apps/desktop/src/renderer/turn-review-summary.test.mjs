@@ -1,44 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import React, { act } from 'react';
-import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
 import { TurnReviewBar } from './TurnReview';
+import { installReviewDom } from './turn-review-test-support.mjs';
 
 function phone(t) {
-  const dom = new JSDOM('<!doctype html><div id="root"></div>', {
-    url: 'https://mixdog.test/',
-    pretendToBeVisual: true,
-  });
-  const previous = new Map(
-    ['window', 'document', 'navigator', 'IS_REACT_ACT_ENVIRONMENT'].map((key) => [
-      key,
-      Object.getOwnPropertyDescriptor(globalThis, key),
-    ])
-  );
-  Object.defineProperty(globalThis, 'window', { configurable: true, value: dom.window });
-  Object.defineProperty(globalThis, 'document', { configurable: true, value: dom.window.document });
-  Object.defineProperty(globalThis, 'navigator', {
-    configurable: true,
-    value: { userAgent: 'Mozilla/5.0 (Linux; Android 14) Mobile', maxTouchPoints: 5 },
-  });
-  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   const pending = [];
-  dom.window.mixdogDesktop = {
-    invokeCapability() {
-      return new Promise((resolve) => pending.push(resolve));
+  const requests = [];
+  const { dom, root } = installReviewDom(t, {
+    navigator: { userAgent: 'Mozilla/5.0 (Linux; Android 14) Mobile', maxTouchPoints: 5 },
+    desktop: {
+      invokeCapability(request) {
+        requests.push(request);
+        return new Promise((resolve) => pending.push(resolve));
+      },
     },
-  };
-  const root = createRoot(dom.window.document.getElementById('root'));
-  t.after(async () => {
-    await act(async () => root.unmount());
-    dom.window.close();
-    for (const [key, descriptor] of previous) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
   });
-  return { dom, root, pending };
+  return { dom, root, pending, requests };
 }
 
 // A contended worktree reviews the session's own tool edits; a collapsed phone
@@ -75,40 +53,7 @@ test('tracker counts sent as files fill a collapsed bar without the patch', asyn
 // A phone's collapsed bar asks for files and counts only; opening it asks for
 // the patch text it is about to draw.
 test('a collapsed bar on a phone reads a summary, an opened one reads in full', async (t) => {
-  const dom = new JSDOM('<!doctype html><div id="root"></div>', {
-    url: 'https://mixdog.test/',
-    pretendToBeVisual: true,
-  });
-  const previous = new Map(
-    ['window', 'document', 'navigator', 'IS_REACT_ACT_ENVIRONMENT'].map((key) => [
-      key,
-      Object.getOwnPropertyDescriptor(globalThis, key),
-    ])
-  );
-  Object.defineProperty(globalThis, 'window', { configurable: true, value: dom.window });
-  Object.defineProperty(globalThis, 'document', { configurable: true, value: dom.window.document });
-  Object.defineProperty(globalThis, 'navigator', {
-    configurable: true,
-    value: { userAgent: 'Mozilla/5.0 (Linux; Android 14) Mobile', maxTouchPoints: 5 },
-  });
-  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-  const requests = [];
-  const pending = [];
-  dom.window.mixdogDesktop = {
-    invokeCapability(request) {
-      requests.push(request);
-      return new Promise((resolve) => pending.push(resolve));
-    },
-  };
-  const root = createRoot(dom.window.document.getElementById('root'));
-  t.after(async () => {
-    await act(async () => root.unmount());
-    dom.window.close();
-    for (const [key, descriptor] of previous) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
-  });
+  const { dom, root, pending, requests } = phone(t);
   const items = [
     { kind: 'user', id: 'prompt', text: 'Change a file' },
     { kind: 'tool', id: 'edit', name: 'apply_patch', args: {}, result: 'Updated edit' },

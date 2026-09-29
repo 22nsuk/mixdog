@@ -9,7 +9,7 @@
 import { assertSafeComputerInput, assertSafeComputerSessionId, assertSafeComputerTargetTokens } from '../input/guards';
 import { assertExactWindowCommandTarget } from '../input/targeting';
 import { assertCaptureAfterOptions } from '../observation/analysis';
-import { CHROME_SETUP_SESSION_ID } from '../session/chrome-setup';
+import { CHROME_SETUP_SESSION_ID } from '../shared/common';
 import { computerUseCoordinator } from '../session/coordinator';
 import type { ComputerCommand, ComputerCommandResult } from '../shared/types';
 import { AUTO_CAPTURE_ACTIONS, READ_ACTIONS } from './action-sets';

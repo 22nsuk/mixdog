@@ -128,6 +128,18 @@ export class SessionHostTransport {
     return this.owner.applySessionResult(id, result, publish);
   }
 
+  /** A read capability rides `read`; every other action is a `configure`. */
+  private callAction(
+    method: string,
+    args: unknown[],
+    params: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    const callOptions = this.callOptions(randomUUID(), longRunningRequestTimeout(method, args));
+    return READ_CAPABILITIES.has(method)
+      ? this.client.read(params, callOptions)
+      : this.client.configure(params, callOptions);
+  }
+
   async invokeSession(
     sessionId: string,
     method: string,
@@ -142,10 +154,7 @@ export class SessionHostTransport {
       open: this.owner.openHints(id),
       baseRevision: prior?.revision ?? null,
     };
-    const callOptions = this.callOptions(randomUUID(), longRunningRequestTimeout(method, args));
-    const result = READ_CAPABILITIES.has(method)
-      ? await this.client.read(params, callOptions)
-      : await this.client.configure(params, callOptions);
+    const result = await this.callAction(method, args, params);
     const current = this.owner.projection(id);
     // A stream publication may have advanced the baseline while configure
     // awaited its reply. Recover the resulting state, never replay the command
@@ -200,10 +209,7 @@ export class SessionHostTransport {
           open: { cwd: await this.owner.taskWorkspace(), desktopSession: null },
           baseRevision: this.owner.projection(sessionId)?.revision ?? null,
         };
-        const callOptions = this.callOptions(randomUUID(), longRunningRequestTimeout(method, args));
-        const result = READ_CAPABILITIES.has(method)
-          ? await this.client.read(params, callOptions)
-          : await this.client.configure(params, callOptions);
+        const result = await this.callAction(method, args, params);
         return {
           value: result.value,
           snapshot: this.owner.applySessionResult(sessionId, result, false),

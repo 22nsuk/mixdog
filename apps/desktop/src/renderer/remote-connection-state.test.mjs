@@ -3,19 +3,15 @@ import test from 'node:test';
 
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 
-const dom = new JSDOM('<!doctype html><html><body><main></main></body></html>', {
-  url: 'https://mixdog.test/',
+installTestDom(null, {
+  html: '<!doctype html><html><body><main></main></body></html>',
+  jsdom: {
+    url: 'https://mixdog.test/',
+  },
+  expose: ['Event', 'navigator'],
 });
-globalThis.window = dom.window;
-globalThis.document = dom.window.document;
-globalThis.Event = dom.window.Event;
-Object.defineProperty(globalThis, 'navigator', {
-  configurable: true,
-  value: dom.window.navigator,
-});
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 const {
   beginRemoteConnectionTimeline,

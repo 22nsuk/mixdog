@@ -189,10 +189,17 @@ export function EditorBreadcrumbs({
     [onFocusEditor, onOpenAt, picker, relPath, showFiles]
   );
 
-  const focusRow = useCallback((index: number) => {
+  const activateRow = useCallback((index: number) => {
     setPicker((current) => (current ? ({ ...current, activeIndex: index } as BreadcrumbPickerState) : current));
-    window.requestAnimationFrame(() => rowRefs.current[index]?.focus());
   }, []);
+
+  const focusRow = useCallback(
+    (index: number) => {
+      activateRow(index);
+      window.requestAnimationFrame(() => rowRefs.current[index]?.focus());
+    },
+    [activateRow]
+  );
 
   const handlePickerKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLDivElement>) => {
@@ -334,16 +341,8 @@ export function EditorBreadcrumbs({
                 aria-selected={selected}
                 className={selected ? 'selected' : ''}
                 style={symbolItem ? { paddingLeft: `${8 + symbolItem.level * 14}px` } : undefined}
-                onFocus={() =>
-                  setPicker((current) =>
-                    current ? ({ ...current, activeIndex: index } as BreadcrumbPickerState) : current
-                  )
-                }
-                onMouseEnter={() =>
-                  setPicker((current) =>
-                    current ? ({ ...current, activeIndex: index } as BreadcrumbPickerState) : current
-                  )
-                }
+                onFocus={() => activateRow(index)}
+                onMouseEnter={() => activateRow(index)}
                 onClick={() => {
                   if (fileItem) {
                     openFile(fileItem);

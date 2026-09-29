@@ -2,18 +2,18 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 import { SessionGoalIsland } from './SessionGoalIsland.tsx';
 import { PaneGoalIsland } from './app-snapshot-views.tsx';
 import { defaultSessionLaneStore } from './session-lane-store.ts';
 import { goalDisplayStatus, goalElapsedLabel } from './session-goal-presentation.ts';
 import { t } from './i18n.ts';
 
-const dom = new JSDOM('<!doctype html><body></body>', { url: 'https://mixdog.test/' });
-globalThis.window = dom.window;
-globalThis.document = dom.window.document;
-globalThis.Node = dom.window.Node;
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+installTestDom(null, {
+  html: '<!doctype html><body></body>',
+  jsdom: { url: 'https://mixdog.test/' },
+  expose: ['Node'],
+});
 
 test('a paused Goal shows reply activity without inventing approval or elapsed work', async () => {
   const host = document.createElement('div');

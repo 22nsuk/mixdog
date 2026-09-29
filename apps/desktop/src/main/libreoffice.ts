@@ -8,7 +8,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { run } from './cli-run';
+import { installWithPackageManager, run } from './cli-run';
 import { packagedRuntimeSourceRoot } from './runtime-layout';
 import type { DesktopLibreOfficeStatus } from '../shared/contract';
 
@@ -108,44 +108,16 @@ export async function installLibreOffice({
   // probe answers first.
   const existing = await libreOfficeStatus(true);
   if (existing.installed) return existing;
-  if (process.platform === 'win32') {
-    const result = await run(
-      'winget',
-      [
-        'install',
-        '--id',
-        'TheDocumentFoundation.LibreOffice',
-        '--exact',
-        '--source',
-        'winget',
-        '--accept-package-agreements',
-        '--accept-source-agreements',
-        '--disable-interactivity',
-      ],
-      INSTALL_TIMEOUT_MS
-    );
-    if (result.code === -1) {
-      throw new Error('winget is unavailable. Install LibreOffice from https://www.libreoffice.org and try again.');
-    }
-    if (result.code !== 0) {
-      const detail = (result.stderr || result.stdout).trim().split('\n').filter(Boolean).pop();
-      throw new Error(`winget could not install LibreOffice: ${detail || `exit code ${result.code}`}`);
-    }
-  } else if (process.platform === 'darwin') {
-    const result = await run('brew', ['install', '--cask', 'libreoffice'], INSTALL_TIMEOUT_MS);
-    if (result.code === -1) {
-      throw new Error('Homebrew is unavailable. Install LibreOffice from https://www.libreoffice.org and try again.');
-    }
-    if (result.code !== 0) {
-      const detail = (result.stderr || result.stdout).trim().split('\n').filter(Boolean).pop();
-      throw new Error(`brew could not install LibreOffice: ${detail || `exit code ${result.code}`}`);
-    }
-  } else {
-    throw new Error(
+  await installWithPackageManager({
+    label: 'LibreOffice',
+    homepage: 'https://www.libreoffice.org',
+    wingetId: 'TheDocumentFoundation.LibreOffice',
+    brewArgs: ['install', '--cask', 'libreoffice'],
+    timeoutMs: INSTALL_TIMEOUT_MS,
+    unsupported:
       'Automatic LibreOffice installation is not supported on Linux. Install it with your package manager ' +
-        '(for example `sudo apt install libreoffice` or `sudo dnf install libreoffice`) or from https://www.libreoffice.org.'
-    );
-  }
+      '(for example `sudo apt install libreoffice` or `sudo dnf install libreoffice`) or from https://www.libreoffice.org.',
+  });
   const status = await libreOfficeStatus(true);
   if (!status.installed) {
     throw new Error(

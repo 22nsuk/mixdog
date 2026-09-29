@@ -11,6 +11,7 @@ import {
 import type { DesktopServiceInbound, DesktopServiceOutbound } from './desktop-service-protocol';
 import { createSnapshotStateMailbox } from './snapshot-state-mailbox';
 import {
+  createSessionReadWindow,
   createSnapshotDeltaEncoder,
   isNoDelta,
   releaseHiddenSessionStateEntries,
@@ -429,6 +430,7 @@ export async function createDesktopService({
   let serviceClosed = false;
   let viewSyncQueue: Promise<void> = Promise.resolve();
   const visibleSessionIds = new Set<string>();
+  const desktopReads = createSessionReadWindow();
   const sessionStates = createSessionStatePublisher(emit);
 
   const stateMailbox = createSnapshotStateMailbox<SessionSnapshot>((sequence, wire) => {
@@ -449,7 +451,7 @@ export async function createDesktopService({
       reportTranscriptRead(update.sessionId, update.readTraceId, 'service-syncing');
       return;
     }
-    if (!shouldPublishSessionState(update.sessionId, update.snapshot, visibleSessionIds)) {
+    if (!shouldPublishSessionState(update.sessionId, update.snapshot, visibleSessionIds, desktopReads)) {
       reportTranscriptRead(update.sessionId, update.readTraceId, 'service-hidden');
       return;
     }
@@ -553,6 +555,11 @@ export async function createDesktopService({
       const target = (host as unknown as Record<DesktopServiceMethod, (...values: unknown[]) => unknown>)[
         method as DesktopServiceMethod
       ];
+      // The window's own read: its frame must reach the window even before a
+      // pane registers the session as visible.
+      if (method === 'prefetchSession') {
+        return desktopReads.run(String(args[0] || ''), async () => await target.apply(host, args));
+      }
       return await target.apply(host, args);
     },
     async control(value): Promise<void> {

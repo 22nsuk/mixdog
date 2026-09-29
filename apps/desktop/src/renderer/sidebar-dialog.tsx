@@ -2,6 +2,7 @@ import { LoaderCircle, X } from 'lucide-react';
 import { useEffect, useId, useState, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 
+import { ErrorNotice } from './ErrorNotice';
 import { t } from './i18n';
 import { useMobileBack } from './mobile-back';
 import { acquireTitleBarDim } from './titlebar-dim';
@@ -60,6 +61,52 @@ export function PaneDialogLayer({
     pane ?? document.body,
     onClose,
     children
+  );
+}
+
+/** Editor footer: the error line, an armed two-step delete when the entry is
+ *  deletable, the caller's extra actions, then Cancel / Save. */
+export function EditorDialogFooter({
+  error,
+  busy,
+  onCancel,
+  onDelete,
+  children,
+}: {
+  error: string;
+  busy: boolean;
+  onCancel(): void;
+  onDelete?(): void;
+  children?: ReactNode;
+}) {
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  return (
+    <footer>
+      {error && <ErrorNotice error={error} />}
+      {onDelete && (
+        <button
+          type="button"
+          className={`danger${confirmDelete ? ' confirming' : ''}`}
+          disabled={busy}
+          onClick={() => {
+            if (!confirmDelete) {
+              setConfirmDelete(true);
+              return;
+            }
+            onDelete();
+          }}
+        >
+          {confirmDelete ? t('Confirm delete') : t('Delete')}
+        </button>
+      )}
+      {children}
+      <button type="button" className="secondary" disabled={busy} onClick={onCancel}>
+        {t('Cancel')}
+      </button>
+      <button type="submit" disabled={busy}>
+        {t('Save')}
+      </button>
+    </footer>
   );
 }
 

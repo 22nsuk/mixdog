@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { initialPaneWorkspaceState, mobilePaneWorkspaceState } from './pane-workspace-state.ts';
-import { paneTabAcrossVisualBoundary, openTabInPaneLeaf, parsePaneLayout } from './pane-layout.ts';
+import { initialPaneWorkspaceState } from './pane-workspace-state.ts';
+import { paneTabAcrossVisualBoundary, openTabInPaneLeaf } from './pane-layout.ts';
+import { parsePaneLayout } from './pane-layout-parse.ts';
 
-const mobileStored = {
+const twoPaneStored = {
   layout: {
     type: 'split',
     direction: 'row',
@@ -30,11 +31,6 @@ const mobileStored = {
   },
   focusedLeafId: 'right',
 };
-
-test('a phone restart resets every stored pane and tab', () => {
-  assert.equal(mobilePaneWorkspaceState(mobileStored), null);
-  assert.equal(mobilePaneWorkspaceState(null), null);
-});
 
 test('session validation keeps the persisted pane geometry on first paint', () => {
   const stored = {
@@ -81,7 +77,7 @@ test('legacy Browser tabs are dropped without discarding the surrounding layout'
 });
 
 test('forward pane traversal enters at the first tab instead of the last active tab', () => {
-  const target = paneTabAcrossVisualBoundary(mobileStored.layout, 'left', 1);
+  const target = paneTabAcrossVisualBoundary(twoPaneStored.layout, 'left', 1);
   assert.equal(target?.leafId, 'right');
   assert.deepEqual(target?.selection, { kind: 'file', project: 'p', rel: 'a.ts' });
 });
@@ -89,9 +85,9 @@ test('forward pane traversal enters at the first tab instead of the last active 
 test('backward pane traversal enters at the last tab instead of the last active tab', () => {
   const target = paneTabAcrossVisualBoundary(
     {
-      ...mobileStored.layout,
+      ...twoPaneStored.layout,
       first: {
-        ...mobileStored.layout.first,
+        ...twoPaneStored.layout.first,
         activeKey: 'session:session-a',
         tabs: [
           { kind: 'session', id: 'session-a' },

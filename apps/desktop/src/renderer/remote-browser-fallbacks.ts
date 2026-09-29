@@ -10,7 +10,7 @@ const DISABLED_UPDATER: DesktopUpdaterState = { status: 'disabled' };
 // reach. Reporting that keeps a remote action honest instead of doing nothing.
 const DESKTOP_ONLY_TRASH = 'Moving items to the trash is available in the desktop app only.';
 
-export type RemoteBrowserFallbacks = Pick<
+type RemoteBrowserFallbacks = Pick<
   DesktopApi,
   | 'chooseProject'
   | 'chooseFile'

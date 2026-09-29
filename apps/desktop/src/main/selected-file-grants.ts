@@ -1,7 +1,32 @@
 import { createHash } from 'node:crypto';
-import { isAbsolute, resolve } from 'node:path';
+import { isAbsolute, resolve, sep } from 'node:path';
 
 export const MAX_SELECTED_FILE_GRANTS = 100;
+
+const comparablePath = (path: string): string => (process.platform === 'win32' ? path.toLocaleLowerCase() : path);
+
+/** The deepest registered project that contains the file, or null when it
+ *  lies outside every project (such a file needs a one-off grant). */
+export function owningProject<T extends { path: string }>(
+  projects: readonly T[],
+  absolutePath: string
+): { project: T; root: string } | null {
+  const file = comparablePath(absolutePath);
+  return (
+    projects
+      .map((project) => ({ project, root: resolve(project.path) }))
+      .filter(({ root }) => {
+        const normalizedRoot = comparablePath(root);
+        return file.startsWith(normalizedRoot + sep) || file === normalizedRoot;
+      })
+      .sort((left, right) => right.root.length - left.root.length)[0] ?? null
+  );
+}
+
+/** Whether a requested path is exactly the file a grant names. */
+export function sameGrantedPath(granted: string, requested: string): boolean {
+  return comparablePath(requested) === comparablePath(granted);
+}
 
 export function selectedFileGrantKey(token: string): string {
   return createHash('sha256').update(token).digest('hex');

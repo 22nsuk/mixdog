@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildSessionDiffRows } from './session-diff-model.ts';
+import { buildSessionDiffRows, sessionDiffFilePatch } from './session-diff-model.ts';
 import { boundReviewPatch } from '../../../../src/runtime/shared/review-diff.mjs';
 
 test('omitted large hunks keep modified, added and deleted rows in the session pane', () => {
@@ -46,6 +46,30 @@ test('session diff rows follow the scoped capability file set', () => {
   assert.equal(rows[0].parts.length, 1);
   assert.equal(rows[0].additions, 1);
   assert.equal(rows[0].deletions, 1);
+});
+
+test('a file slice holds only its own parts, and an empty patch or blank path yields nothing', () => {
+  const patch = [
+    'diff --git a/a.txt b/a.txt',
+    '--- a/a.txt',
+    '+++ b/a.txt',
+    '@@ -1 +1 @@',
+    '-one',
+    '+two',
+    'diff --git a/b.txt b/b.txt',
+    '--- a/b.txt',
+    '+++ b/b.txt',
+    '@@ -1 +1 @@',
+    '-three',
+    '+four',
+    '',
+  ].join('\n');
+  const slice = sessionDiffFilePatch(patch, 'b.txt');
+  assert.match(slice, /\+four/);
+  assert.doesNotMatch(slice, /\+two/);
+  assert.equal(sessionDiffFilePatch('', 'b.txt'), '');
+  assert.equal(sessionDiffFilePatch(patch, ''), '');
+  assert.equal(sessionDiffFilePatch(patch, 'missing.txt'), '');
 });
 
 test('session diff rows still render an exact tracked patch without Git metadata', () => {

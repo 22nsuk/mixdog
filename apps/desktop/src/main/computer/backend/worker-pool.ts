@@ -6,10 +6,11 @@
  */
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { powershellHostProgram, RESPONSE_MARKER } from './program';
+import { createHostScriptPublisher, HOST_ASSEMBLY_CACHE_DIRECTORY } from './host-script';
+import { RESPONSE_MARKER } from './program';
 import { elevatedProgramInvocation } from './elevated-program';
 import { computerNativeBinary, computerNativeEnvironment } from './native-host';
 import { createSessionJobs } from './session-jobs';
@@ -25,8 +26,6 @@ import {
 
 /** Per-command ceiling for the PowerShell host round trip. */
 const COMMAND_TIMEOUT_MS = 45_000;
-// build pays the C# compile; every later worker loads the cached assembly.
-const HOST_ASSEMBLY_CACHE_DIRECTORY = 'host-cache';
 
 /** Actions whose worker streams pointer progress back while they run. */
 const POINTER_FEEDBACK_ACTIONS = [
@@ -308,8 +307,7 @@ export interface WorkerPoolHost {
 export function createWorkerPool(host: WorkerPoolHost) {
   const { dataDirectory, onSessionRetired } = host;
 
-  let hostScriptPath: string | null = null;
-  let hostScriptBuild = '';
+  const hostScript = createHostScriptPublisher(dataDirectory);
   let nextId = 1;
   const pending = new Map<number, PendingWorkerRequest>();
   const powerShellBySession = new Map<string, ChildProcessWithoutNullStreams>();
@@ -324,43 +322,6 @@ export function createWorkerPool(host: WorkerPoolHost) {
   assertComputerWorkerCapacity(0, maxWorkers);
   let elevatedSlots = 0;
   const inputMarker = String(randomBytes(4).readUInt32LE() & 0x7fffffff || 1);
-  const hostScriptName = `computer-host-${process.pid}-${randomBytes(12).toString('hex')}.ps1`;
-  const processAlive = (pid: number) => {
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch (error) {
-      // EPERM: the process exists but belongs to someone else.
-      return (error as NodeJS.ErrnoException).code === 'EPERM';
-    }
-  };
-
-  function ensureHostScript(): string {
-    if (hostScriptPath) return hostScriptPath;
-    const directory = dataDirectory();
-    mkdirSync(directory, { recursive: true });
-    const program = powershellHostProgram();
-    hostScriptBuild = createHash('sha256').update(program).digest('hex').slice(0, 16);
-    hostScriptPath = join(directory, hostScriptName);
-    writeFileSync(hostScriptPath, program);
-    removeOrphanedHostScripts(directory);
-    try {
-      const cacheDirectory = join(directory, HOST_ASSEMBLY_CACHE_DIRECTORY);
-      mkdirSync(cacheDirectory, { recursive: true });
-      const current = `mixdog-computer-host-${hostScriptBuild}.dll`;
-      for (const name of readdirSync(cacheDirectory)) {
-        if (name === current) continue;
-        try {
-          unlinkSync(join(cacheDirectory, name));
-        } catch {
-          /* a live worker holds it */
-        }
-      }
-    } catch {
-      /* the cache is an optimization, never a requirement */
-    }
-    return hostScriptPath;
-  }
 
   /** An exited worker keeps its slot until its `exit` event arrives, and a
    * confirmed session release can outrun that event. Dead children are pruned
@@ -384,7 +345,7 @@ export function createWorkerPool(host: WorkerPoolHost) {
     // with -Command - PowerShell consumes stdin as the command text, colliding
     // with the per-command JSON we also write to stdin. -File leaves stdin
     // dedicated to runtime commands.
-    const scriptPath = ensureHostScript();
+    const scriptPath = hostScript.ensure();
     return spawnProcess(
       'powershell.exe',
       ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath],
@@ -393,7 +354,7 @@ export function createWorkerPool(host: WorkerPoolHost) {
         env: {
           ...process.env,
           MIXDOG_COMPUTER_HOST_CACHE: join(dataDirectory(), HOST_ASSEMBLY_CACHE_DIRECTORY),
-          MIXDOG_COMPUTER_HOST_BUILD: hostScriptBuild,
+          MIXDOG_COMPUTER_HOST_BUILD: hostScript.build(),
           MIXDOG_COMPUTER_INPUT_MARKER: inputMarker,
         },
       }
@@ -582,6 +543,7 @@ export function createWorkerPool(host: WorkerPoolHost) {
   async function callPowerShellElevated(request: Record<string, unknown>): Promise<PowerShellResponse> {
     const sessionId = String(request.session_id || 'default');
     ensurePowerShell(sessionId);
+    const hostScriptPath = hostScript.path();
     if (!hostScriptPath) throw new Error('privileged_worker_unavailable: computer host script is missing');
     const directory = dataDirectory();
     mkdirSync(directory, { recursive: true });
@@ -658,38 +620,6 @@ export function createWorkerPool(host: WorkerPoolHost) {
     }
   }
 
-  /** A host that crashed or was killed never ran removeHostScript, so its
-   *  script outlives it; one whose process is gone is safe to delete. */
-  function removeOrphanedHostScripts(directory: string): void {
-    let names: string[] = [];
-    try {
-      names = readdirSync(directory);
-    } catch {
-      return;
-    }
-    for (const name of names) {
-      const match = /^computer-host-(\d+)-[0-9a-f]+\.ps1$/.exec(name);
-      if (!match || name === hostScriptName || processAlive(Number(match[1]))) continue;
-      try {
-        unlinkSync(join(directory, name));
-      } catch {
-        /* removed concurrently */
-      }
-    }
-  }
-
-  /** The published script is a temp artifact; it goes when the host does. */
-  function removeHostScript(): void {
-    if (hostScriptPath) {
-      try {
-        unlinkSync(hostScriptPath);
-      } catch {
-        /* already gone */
-      }
-    }
-    hostScriptPath = null;
-  }
-
   function residentWorkerPids(): number[] {
     return [...hostWorkers]
       .filter((child) => child.exitCode === null && child.signalCode === null)
@@ -722,8 +652,8 @@ export function createWorkerPool(host: WorkerPoolHost) {
     workerLastUsedAt,
     residentWorkerPids,
     waitForResidentWorkersExit,
-    removeHostScript,
-    ensureHostScript,
+    removeHostScript: hostScript.remove,
+    ensureHostScript: hostScript.ensure,
     ensurePowerShell,
     retirePowerShell,
     hasUnconfirmedBackgroundInput: (sessionId?: string) =>

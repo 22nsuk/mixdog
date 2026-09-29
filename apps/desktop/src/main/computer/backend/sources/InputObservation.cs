@@ -296,11 +296,6 @@ public static class MixInputObservation
         try { AssertContinue(); }
         catch { End(); throw; }
     }
-    public static bool CanContinue()
-    {
-        var value = Read();
-        return value.Ready && (!actionSequence.HasValue || value.Sequence == actionSequence.Value);
-    }
     public static void AssertContinue()
     {
         if (DispatchAuthorization != null) DispatchAuthorization();

@@ -1,3 +1,5 @@
+import { evictOldest } from '../shared/common';
+
 /** A window that just handed back addressable elements is not a visual-only
  *  target, whatever the grounding heuristic decided about their placement:
  *  caching it blinds the very reads a modal or menu-only moment needs most. */
@@ -49,11 +51,7 @@ export function createVisualOnlyCapabilityStore(maxEntries = 128) {
     remember(targetKey: string, capability: VisualOnlyCapability): void {
       byTarget.delete(targetKey);
       byTarget.set(targetKey, capability);
-      while (byTarget.size > maxEntries) {
-        const oldestKey = byTarget.keys().next().value;
-        if (oldestKey === undefined) break;
-        byTarget.delete(oldestKey);
-      }
+      evictOldest(byTarget, maxEntries);
     },
     delete(targetKey: string): void {
       byTarget.delete(targetKey);
@@ -84,11 +82,7 @@ export function createOcrCapturePreferenceStore() {
       }
       bySession.delete(sessionId);
       bySession.set(sessionId, { ...preference });
-      while (bySession.size > MAX_OCR_CAPTURE_PREFERENCE_SESSIONS) {
-        const oldest = bySession.keys().next().value;
-        if (oldest === undefined) break;
-        bySession.delete(oldest);
-      }
+      evictOldest(bySession, MAX_OCR_CAPTURE_PREFERENCE_SESSIONS);
     },
     resolve(sessionId: string, override: Partial<OcrCapturePreference>): OcrCapturePreference {
       const remembered = bySession.get(sessionId);

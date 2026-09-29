@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 import { ErrorNotice } from './ErrorNotice.tsx';
 import { DesktopToastRegion, showDesktopToast } from './desktop-toasts.tsx';
 import { groupToasts, reduceToasts } from './desktop-toast-state.ts';
@@ -112,27 +112,17 @@ test('visible prompts and progress separate error runs instead of folding unrela
 });
 
 async function withDom(run) {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'http://localhost/' });
-  const names = ['window', 'document', 'navigator', 'HTMLElement', 'MutationObserver', 'IS_REACT_ACT_ENVIRONMENT'];
-  const previous = new Map(names.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
-  const overrides = { window: dom.window, IS_REACT_ACT_ENVIRONMENT: true };
-  for (const name of names)
-    Object.defineProperty(globalThis, name, {
-      configurable: true,
-      writable: true,
-      value: overrides[name] ?? dom.window[name],
-    });
+  const { dom, restore } = installTestDom(null, {
+    jsdom: { url: 'http://localhost/' },
+    expose: ['navigator', 'HTMLElement', 'MutationObserver'],
+  });
   const root = createRoot(document.getElementById('root'));
   const render = async (element) => act(async () => root.render(element));
   try {
     await run({ dom, render });
   } finally {
     await act(async () => root.unmount());
-    dom.window.close();
-    for (const [name, descriptor] of previous) {
-      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
-      else delete globalThis[name];
-    }
+    restore();
   }
 }
 

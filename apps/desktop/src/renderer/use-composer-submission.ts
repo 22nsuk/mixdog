@@ -22,6 +22,67 @@ import {
   submissionRetryKey,
 } from './composer-draft';
 
+function base64Bytes(data: string): number {
+  let padding = 0;
+  if (data.endsWith('==')) padding = 2;
+  else if (data.endsWith('=')) padding = 1;
+  return Math.floor((data.length * 3) / 4) - padding;
+}
+
+/** Expands chip-only tokens, keeps the attachments the text references and
+ *  builds the wire content plus the pasted-item side tables. */
+function buildSubmissionContent(submittedDraft: string, submittedAttachments: ComposerAttachment[]) {
+  const chipOnlyTextTokens = submittedAttachments
+    .filter(
+      (attachment) => attachment.chipOnly === true && attachment.token && !submittedDraft.includes(attachment.token)
+    )
+    .map((attachment) => attachment.token);
+  const expandedText = chipOnlyTextTokens.length
+    ? [submittedDraft.trim(), ...chipOnlyTextTokens].filter(Boolean).join('\n')
+    : submittedDraft;
+  const used = submittedAttachments.filter((attachment) => expandedText.includes(attachment.token));
+  const pastedImages: Record<string, DesktopPromptAttachment> = {};
+  const pastedTexts: Record<string, DesktopPastedText> = {};
+  for (const attachment of used) {
+    if (attachment.kind === 'text') {
+      pastedTexts[String(attachment.id)] = {
+        id: attachment.id,
+        text: attachment.data,
+        filename: attachment.name,
+        mimeType: attachment.mimeType,
+        source: attachment.source || 'file',
+      };
+    } else if (attachment.kind === 'image') {
+      pastedImages[String(attachment.id)] = {
+        id: attachment.id,
+        type: 'image',
+        sizeBytes: base64Bytes(attachment.data),
+        mediaType: attachment.mimeType,
+        filename: attachment.name,
+        ...(attachment.metadataText ? { metadataText: attachment.metadataText } : {}),
+      };
+    }
+  }
+  const imageAttachments = used.filter((attachment) => attachment.kind === 'image');
+  const pdfAttachments = used.filter((attachment) => attachment.kind === 'pdf');
+  const contentParts: Exclude<DesktopPromptContent, string> = [];
+  if (expandedText) contentParts.push({ type: 'text', text: expandedText });
+  for (const attachment of imageAttachments) {
+    if (attachment.metadataText) contentParts.push({ type: 'text', text: attachment.metadataText });
+    contentParts.push({ type: 'image', data: attachment.data, mimeType: attachment.mimeType });
+  }
+  for (const attachment of pdfAttachments) {
+    contentParts.push({
+      type: 'file',
+      data: attachment.data,
+      mimeType: attachment.mimeType,
+      filename: attachment.name,
+    });
+  }
+  const content: DesktopPromptContent = imageAttachments.length || pdfAttachments.length ? contentParts : expandedText;
+  return { expandedText, used, pastedImages, pastedTexts, imageAttachments, content };
+}
+
 export function useComposerSubmission({
   turnBusy,
   commandBusy,
@@ -142,46 +203,10 @@ export function useComposerSubmission({
           return;
         }
         setAttachmentError('');
-        const base64Bytes = (data: string) => {
-          let padding = 0;
-          if (data.endsWith('==')) padding = 2;
-          else if (data.endsWith('=')) padding = 1;
-          return Math.floor((data.length * 3) / 4) - padding;
-        };
-        const chipOnlyTextTokens = submittedAttachments
-          .filter(
-            (attachment) =>
-              attachment.chipOnly === true && attachment.token && !submittedDraft.includes(attachment.token)
-          )
-          .map((attachment) => attachment.token);
-        const expandedText = chipOnlyTextTokens.length
-          ? [submittedDraft.trim(), ...chipOnlyTextTokens].filter(Boolean).join('\n')
-          : submittedDraft;
-        const used = submittedAttachments.filter((attachment) => expandedText.includes(attachment.token));
-        const pastedImages: Record<string, DesktopPromptAttachment> = {};
-        const pastedTexts: Record<string, DesktopPastedText> = {};
-        for (const attachment of used) {
-          if (attachment.kind === 'text') {
-            pastedTexts[String(attachment.id)] = {
-              id: attachment.id,
-              text: attachment.data,
-              filename: attachment.name,
-              mimeType: attachment.mimeType,
-              source: attachment.source || 'file',
-            };
-          } else if (attachment.kind === 'image') {
-            pastedImages[String(attachment.id)] = {
-              id: attachment.id,
-              type: 'image',
-              sizeBytes: base64Bytes(attachment.data),
-              mediaType: attachment.mimeType,
-              filename: attachment.name,
-              ...(attachment.metadataText ? { metadataText: attachment.metadataText } : {}),
-            };
-          }
-        }
-        const imageAttachments = used.filter((attachment) => attachment.kind === 'image');
-        const pdfAttachments = used.filter((attachment) => attachment.kind === 'pdf');
+        const { expandedText, used, pastedImages, pastedTexts, imageAttachments, content } = buildSubmissionContent(
+          submittedDraft,
+          submittedAttachments
+        );
         for (const attachment of imageAttachments) {
           registerImagePreview(
             attachment.id,
@@ -193,22 +218,6 @@ export function useComposerSubmission({
           setAttachmentError('This prompt is too large to send. Remove or shorten an inline text attachment.');
           return;
         }
-        const contentParts: Exclude<DesktopPromptContent, string> = [];
-        if (expandedText) contentParts.push({ type: 'text', text: expandedText });
-        for (const attachment of imageAttachments) {
-          if (attachment.metadataText) contentParts.push({ type: 'text', text: attachment.metadataText });
-          contentParts.push({ type: 'image', data: attachment.data, mimeType: attachment.mimeType });
-        }
-        for (const attachment of pdfAttachments) {
-          contentParts.push({
-            type: 'file',
-            data: attachment.data,
-            mimeType: attachment.mimeType,
-            filename: attachment.name,
-          });
-        }
-        const content: DesktopPromptContent =
-          imageAttachments.length || pdfAttachments.length ? contentParts : expandedText;
         const committedAttachments = [...used];
         const retryKey = submissionRetryKey(JSON.stringify([selectedSkill, expandedText]), committedAttachments);
         const submittedDisplayText = [selectedSkill ? `[${skillTitle(selectedSkill)}]` : '', expandedText.trim()]

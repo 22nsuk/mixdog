@@ -6,28 +6,22 @@
 import assert from 'node:assert/strict';
 import test, { after } from 'node:test';
 import React, { act } from 'react';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 
 // React DOM decides ONCE, at module evaluation, whether the host supports
 // native input events; evaluated without a document it falls back to the IE
 // `onpropertychange` polyfill, which calls attachEvent on focus and never
 // delivers onChange. So the DOM globals land first and react-dom/client plus
 // the pane are imported afterwards (same order as goal-entry.test.mjs).
-const DOM_GLOBALS = ['window', 'document', 'Node', 'HTMLElement', 'HTMLInputElement', 'Event', 'KeyboardEvent'];
-const savedGlobals = DOM_GLOBALS.map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]);
-const dom = new JSDOM('<!doctype html><html><body></body></html>', {
-  url: 'https://mixdog.test/',
-  pretendToBeVisual: true,
+const { restore } = installTestDom(null, {
+  html: '<!doctype html><html><body></body></html>',
+  jsdom: {
+    url: 'https://mixdog.test/',
+    pretendToBeVisual: true,
+  },
+  expose: ['Node', 'HTMLElement', 'HTMLInputElement', 'Event', 'KeyboardEvent'],
 });
-for (const key of DOM_GLOBALS) globalThis[key] = dom.window[key];
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-after(() => {
-  dom.window.close();
-  for (const [key, descriptor] of savedGlobals) {
-    if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-    else delete globalThis[key];
-  }
-});
+after(restore);
 
 const { createRoot } = await import('react-dom/client');
 const { FilesRootPane } = await import('./ExplorerTree.tsx');

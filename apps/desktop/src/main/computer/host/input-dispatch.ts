@@ -1,6 +1,6 @@
 /** Execute one authorized input without owning routing, leases, or reply policy. */
 import { electronWindowForNativeId } from '../observation/window-handles';
-import { CHROME_SETUP_SESSION_ID } from '../session/chrome-setup';
+import { CHROME_SETUP_SESSION_ID } from '../shared/common';
 import { computerUseCoordinator } from '../session/coordinator';
 import type { ComputerCommand, PowerShellResponse } from '../shared/types';
 import type { CommandRouterHost } from './command-router';

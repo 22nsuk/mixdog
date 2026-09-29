@@ -12,9 +12,9 @@ import {
   type RelayE2EEPairingMaterial,
 } from '../shared/remote-e2ee';
 import { createRemoteStateLane } from './remote-state-lane';
-import type { RemoteClientClaim } from './remote-relay';
+import type { RemoteClientClaim } from './remote-relay-claim';
 import type { RelayClientCallOutcome } from './remote-relay-client-calls';
-import type { RelayClientRegistry, RelayClientState } from './remote-relay-clients';
+import type { RelayClientRegistry, RelayClientState, SendEncryptedFrame } from './remote-relay-clients';
 
 export interface RelayClientLifecycleDeps {
   clients: RelayClientRegistry;
@@ -24,13 +24,7 @@ export interface RelayClientLifecycleDeps {
   viewSyncSupported(): boolean;
   relayRoutingCapsPayload(): Record<string, unknown>;
   sendEnvelope(payload: unknown): void;
-  sendEncryptedFrame(
-    clientId: string,
-    payload: unknown,
-    droppable?: boolean,
-    onSent?: (bytes: number) => void,
-    requireDelivery?: boolean
-  ): Promise<void>;
+  sendEncryptedFrame: SendEncryptedFrame;
   dispatchClientCall(
     clientId: string,
     client: RelayClientState,

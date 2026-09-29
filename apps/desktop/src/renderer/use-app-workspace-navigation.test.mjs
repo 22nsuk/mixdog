@@ -3,21 +3,14 @@
 import assert from 'node:assert/strict';
 import test, { after } from 'node:test';
 import React, { act } from 'react';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 
-const DOM_GLOBALS = ['window', 'document', 'navigator', 'Node', 'HTMLElement', 'Event', 'CustomEvent', 'KeyboardEvent'];
-const savedGlobals = DOM_GLOBALS.map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]);
-const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'https://mixdog.test/' });
-for (const key of DOM_GLOBALS)
-  Object.defineProperty(globalThis, key, { configurable: true, writable: true, value: dom.window[key] });
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-after(() => {
-  dom.window.close();
-  for (const [key, descriptor] of savedGlobals) {
-    if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-    else delete globalThis[key];
-  }
+const { restore } = installTestDom(null, {
+  html: '<!doctype html><html><body></body></html>',
+  jsdom: { url: 'https://mixdog.test/' },
+  expose: ['navigator', 'Node', 'HTMLElement', 'Event', 'CustomEvent', 'KeyboardEvent'],
 });
+after(restore);
 
 const { createRoot } = await import('react-dom/client');
 const { useAppWorkspaceNavigation } = await import('./use-app-workspace-navigation.ts');

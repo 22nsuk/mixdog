@@ -5,6 +5,7 @@ import { SessionSidebar } from '../../src/renderer/session-sidebar';
 import { RowOverflowMenu } from '../../src/renderer/RowOverflowMenu';
 import { DialogFrame, MenuList } from '../../src/renderer/ui/primitives';
 import '../../src/renderer/bootstrap-styles';
+import { settleFrames } from '../probe-settle';
 
 const root = createRoot(document.getElementById('root')!);
 const noop = () => {};
@@ -190,15 +191,7 @@ function Scene({ view, mobile }: { view: string; mobile: boolean }) {
   );
 }
 
-async function settle() {
-  await document.fonts.ready;
-  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-  // Hidden windows can suspend animation timelines. Capture the settled
-  // production appearance, not an arbitrary partly transparent entry frame.
-  for (const animation of document.getAnimations()) {
-    if (Number.isFinite(animation.effect?.getTiming().iterations)) animation.finish();
-  }
-}
+const settle = () => settleFrames();
 (window as any).polishProbe = {
   async render(view: string, theme: string, mobile = false) {
     document.documentElement.dataset.mixdogTheme = theme;

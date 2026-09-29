@@ -2,17 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from '../test-support/test-dom.mjs';
 import { useAppTaskLifecycle } from './use-app-task-lifecycle.ts';
 
 test('useAppTaskLifecycle manages selection, tabs, task start, and session clear', async () => {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
-    url: 'http://localhost/',
+  const { dom } = installTestDom(null, {
+    html: '<!doctype html><html><body><div id="root"></div></body></html>',
+    jsdom: {
+      url: 'http://localhost/',
+    },
+    expose: ['navigator', 'HTMLElement', 'Event', 'CustomEvent'],
   });
-  for (const key of ['window', 'document', 'navigator', 'HTMLElement', 'Event', 'CustomEvent']) {
-    Object.defineProperty(globalThis, key, { configurable: true, value: dom.window[key] });
-  }
-  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
   let hookResult = null;
   const navigationEpoch = { current: 0 };

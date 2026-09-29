@@ -384,7 +384,11 @@ try {
       }
       const delayedReview = summary.delayedReview || {};
       assert.equal(delayedReview.appeared, true, 'the delayed review bar must appear during the probe.');
-      assert.equal(Number(delayedReview.height), 32, 'the collapsed review bar must retain its readable 32px head row.');
+      assert.equal(
+        Number(delayedReview.height),
+        32,
+        'the collapsed review bar must retain its readable 32px head row.'
+      );
       assert.equal(
         Number(delayedReview.maxOverlap),
         0,

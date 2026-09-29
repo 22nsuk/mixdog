@@ -5,10 +5,12 @@ import {
   type DesktopUpdaterState,
   type SessionSnapshot,
 } from '../shared/contract';
-import { isSessionId, requiredSessionIds } from './desktop-state';
+import { isSessionId, requiredSessionId, requiredSessionIds } from './desktop-state';
 import { reportTranscriptRead } from '../shared/transcript-read-diagnostics';
 import type { DesktopService } from './desktop-service-contract';
+import { requiredTranscriptItemLimit } from './ipc-validation';
 import {
+  createSessionReadWindow,
   createSnapshotDeltaEncoder,
   isNoDelta,
   releaseHiddenSessionStateEntries,
@@ -35,9 +37,16 @@ interface DesktopStateBridgeOptions {
 
 type SessionProvenance = Pick<DesktopSessionStateUpdate, 'frameSource' | 'contentRevision'>;
 
+// A read's frame travels the daemon's session stream while its reply travels
+// the request channel, so the reply can land first and close the read window.
+// The frame still carries the read's trace id; it is admitted for this long.
+const REQUESTED_READ_FRAME_GRACE_MS = 10_000;
+
 export class DesktopStateBridge {
   private readonly stateEncoder = createSnapshotDeltaEncoder();
   private readonly visibleSessionIds = new Set<string>();
+  private readonly requestedReads = createSessionReadWindow();
+  private readonly requestedReadTraces = new Map<string, { sessionId: string; timer: ReturnType<typeof setTimeout> }>();
   private readonly sessionEncoders = new Map<string, SnapshotDeltaEncoder>();
   private readonly latestSessionStates = new Map<string, SessionSnapshot>();
   private readonly latestSessionProvenance = new Map<string, SessionProvenance>();
@@ -52,6 +61,15 @@ export class DesktopStateBridge {
   constructor(private readonly options: DesktopStateBridgeOptions) {
     const { handle, host, updater } = options;
     handle(DESKTOP_IPC.setVisibleSessions, (_event, sessionIds) => this.setVisibleSessions(sessionIds));
+    // Reads live beside the visibility filter: the frame a read publishes
+    // must pass it even when no pane shows the session yet.
+    handle(DESKTOP_IPC.prefetchSession, (_event, sessionId, itemLimit, readTraceId) => {
+      const id = requiredSessionId(sessionId);
+      const limit = requiredTranscriptItemLimit(itemLimit);
+      const traceId = typeof readTraceId === 'string' && readTraceId ? readTraceId : undefined;
+      if (traceId) this.rememberRequestedReadTrace(traceId, id);
+      return this.requestedReads.run(id, () => host.prefetchSession(id, limit, traceId));
+    });
     handle(DESKTOP_IPC.getSnapshot, () => host.getSnapshot());
     handle(DESKTOP_IPC.getUpdaterState, () => updater?.getState() ?? { status: 'disabled' });
     handle(
@@ -105,7 +123,12 @@ export class DesktopStateBridge {
 
   private readonly sendSessionState = (update: DesktopSessionStateUpdate): void => {
     const sessionId = String(update.sessionId || '');
-    if (!sessionId || !shouldPublishSessionState(sessionId, update.snapshot, this.visibleSessionIds)) {
+    const answersRequestedRead = this.takeRequestedReadTrace(sessionId, update.readTraceId);
+    if (
+      !sessionId ||
+      (!answersRequestedRead &&
+        !shouldPublishSessionState(sessionId, update.snapshot, this.visibleSessionIds, this.requestedReads))
+    ) {
       reportTranscriptRead(sessionId, update.readTraceId, 'ipc-hidden');
       return;
     }
@@ -142,6 +165,24 @@ export class DesktopStateBridge {
       ...(typeof update.contentRevision === 'number' ? { contentRevision: update.contentRevision } : {}),
     });
   };
+
+  private rememberRequestedReadTrace(traceId: string, sessionId: string): void {
+    const previous = this.requestedReadTraces.get(traceId);
+    if (previous) clearTimeout(previous.timer);
+    const timer = setTimeout(() => this.requestedReadTraces.delete(traceId), REQUESTED_READ_FRAME_GRACE_MS);
+    timer.unref?.();
+    this.requestedReadTraces.set(traceId, { sessionId, timer });
+  }
+
+  /** True once for the frame answering a read this window requested. */
+  private takeRequestedReadTrace(sessionId: string, traceId: string | undefined): boolean {
+    if (!sessionId || !traceId) return false;
+    const pending = this.requestedReadTraces.get(traceId);
+    if (!pending || pending.sessionId !== sessionId) return false;
+    clearTimeout(pending.timer);
+    this.requestedReadTraces.delete(traceId);
+    return true;
+  }
 
   private async setVisibleSessions(value: unknown): Promise<boolean> {
     const normalized = requiredSessionIds(value);
@@ -226,6 +267,8 @@ export class DesktopStateBridge {
     this.latestSessionStates.clear();
     this.latestSessionProvenance.clear();
     this.visibleSessionIds.clear();
+    for (const { timer } of this.requestedReadTraces.values()) clearTimeout(timer);
+    this.requestedReadTraces.clear();
     if (typeof powerMonitor?.removeListener === 'function') {
       powerMonitor.removeListener('resume', this.onSystemResume);
     }

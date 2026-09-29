@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 import {
   PaneSideDock,
   normalizePaneSideDocks,
@@ -235,22 +235,10 @@ test('mobile always stacks the visible diff so Goal has a visible DIFF anchor', 
 });
 
 test('a cold pane dock paints its open shell before mounting the heavy body', async () => {
-  const dom = new JSDOM('<!doctype html><html><body><main id="root"></main></body></html>', {
-    url: 'https://mixdog.test/',
+  const { dom, restore } = installTestDom(null, {
+    html: '<!doctype html><html><body><main id="root"></main></body></html>',
+    expose: ['navigator', 'Element', 'HTMLElement', 'Node'],
   });
-  const globals = ['window', 'document', 'navigator', 'Element', 'HTMLElement', 'Node', 'IS_REACT_ACT_ENVIRONMENT'];
-  const previous = new Map(globals.map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
-  for (const [key, value] of Object.entries({
-    window: dom.window,
-    document: dom.window.document,
-    navigator: dom.window.navigator,
-    Element: dom.window.Element,
-    HTMLElement: dom.window.HTMLElement,
-    Node: dom.window.Node,
-    IS_REACT_ACT_ENVIRONMENT: true,
-  })) {
-    Object.defineProperty(globalThis, key, { configurable: true, value });
-  }
   let nextFrame = 1;
   const pendingFrames = new Map();
   dom.window.requestAnimationFrame = (callback) => {
@@ -314,10 +302,6 @@ test('a cold pane dock paints its open shell before mounting the heavy body', as
     assert.ok(document.querySelector('[data-testid="heavy-dock-body"]'));
   } finally {
     await act(async () => root.unmount());
-    dom.window.close();
-    for (const [key, descriptor] of previous) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
+    restore();
   }
 });

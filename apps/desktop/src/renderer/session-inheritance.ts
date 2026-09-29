@@ -54,7 +54,7 @@ export function sessionModelSelection(snapshot: Snapshot): DesktopModelSelection
   };
 }
 
-export function lastAssistantRoute(snapshot: Snapshot): { provider: string; model: string; modelId?: string } | null {
+function lastAssistantRoute(snapshot: Snapshot): { provider: string; model: string; modelId?: string } | null {
   const items = Array.isArray(snapshot.items) ? snapshot.items : [];
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = record(items[index]);

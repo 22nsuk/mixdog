@@ -585,11 +585,13 @@ try {
   );
   const heapUsage = await client.request('Runtime.getHeapUsage');
   const domCounters = await client.request('Memory.getDOMCounters');
-  const heapMegabytes = Object.fromEntries(
-    Object.entries(heapUsage)
-      .filter(([, value]) => Number.isFinite(value))
-      .map(([key, value]) => [key, Math.round((value / 1024 / 1024) * 100) / 100])
-  );
+  const toMegabytes = (usage) =>
+    Object.fromEntries(
+      Object.entries(usage)
+        .filter(([, value]) => Number.isFinite(value))
+        .map(([key, value]) => [key, Math.round((value / 1024 / 1024) * 100) / 100])
+    );
+  const heapMegabytes = toMegabytes(heapUsage);
   let afterGarbageCollection = null;
   if (process.env.MIXDOG_E2E_COLLECT_GC === '1') {
     await client.request('HeapProfiler.collectGarbage');
@@ -598,11 +600,7 @@ try {
       client.request('Memory.getDOMCounters'),
     ]);
     afterGarbageCollection = {
-      heapUsageMb: Object.fromEntries(
-        Object.entries(collectedHeap)
-          .filter(([, value]) => Number.isFinite(value))
-          .map(([key, value]) => [key, Math.round((value / 1024 / 1024) * 100) / 100])
-      ),
+      heapUsageMb: toMegabytes(collectedHeap),
       domCounters: collectedDom,
     };
   }

@@ -15,6 +15,7 @@ import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { CdpClient, evaluateStable as evaluateUntilStable, stopApp, waitForTarget } from './cdp-client.mjs';
 import { optionValue } from './cli-args.mjs';
 
 const desktopDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -38,89 +39,7 @@ const profilePath = join(desktopDir, 'artifacts', 'submit-shift-profile');
 
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 
-class Cdp {
-  constructor(url) {
-    this.socket = new WebSocket(url);
-    this.nextId = 1;
-    this.pending = new Map();
-  }
-  async connect() {
-    this.socket.addEventListener('message', (event) => {
-      const message = JSON.parse(String(event.data));
-      if (!message.id || !this.pending.has(message.id)) return;
-      const entry = this.pending.get(message.id);
-      this.pending.delete(message.id);
-      if (message.error) entry.reject(new Error(message.error.message));
-      else entry.resolve(message.result);
-    });
-    await new Promise((done, fail) => {
-      this.socket.addEventListener('open', done, { once: true });
-      this.socket.addEventListener('error', () => fail(new Error('CDP websocket failed.')), { once: true });
-    });
-  }
-  request(method, params = {}) {
-    return new Promise((done, fail) => {
-      const id = this.nextId++;
-      this.pending.set(id, { resolve: done, reject: fail });
-      this.socket.send(JSON.stringify({ id, method, params }));
-    });
-  }
-  async evaluate(expression) {
-    const result = await this.request('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
-    if (result.exceptionDetails) {
-      throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text);
-    }
-    return result.result?.value;
-  }
-  close() {
-    this.socket.close();
-  }
-}
-
-async function waitForTarget(child) {
-  const deadline = Date.now() + 30_000;
-  while (Date.now() < deadline) {
-    if (child.exitCode !== null) throw new Error(`Electron exited with ${child.exitCode}.`);
-    try {
-      const targets = await fetch(`http://127.0.0.1:${port}/json/list`).then((response) => response.json());
-      const target = targets.find(
-        (candidate) => candidate.type === 'page' && candidate.url?.includes('/out/renderer/index.html')
-      );
-      if (target?.webSocketDebuggerUrl) return target.webSocketDebuggerUrl;
-    } catch {
-      /* not listening yet */
-    }
-    await sleep(50);
-  }
-  throw new Error(`CDP target did not appear on port ${port}.`);
-}
-
-async function evaluateStable(client, expression, timeoutMs = 20_000) {
-  const deadline = Date.now() + timeoutMs;
-  let lastError = null;
-  while (Date.now() < deadline) {
-    try {
-      return await client.evaluate(expression);
-    } catch (error) {
-      lastError = error;
-      if (!/Execution context was destroyed|Cannot find context|localStorage/i.test(String(error?.message)))
-        throw error;
-      await sleep(100);
-    }
-  }
-  throw lastError || new Error('Renderer did not stabilize.');
-}
-
-async function stopApp(client, child) {
-  try {
-    await client.evaluate('window.mixdogDesktop?.quit?.()');
-  } catch {
-    /* fallback below */
-  }
-  client.close();
-  await Promise.race([new Promise((done) => child.once('exit', done)), sleep(4_000)]);
-  if (child.exitCode === null) child.kill();
-}
+const evaluateStable = (client, expression, timeoutMs = 20_000) => evaluateUntilStable(client, expression, timeoutMs);
 
 // Installed once: layout-shift observer, transcript scroll-write attribution,
 // and a rAF sampler that starts on demand.
@@ -418,7 +337,7 @@ const child = spawn(electron, [desktopDir, `--remote-debugging-port=${port}`, '-
   stdio: 'ignore',
   windowsHide: false,
 });
-const client = new Cdp(await waitForTarget(child));
+const client = new CdpClient(await waitForTarget(port, child));
 await client.connect();
 try {
   await evaluateStable(

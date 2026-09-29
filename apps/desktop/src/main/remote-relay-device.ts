@@ -142,6 +142,16 @@ export function relayDeviceSocketOptions(
   };
 }
 
+/** The relay's `device-revoked` answer, or null for any other message. */
+function readDeviceRevokedReply(raw: WebSocket.RawData): { ok?: unknown } | null {
+  try {
+    const message = JSON.parse(String(raw)) as { type?: unknown; ok?: unknown };
+    return message.type === 'device-revoked' ? message : null;
+  } catch {
+    return null;
+  }
+}
+
 function revokeIdentity(
   relayUrl: string,
   identity: DeviceIdentity,
@@ -180,13 +190,8 @@ function revokeIdentity(
       });
     });
     ws.on('message', (raw) => {
-      let message: { type?: unknown; ok?: unknown };
-      try {
-        message = JSON.parse(String(raw)) as { type?: unknown; ok?: unknown };
-      } catch {
-        return;
-      }
-      if (message.type === 'device-revoked') finish(message.ok !== false);
+      const reply = readDeviceRevokedReply(raw);
+      if (reply) finish(reply.ok !== false);
     });
     ws.once('error', () => finish(false));
     ws.once('close', () => finish(false));
@@ -267,14 +272,9 @@ export function revokeDeviceOverSocket(deps: { currentSocket(): WebSocket | null
       reject(error);
     };
     const onMessage = (raw: WebSocket.RawData) => {
-      let message: { type?: unknown; ok?: unknown };
-      try {
-        message = JSON.parse(String(raw)) as { type?: unknown; ok?: unknown };
-      } catch {
-        return;
-      }
-      if (message.type !== 'device-revoked') return;
-      if (message.ok === false) {
+      const reply = readDeviceRevokedReply(raw);
+      if (!reply) return;
+      if (reply.ok === false) {
         fail(new Error('Relay registration was not found.'));
         return;
       }

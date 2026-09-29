@@ -16,6 +16,7 @@ import { TerminalLocalEcho } from './terminal-local-echo';
 import { TerminalWritePump } from './terminal-write-pump';
 import { applyTerminalActivity, StableTerminalFitScheduler } from './terminal-fit';
 import { dataTransferHasLocalFiles, droppedLocalPaths, terminalPathText } from './file-drag';
+import { remoteSurface } from './shell-viewport';
 
 type ShellProfile = { id: string; label: string; path: string; default?: boolean };
 
@@ -45,14 +46,17 @@ const TERMINAL_VIEW_STATE_KEY = 'mixdog.desktop-terminal-view.v1';
 const TERMINAL_SHELL_CHOICE_KEY = 'mixdog.desktop-terminal-shell.v1';
 const TERMINAL_SHELL_DEFAULT_SLOT = '__default__';
 
+/** A per-terminal record map persisted under one storage key. Throws on
+ *  unavailable or corrupt storage; every caller treats that as best-effort. */
+function readStoredRecord<T>(storageKey: string): Record<string, T> {
+  return JSON.parse(window.localStorage.getItem(storageKey) || '{}') as Record<string, T>;
+}
+
 /** Per-terminal shell choice; the last pick doubles as the default for every
  *  NEW terminal (user: 터미널 변경 — 간단하게). */
 function readShellChoice(key: string): string {
   try {
-    const stored = JSON.parse(window.localStorage.getItem(TERMINAL_SHELL_CHOICE_KEY) || '{}') as Record<
-      string,
-      unknown
-    >;
+    const stored = readStoredRecord<unknown>(TERMINAL_SHELL_CHOICE_KEY);
     return String(stored[key] || stored[TERMINAL_SHELL_DEFAULT_SLOT] || '');
   } catch {
     return '';
@@ -61,10 +65,7 @@ function readShellChoice(key: string): string {
 
 function writeShellChoice(key: string, id: string): void {
   try {
-    const stored = JSON.parse(window.localStorage.getItem(TERMINAL_SHELL_CHOICE_KEY) || '{}') as Record<
-      string,
-      unknown
-    >;
+    const stored = readStoredRecord<unknown>(TERMINAL_SHELL_CHOICE_KEY);
     stored[key] = id;
     stored[TERMINAL_SHELL_DEFAULT_SLOT] = id;
     window.localStorage.setItem(TERMINAL_SHELL_CHOICE_KEY, JSON.stringify(stored));
@@ -101,11 +102,7 @@ function loadShellProfiles(): Promise<ShellProfile[]> {
 
 function readTerminalViewState(key: string): TerminalViewState | null {
   try {
-    const stored = JSON.parse(window.localStorage.getItem(TERMINAL_VIEW_STATE_KEY) || '{}') as Record<
-      string,
-      Partial<TerminalViewState>
-    >;
-    const state = stored[key];
+    const state = readStoredRecord<Partial<TerminalViewState>>(TERMINAL_VIEW_STATE_KEY)[key];
     if (!state || !Number.isFinite(state.cols) || !Number.isFinite(state.rows) || !Number.isFinite(state.scrollY))
       return null;
     return {
@@ -122,10 +119,7 @@ function readTerminalViewState(key: string): TerminalViewState | null {
 function writeTerminalViewState(key: string, view: TerminalView): void {
   try {
     const buffer = view.term.buffer.active;
-    const stored = JSON.parse(window.localStorage.getItem(TERMINAL_VIEW_STATE_KEY) || '{}') as Record<
-      string,
-      TerminalViewState
-    >;
+    const stored = readStoredRecord<TerminalViewState>(TERMINAL_VIEW_STATE_KEY);
     stored[key] = {
       cols: view.term.cols,
       rows: view.term.rows,
@@ -140,10 +134,7 @@ function writeTerminalViewState(key: string, view: TerminalView): void {
 
 function clearTerminalViewState(key: string): void {
   try {
-    const stored = JSON.parse(window.localStorage.getItem(TERMINAL_VIEW_STATE_KEY) || '{}') as Record<
-      string,
-      TerminalViewState
-    >;
+    const stored = readStoredRecord<TerminalViewState>(TERMINAL_VIEW_STATE_KEY);
     if (!(key in stored)) return;
     delete stored[key];
     window.localStorage.setItem(TERMINAL_VIEW_STATE_KEY, JSON.stringify(stored));
@@ -247,8 +238,7 @@ function terminalView(key: string): TerminalView {
   // Relay-served browsers pay a full round trip per echoed keystroke; the
   // predictor paints validated keystrokes immediately (user: RTT 때문에
   // 터미널 타이핑이 답답함). Electron's local PTY needs none of it.
-  const remoteSurface = Boolean((window as unknown as { mixdogRemoteServer?: string }).mixdogRemoteServer);
-  const localEcho = remoteSurface
+  const localEcho = remoteSurface()
     ? new TerminalLocalEcho({
         write: (data) => {
           void writer.writeReplay(data);

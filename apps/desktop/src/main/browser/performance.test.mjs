@@ -108,6 +108,26 @@ test('performance trace setup keeps its ledger when cleanup must be retried', as
   assert.equal(traces.has(guest), true);
 });
 
+test('performance stop releases the completion timer when the trace completes first', async () => {
+  const guest = {};
+  const traces = new WeakMap();
+  let timerSignal;
+  const trace = new BrowserPerformanceTrace();
+  traces.set(guest, { trace, complete: Promise.resolve(), resolveComplete() {} });
+  const performanceCommands = createBrowserPerformanceCommands({
+    cdp: { call: async () => ({}) },
+    tracesByGuest: traces,
+    settleAfterAction: async () => {},
+    pause: (_ms, signal) => {
+      timerSignal = signal;
+      return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason)));
+    },
+  });
+  const result = await performanceCommands.performanceResult(guest, { operation: 'stop' });
+  assert.match(result.text, /Performance trace stopped/);
+  assert.equal(timerSignal.aborted, true);
+});
+
 function settleHarness() {
   return createBrowserSettle({
     diagnostics: () => ({

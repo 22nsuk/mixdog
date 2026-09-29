@@ -2,24 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 import { useAppUiOpenRequest } from './app-shell-ui-open-request.ts';
 
 test('useAppUiOpenRequest handles sequence increasing, deduplication, TTL, and settings routing', async () => {
-  const dom = new JSDOM('<!doctype html><div id="root"></div>');
-  const prior = new Map(
-    ['window', 'document', 'IS_REACT_ACT_ENVIRONMENT'].map((key) => [
-      key,
-      Object.getOwnPropertyDescriptor(globalThis, key),
-    ])
-  );
-
-  for (const [key, value] of Object.entries({
-    window: dom.window,
-    document: dom.window.document,
-    IS_REACT_ACT_ENVIRONMENT: true,
-  }))
-    Object.defineProperty(globalThis, key, { configurable: true, value });
+  const { dom, restore } = installTestDom(null, {
+    html: '<!doctype html><div id="root"></div>',
+    jsdom: { url: 'about:blank' },
+  });
 
   let openedCommandSurface = null;
   let openedSettings = null;
@@ -99,10 +89,6 @@ test('useAppUiOpenRequest handles sequence increasing, deduplication, TTL, and s
     await act(async () => {
       root.unmount();
     });
-    dom.window.close();
-    for (const [key, descriptor] of prior) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
+    restore();
   }
 });

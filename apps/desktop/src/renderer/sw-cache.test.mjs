@@ -7,6 +7,15 @@ const shellMarkup = (label) =>
   `${label}<meta name="mixdog-shell-version" content="${label}">` +
   '<meta name="mixdog-shell-assets" content="assets/bootstrap-12345678.js">';
 
+/** A Cache double that holds nothing; override the members a test observes. */
+const stubCache = (overrides = {}) => ({
+  match: async () => undefined,
+  put: async () => undefined,
+  keys: async () => [],
+  delete: async () => true,
+  ...overrides,
+});
+
 test('service-worker cache copies retain the body stream without encoded headers', async () => {
   let cloned = 0;
   const body = new ReadableStream({
@@ -70,14 +79,11 @@ test('a cached shell document answers without waiting for the network', async ()
 
 test('a first launch with no cached shell still answers from the network', async () => {
   let stored = null;
-  const cache = {
-    match: async () => undefined,
+  const cache = stubCache({
     put: async (_request, response) => {
       stored = response;
     },
-    keys: async () => [],
-    delete: async () => true,
-  };
+  });
   const { shellFirst } = loadWorker({ cache });
   const result = await shellFirst({ url: 'https://relay/d/abc/', mode: 'navigate' });
 
@@ -130,12 +136,15 @@ function shellCache(cached) {
   };
 }
 
+/** A same-origin (`basic`) network answer, as the worker stores only those. */
+function basicResponse(body) {
+  const response = new Response(body);
+  Object.defineProperty(response, 'type', { value: 'basic' });
+  return response;
+}
+
 function shellNetwork(body) {
-  return async () => {
-    const response = new Response(shellMarkup(body));
-    Object.defineProperty(response, 'type', { value: 'basic' });
-    return response;
-  };
+  return async () => basicResponse(shellMarkup(body));
 }
 
 test('a deploy found behind the paint is offered to the running app', async () => {
@@ -173,12 +182,7 @@ test('an unchanged shell never disturbs the running app', async () => {
 test('a first launch has no previous document to compare against', async () => {
   const posted = [];
   const { shellFirst } = loadWorker({
-    cache: {
-      match: async () => undefined,
-      put: async () => undefined,
-      keys: async () => [],
-      delete: async () => true,
-    },
+    cache: stubCache(),
     windows: [{ postMessage: (message) => posted.push(message) }],
     fetchAsset: shellNetwork('first shell'),
   });
@@ -320,9 +324,7 @@ test('hashed assets under a device route are cached once and reused from any rou
     caches,
     fetchAsset: async (request) => {
       requested.push(new URL(request.url).pathname);
-      const response = new Response('chunk');
-      Object.defineProperty(response, 'type', { value: 'basic' });
-      return response;
+      return basicResponse('chunk');
     },
   });
   const first = dispatchFetch(worker, `${WORKER_ORIGIN}/d/device/assets/bootstrap-12345678.js`);
@@ -395,14 +397,7 @@ test('share and notification query variants reuse one document per device', asyn
 test('document cache bounds both route count and retained bytes', async () => {
   for (const body of [shellMarkup('small'), shellMarkup('large') + 'x'.repeat(400_000)]) {
     const caches = memoryCacheStorage();
-    const worker = loadWorker({
-      caches,
-      fetchAsset: async () => {
-        const response = new Response(body);
-        Object.defineProperty(response, 'type', { value: 'basic' });
-        return response;
-      },
-    });
+    const worker = loadWorker({ caches, fetchAsset: async () => basicResponse(body) });
     for (let index = 0; index < 20; index += 1) {
       const result = await worker.shellFirst({ url: `${WORKER_ORIGIN}/d/${index}/` });
       await result.maintenance;
@@ -420,14 +415,7 @@ test('document cache bounds both route count and retained bytes', async () => {
 test('oversized and non-shell responses remain usable without entering document storage', async () => {
   const caches = memoryCacheStorage();
   const body = 'x'.repeat(600_000);
-  const worker = loadWorker({
-    caches,
-    fetchAsset: async () => {
-      const response = new Response(body);
-      Object.defineProperty(response, 'type', { value: 'basic' });
-      return response;
-    },
-  });
+  const worker = loadWorker({ caches, fetchAsset: async () => basicResponse(body) });
   for (const path of ['/d/a/', '/not-an-app-document']) {
     const result = await worker.shellFirst({ url: `${WORKER_ORIGIN}${path}` });
     assert.equal(await result.response.text(), body);

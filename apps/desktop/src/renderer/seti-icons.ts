@@ -2,9 +2,9 @@
 // Attribution and license details live in LICENSES/editor-assets-NOTICE.txt.
 // See THIRD-PARTY-NOTICES.txt. Dark-theme colour set.
 
-export const SETI_DEFAULT_ID = '_default';
+const SETI_DEFAULT_ID = '_default';
 
-export const SETI_ICON_DEFS: Record<string, readonly [string, string]> = {
+const SETI_ICON_DEFS: Record<string, readonly [string, string]> = {
   _windows: ['\uE0A2', '#519aba'],
   _clojure: ['\uE013', '#8dc149'],
   _coffee: ['\uE016', '#cbcb41'],
@@ -199,7 +199,7 @@ export const SETI_ICON_DEFS: Record<string, readonly [string, string]> = {
   _default: ['\uE023', '#d4d7d6'],
 };
 
-export const SETI_FILE_EXTENSIONS: Record<string, string> = {
+const SETI_FILE_EXTENSIONS: Record<string, string> = {
   bat: '_windows',
   cmd: '_windows',
   clj: '_clojure',
@@ -714,7 +714,7 @@ export const SETI_FILE_EXTENSIONS: Record<string, string> = {
   ds_store: '_ignored',
 };
 
-export const SETI_FILE_NAMES: Record<string, string> = {
+const SETI_FILE_NAMES: Record<string, string> = {
   'settings.json': '_json',
   'launch.json': '_json',
   'tasks.json': '_json',
@@ -885,7 +885,7 @@ export const SETI_FILE_NAMES: Record<string, string> = {
   'npm-debug.log': '_npm_ignored',
 };
 
-export interface SetiIcon {
+interface SetiIcon {
   glyph: string;
   color: string;
 }

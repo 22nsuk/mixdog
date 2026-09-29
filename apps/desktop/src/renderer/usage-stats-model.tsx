@@ -267,7 +267,9 @@ export function trendMetricText(totals: TrendTotals, metric: Metric): string {
   return metricText(metricValue(totals, metric), metric, totals.unmeasuredTurns > 0);
 }
 
-export function trendPeriodLabel(bucket: Pick<TrendBucket, 'fromMs' | 'toMs' | 'startDay' | 'endDay' | 'label'>): string {
+export function trendPeriodLabel(
+  bucket: Pick<TrendBucket, 'fromMs' | 'toMs' | 'startDay' | 'endDay' | 'label'>
+): string {
   if (bucket.fromMs !== null && bucket.toMs !== null) {
     return new Intl.DateTimeFormat(uiFormatLocale(), {
       month: 'short',

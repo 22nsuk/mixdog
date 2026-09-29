@@ -1470,7 +1470,8 @@ async function run(): Promise<void> {
           // at the machine), Windows' foreground lock keeps it there, the host rightly records that app as where the
           // user left focus, and release returns focus to it — never to the guard this scenario waits for.
           const guardHandle = guard.getNativeWindowHandle();
-          const guardHwnd = guardHandle.length >= 8 ? guardHandle.readBigUInt64LE(0) : BigInt(guardHandle.readUInt32LE(0));
+          const guardHwnd =
+            guardHandle.length >= 8 ? guardHandle.readBigUInt64LE(0) : BigInt(guardHandle.readUInt32LE(0));
           const restoreHwnd = BigInt(String(recovery?.expected_focus_window_id || '0').replace(/^hwnd:/i, '') || '0');
           if (restoreHwnd !== guardHwnd) {
             throw new ScenarioSkip(

@@ -2,22 +2,15 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 
 for (const withObserver of [true, false]) {
   test(`archived sessions page without narrowing bulk actions (${withObserver ? 'observer' : 'scroll'})`, async () => {
-    const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'http://localhost/' });
-    const values = {
-      window: dom.window,
-      document: dom.window.document,
-      navigator: dom.window.navigator,
-      CustomEvent: dom.window.CustomEvent,
-      IS_REACT_ACT_ENVIRONMENT: true,
-    };
-    const previous = new Map(Object.keys(values).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
-    for (const [key, value] of Object.entries(values)) {
-      Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
-    }
+    const { dom, restore } = installTestDom(null, {
+      html: '<!doctype html><div id="root"></div>',
+      jsdom: { url: 'http://localhost/' },
+      expose: ['navigator', 'CustomEvent'],
+    });
     const observers = [];
     if (withObserver) {
       dom.window.IntersectionObserver = class {
@@ -127,11 +120,7 @@ for (const withObserver of [true, false]) {
       );
     } finally {
       await act(async () => root.unmount());
-      dom.window.close();
-      for (const [key, descriptor] of previous) {
-        if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-        else delete globalThis[key];
-      }
+      restore();
     }
   });
 }

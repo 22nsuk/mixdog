@@ -47,7 +47,9 @@ await withTempWorkspace(
     ]);
     await bundleElectronEntry({
       entry: new URL(
-        native ? '../src/main/browser/native-view.integration.ts' : '../src/main/browser/input-isolation.integration.ts',
+        native
+          ? '../src/main/browser/native-view.integration.ts'
+          : '../src/main/browser/input-isolation.integration.ts',
         import.meta.url
       ),
       outfile: output,

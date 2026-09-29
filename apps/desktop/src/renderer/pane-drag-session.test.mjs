@@ -1,18 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 import { paneInnerDropZone, paneOuterDropZone } from './pane-drop-zone.ts';
 import { resolvePaneDropIntent } from './PaneWorkspace.tsx';
 
 test('pane drag commits only on drop and cancels an unfinished native drag', async () => {
-  const dom = new JSDOM(
-    '<!doctype html><html><body><div class="app-shell"><div id="source"></div><div id="target"></div></div></body></html>'
-  );
-  const globals = ['window', 'document', 'Element'];
-  const previous = new Map(globals.map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
-  Object.defineProperty(globalThis, 'window', { configurable: true, value: dom.window });
-  Object.defineProperty(globalThis, 'document', { configurable: true, value: dom.window.document });
-  Object.defineProperty(globalThis, 'Element', { configurable: true, value: dom.window.Element });
+  const { restore } = installTestDom(null, {
+    html: '<!doctype html><html><body><div class="app-shell"><div id="source"></div><div id="target"></div></div></body></html>',
+    jsdom: { url: 'about:blank' },
+    expose: ['Element'],
+    actEnvironment: false,
+  });
 
   const {
     acceptPaneDrag,
@@ -110,11 +109,7 @@ test('pane drag commits only on drop and cancels an unfinished native drag', asy
   } finally {
     finishPaneDrag();
     unsubscribe();
-    dom.window.close();
-    for (const [key, descriptor] of previous) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
+    restore();
   }
 });
 

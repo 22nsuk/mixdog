@@ -19,7 +19,7 @@ type StableTerminalFitOptions<RestoreState> = {
 
 const MAX_STABILITY_FRAMES = 8;
 
-export function sameTerminalGrid(left: TerminalGrid | null, right: TerminalGrid | null): boolean {
+function sameTerminalGrid(left: TerminalGrid | null, right: TerminalGrid | null): boolean {
   return left?.cols === right?.cols && left?.rows === right?.rows;
 }
 

@@ -26,7 +26,7 @@ import type { ComputerAuthorizationStatus, ComputerAuthorizationWindow } from '.
 import { createComputerAuthorizationSettings } from './authorization-settings';
 import { createComputerFailureDiagnostics } from '../session/failure-diagnostics';
 import { bridgeDiscoveryDirectory } from '../../bridge/discovery-file';
-import { mixdogDataDirectory } from '../shared/common';
+import { CHROME_SETUP_SESSION_ID, mixdogDataDirectory } from '../shared/common';
 import { nativeDisplayGeometry } from '../shared/native-coordinates';
 import { createWorkerPool } from '../backend/worker-pool';
 import { createCaptureEngine } from '../observation/capture';
@@ -36,7 +36,6 @@ import { createSessionState } from '../session/state';
 import { createWindowTargeting } from '../input/targeting';
 import {
   createChromeRemoteDebuggingSetup,
-  CHROME_SETUP_SESSION_ID,
   type ChromeRemoteDebuggingSetup,
   type ChromeRemoteDebuggingTarget,
 } from '../session/chrome-setup';
@@ -82,6 +81,17 @@ export interface PowerShellComputerHost {
   finalizeChromeRemoteDebuggingSetup(setup: ChromeRemoteDebuggingSetup): Promise<void>;
   releaseChromeRemoteDebugging(setup: ChromeRemoteDebuggingSetup): Promise<void>;
   dispose(): Promise<void>;
+}
+
+/** The union of every display in native coordinates: the Wayland input
+ *  device spans it when the compositor cannot report its outputs. */
+function desktopBoundsEnvironment(): Record<string, string> {
+  const areas = screen.getAllDisplays().map(nativeDisplayGeometry);
+  const left = Math.min(...areas.map((area) => area.x));
+  const top = Math.min(...areas.map((area) => area.y));
+  const right = Math.max(...areas.map((area) => area.x + area.width));
+  const bottom = Math.max(...areas.map((area) => area.y + area.height));
+  return { MIXDOG_COMPUTER_DESKTOP_BOUNDS: `${left},${top},${right - left},${bottom - top}` };
 }
 
 export function createPowerShellComputerHost(
@@ -130,16 +140,7 @@ export function createPowerShellComputerHost(
       lifecycle.onSessionWorkerRetired(sessionId, child, interruptedInput),
     maxWorkers: options.maxWorkers,
     onPointerProgress: publishPointerProgress,
-    nativeEnvironment: () => {
-      // The union of every display in native coordinates: the Wayland input
-      // device spans it when the compositor cannot report its outputs.
-      const areas = screen.getAllDisplays().map(nativeDisplayGeometry);
-      const left = Math.min(...areas.map((area) => area.x));
-      const top = Math.min(...areas.map((area) => area.y));
-      const right = Math.max(...areas.map((area) => area.x + area.width));
-      const bottom = Math.max(...areas.map((area) => area.y + area.height));
-      return { MIXDOG_COMPUTER_DESKTOP_BOUNDS: `${left},${top},${right - left},${bottom - top}` };
-    },
+    nativeEnvironment: desktopBoundsEnvironment,
   });
   const { callPowerShell, powerShellBySession, retirePowerShell } = workerPool;
 

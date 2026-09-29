@@ -20,11 +20,14 @@ import { ErrorNotice } from '../ErrorNotice';
 import { OpenSelect } from '../OpenSelect';
 import { PaneSurfaceGate } from '../PaneSurfaceGate';
 import { providerDisplayName } from '../provider-display';
-import { record } from '../record-utils';
+import { record, rows } from '../record-utils';
 import { invalidateSidebarReferenceForMutation } from '../sidebar-reference-cache';
 import { acquireTitleBarDim } from '../titlebar-dim';
 import { OAuthControl } from './CapabilitySettings';
+import { FOCUSABLE_SELECTOR, inertBackground, portaledMenuOpen, trapTab } from './dialog-modality';
 import { getCachedGitPanelInfo, patchCachedGitPanelInfo, preloadGitPanelInfo } from './git-panel-info';
+import { useGithubLoginPolling } from './github-login-polling';
+import { rememberGithubStarred } from './github-star-storage';
 import '../desktop/21-onboarding.css';
 
 type RecordValue = Record<string, unknown>;
@@ -35,9 +38,6 @@ type RunCapability = <T = unknown>(
   refresh?: boolean,
   silent?: boolean
 ) => Promise<T | undefined>;
-const FOCUSABLE =
-  'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
-
 const MIXDOG_REPO_URL = 'https://github.com/tribgames/mixdog';
 const CLI_DOWNLOAD_URL = 'https://cli.github.com';
 // Resume marker: reopening the wizard continues from the last step reached.
@@ -77,12 +77,6 @@ function savedStep(): number {
   } catch {
     return 0;
   }
-}
-
-function rows(value: unknown, key?: string): RecordValue[] {
-  if (Array.isArray(value)) return value.map(record);
-  const source = record(value);
-  return key && Array.isArray(source[key]) ? (source[key] as unknown[]).map(record) : [];
 }
 
 function title(value: RecordValue): string {
@@ -265,23 +259,10 @@ export function OnboardingWizard({ api, onDone }: { api: DesktopApi; onDone(): v
   useLayoutEffect(() => {
     priorFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const layer = layerRef.current;
-    const background = Array.from(document.body.children)
-      .filter(
-        (element): element is HTMLElement =>
-          element instanceof HTMLElement && !element.matches('.mx-toast-region') && element !== layer
-      )
-      .map((element) => ({ element, inert: element.inert, ariaHidden: element.getAttribute('aria-hidden') }));
-    for (const { element } of background) {
-      element.inert = true;
-      element.setAttribute('aria-hidden', 'true');
-    }
+    const restoreBackground = inertBackground((element) => element !== layer);
     closeRef.current?.focus();
     return () => {
-      for (const { element, inert, ariaHidden } of background) {
-        element.inert = inert;
-        if (ariaHidden === null) element.removeAttribute('aria-hidden');
-        else element.setAttribute('aria-hidden', ariaHidden);
-      }
+      restoreBackground();
       if (priorFocus.current?.isConnected) priorFocus.current.focus();
     };
   }, []);
@@ -301,13 +282,7 @@ export function OnboardingWizard({ api, onDone }: { api: DesktopApi; onDone(): v
         return;
       }
       if (event.key === 'Escape') {
-        const openPortaledMenu = Array.from(
-          dialog.querySelectorAll<HTMLElement>('[role="combobox"][aria-expanded="true"][aria-controls]')
-        ).some((trigger) => {
-          const menu = document.getElementById(trigger.getAttribute('aria-controls') || '');
-          return menu?.matches('.mx-menu[role="listbox"]');
-        });
-        if (openPortaledMenu) return;
+        if (portaledMenuOpen(dialog)) return;
         event.preventDefault();
         event.stopPropagation();
         if (nested) nested.querySelector<HTMLButtonElement>('[aria-label^="Close"]')?.click();
@@ -316,25 +291,13 @@ export function OnboardingWizard({ api, onDone }: { api: DesktopApi; onDone(): v
       }
       if (event.key !== 'Tab') return;
       const root = nested || dialog;
-      const controls = Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE));
-      if (!controls.length) {
-        event.preventDefault();
-        root.focus();
-        return;
-      }
-      const first = controls[0];
-      const last = controls[controls.length - 1];
-      if (event.shiftKey && (document.activeElement === first || !root.contains(document.activeElement))) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && (document.activeElement === last || !root.contains(document.activeElement))) {
-        event.preventDefault();
-        first.focus();
-      }
+      trapTab(event, root, Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)));
     };
     document.addEventListener('keydown', onKeyDown, true);
     return () => document.removeEventListener('keydown', onKeyDown, true);
-  }, [finish]);
+    // The handler reaches state only through refs and stable setters, so one
+    // registration serves every render.
+  }, []);
 
   const meta = STEPS[step];
 
@@ -693,38 +656,7 @@ function GitStep({ api }: { api: DesktopApi }) {
 
   const flowId = flow?.flowId || '';
   const flowState = flow?.state || '';
-  useEffect(() => {
-    if (!flowId || (flowState !== 'pending' && flowState !== 'code')) return undefined;
-    let cancelled = false;
-    const timer = window.setInterval(() => {
-      void api
-        .githubCliLoginStatus?.(flowId)
-        .then((next) => {
-          if (cancelled || !next) return;
-          setFlow(next);
-          if (next.state === 'success') {
-            // Main reports success only after `gh auth status` confirmed the
-            // account: adopt it now. Waiting for the refresh probe flashed the
-            // Sign-in button back for ~1s, and a click there started a second
-            // device flow (a new 8-character code).
-            setStatus((current) => ({
-              installed: true,
-              ...current,
-              authenticated: true,
-              ...(next.login ? { login: next.login } : {}),
-            }));
-            void refresh();
-          }
-        })
-        .catch(() => {
-          /* transient; the next tick retries */
-        });
-    }, 1_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [api, flowId, flowState, refresh]);
+  useGithubLoginPolling({ host: api, flowId, flowState, setFlow, setStatus, refreshStatus: refresh });
 
   const authenticated = status?.authenticated === true;
   useEffect(() => {
@@ -991,7 +923,7 @@ function StarStep({ api }: { api: DesktopApi }) {
     setBusy(true);
     void api
       .starGithub()
-      .then((result) => setStarred(result?.starred === true))
+      .then((result) => setStarred(rememberGithubStarred(result?.starred === true)))
       .catch(() => open(MIXDOG_REPO_URL))
       .finally(() => setBusy(false));
   };

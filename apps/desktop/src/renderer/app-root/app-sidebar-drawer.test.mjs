@@ -2,15 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from '../test-support/test-dom.mjs';
 import { AppSidebarDrawer } from './AppSidebarDrawer.tsx';
 
 test('AppSidebarDrawer renders sidebar drawer frame and activity rail with given state', async () => {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>');
-  for (const key of ['window', 'document', 'navigator', 'HTMLElement', 'Event', 'CustomEvent']) {
-    Object.defineProperty(globalThis, key, { configurable: true, value: dom.window[key] });
-  }
-  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const { dom } = installTestDom(null, {
+    jsdom: { url: 'about:blank' },
+    expose: ['navigator', 'HTMLElement', 'Event', 'CustomEvent'],
+  });
 
   let settingsOpened = false;
   let navigationClosedMotion = null;

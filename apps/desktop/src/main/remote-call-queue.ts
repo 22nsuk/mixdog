@@ -58,7 +58,9 @@ export function createRemoteCallQueue(concurrency = 4, slowConcurrency = 2, voic
   return {
     run(method: string, task: () => Promise<void>): Promise<void> {
       if (TERMINAL_METHODS.has(method)) return terminal.run(method, task);
-      const lane = SLOW_READS.has(method) ? slow : VOICE_CALLS.has(method) ? voice : null;
+      let lane: typeof general | null = null;
+      if (SLOW_READS.has(method)) lane = slow;
+      else if (VOICE_CALLS.has(method)) lane = voice;
       if (!lane) return general.run(method, task);
       const writes = general.writesSettled();
       return lane.run(method, async () => {

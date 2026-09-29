@@ -1,13 +1,13 @@
 type RemoteConnectionState = 'connecting' | 'syncing' | 'connected' | 'reconnecting';
 
-export const REMOTE_CONNECTION_STATE_EVENT = 'mixdog:remote-connection-state';
-export const REMOTE_CONNECTION_INTERRUPTED_CODE = 'MIXDOG_REMOTE_CONNECTION_INTERRUPTED';
+const REMOTE_CONNECTION_STATE_EVENT = 'mixdog:remote-connection-state';
+const REMOTE_CONNECTION_INTERRUPTED_CODE = 'MIXDOG_REMOTE_CONNECTION_INTERRUPTED';
 
 /** Manual retry from the connection chip. The shim reconnects on it exactly as
  *  it does on a foreground wake, so a user never has to wait out the backoff. */
 export const REMOTE_WAKE_EVENT = 'mixdog:remote-wake';
 
-export type RemoteConnectionPhase =
+type RemoteConnectionPhase =
   | 'approval'
   | 'registration'
   | 'websocket'

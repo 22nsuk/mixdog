@@ -19,7 +19,7 @@ const CLAIM_STORAGE_KEY = REMOTE_PAIRING_STORAGE_KEYS.claim;
 /** The screen's status line. A failed status keeps the retry button visible. */
 type PairingStatus = (text: string, failed?: boolean) => void;
 
-export interface RemotePairingScreenDeps {
+interface RemotePairingScreenDeps {
   /** The route this container captured at install time — the ONE thing it
    *  knows about the desktop that may approve it. */
   deviceId: string;

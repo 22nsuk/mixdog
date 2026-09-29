@@ -5,6 +5,7 @@ import { initUiLanguage, setUiLanguagePreference } from '../../src/renderer/i18n
 import '../../src/renderer/bootstrap-styles';
 import '../../src/renderer/settings/settings.css';
 import '../../src/renderer/desktop/31-extensions.css';
+import { settleFrames } from '../probe-settle';
 
 const root = createRoot(document.getElementById('root')!);
 (window as any).mixdogDesktop = { async setTitleBarDim() {}, rendererDiagnostic() {} };
@@ -42,13 +43,7 @@ const api = { readCapabilities: async () => [{ ok: true, value: { localProvider 
 const run = async () => ({ localProvider });
 const noop = () => {};
 const asyncNoop = async () => {};
-async function settle() {
-  await document.fonts.ready;
-  await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
-  for (const animation of document.getAnimations()) {
-    if (Number.isFinite(animation.effect?.getTiming().iterations)) animation.finish();
-  }
-}
+const settle = () => settleFrames();
 (window as any).localProviderProbe = {
   async render(theme: string, mobile: boolean) {
     setUiLanguagePreference('ko');

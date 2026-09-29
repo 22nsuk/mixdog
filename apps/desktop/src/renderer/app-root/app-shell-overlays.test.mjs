@@ -2,27 +2,25 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from '../test-support/test-dom.mjs';
 import { AppShellOverlays } from './AppShellOverlays.tsx';
 
 test('AppShellOverlays renders tab switcher, unsaved dialog, and update dialog under given conditions', async () => {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>');
-  for (const key of [
-    'window',
-    'document',
-    'navigator',
-    'Node',
-    'Element',
-    'HTMLElement',
-    'HTMLButtonElement',
-    'Event',
-    'CustomEvent',
-    'KeyboardEvent',
-    'MutationObserver',
-  ]) {
-    Object.defineProperty(globalThis, key, { configurable: true, value: dom.window[key] });
-  }
-  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const { dom } = installTestDom(null, {
+    html: '<!doctype html><html><body><div id="root"></div></body></html>',
+    jsdom: { url: 'about:blank' },
+    expose: [
+      'navigator',
+      'Node',
+      'Element',
+      'HTMLElement',
+      'HTMLButtonElement',
+      'Event',
+      'CustomEvent',
+      'KeyboardEvent',
+      'MutationObserver',
+    ],
+  });
 
   const defaultProps = {
     quickAccessMode: null,

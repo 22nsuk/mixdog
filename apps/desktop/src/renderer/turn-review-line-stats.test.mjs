@@ -1,33 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import React, { act } from 'react';
-import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
 import { TurnReviewBar } from './TurnReview';
 import { rememberAgentReviews } from './turn-review-cache';
+import { installReviewDom } from './turn-review-test-support.mjs';
 import { formatAggregateDetail, summarizeToolResult } from '../../../../src/runtime/shared/tool-surface.mjs';
 
 test('turn review headlines exclude filename dates for individual and aggregated edits', async (t) => {
-  const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'https://mixdog.test/' });
-  const previous = new Map(
-    ['window', 'document', 'IS_REACT_ACT_ENVIRONMENT'].map((key) => [
-      key,
-      Object.getOwnPropertyDescriptor(globalThis, key),
-    ])
-  );
-  Object.defineProperty(globalThis, 'window', { configurable: true, value: dom.window });
-  Object.defineProperty(globalThis, 'document', { configurable: true, value: dom.window.document });
-  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-  dom.window.mixdogDesktop = {};
-  const root = createRoot(dom.window.document.getElementById('root'));
-  t.after(async () => {
-    await act(async () => root.unmount());
-    dom.window.close();
-    for (const [key, descriptor] of previous) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
-  });
+  const { dom, root } = installReviewDom(t);
   // The turn keeps its prompt row: rows without one are a cut-off tail, whose
   // headline shows the review's own totals instead of the edit workload.
   const prompt = { kind: 'user', id: 'line-stats-prompt', text: 'write the report' };

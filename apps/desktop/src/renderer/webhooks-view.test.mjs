@@ -31,7 +31,8 @@ const { resetSidebarReferenceCache, adoptSidebarReferenceHost, updateSidebarRefe
   './sidebar-reference-cache.ts'
 );
 
-test('a legacy webhook without a stored parser lists and opens as the same parser', async (t) => {
+/** A warm sidebar cache holding one legacy webhook, and a mounted WebhooksPane over it. */
+async function mountLegacyWebhookPane(t) {
   const api = {
     async invokeCapability() {
       return { value: undefined };
@@ -55,8 +56,13 @@ test('a legacy webhook without a stored parser lists and opens as the same parse
     host.remove();
     resetSidebarReferenceCache();
   });
+  const render = () => act(async () => root.render(React.createElement(WebhooksPane, { api, active: true })));
+  return { host, render };
+}
 
-  await act(async () => root.render(React.createElement(WebhooksPane, { api, active: true })));
+test('a legacy webhook without a stored parser lists and opens as the same parser', async (t) => {
+  const { host, render } = await mountLegacyWebhookPane(t);
+  await render();
   const row = host.querySelector('.schedules-row');
   assert.ok(row);
   const listed = row.querySelector('small').textContent;
@@ -69,34 +75,12 @@ test('a legacy webhook without a stored parser lists and opens as the same parse
 });
 
 test('without a cryptographic random source, regenerating a signing secret reports an error instead of a weak secret', async (t) => {
-  const api = {
-    async invokeCapability() {
-      return { value: undefined };
-    },
-  };
-  resetSidebarReferenceCache();
-  adoptSidebarReferenceHost(api);
-  updateSidebarReference('channelSetup', {
-    webhook: { publicUrl: 'https://hooks.mixdog.test' },
-    webhooks: [{ name: 'legacy', enabled: true, secretSet: true }],
-  });
-  updateSidebarReference('projects', []);
-  updateSidebarReference('workflows', []);
-  updateSidebarReference('providerSetup', {});
-  updateSidebarReference('quickProviderModels', []);
-  const host = document.createElement('main');
-  document.body.append(host);
-  const root = createRoot(host);
-  t.after(async () => {
-    await act(async () => root.unmount());
-    host.remove();
-    resetSidebarReferenceCache();
-  });
+  const { host, render } = await mountLegacyWebhookPane(t);
   t.mock.method(globalThis.crypto, 'getRandomValues', () => {
     throw new Error('entropy source unavailable');
   });
 
-  await act(async () => root.render(React.createElement(WebhooksPane, { api, active: true })));
+  await render();
   await act(async () => host.querySelector('.schedules-row').click());
   const regenerate = [...document.querySelectorAll('button')].find(
     (button) => button.textContent === 'Regenerate secret'

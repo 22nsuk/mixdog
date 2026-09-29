@@ -5,7 +5,7 @@ $legacyDir = Join-Path $root 'Program Files\Mixdog'
 $registryDir = Join-Path $root "registry\$legacyId"
 $publicShortcut = Join-Path $root 'Users\Public\Desktop\Mixdog.lnk'
 $startShortcut = Join-Path $root 'ProgramData\Microsoft\Windows\Start Menu\Programs\Mixdog.lnk'
-$userData = Join-Path $root 'Users\tempe\.mixdog'
+$userData = Join-Path $root 'Users\fixture\.mixdog'
 $uninstaller = Join-Path $legacyDir 'Uninstall Mixdog.ps1'
 
 try {

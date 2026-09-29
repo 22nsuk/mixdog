@@ -107,7 +107,7 @@ export function useTrendDetail(dependencies: readonly unknown[]) {
   };
 }
 
-export type TrendDetail = ReturnType<typeof useTrendDetail>;
+type TrendDetail = ReturnType<typeof useTrendDetail>;
 
 export function TrendDetailCard({
   detail,

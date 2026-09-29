@@ -10,7 +10,7 @@ import { DateRangePicker, type DayRange } from './DateRangePicker';
 import { t } from './i18n';
 import { localDayKey, shiftCustomRange, type Row } from './usage-stats-model';
 
-export type PeriodOption = { key: string; label: string };
+type PeriodOption = { key: string; label: string };
 
 /** The calendar chips both usage modes offer. */
 export function usagePeriodOptions(): PeriodOption[] {

@@ -165,7 +165,11 @@ function QuotaTable({
         <thead>
           <tr>
             <th scope="col">{t('Provider')}</th>
-            <th scope="col" className="stats-share-col" title={t('Model shares are estimates split by list-price value.')}>
+            <th
+              scope="col"
+              className="stats-share-col"
+              title={t('Model shares are estimates split by list-price value.')}
+            >
               {t('Usage share')}
             </th>
             <th scope="col">{t('Usage records')}</th>

@@ -2,24 +2,13 @@ import assert from 'node:assert/strict';
 import test, { after } from 'node:test';
 import { registerHooks } from 'node:module';
 import React, { act } from 'react';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 
-const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'https://mixdog.test/' });
-const globals = ['window', 'document', 'navigator', 'IS_REACT_ACT_ENVIRONMENT'];
-const saved = globals.map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]);
-Object.defineProperties(globalThis, {
-  window: { configurable: true, writable: true, value: dom.window },
-  document: { configurable: true, writable: true, value: dom.window.document },
-  navigator: { configurable: true, writable: true, value: { userAgent: 'Electron/41.0' } },
-  IS_REACT_ACT_ENVIRONMENT: { configurable: true, writable: true, value: true },
+const { restore } = installTestDom(null, {
+  html: '<!doctype html><html><body></body></html>',
+  globals: { navigator: { userAgent: 'Electron/41.0' } },
 });
-after(() => {
-  dom.window.close();
-  for (const [key, descriptor] of saved) {
-    if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-    else delete globalThis[key];
-  }
-});
+after(restore);
 
 // File routing and breadcrumbs do not need Monaco's browser-only providers.
 // Keep the production routing and UI real, isolating only editor preloading

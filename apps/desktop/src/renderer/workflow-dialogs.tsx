@@ -3,10 +3,9 @@ import { type FormEvent, useState } from 'react';
 
 import type { DesktopCapability, DesktopModelOption, DesktopModelSelection } from '../shared/contract';
 import { t } from './i18n';
-import { ErrorNotice } from './ErrorNotice';
 import { ModelRouteEditor } from './ModelRouteEditor';
 import { record } from './record-utils';
-import { SidebarDialogLayer } from './sidebar-dialog';
+import { EditorDialogFooter, SidebarDialogLayer } from './sidebar-dialog';
 import { CompactSwitch } from './settings/capability-controls';
 import type { RecordValue } from './desktop-types';
 
@@ -62,49 +61,6 @@ function RouteControls({
         onChange={onChange}
       />
     </div>
-  );
-}
-
-/** Editor footer: the error line, an armed two-step delete when the entry is
- *  deletable, then Cancel / Save. */
-function EditorDialogFooter({
-  error,
-  busy,
-  onCancel,
-  onDelete,
-}: {
-  error: string;
-  busy: boolean;
-  onCancel(): void;
-  onDelete?(): void;
-}) {
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  return (
-    <footer>
-      {error && <ErrorNotice error={error} />}
-      {onDelete && (
-        <button
-          type="button"
-          className={`danger${confirmDelete ? ' confirming' : ''}`}
-          disabled={busy}
-          onClick={() => {
-            if (!confirmDelete) {
-              setConfirmDelete(true);
-              return;
-            }
-            onDelete();
-          }}
-        >
-          {confirmDelete ? t('Confirm delete') : t('Delete')}
-        </button>
-      )}
-      <button type="button" className="secondary" disabled={busy} onClick={onCancel}>
-        {t('Cancel')}
-      </button>
-      <button type="submit" disabled={busy}>
-        {t('Save')}
-      </button>
-    </footer>
   );
 }
 

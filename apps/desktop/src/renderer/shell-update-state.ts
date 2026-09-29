@@ -5,7 +5,7 @@ export const SHELL_UPDATE_MESSAGE = 'mixdog:shell-updated';
 const SHELL_CHECK_MESSAGE = 'mixdog:shell-check';
 const SHELL_REFRESH_MESSAGE = 'mixdog:shell-refresh';
 /** At most one release probe per foreground return in this window. */
-export const SHELL_REFRESH_INTERVAL_MS = 60_000;
+const SHELL_REFRESH_INTERVAL_MS = 60_000;
 let lastRefreshAt = -Infinity;
 let pending = false;
 let bootFailed = false;
@@ -30,7 +30,7 @@ function recoverBoot(): void {
   window.location.reload();
 }
 
-export function checkShellUpdate(): void {
+function checkShellUpdate(): void {
   const controller = navigator.serviceWorker?.controller;
   controller?.postMessage({ type: SHELL_CHECK_MESSAGE, version: currentVersion() });
 }

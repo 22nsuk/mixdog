@@ -5,8 +5,6 @@ import { uiTimeUnit } from './ui-format';
 import { MxIcon } from './MxIcon';
 import { copyTextToClipboard } from './text-format';
 
-export const TERMINAL_AGENT_STATUS = /idle|done|complete|success|closed|error|fail|cancel|killed|timeout/i;
-
 const tokenFormatters = new Map<string, Intl.NumberFormat>();
 export function formatTokenCount(value: number): string {
   const tokens = Math.max(0, Number(value) || 0);

@@ -2,6 +2,7 @@ import { existsSync, statSync } from 'node:fs';
 import * as nodeModule from 'node:module';
 import { constants as osConstants, freemem, homedir, setPriority, totalmem } from 'node:os';
 import { join, resolve } from 'node:path';
+import { inlineBootScriptHash, withInlineBootScript } from './renderer-csp';
 import { pathToFileURL } from 'node:url';
 
 import {
@@ -1478,6 +1479,9 @@ if (!app.requestSingleInstanceLock()) {
           handleGpuChildCrash(details.reason, details.exitCode);
         }
       });
+      const bootScriptHash = process.env.ELECTRON_RENDERER_URL
+        ? null
+        : inlineBootScriptHash(join(__dirname, '../renderer'));
       session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
         // The policy governs the app's own documents: the built renderer
         // (file:) or the dev server. Other responses keep their headers —
@@ -1500,7 +1504,7 @@ if (!app.requestSingleInstanceLock()) {
         callback({
           responseHeaders: {
             ...details.responseHeaders,
-            'Content-Security-Policy': [policy],
+            'Content-Security-Policy': [development ? policy : withInlineBootScript(policy, bootScriptHash)],
           },
         });
       });

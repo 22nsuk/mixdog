@@ -6,7 +6,7 @@
 import { randomBytes } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { createBridgeDiscovery } from '../../bridge/discovery-file';
-import { CHROME_SETUP_SESSION_ID } from '../session/chrome-setup';
+import { CHROME_SETUP_SESSION_ID } from '../shared/common';
 import { computerUseCoordinator } from '../session/coordinator';
 import { createBridgeServerState, type BridgeServerHost } from './bridge-server-contract';
 import { publishBridgeDiscovery } from './bridge-server-discovery';

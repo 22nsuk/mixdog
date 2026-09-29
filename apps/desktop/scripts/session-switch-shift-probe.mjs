@@ -8,6 +8,7 @@
 // scrollTop/scrollTo so every programmatic write is attributed to its caller.
 // The output tells whether a visible up/down shift comes from measurement
 // growth (scrollHeight), from a scroll writer, or from late row geometry.
+import { CdpClient } from './cdp-client.mjs';
 import { optionValue } from './cli-args.mjs';
 
 const argumentsList = process.argv.slice(2);
@@ -23,38 +24,10 @@ const targets = await fetch(`http://127.0.0.1:${port}/json/list`).then((response
 const target = targets.find((candidate) => candidate.type === 'page');
 if (!target?.webSocketDebuggerUrl) throw new Error('No debuggable page target found.');
 
-const socket = new WebSocket(target.webSocketDebuggerUrl);
-await new Promise((resolve, reject) => {
-  socket.addEventListener('open', resolve, { once: true });
-  socket.addEventListener('error', () => reject(new Error('CDP websocket failed.')), { once: true });
-});
-let nextId = 1;
-const pending = new Map();
-socket.addEventListener('message', (event) => {
-  const message = JSON.parse(String(event.data));
-  if (!message.id || !pending.has(message.id)) return;
-  const entry = pending.get(message.id);
-  pending.delete(message.id);
-  if (message.error) entry.reject(new Error(message.error.message));
-  else entry.resolve(message.result);
-});
-const request = (method, params = {}) =>
-  new Promise((resolve, reject) => {
-    const id = nextId++;
-    pending.set(id, { resolve, reject });
-    socket.send(JSON.stringify({ id, method, params }));
-  });
-const evaluate = async (expression) => {
-  const result = await request('Runtime.evaluate', {
-    expression,
-    awaitPromise: true,
-    returnByValue: true,
-  });
-  if (result.exceptionDetails) {
-    throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text);
-  }
-  return result.result?.value;
-};
+const client = new CdpClient(target.webSocketDebuggerUrl);
+await client.connect();
+const request = (method, params) => client.request(method, params);
+const evaluate = (expression) => client.evaluate(expression);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Navigation collapses an overlay sidebar, and a fresh install boots with it
@@ -224,7 +197,7 @@ const install = `(() => {
 const rows = await evaluate(install);
 if (!rows?.length) {
   console.log('no sidebar session rows found');
-  socket.close();
+  client.close();
   process.exit(0);
 }
 const pick = rows.filter((row) => !row.active)[rowIndex] || rows[rowIndex];
@@ -311,5 +284,5 @@ for (const shift of result.shifts || []) {
     console.log(`\t  y ${source.from} -> ${source.to}  h ${source.fromH} -> ${source.toH}  ${source.node}`);
   }
 }
-socket.close();
+client.close();
 process.exit(0);

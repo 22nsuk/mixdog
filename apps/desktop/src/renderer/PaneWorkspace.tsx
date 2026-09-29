@@ -7,34 +7,29 @@
 // while the lanes already deliver concurrent live output.
 
 import type React from 'react';
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { useVisibleSessions } from './use-visible-sessions';
 import { t } from './i18n';
-import { dataTransferHasLocalFiles, droppedLocalPaths } from './file-drag';
 import { isMobileRemoteSurface } from './mobile-surface';
 import { PaneSplitLayout } from './PaneSplitLayout';
-import { NARROW_SHELL_QUERY, useMediaBand } from './use-responsive-shell-bands';
+import {
+  isConversationSelection,
+  parksConversationBehindSelection,
+  usePaneConversationOwners,
+  usePaneSurfaceHandoffs,
+} from './pane-surface-model';
+import {
+  usePaneDropPreview,
+  usePaneFileDrop,
+  usePaneSelectionFence,
+  useSinglePaneMode,
+} from './use-pane-workspace-interactions';
 import { PersistentPanePortal } from './PaneSurfaceGate';
 import type { NavigationSelection, WorkspaceSelection } from './nav-types';
-import {
-  paneActiveSessionIds,
-  paneActiveSelection,
-  paneLeavesInVisualOrder,
-  paneNodeMinimumSize,
-  type PaneLeaf,
-} from './pane-layout';
+import { paneActiveSessionIds, paneActiveSelection, paneLeavesInVisualOrder, type PaneLeaf } from './pane-layout';
 import type { usePaneWorkspace } from './pane-workspace-state';
 import { defaultSessionLaneStore } from './session-lane-store';
-import {
-  cancelPaneDragPreview,
-  currentPaneDrag,
-  dropPaneDrag,
-  movePaneDrag,
-  subscribePaneDrag,
-} from './pane-drag-session';
-import { navigationKey } from './text-format';
-import { commitPaneDropAction, resolvePaneDropIntent, sameDropPreview } from './pane-drop-intent';
 import type { DropPreview } from './pane-drop-intent';
 
 export { resolvePaneDropIntent } from './pane-drop-intent';
@@ -65,32 +60,6 @@ function selectionLabel(selection: WorkspaceSelection | null): string {
   }
 }
 
-type ConversationOwner = {
-  key: string;
-  leafId: string;
-  selectionKey: string;
-};
-
-type ConversationSurface = {
-  leaf: PaneLeaf;
-  selectionKey: string;
-  active: Extract<NavigationSelection, { kind: 'session' | 'new' }>;
-  handoff: boolean;
-  parked: boolean;
-};
-
-type PaneSurfaceSnapshot = {
-  key: string;
-  leaf: PaneLeaf;
-};
-
-function paneSurfaceKey(leaf: PaneLeaf): string {
-  const active = paneActiveSelection(leaf);
-  if (!active) return 'empty';
-  if (isConversationSelection(active)) return 'conversation';
-  return navigationKey(active);
-}
-
 /** A phone renders exactly ONE leaf — the focused one — and pays the relay for
  *  every session it registers, so only that leaf's active session is mirrored
  *  (user: vps라 비용때문에). Every other leaf stays unregistered until it is
@@ -99,38 +68,6 @@ function mobileVisibleSessionIds(leaves: readonly PaneLeaf[], focusedLeafId: str
   const leaf = leaves.find((entry) => entry.id === focusedLeafId) ?? leaves[0];
   const active = leaf ? paneActiveSelection(leaf) : null;
   return active?.kind === 'session' ? [active.id] : [];
-}
-
-function isConversationSelection(
-  selection: WorkspaceSelection | null | undefined
-): selection is Extract<NavigationSelection, { kind: 'session' | 'new' }> {
-  return selection?.kind === 'session' || selection?.kind === 'new';
-}
-
-/** Every selection that renders its own persistent surface behind the chat
- *  layer: the conversation stays mounted and parked underneath it. */
-function parksConversationBehindSelection(selection: WorkspaceSelection | null): boolean {
-  return selection?.kind === 'file' || usesPersistentUtilityPortal(selection);
-}
-
-function usesPersistentUtilityPortal(selection: WorkspaceSelection | null): boolean {
-  return (
-    selection?.kind === 'studio' ||
-    selection?.kind === 'terminal' ||
-    selection?.kind === 'diff' ||
-    selection?.kind === 'pull-request'
-  );
-}
-
-function retainSurfaceForOneFrame(previousLeaf: PaneLeaf, currentLeaf: PaneLeaf): boolean {
-  const previous = paneActiveSelection(previousLeaf);
-  // Only an open tab may bridge a switch. A closed tab must leave in this commit.
-  if (!previous || !currentLeaf.tabs.some((tab) => navigationKey(tab) === navigationKey(previous))) return false;
-  // A utility destination needs its physical portal slot in the same commit.
-  // Holding the outgoing layer suppresses that slot; a missed retirement frame
-  // then leaves a newly opened Studio mounted nowhere and the pane stays blank.
-  if (usesPersistentUtilityPortal(paneActiveSelection(currentLeaf))) return false;
-  return isConversationSelection(previous) || parksConversationBehindSelection(previous);
 }
 
 function dropZoneStyle(preview: DropPreview): React.CSSProperties {
@@ -198,16 +135,6 @@ export function PaneWorkspace({
   /** Opens native/internal file drops in the pane they were dropped onto. */
   onOpenDroppedPaths?: (leafId: string, paths: string[]) => void | Promise<void>;
 }): React.JSX.Element {
-  const [fileDropLeafId, setFileDropLeafId] = useState('');
-  useEffect(() => {
-    const clear = () => setFileDropLeafId('');
-    window.addEventListener('drop', clear, true);
-    window.addEventListener('dragend', clear, true);
-    return () => {
-      window.removeEventListener('drop', clear, true);
-      window.removeEventListener('dragend', clear, true);
-    };
-  }, []);
   // Subscribe before the browser can paint the restored pane tree. main.tsx
   // starts this even earlier on a normal boot; this layout effect preserves
   // the same contract for tests, remote shells, and hot remounts.
@@ -225,171 +152,10 @@ export function PaneWorkspace({
   // every observed lane mirrored a whole working transcript over the relay.
   const visibleSessionIds = mobileSurface ? paneSessionIds : [...new Set([...paneSessionIds, ...observedSessionIds])];
   useVisibleSessions(visibleSessionIds);
-  // Selection is ONE document-wide range, so a drag that starts in one pane
-  // and travels over another painted every row in between (user: 왜 드래그가
-  // 패널별로 분리 안 되어 있어). Mark the pane the gesture began in; CSS
-  // suspends selection in every OTHER pane until the pointer is released, so
-  // each pane reads as its own document the way editor groups do.
-  useEffect(() => {
-    const root = document.documentElement;
-    const release = (): void => {
-      document.querySelector<HTMLElement>('.pane-leaf[data-selecting]')?.removeAttribute('data-selecting');
-      delete root.dataset.paneSelecting;
-    };
-    const onPointerDown = (event: PointerEvent): void => {
-      // Only a primary-button drag selects text; keep right-click menus and
-      // middle-click paste out of it.
-      if (event.button !== 0) return;
-      release();
-      const target = event.target instanceof Element ? event.target : null;
-      const leaf = target?.closest<HTMLElement>('.pane-leaf');
-      // A single-pane workspace has no .pane-leaf wrapper and needs no fence.
-      if (!leaf) return;
-      leaf.dataset.selecting = 'true';
-      root.dataset.paneSelecting = 'true';
-    };
-    document.addEventListener('pointerdown', onPointerDown, true);
-    document.addEventListener('pointerup', release, true);
-    document.addEventListener('pointercancel', release, true);
-    return () => {
-      document.removeEventListener('pointerdown', onPointerDown, true);
-      document.removeEventListener('pointerup', release, true);
-      document.removeEventListener('pointercancel', release, true);
-      release();
-    };
-  }, []);
-  // Drag-to-split: native dragover publishes target-local frames once a tab
-  // leaves the strip band; hit-test the pane under the
-  // pointer, preview the edge zone, and split on drop. Refs keep the single
-  // subscription stable across renders.
-  const [dropPreview, setDropPreview] = useState<DropPreview | null>(null);
-  const conversationOwnerSequence = useRef(0);
-  const conversationOwners = useRef<ConversationOwner[]>([]);
-  const previousPaneSurfaces = useRef(new Map<string, PaneSurfaceSnapshot>());
-  const paneSurfaceHandoffs = useRef(new Map<string, PaneSurfaceSnapshot>());
-  const [, setSurfaceHandoffRevision] = useState(0);
-  const workspaceRef = useRef(workspace);
-  workspaceRef.current = workspace;
-  const focusSelectionRef = useRef(onFocusSelection);
-  focusSelectionRef.current = onFocusSelection;
-  useEffect(
-    () =>
-      subscribePaneDrag((frame) => {
-        if (frame.phase === 'cancel') {
-          setDropPreview(null);
-          return;
-        }
-        const current = workspaceRef.current;
-        const panelElement = document.querySelector<HTMLElement>('.main-panel');
-        const intent = panelElement ? resolvePaneDropIntent(frame, current, panelElement) : null;
-        if (frame.phase === 'move') {
-          if (!intent) {
-            setDropPreview(null);
-          } else {
-            setDropPreview((currentPreview) =>
-              sameDropPreview(currentPreview, intent.preview) ? currentPreview : intent.preview
-            );
-          }
-          return;
-        }
-        setDropPreview(null);
-        if (!intent) return;
-        commitPaneDropAction(current, intent.action);
-        focusSelectionRef.current(intent.selection);
-      }),
-    []
-  );
-  useEffect(() => {
-    const panel = document.querySelector<HTMLElement>('.main-panel');
-    if (!panel) return undefined;
-    let enterCounter = 0;
-    const isSourceStripReorder = (event: DragEvent): boolean => {
-      const drag = currentPaneDrag();
-      if (drag?.kind !== 'tab' || !drag.sourceLeafId) return false;
-      const target = event.target instanceof Element ? event.target : null;
-      const strip = target?.closest('.workspace-tabs-shell');
-      const pane = strip?.closest<HTMLElement>('[data-pane-id]');
-      return pane?.dataset.paneId === drag.sourceLeafId;
-    };
-    const onDragEnter = (event: DragEvent): void => {
-      if (!currentPaneDrag()) return;
-      enterCounter += 1;
-      if (isSourceStripReorder(event)) {
-        cancelPaneDragPreview();
-        return;
-      }
-      // dragenter coordinates can be synthetic or stale in Chromium. It only
-      // admits the native drop; dragover owns every preview coordinate.
-      event.preventDefault();
-      if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
-    };
-    const onDragOver = (event: DragEvent): void => {
-      if (!currentPaneDrag()) return;
-      if (isSourceStripReorder(event)) {
-        cancelPaneDragPreview();
-        return;
-      }
-      movePaneDrag(event);
-    };
-    const onDragLeave = (): void => {
-      if (!currentPaneDrag()) return;
-      enterCounter = Math.max(0, enterCounter - 1);
-      if (enterCounter === 0) cancelPaneDragPreview();
-    };
-    const onDrop = (event: DragEvent): void => {
-      if (!currentPaneDrag()) return;
-      enterCounter = 0;
-      if (isSourceStripReorder(event)) {
-        cancelPaneDragPreview();
-        return;
-      }
-      dropPaneDrag(event);
-    };
-    panel.addEventListener('dragenter', onDragEnter);
-    panel.addEventListener('dragover', onDragOver);
-    panel.addEventListener('dragleave', onDragLeave);
-    panel.addEventListener('drop', onDrop);
-    return () => {
-      panel.removeEventListener('dragenter', onDragEnter);
-      panel.removeEventListener('dragover', onDragOver);
-      panel.removeEventListener('dragleave', onDragLeave);
-      panel.removeEventListener('drop', onDrop);
-    };
-  }, []);
-  // Narrow shell (≤760px, phone composition): the split grid cannot hold two
-  // panes above their floors, so the tree renders as ONE full-size pane at a
-  // time — single-session mode (user decision) — and the strip-row pager
-  // steps left/right through the panes in visual order.
-  const narrowShell = useMediaBand(NARROW_SHELL_QUERY);
-  // The band check alone is not enough: on a mid-width window the panel can
-  // shrink under the TREE's aggregate floors (side panels open, column
-  // splits taller than the window) and the overflow buried panes past the
-  // right or BOTTOM edge (user: 하단이 묻히는 케이스 — 올라와야 해). Track
-  // the panel box and fall back to single-pane mode whenever the floors do
-  // not fit either axis.
-  const [panelSize, setPanelSize] = useState({ width: 0, height: 0 });
-  useEffect(() => {
-    const panel = document.querySelector<HTMLElement>('.main-panel');
-    if (!panel || typeof ResizeObserver === 'undefined') return undefined;
-    const observer = new ResizeObserver((entries) => {
-      const rect = entries[0]?.contentRect;
-      if (!rect) return;
-      setPanelSize((current) => {
-        const width = Math.round(rect.width);
-        const height = Math.round(rect.height);
-        return current.width === width && current.height === height ? current : { width, height };
-      });
-    });
-    observer.observe(panel);
-    return () => observer.disconnect();
-  }, []);
-  const treeMinimum = workspace.layout.type === 'split' ? paneNodeMinimumSize(workspace.layout) : null;
-  const singlePaneMode =
-    narrowShell ||
-    (treeMinimum !== null &&
-      panelSize.width > 0 &&
-      panelSize.height > 0 &&
-      (treeMinimum.width > panelSize.width || treeMinimum.height > panelSize.height));
+  usePaneSelectionFence();
+  const fileDropPropsFor = usePaneFileDrop(onOpenDroppedPaths);
+  const dropPreview = usePaneDropPreview(workspace, onFocusSelection);
+  const singlePaneMode = useSinglePaneMode(workspace.layout);
   let overlay: ReturnType<typeof createPortal> | null = null;
   if (dropPreview) {
     // ONE drop overlay per editor group: the highlight glides between zones
@@ -407,135 +173,14 @@ export function PaneWorkspace({
     );
   }
   const { focusedLeafId } = workspace;
-  const fileDropPropsFor = (leafId: string) => {
-    if (!onOpenDroppedPaths) return {};
-    return {
-      'data-file-dropping': fileDropLeafId === leafId ? 'true' : undefined,
-      onDragEnter: (event: React.DragEvent<HTMLDivElement>) => {
-        if (!dataTransferHasLocalFiles(event.dataTransfer)) return;
-        event.preventDefault();
-        setFileDropLeafId(leafId);
-      },
-      onDragOver: (event: React.DragEvent<HTMLDivElement>) => {
-        if (!dataTransferHasLocalFiles(event.dataTransfer)) return;
-        event.preventDefault();
-        event.dataTransfer.dropEffect = 'copy';
-        setFileDropLeafId(leafId);
-      },
-      onDragLeave: (event: React.DragEvent<HTMLDivElement>) => {
-        if (event.currentTarget.contains(event.relatedTarget as Node)) return;
-        setFileDropLeafId((current) => (current === leafId ? '' : current));
-      },
-      onDrop: (event: React.DragEvent<HTMLDivElement>) => {
-        if (!dataTransferHasLocalFiles(event.dataTransfer)) return;
-        const paths = droppedLocalPaths(event.dataTransfer);
-        if (!paths.length) return;
-        event.preventDefault();
-        event.stopPropagation();
-        setFileDropLeafId('');
-        void onOpenDroppedPaths(leafId, paths);
-      },
-    };
-  };
   const multi = workspace.leaves.length > 1;
-  const currentPaneSurfaces = new Map<string, PaneSurfaceSnapshot>();
-  const liveLeafIds = new Set(workspace.leaves.map((leaf) => leaf.id));
-  for (const leaf of workspace.leaves) {
-    const current = { key: paneSurfaceKey(leaf), leaf };
-    const previous = previousPaneSurfaces.current.get(leaf.id);
-    const handoff = paneSurfaceHandoffs.current.get(leaf.id);
-    currentPaneSurfaces.set(leaf.id, current);
-    if (previous && previous.key !== current.key && retainSurfaceForOneFrame(previous.leaf, current.leaf)) {
-      paneSurfaceHandoffs.current.set(leaf.id, previous);
-    } else if (handoff && (handoff.key === current.key || !retainSurfaceForOneFrame(handoff.leaf, current.leaf))) {
-      paneSurfaceHandoffs.current.delete(leaf.id);
-    }
-  }
-  for (const leafId of paneSurfaceHandoffs.current.keys()) {
-    if (!liveLeafIds.has(leafId)) paneSurfaceHandoffs.current.delete(leafId);
-  }
-  previousPaneSurfaces.current = currentPaneSurfaces;
-  const paneSurfaceHandoffKey = [...paneSurfaceHandoffs.current]
-    .map(([leafId, surface]) => `${leafId}\0${surface.key}`)
-    .join('\x01');
-  useLayoutEffect(() => {
-    if (!paneSurfaceHandoffKey) return undefined;
-    const retiring = new Map(paneSurfaceHandoffs.current);
-    const frame = window.requestAnimationFrame(() => {
-      let changed = false;
-      for (const [leafId, surface] of retiring) {
-        if (paneSurfaceHandoffs.current.get(leafId)?.key !== surface.key) continue;
-        paneSurfaceHandoffs.current.delete(leafId);
-        changed = true;
-      }
-      if (changed) setSurfaceHandoffRevision((value) => value + 1);
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [paneSurfaceHandoffKey]);
+  const { currentPaneSurfaces, paneSurfaceHandoffs } = usePaneSurfaceHandoffs(workspace.leaves);
+  const { conversationLeaves, ownerByLeaf } = usePaneConversationOwners(workspace, paneSurfaceHandoffs);
   // Conversation owns scroll, virtualizer, parsed Markdown and composer state.
   // Keep one stable owner per visible pane instead of keying it by the active
   // session. When an active tab/group moves to another leaf, match its prior
   // selection first so the same owner follows the move; ordinary tab switches
   // then fall back to the existing leaf owner and never remount Conversation.
-  const conversationSurfaceFor = (leaf: PaneLeaf, handoff: boolean): ConversationSurface[] => {
-    const active = paneActiveSelection(leaf);
-    return isConversationSelection(active)
-      ? [{ leaf, active, selectionKey: navigationKey(active), handoff, parked: false }]
-      : [];
-  };
-  const conversationLeaves: ConversationSurface[] = workspace.restorePending
-    ? []
-    : workspace.leaves
-        .flatMap((leaf) => conversationSurfaceFor(leaf, false))
-        .concat(
-          [...paneSurfaceHandoffs.current.values()].flatMap((surface) => conversationSurfaceFor(surface.leaf, true))
-        );
-  const previousConversationOwners = conversationOwners.current;
-  const representedConversationLeaves = new Set(conversationLeaves.map((entry) => entry.leaf.id));
-  for (const owner of previousConversationOwners) {
-    if (representedConversationLeaves.has(owner.leafId)) continue;
-    const leaf = workspace.leaves.find(
-      (candidate) =>
-        !representedConversationLeaves.has(candidate.id) &&
-        parksConversationBehindSelection(paneActiveSelection(candidate)) &&
-        candidate.tabs.some((selection) => navigationKey(selection) === owner.selectionKey)
-    );
-    if (!leaf) continue;
-    const selection = leaf.tabs.find((candidate) => navigationKey(candidate) === owner.selectionKey);
-    if (!isConversationSelection(selection)) continue;
-    conversationLeaves.push({
-      leaf,
-      active: selection,
-      selectionKey: owner.selectionKey,
-      handoff: false,
-      parked: true,
-    });
-    representedConversationLeaves.add(leaf.id);
-  }
-  const ownerByLeaf = new Map<string, string>();
-  const usedOwnerKeys = new Set<string>();
-  for (const entry of conversationLeaves) {
-    const movedOwner = previousConversationOwners.find(
-      (owner) => owner.selectionKey === entry.selectionKey && !usedOwnerKeys.has(owner.key)
-    );
-    if (!movedOwner) continue;
-    ownerByLeaf.set(entry.leaf.id, movedOwner.key);
-    usedOwnerKeys.add(movedOwner.key);
-  }
-  for (const entry of conversationLeaves) {
-    if (ownerByLeaf.has(entry.leaf.id)) continue;
-    const paneOwner = previousConversationOwners.find(
-      (owner) => owner.leafId === entry.leaf.id && !usedOwnerKeys.has(owner.key)
-    );
-    const ownerKey = paneOwner?.key ?? `pane-conversation-owner-${++conversationOwnerSequence.current}`;
-    ownerByLeaf.set(entry.leaf.id, ownerKey);
-    usedOwnerKeys.add(ownerKey);
-  }
-  conversationOwners.current = conversationLeaves.map((entry) => ({
-    key: ownerByLeaf.get(entry.leaf.id)!,
-    leafId: entry.leaf.id,
-    selectionKey: entry.selectionKey,
-  }));
   let conversationPortals: React.ReactNode[] = [];
   if (renderConversation) {
     conversationPortals = conversationLeaves.map(({ leaf, active, handoff, parked }) => {

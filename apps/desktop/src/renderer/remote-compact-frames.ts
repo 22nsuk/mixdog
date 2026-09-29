@@ -9,7 +9,7 @@ export const markCompactPayload = (wire: unknown): void => {
   }
 };
 
-export interface CompactTranscriptExpander {
+interface CompactTranscriptExpander {
   /** The canonical `sessionState` frame this compact envelope stands for, or
    *  null when this browser's handle map disagrees with the desktop's. */
   expand(frame: Record<string, unknown>): Record<string, unknown> | null;

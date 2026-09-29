@@ -12,7 +12,7 @@ import type { BrowserCdpPort } from './cdp';
 import { createBrowserReadPool, settleBrowserReads } from './parallel-read';
 import { redactBrowserText } from './redaction';
 
-export const MAX_ACCESSIBILITY_TARGETS = 32;
+const MAX_ACCESSIBILITY_TARGETS = 32;
 const MAX_FRAME_DOCUMENTS = 64;
 
 export interface DomSnapshotDocument {

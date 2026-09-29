@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { nativeImage, type WebContents } from 'electron';
 import type { BrowserHost } from './host';
 import { readyBrowserFrame } from './harness-frame';
+import { percentileMs } from './input-surface-latency';
 import { measureBrowserSurfaceLoad } from './input-surface-load';
 
 /** Fixture-only input acknowledgement and visible-pixel latency measurements. */
@@ -71,15 +72,13 @@ export async function measureBrowserPresentation(
       document.getElementById('presentation-marker').remove();
     })()`);
   }
-  const p95 = (values: number[]) =>
-    Number([...values].sort((a, b) => a - b)[Math.ceil(values.length * 0.95) - 1].toFixed(1));
   log(
     `presentation benchmark ${JSON.stringify({
       decodedFramesPerSecond: Number(((loads * 1000) / elapsed).toFixed(2)),
       inputAcknowledgementMs: samples.map((value) => Number(value.toFixed(1))),
       inputToPixelsMs: visible.map((value) => Number(value.toFixed(1))),
-      inputAcknowledgementP95Ms: p95(samples),
-      inputToPixelsP95Ms: p95(visible),
+      inputAcknowledgementP95Ms: percentileMs(samples, 0.95),
+      inputToPixelsP95Ms: percentileMs(visible, 0.95),
     })}`
   );
   await measureBrowserSurfaceLoad(host, guest, shell, log);

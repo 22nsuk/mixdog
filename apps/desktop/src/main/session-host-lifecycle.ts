@@ -154,6 +154,13 @@ export class SessionHostLifecycle {
     else await this.owner.publishCatalogs();
   }
 
+  /** Abandon the daemon subscription; a failure changes nothing for the caller. */
+  private async unsubscribeQuietly(sessionId: string): Promise<void> {
+    try {
+      await this.owner.client.unsubscribe({ sessionId }, this.owner.callOptions());
+    } catch {}
+  }
+
   async renameSession(sessionId: string, title: string): Promise<void> {
     const id = sessionIdOf(sessionId);
     const normalized = normalizeSessionTitle(title, '');
@@ -183,9 +190,7 @@ export class SessionHostLifecycle {
     if ((await this.owner.invokeControl('deleteSession', [id])) !== true) {
       throw new Error('Session could not be deleted.');
     }
-    try {
-      await this.owner.client.unsubscribe({ sessionId: id }, this.owner.callOptions());
-    } catch {}
+    await this.unsubscribeQuietly(id);
     this.owner.visibleSessionIds.delete(id);
     for (const sessions of this.owner.visibleSessionSources.values()) sessions.delete(id);
     this.owner.publication.projections.delete(id);
@@ -478,9 +483,7 @@ export class SessionHostLifecycle {
       void this.owner.publishCatalogs();
       return { accepted: true, sessionId, snapshot };
     } catch (error) {
-      try {
-        await this.owner.client.unsubscribe({ sessionId }, this.owner.callOptions());
-      } catch {}
+      await this.unsubscribeQuietly(sessionId);
       throw error;
     } finally {
       this.owner.pendingCatalogSessionIds.delete(sessionId);
@@ -526,11 +529,7 @@ export class SessionHostLifecycle {
       return { sessionId, snapshot: inherited.snapshot ?? null };
     } catch (error) {
       // A half-built heir must not linger in the catalog.
-      try {
-        await this.owner.client.unsubscribe({ sessionId }, this.owner.callOptions());
-      } catch {
-        /* the create is being abandoned either way */
-      }
+      await this.unsubscribeQuietly(sessionId);
       throw error;
     } finally {
       this.owner.pendingCatalogSessionIds.delete(sessionId);

@@ -376,7 +376,7 @@
 /* The source header has no row actions; this spacer holds the action column
    so its totals line up with the file rows below. */
 .turn-review-files li.turn-review-source::after {
-  content: '';
+  content: "";
   grid-column: 5;
   min-width: 40px;
 }

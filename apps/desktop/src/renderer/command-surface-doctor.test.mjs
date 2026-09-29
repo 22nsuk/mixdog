@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 import { DoctorBody, doctorReport } from './command-surface-doctor.tsx';
 
 const result = {
@@ -31,11 +31,11 @@ test('doctor report parsing puts problems first and rejects non-reports', () => 
 });
 
 test('doctor dialog shows the verdict, per-check fixes, busy state and re-run', async () => {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>');
-  for (const key of ['window', 'document', 'navigator', 'Node', 'Element', 'HTMLElement', 'Event']) {
-    Object.defineProperty(globalThis, key, { configurable: true, value: dom.window[key] });
-  }
-  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const { dom } = installTestDom(null, {
+    html: '<!doctype html><html><body><div id="root"></div></body></html>',
+    jsdom: { url: 'about:blank' },
+    expose: ['navigator', 'Node', 'Element', 'HTMLElement', 'Event'],
+  });
   const container = dom.window.document.getElementById('root');
   const root = createRoot(container);
   const opened = [];

@@ -1,10 +1,9 @@
 import { AlarmClock, ChevronRight, Plus, Search, X } from 'lucide-react';
 import { useMemo, useState, type FormEvent } from 'react';
 
-import type { DesktopApi, DesktopCapability, DesktopModelOption, DesktopProjectSummary } from '../shared/contract';
+import type { DesktopApi, DesktopModelOption, DesktopProjectSummary } from '../shared/contract';
 import type { RecordValue } from './desktop-types';
 import { t, uiFormatLocale } from './i18n';
-import { ErrorNotice } from './ErrorNotice';
 import { InitialSurface } from './InitialSurface';
 import { filterConfiguredModels } from './model-catalog';
 import { ModelRouteEditor } from './ModelRouteEditor';
@@ -20,12 +19,20 @@ import {
   attachmentsFromRecords,
   type AutomationAttachment,
 } from './automation-attachments';
-import { ModelRouteLabel, modelDisplayName, modelFastAvailable, normalizeModelOptions } from './provider-display';
-import { SidebarPanelAction } from './session-sidebar';
-import { SidebarDialogLayer } from './sidebar-dialog';
+import { ModelRouteLabel, normalizeModelOptions } from './provider-display';
+import {
+  automationFastSuffix,
+  automationProjectOptions,
+  automationRouteSummary,
+  automationWorkflowOptions,
+  splitModelRoute,
+} from './automation-editor-support';
+import { SidebarPanelAction } from './session-sidebar-sections';
+import { EditorDialogFooter, SidebarDialogLayer } from './sidebar-dialog';
 import { useSidebarPanelDismiss } from './sidebar-panel-surface';
 import { useSidebarReferences, type SidebarReferenceKey } from './sidebar-reference-cache';
 import { usePersistedListOrder } from './use-persisted-list-order';
+import { useSidebarCapabilityRunner } from './use-sidebar-capability-runner';
 import { CompactSwitch } from './settings/capability-controls';
 
 type SchedulesApi = Partial<Pick<DesktopApi, 'invokeCapability' | 'listProviderModels' | 'listProjects'>>;
@@ -154,13 +161,7 @@ function describeSchedule(schedule: RecordValue): string {
 // Sub-line: schedule first, then model, project, and paused state.
 function scheduleMeta(schedule: RecordValue) {
   const scheduleLabel = describeSchedule(schedule);
-  const ref = parseModelRef(String(schedule.model || ''));
-  let route: { model: string; effort: string; fast: boolean } | null = null;
-  if (ref.route) {
-    const slash = ref.route.indexOf('/');
-    const model = slash > 0 ? modelDisplayName(ref.route.slice(slash + 1), ref.route.slice(0, slash)) : ref.route;
-    route = { model, effort: ref.effort || '', fast: ref.fast };
-  }
+  const route = automationRouteSummary(String(schedule.model || ''));
   const cwd = String(schedule.cwd || '');
   const cwdLabel = cwd ? cwd.split(/[\\/]/).filter(Boolean).pop() || cwd : '';
   return (
@@ -247,29 +248,21 @@ function ScheduleEditor({
   const [attachments, setAttachments] = useState<AutomationAttachment[]>(draft.attachments);
   const [enabled, setEnabled] = useState(draft.enabled);
   const [formError, setFormError] = useState('');
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  const slash = model.indexOf('/');
-  const modelProvider = slash > 0 ? model.slice(0, slash) : '';
-  const modelId = slash > 0 ? model.slice(slash + 1) : '';
+  const { provider: modelProvider, id: modelId } = splitModelRoute(model);
   const selected = models.find((option) => option.provider === modelProvider && option.model === modelId);
   const effortValue = selected?.effortOptions.some((entry) => entry.value === effort)
     ? effort
     : preferredModelEffort(selected) || '';
   const selectedModelParameters = preferredModelParameters(selected, modelParameters);
-  const fastAvailable = modelFastAvailable(selected, effortValue, selectedModelParameters);
-  const projectOptions = [
-    { value: '__none__', label: 'No project' },
-    ...projects.map((project) => ({
-      value: project.path,
-      label: project.alias?.trim() || project.name?.trim() || project.path,
-    })),
-  ];
-  if (cwd && !projectOptions.some((option) => option.value === cwd)) {
-    projectOptions.push({ value: cwd, label: cwd });
-  }
+  const projectOptions = automationProjectOptions(projects, cwd);
   return (
     <SidebarDialogLayer onClose={onCancel}>
-      <section className="schedules-dialog schedules-editor-dialog" role="dialog" aria-modal="true" aria-labelledby="schedules-dialog-title">
+      <section
+        className="schedules-dialog schedules-editor-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="schedules-dialog-title"
+      >
         <header>
           <h2 id="schedules-dialog-title">{editing ? t('Edit scheduled task') : t('Create scheduled task')}</h2>
           <div className="schedules-dialog-header-actions">
@@ -298,7 +291,7 @@ function ScheduleEditor({
             }
             setFormError('');
             const effortSuffix = selected && effortValue ? `@${effortValue}` : '';
-            const fastSuffix = fastAvailable && fast ? '+fast' : '';
+            const fastSuffix = automationFastSuffix(selected, effortValue, selectedModelParameters, fast);
             const parameterSuffix = Object.keys(selectedModelParameters).length
               ? `?${new URLSearchParams(selectedModelParameters).toString()}`
               : '';
@@ -470,36 +463,18 @@ function ScheduleEditor({
               )}
             </div>
           </div>
-          <footer>
-            {(formError || error) && <ErrorNotice error={formError || error} />}
-            {editing && onDelete && (
-              <button
-                type="button"
-                className={`danger${confirmDelete ? ' confirming' : ''}`}
-                disabled={busy}
-                onClick={() => {
-                  if (!confirmDelete) {
-                    setConfirmDelete(true);
-                    return;
-                  }
-                  onDelete();
-                }}
-              >
-                {confirmDelete ? t('Confirm delete') : t('Delete')}
-              </button>
-            )}
+          <EditorDialogFooter
+            error={formError || error}
+            busy={busy}
+            onCancel={onCancel}
+            onDelete={editing ? onDelete : undefined}
+          >
             {editing && onRun && (
               <button type="button" disabled={busy || running} onClick={onRun}>
                 {running ? t('Running…') : t('Run now')}
               </button>
             )}
-            <button type="button" className="secondary" disabled={busy} onClick={onCancel}>
-              {t('Cancel')}
-            </button>
-            <button type="submit" disabled={busy}>
-              {t('Save')}
-            </button>
-          </footer>
+          </EditorDialogFooter>
         </form>
       </section>
     </SidebarDialogLayer>
@@ -539,15 +514,15 @@ export function SchedulesPane({
     [values.quickProviderModels, values.providerSetup]
   );
   const projects = values.projects;
-  const workflows = useMemo(
-    () =>
-      values.workflows
-        .map((row) => ({ value: String(row.id || ''), label: String(row.name || row.id || '') }))
-        .filter((option) => option.value),
-    [values.workflows]
-  );
-  const [pending, setPending] = useState('');
-  const [error, setError] = useState('');
+  const workflows = useMemo(() => automationWorkflowOptions(values.workflows), [values.workflows]);
+  // Host-scoped completion invalidates the keys a capability made untrue and
+  // reads through once, unless the app already rebound hosts.
+  const { pending, error, setError, run } = useSidebarCapabilityRunner({
+    api,
+    completeMutation,
+    toastScope: 'schedule',
+    onSuccess: notifySessionsRefresh,
+  });
   const [query, setQuery] = useState('');
   const [editor, setEditor] = useState<{ name: string; draft: ScheduleDraft } | null>(null);
   const [runningName, setRunningName] = useState('');
@@ -558,30 +533,6 @@ export function SchedulesPane({
     setEditor(null);
   });
   const busy = Boolean(pending) || loading;
-  const run = async (
-    capability: DesktopCapability,
-    args: unknown[] = [],
-    errorMode: 'inline' | 'toast' = 'inline'
-  ): Promise<unknown> => {
-    if (!api?.invokeCapability || pending) return undefined;
-    setPending(capability);
-    setError('');
-    try {
-      const result = await api.invokeCapability({ capability, args });
-      // Host-scoped completion: invalidates the keys this capability made
-      // untrue and reads through once, unless the app already rebound hosts.
-      await completeMutation(capability);
-      notifySessionsRefresh();
-      return result?.value ?? true;
-    } catch (reason) {
-      const message = reason instanceof Error ? reason.message : String(reason);
-      if (errorMode === 'toast') showDesktopToast(message, 'error', { scope: `schedule:${capability}` });
-      else setError(message);
-      return undefined;
-    } finally {
-      setPending('');
-    }
-  };
 
   const schedules = rows(setup.schedules);
   const scheduleOrder = usePersistedListOrder(

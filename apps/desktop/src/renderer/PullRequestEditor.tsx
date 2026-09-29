@@ -1,4 +1,4 @@
-// Create-pull-request editor surface.
+// Pull request editor surface: overview, conversation, files and checks.
 import { ArrowUpRight, Check, FileText, GitMerge, ListChecks, MessageSquare, RefreshCw } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import type { DesktopPullRequestDetail } from '../shared/contract';

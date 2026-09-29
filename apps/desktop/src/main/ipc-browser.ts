@@ -44,6 +44,13 @@ function nativeRect(value: unknown): { x: number; y: number; width: number; heig
   return rect;
 }
 
+function requiredGuestId(value: unknown): number {
+  if (!Number.isSafeInteger(value) || Number(value) <= 0) {
+    throw new TypeError('Browser guest id is invalid.');
+  }
+  return Number(value);
+}
+
 export function registerBrowserIpc({ handle, browserHost }: BrowserIpcOptions): void {
   handle(DESKTOP_IPC.browserPageFrame, (_event, sessionId, previousId, texture) => {
     if (!browserHost) throw new Error('Browser Use is unavailable.');
@@ -72,18 +79,14 @@ export function registerBrowserIpc({ handle, browserHost }: BrowserIpcOptions): 
   handle(DESKTOP_IPC.browserSetActiveGuest, (_event, sessionId, webContentsId, active) => {
     if (!browserHost) throw new Error('Browser Use is unavailable in this app surface.');
     const ownerSessionId = requiredSessionId(sessionId);
-    if (!Number.isSafeInteger(webContentsId) || Number(webContentsId) <= 0) {
-      throw new TypeError('Browser guest id is invalid.');
-    }
+    const guestId = requiredGuestId(webContentsId);
     if (typeof active !== 'boolean') throw new TypeError('Browser guest activity is invalid.');
-    browserHost.setGuestActive(ownerSessionId, Number(webContentsId), active);
+    browserHost.setGuestActive(ownerSessionId, guestId, active);
   });
   handle(DESKTOP_IPC.browserConfigureGuestViewport, (_event, sessionId, webContentsId, value) => {
     if (!browserHost) throw new Error('Browser Use is unavailable in this app surface.');
     const ownerSessionId = requiredSessionId(sessionId);
-    if (!Number.isSafeInteger(webContentsId) || Number(webContentsId) <= 0) {
-      throw new TypeError('Browser guest id is invalid.');
-    }
+    const guestId = requiredGuestId(webContentsId);
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
       throw new TypeError('Browser viewport config is invalid.');
     }
@@ -124,7 +127,7 @@ export function registerBrowserIpc({ handle, browserHost }: BrowserIpcOptions): 
       touch: input.touch,
       userAgent,
     };
-    return browserHost.configureGuestViewport(ownerSessionId, Number(webContentsId), config);
+    return browserHost.configureGuestViewport(ownerSessionId, guestId, config);
   });
   handle(DESKTOP_IPC.browserProfileImportSources, () => {
     if (!browserHost) throw new Error('Browser profile import is unavailable in this app surface.');

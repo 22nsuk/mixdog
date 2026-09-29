@@ -1133,16 +1133,6 @@ public class MixWin32
         }, IntPtr.Zero);
         return contentPid;
     }
-    public static IntPtr[] ChildHandles(IntPtr parent)
-    {
-        List<IntPtr> result = new List<IntPtr>();
-        EnumChildWindows(parent, delegate (IntPtr h, IntPtr l)
-        {
-            if (IsWindowVisible(h)) result.Add(h);
-            return true;
-        }, IntPtr.Zero);
-        return result.ToArray();
-    }
     [DllImport("user32.dll")] static extern bool ScreenToClient(IntPtr h, ref POINT p);
     [DllImport("user32.dll")] static extern IntPtr ChildWindowFromPointEx(IntPtr h, POINT p, uint flags);
     [DllImport("user32.dll", SetLastError = true, EntryPoint = "SendMessageTimeoutW")]

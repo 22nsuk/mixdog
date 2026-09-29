@@ -30,7 +30,9 @@ export interface IgnoreRule {
   matcher: RegExp;
 }
 
-function globExpression(pattern: string): string {
+/** Regular-expression source for a glob: `**` crosses folders, `*` and `?`
+ *  stay inside one path segment, everything else is literal. */
+export function globExpression(pattern: string): string {
   let expression = '';
   for (let index = 0; index < pattern.length; index += 1) {
     const character = pattern[index];

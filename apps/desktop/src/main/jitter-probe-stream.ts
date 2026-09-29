@@ -7,7 +7,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { BrowserWindow } from 'electron';
 import { assistantMarkdown, paragraph, probeItems } from './jitter-probe-fixtures';
-import { waitForProbeSessionRow } from './jitter-probe-session';
+import { sleep, waitForProbeSessionRow } from './jitter-probe-session';
 
 interface StreamProbeDeps {
   window: BrowserWindow;
@@ -17,7 +17,6 @@ interface StreamProbeDeps {
   outPath: string;
 }
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export async function runStreamingProbe({
   window,

@@ -2,6 +2,7 @@ import {
   DEFAULT_CAPTURE_AFTER_DELAY_MS,
   DEFAULT_CAPTURE_MAX_ELEMENTS,
   MAX_CAPTURE_AFTER_DELAY_MS,
+  sleep,
 } from '../shared/common';
 import { screenshotInteger } from './analysis';
 import { createCaptureImageDedupStore } from './capture-image-dedup';
@@ -63,7 +64,7 @@ export function createCaptureAfter(
     const deadline = performance.now() + LAUNCH_LAYOUT_BUDGET_MS;
     let previous = await layoutFingerprint(command, windowId);
     while (previous !== null && performance.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, LAUNCH_LAYOUT_POLL_MS));
+      await sleep(LAUNCH_LAYOUT_POLL_MS);
       host.assertExecutionNotAborted();
       const next = await layoutFingerprint(command, windowId);
       if (next === null || next === previous) return;
@@ -89,7 +90,7 @@ export function createCaptureAfter(
     if (!windowId) {
       return { metadata: { ok: false, error: 'exact target window is unavailable; no screen fallback was captured' } };
     }
-    if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+    if (delayMs > 0) await sleep(delayMs);
     host.assertExecutionNotAborted();
     if (command.action === 'launch' && host.callPowerShell) await awaitSettledLayout(command, windowId);
     try {

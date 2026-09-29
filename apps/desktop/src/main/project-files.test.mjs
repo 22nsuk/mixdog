@@ -1,10 +1,18 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import test from 'node:test';
 
-import { createProjectEntryIn, listProjectDirIn, projectEntryPathIn, readProjectTextFileIn } from './project-files.ts';
+import {
+  copyProjectEntryIn,
+  createProjectEntryIn,
+  listProjectDirIn,
+  moveProjectEntryIn,
+  projectEntryPathIn,
+  readProjectTextFileIn,
+  renameProjectEntryIn,
+} from './project-files.ts';
 
 test('project file operations reject symlink and junction escapes', async (t) => {
   const fixture = await mkdtemp(join(tmpdir(), 'mixdog-project-path-'));
@@ -20,6 +28,17 @@ test('project file operations reject symlink and junction escapes', async (t) =>
   await assert.rejects(listProjectDirIn(root, 'escape'), /resolves outside/);
   await assert.rejects(readProjectTextFileIn(root, 'escape/secret.txt'), /resolves outside/);
   await assert.rejects(createProjectEntryIn(root, '', 'escape/created.txt', false), /resolves outside/);
+});
+
+test('the project-root guard holds when the caller passes an unresolved root', async (t) => {
+  const fixture = await mkdtemp(join(tmpdir(), 'mixdog-project-root-'));
+  t.after(() => rm(fixture, { recursive: true, force: true }));
+  const root = join(fixture, 'project');
+  await mkdir(join(root, 'dir'), { recursive: true });
+  const unresolved = `${root}${sep}dir${sep}..`;
+  await assert.rejects(renameProjectEntryIn(unresolved, '', 'renamed'), /Cannot rename the project root/);
+  await assert.rejects(moveProjectEntryIn(unresolved, '', 'dir'), /Cannot move the project root/);
+  await assert.rejects(copyProjectEntryIn(unresolved, '', 'dir'), /Cannot copy the project root/);
 });
 
 test('project directory listing does not hide entries after 500', async (t) => {

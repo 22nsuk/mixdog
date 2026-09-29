@@ -1,10 +1,10 @@
 import type React from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { InitialSurface } from './InitialSurface';
-import { describeSourceControlError, sourceControlErrorToastText } from './SourceControlErrorNotice';
+import { sourceControlErrorToastText } from './SourceControlErrorNotice';
 import { useErrorToast } from './notifications';
 import { commitImmediateOverlay } from './immediate-overlay';
-import type { DesktopGitCommitFile, DesktopGitFile, DesktopGitLogEntry, DesktopGitStatus } from '../shared/contract';
+import type { DesktopGitFile, DesktopGitLogEntry, DesktopGitStatus } from '../shared/contract';
 import { t } from './i18n';
 import type { PullRequestOpenHandler } from './PullRequestsPane';
 import { GithubDock as PullRequestsPane } from './github/GithubDock';
@@ -22,7 +22,6 @@ import { SourceControlBranchPicker } from './source-control-branch-picker';
 import { SourceControlCommitDetail } from './source-control-commit-detail';
 import { SourceControlCommitForm } from './SourceControlCommitForm';
 import { SourceControlViewControls, type SourceControlView } from './SourceControlViewControls';
-import { buildSourceControlCommitMenu } from './source-control-history-menu';
 import { useSourceControlFiles } from './use-source-control-files';
 import { useSurfaceActive, useSurfaceNavigationReset } from './surface-activity';
 import {
@@ -30,7 +29,6 @@ import {
   indexOnly,
   pathsFor,
   pullRequestUrl,
-  reasonText,
   RowSpacer,
   type SourceControlDiffRequest,
 } from './source-control-support';
@@ -59,6 +57,8 @@ import { useSourceControlBranches } from './use-source-control-branches';
 import { useSourceControlCommit } from './use-source-control-commit';
 import { useSourceControlHistory } from './use-source-control-history';
 import { useSourceControlRunner } from './use-source-control-runner';
+import { useSourceControlCommitDetail } from './use-source-control-commit-detail';
+import { createHistoryMenuItems } from './source-control-history-menu-items';
 export {
   changedFilesLabel,
   gitRemoteWebUrl,
@@ -273,61 +273,14 @@ export function SourceControlDock({
   const historyBusyReason = repositoryBusyReason(busy, status);
   const stashReason = stashReasons({ api, busy, status, fileCount: files.length });
 
-  const openCommit = async (entry: DesktopGitLogEntry) => {
-    if (!api?.gitShow || busy) return;
-    setBusy(`show:${entry.hash}`);
-    history.setSelectedCommit(entry.hash);
-    history.setCommitDetail(null);
-    history.setOpenCommitFile('');
-    history.setCommitDiffs({});
-    history.setShaCopy(null);
-    try {
-      history.setCommitDetail(await api.gitShow(projectPath, entry.hash));
-    } catch (reason) {
-      setError(reasonText(reason));
-      history.setSelectedCommit('');
-    } finally {
-      setBusy('');
-    }
-  };
-  /** Short SHA + copy affordance. The Clipboard API can be absent (insecure
-   *  context) or refuse; either way the outcome is reported — announced
-   *  through the header's live region and surfaced in the error banner —
-   *  instead of claiming a copy that never happened. */
-  const copyCommitSha = async (hash: string) => {
-    const clipboard = window.navigator?.clipboard;
-    if (!clipboard?.writeText) {
-      history.setShaCopy({ hash, ok: false });
-      setError(t('Could not copy the SHA: this environment has no clipboard access.'));
-      return;
-    }
-    try {
-      await clipboard.writeText(hash);
-      history.setShaCopy({ hash, ok: true });
-    } catch (reason) {
-      history.setShaCopy({ hash, ok: false });
-      setError(`Could not copy the SHA: ${reasonText(reason)}`);
-    }
-  };
-  const toggleCommitFile = async (file: DesktopGitCommitFile) => {
-    if (history.openCommitFile === file.path) {
-      history.setOpenCommitFile('');
-      return;
-    }
-    history.setOpenCommitFile(file.path);
-    if (history.commitDiffs[file.path] !== undefined || !api?.gitShowDiff || !history.selectedCommit) return;
-    history.setCommitDiffs((current) => ({ ...current, [file.path]: null }));
-    try {
-      const patch = await api.gitShowDiff(projectPath, history.selectedCommit, file.path);
-      history.setCommitDiffs((current) => ({ ...current, [file.path]: patch || '' }));
-    } catch (reason) {
-      history.setCommitDiffs((current) => ({
-        ...current,
-        [file.path]: describeSourceControlError(reason).summary,
-      }));
-    }
-  };
-
+  const { openCommit, copyCommitSha, toggleCommitFile } = useSourceControlCommitDetail({
+    api,
+    projectPath,
+    busy,
+    setBusy,
+    setError,
+    history,
+  });
   const fileRow = (file: DesktopGitFile) => {
     const actionFiles = selectedActionFiles(file);
     const openChange = () => {
@@ -411,6 +364,7 @@ export function SourceControlDock({
       )
     );
   };
+  const pushNow = () => void run('push', () => api?.gitPush?.(projectPath));
   const { remoteName, aheadCount, behindCount, fetchEntry, pushEntry, rowPushReason, rowPushBlocked } =
     sourceControlRemoteActions({
       status,
@@ -419,9 +373,8 @@ export function SourceControlDock({
       canPush: Boolean(api?.gitPush),
       missingChannel,
       onFetch: () => void run('fetch', () => api?.gitFetch?.(projectPath)),
-      onPush: () => void run('push', () => api?.gitPush?.(projectPath)),
+      onPush: pushNow,
     });
-  const pushNow = () => void run('push', () => api?.gitPush?.(projectPath));
   // PR eligibility, shared by the review tab's Pull Request pane. The button
   // itself lives ONLY there now (user: PR은 완전히 분리).
   const prAhead = status?.ahead ?? 0;
@@ -430,42 +383,15 @@ export function SourceControlDock({
       ? pullRequestUrl(status.remoteUrl || '', status.branch)
       : '';
 
-  const historyMenuItems = (entry: DesktopGitLogEntry, entryIndex: number, hostedCommitUrl: string) =>
-    buildSourceControlCommitMenu({
-      entry,
-      entryIndex,
-      historyBusyReason,
-      statusUnborn: Boolean(status?.unborn),
-      conflictCount: conflicts.length,
-      commitUrl: hostedCommitUrl,
-      missingChannel,
-      capabilities: {
-        amend: Boolean(api?.gitAmend),
-        checkout: Boolean(api?.gitCheckoutCommit),
-        cherryPick: Boolean(api?.gitCherryPickCommit),
-        createBranch: Boolean(api?.gitCreateBranchAtCommit),
-        createTag: Boolean(api?.gitCreateTag),
-        deleteTag: Boolean(api?.gitDeleteTag),
-        openExternal: Boolean(api?.openExternal),
-        reset: Boolean(api?.gitResetToCommit),
-        revert: Boolean(api?.gitRevertCommit),
-        undo: Boolean(api?.gitUndoLastCommit),
-      },
-      actions: {
-        amend: () => guarded(() => commitActions.amendCommitAt(entry)),
-        checkout: () => guarded(() => commitActions.checkoutCommit(entry)),
-        cherryPick: () => guarded(() => commitActions.cherryPickCommit(entry)),
-        copySha: () => void copyText(ctx, entry.hash, 'SHA'),
-        copyTags: (values) => void copyText(ctx, values.join(' '), values.length > 1 ? 'tags' : 'tag'),
-        createBranch: () => guarded(() => commitActions.createBranchAtCommit(entry)),
-        createTag: () => guarded(() => commitActions.createTagAt(entry)),
-        deleteTag: (tag) => guarded(() => commitActions.deleteTagAt(entry, tag)),
-        openHostedCommit: () => void api?.openExternal?.(hostedCommitUrl),
-        reset: () => guarded(() => commitActions.resetToCommit(entry)),
-        revert: () => guarded(() => commitActions.revertCommit(entry)),
-        undo: () => guarded(() => commitActions.undoCommitAt(entry)),
-      },
-    });
+  const historyMenuItems = createHistoryMenuItems({
+    api,
+    ctx,
+    status,
+    conflictCount: conflicts.length,
+    historyBusyReason,
+    guarded,
+    commitActions,
+  });
   const historyRowProps = (entry: DesktopGitLogEntry, entryIndex: number) => {
     const hostedCommitUrl = commitWebUrl(status?.remoteUrl || '', entry.hash);
     return {

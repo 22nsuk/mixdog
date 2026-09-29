@@ -168,7 +168,7 @@ function IconAction({
 
 // Tri-state select-all row; the shared filter box lives in the view controls
 // above Changes | History. The row is also the list's ACTION header: Stage
-// Stage All, Unstage All and Discard All sit here with Stash / Pop Stash and
+// All, Unstage All and Discard All sit here with Stash / Pop Stash and
 // View & Sort beside them. It is a plain row (not a
 // <label>) so those buttons cannot toggle the checkbox by label activation;
 // the checkbox keeps the same accessible name it always had. No visible count

@@ -14,10 +14,9 @@ export const TRANSCRIPT_ROW_ESTIMATE = 60;
 // only added per-tick mount/measure cost without a smoothness gain.
 export const TRANSCRIPT_VIRTUAL_OVERSCAN = 10;
 // A floating prompt dock needs ~64px of clearance behind its translucent
-// overlay. Mixdog's
-// composer sits in flow BELOW the viewport, so the same 64px rendered as pure
-// empty space above the composer (user: 하단 여백이 많다). 24px keeps the
-// last message's breathing room without a dead band.
+// overlay. Mixdog's composer sits in flow BELOW the viewport, so the same 64px
+// rendered as pure empty space above the composer (user: 하단 여백이 많다).
+// 24px keeps the last message's breathing room without a dead band.
 export const TRANSCRIPT_BOTTOM_SPACER = 24;
 const TRANSCRIPT_VIRTUAL_CACHE_LIMIT = 16;
 

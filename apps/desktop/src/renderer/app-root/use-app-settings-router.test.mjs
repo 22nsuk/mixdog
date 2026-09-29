@@ -2,14 +2,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from '../test-support/test-dom.mjs';
 import { useAppSettingsRouter } from './use-app-settings-router.ts';
 
 test('useAppSettingsRouter handles openSettings and UI requests routing', async () => {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>');
-  for (const key of ['window', 'document', 'navigator', 'HTMLElement', 'Event', 'CustomEvent']) {
-    Object.defineProperty(globalThis, key, { configurable: true, value: dom.window[key] });
-  }
+  const { dom } = installTestDom(null, {
+    html: '<!doctype html><html><body><div id="root"></div></body></html>',
+    jsdom: { url: 'about:blank' },
+    expose: ['navigator', 'HTMLElement', 'Event', 'CustomEvent'],
+    actEnvironment: false,
+  });
   globalThis.window.mixdogDesktop = {
     getRemoteAccessInfo: async () => null,
   };

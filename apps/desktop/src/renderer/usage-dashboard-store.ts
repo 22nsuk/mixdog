@@ -43,7 +43,7 @@ export type UsageDashboardSnapshot = {
 export const USAGE_DASHBOARD_CACHE_KEY = 'mixdog.desktop.sidebar-usage.v1';
 export const USAGE_DASHBOARD_REFRESH_INTERVAL_MS = 5 * 60_000;
 /** A snapshot younger than this satisfies an open/prewarm without a request. */
-export const USAGE_DASHBOARD_TTL_MS = USAGE_DASHBOARD_REFRESH_INTERVAL_MS;
+const USAGE_DASHBOARD_TTL_MS = USAGE_DASHBOARD_REFRESH_INTERVAL_MS;
 export const USAGE_DASHBOARD_RETRY_DELAY_MS = 15_000;
 export const USAGE_DASHBOARD_REQUEST_TIMEOUT_MS = 30_000;
 

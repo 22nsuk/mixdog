@@ -27,7 +27,7 @@ export function quotaPace(startMs: number, endMs: number, now: number): number |
   return Math.min(100, Math.max(0, ((now - startMs) / (endMs - startMs)) * 100));
 }
 
-export type QuotaTone = '' | 'warning' | 'danger';
+type QuotaTone = '' | 'warning' | 'danger';
 
 /** Danger once the window is nearly used up or forecast to run out before
  *  its reset; warning once it is past 70 % or well ahead of an even pace. */

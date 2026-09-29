@@ -47,6 +47,7 @@ const browserImportNativeFileNames = [
   'LICENSE_GPL.txt',
   'browser-import-NOTICE.txt',
 ];
+const NATIVE_BINARY_NAME = /\.(?:node|dll|dylib|so(?:\.\d+)*)$/i;
 const runtimeManifestPath = join(runtimeDir, 'manifest.json');
 const preparedRuntimeSchema = 2;
 const configuredNpmCacheDir = String(process.env.MIXDOG_RUNTIME_NPM_CACHE ?? '').trim();
@@ -278,7 +279,7 @@ async function assertTargetArchitecture(path, label) {
 async function assertTreeTargetArchitecture(root, label) {
   const entries = await readdir(root, { recursive: true, withFileTypes: true });
   for (const entry of entries) {
-    if (!entry.isFile() || !/\.(?:node|dll|dylib|so(?:\.\d+)*)$/i.test(entry.name)) continue;
+    if (!entry.isFile() || !NATIVE_BINARY_NAME.test(entry.name)) continue;
     await assertTargetArchitecture(join(entry.parentPath, entry.name), `${label} (${entry.name})`);
   }
 }
@@ -689,9 +690,7 @@ async function prepareRuntime(manifest, fingerprint) {
       throw new Error('Runtime archive contains unused onnxruntime-web payloads.');
     }
 
-    const nativeBinaryEntries = [...archiveEntries].filter((entry) =>
-      /\.(?:node|dll|dylib|so(?:\.\d+)*)$/i.test(entry)
-    );
+    const nativeBinaryEntries = [...archiveEntries].filter((entry) => NATIVE_BINARY_NAME.test(entry));
     const unpackedRuntimeEntries = [...new Set([...nativeBinaryEntries, ...externalProcessArchiveEntries])];
     await timed('unpacked-runtime-mirror', async () => {
       for (const entry of unpackedRuntimeEntries) {
@@ -704,7 +703,7 @@ async function prepareRuntime(manifest, fingerprint) {
         const pathParts = archivePath.split('/');
         const source = join(runtimeSidecar, ...pathParts);
         await access(source);
-        if (/\.(?:node|dll|dylib|so(?:\.\d+)*)$/i.test(entry)) {
+        if (NATIVE_BINARY_NAME.test(entry)) {
           await assertTargetArchitecture(source, `Runtime addon ${entry}`);
         }
 

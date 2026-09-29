@@ -1,6 +1,6 @@
 import type { editor } from 'monaco-editor';
 
-export interface EditorSurface {
+interface EditorSurface {
   editor: editor.IStandaloneCodeEditor;
   element: HTMLElement;
 }

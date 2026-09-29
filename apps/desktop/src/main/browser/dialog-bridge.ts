@@ -1,4 +1,4 @@
-export const DIALOG_BRIDGE_HOST = 'mixdog-dialog-bridge.invalid';
+const DIALOG_BRIDGE_HOST = 'mixdog-dialog-bridge.invalid';
 export const DIALOG_BRIDGE_PATH = '/.well-known/mixdog-dialog-bridge';
 export const DIALOG_BRIDGE_PATTERN = `*://*${DIALOG_BRIDGE_PATH}*`;
 

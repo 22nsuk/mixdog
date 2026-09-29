@@ -17,7 +17,7 @@ import {
 } from './slash-commands';
 import { TURN_LOCKED_SLASH_COMMANDS, asRecord } from './text-format';
 
-export type SlashExecutorDeps = {
+type SlashExecutorDeps = {
   draftMode?: boolean;
   sessionId?: string;
   turnBusy: boolean;

@@ -2,21 +2,17 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 import { useDockVisibilityMenu } from './dock-icon-visibility.tsx';
 import { WorkbenchSideIconBar } from './workbench-side-view-layout.tsx';
 import { PaneDockToggles } from './pane-dock-toggles.tsx';
 
 test('dock check menus hide and restore icons, share panes, and survive remounts without changing selections', async () => {
-  const dom = new JSDOM("<!doctype html><div id='root'></div>", { url: 'http://localhost/' });
-  const globals = ['window', 'document', 'navigator', 'Element', 'HTMLElement', 'Node', 'IS_REACT_ACT_ENVIRONMENT'];
-  const previous = new Map(globals.map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
-  for (const key of globals)
-    Object.defineProperty(globalThis, key, {
-      configurable: true,
-      writable: true,
-      value: key === 'IS_REACT_ACT_ENVIRONMENT' ? true : dom.window[key],
-    });
+  const { restore } = installTestDom(null, {
+    html: "<!doctype html><div id='root'></div>",
+    jsdom: { url: 'http://localhost/' },
+    expose: ['navigator', 'Element', 'HTMLElement', 'Node'],
+  });
   let root = createRoot(document.getElementById('root'));
   const actions = [];
   const Icon = () => React.createElement('span');
@@ -150,10 +146,6 @@ test('dock check menus hide and restore icons, share panes, and survive remounts
     assert.equal(document.querySelectorAll('.pane-dock-toggle').length, 4);
   } finally {
     await act(async () => root.unmount());
-    dom.window.close();
-    for (const [key, descriptor] of previous) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
+    restore();
   }
 });

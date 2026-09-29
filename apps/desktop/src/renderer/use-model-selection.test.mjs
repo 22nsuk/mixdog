@@ -2,14 +2,14 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import React, { act, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 import { useModelSelection } from './use-model-selection.ts';
 
 test('a canonical default response releases the preview and accepts later tuning', async () => {
-  const dom = new JSDOM('<!doctype html><body><main></main></body>');
-  globalThis.window = dom.window;
-  globalThis.document = dom.window.document;
-  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const { dom } = installTestDom(null, {
+    html: '<!doctype html><body><main></main></body>',
+    jsdom: { url: 'about:blank' },
+  });
   const root = createRoot(document.querySelector('main'));
   let paint;
   let acknowledge;

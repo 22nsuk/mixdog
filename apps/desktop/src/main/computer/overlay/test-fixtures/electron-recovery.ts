@@ -4,15 +4,10 @@ import { join } from 'node:path';
 import { createComputerUseOverlay } from '../index';
 import { computerUseCoordinator as coordinator } from '../../session/coordinator';
 import { nativeOverlayClick } from './native-click';
+import { emit } from './process-output';
 
 app.disableHardwareAcceleration();
 app.setPath('userData', join(process.env.OVERLAY_TEST_DIRECTORY!, 'profile'));
-/** Electron's stdio pipes are asynchronous: text written without waiting for its flush is
- * lost when the process exits, which reads in CI as a successful run with no result. */
-const emit = (stream: NodeJS.WriteStream, text: string) =>
-  new Promise<void>((resolve) => {
-    stream.write(text, () => resolve());
-  });
 // Retiring the frozen renderer leaves this fixture with zero windows until the replacement
 // exists. Without this listener Electron's default quit-on-last-window-close runs the whole
 // quit sequence right there, the process exits 0 before any result or diagnostic is written,

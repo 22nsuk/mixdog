@@ -11,6 +11,17 @@ import type { PaneLeaf } from './pane-layout';
 import { asRecord, navigationKey } from './text-format';
 import type { ResolvedDraftPrefs } from './use-draft-pane-preferences';
 
+const MAX_CACHED_SUBMIT_ENTRIES = 32;
+
+/** Drops insertion-oldest entries beyond the cap; `keep` is never evicted. */
+function evictOldest(map: Map<string, unknown>, keep?: string): void {
+  while (map.size > MAX_CACHED_SUBMIT_ENTRIES) {
+    const oldest = map.keys().next().value;
+    if (oldest === undefined || oldest === keep) break;
+    map.delete(oldest);
+  }
+}
+
 export function useAppSubmitRouting({
   selectionRef,
   focusedLeafIdRef,
@@ -62,11 +73,7 @@ export function useAppSubmitRouting({
         settle = resolve;
       })
     );
-    while (draftSubmissions.current.size > 32) {
-      const oldest = draftSubmissions.current.keys().next().value;
-      if (oldest === undefined || oldest === draftKey) break;
-      draftSubmissions.current.delete(oldest);
-    }
+    evictOldest(draftSubmissions.current, draftKey);
     return (sessionId: string) => {
       if (!sessionId) draftSubmissions.current.delete(draftKey);
       settle(sessionId);
@@ -225,11 +232,7 @@ export function useAppSubmitRouting({
     if (!fn) {
       fn = (content, options) => submitToPaneSession(sessionId, content, options);
       paneSessionSubmitCache.current.set(sessionId, fn);
-      while (paneSessionSubmitCache.current.size > 32) {
-        const oldest = paneSessionSubmitCache.current.keys().next().value;
-        if (oldest === undefined) break;
-        paneSessionSubmitCache.current.delete(oldest);
-      }
+      evictOldest(paneSessionSubmitCache.current);
     }
     return fn;
   };
@@ -250,11 +253,7 @@ export function useAppSubmitRouting({
           options
         );
       paneDraftSubmitCache.current.set(key, fn);
-      while (paneDraftSubmitCache.current.size > 32) {
-        const oldest = paneDraftSubmitCache.current.keys().next().value;
-        if (oldest === undefined) break;
-        paneDraftSubmitCache.current.delete(oldest);
-      }
+      evictOldest(paneDraftSubmitCache.current);
     }
     return fn;
   };

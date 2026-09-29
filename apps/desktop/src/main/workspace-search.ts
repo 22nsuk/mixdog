@@ -10,7 +10,7 @@ import type {
   DesktopWorkspaceTextSearchResult,
 } from '../shared/contract';
 import { decodeProjectText, projectEntryPathIn, writeProjectTextFilesIn } from './project-files';
-import { ignoreRules, ignoredPath, type IgnoreRule } from './project-file-search';
+import { globExpression, ignoreRules, ignoredPath, type IgnoreRule } from './project-file-search';
 
 const SKIPPED_DIRECTORIES = new Set([
   '.git',
@@ -42,18 +42,9 @@ function normalizePath(value: string): string {
   return value.replace(/\\/g, '/').replace(/^\.\/+/, '');
 }
 
-function globExpression(pattern: string): RegExp {
+function globMatcher(pattern: string): RegExp {
   const normalized = normalizePath(pattern.trim());
-  let source = '';
-  for (let index = 0; index < normalized.length; index += 1) {
-    const character = normalized[index];
-    if (character === '*' && normalized[index + 1] === '*') {
-      source += '.*';
-      index += 1;
-    } else if (character === '*') source += '[^/]*';
-    else if (character === '?') source += '[^/]';
-    else source += character.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  }
+  const source = globExpression(normalized);
   return new RegExp(normalized.includes('/') ? `^${source}$` : `(?:^|/)${source}$`, 'i');
 }
 
@@ -62,7 +53,7 @@ function globList(value = ''): RegExp[] {
     .split(',')
     .map((entry) => entry.trim())
     .filter(Boolean)
-    .map(globExpression);
+    .map(globMatcher);
 }
 
 function acceptsPath(path: string, include: RegExp[], exclude: RegExp[]): boolean {

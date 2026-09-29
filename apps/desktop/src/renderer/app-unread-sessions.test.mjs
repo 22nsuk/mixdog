@@ -3,7 +3,7 @@ import { test } from 'node:test';
 
 import React, { act, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 
 import {
   sessionSurfaceEngaged,
@@ -38,9 +38,7 @@ test('visible activity publishes only when the shared cursor needs advancing', (
 });
 
 function installDom({ visibility = 'visible', focused = true } = {}) {
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
-    url: 'http://localhost/',
-  });
+  const { dom, restore } = installTestDom(null, { jsdom: { url: 'http://localhost/' }, expose: ['navigator'] });
   const state = { visibility, focused };
   Object.defineProperty(dom.window.document, 'visibilityState', {
     configurable: true,
@@ -50,26 +48,10 @@ function installDom({ visibility = 'visible', focused = true } = {}) {
     configurable: true,
     value: () => state.focused,
   });
-  const previous = new Map(
-    ['window', 'document', 'navigator', 'IS_REACT_ACT_ENVIRONMENT'].map((key) => [
-      key,
-      Object.getOwnPropertyDescriptor(globalThis, key),
-    ])
-  );
-  Object.defineProperty(globalThis, 'window', { configurable: true, value: dom.window });
-  Object.defineProperty(globalThis, 'document', { configurable: true, value: dom.window.document });
-  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: dom.window.navigator });
-  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   return {
     state,
     root: createRoot(dom.window.document.getElementById('root')),
-    close() {
-      dom.window.close();
-      for (const [key, descriptor] of previous) {
-        if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-        else delete globalThis[key];
-      }
-    },
+    close: restore,
   };
 }
 

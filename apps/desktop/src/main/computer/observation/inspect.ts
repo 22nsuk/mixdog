@@ -1,8 +1,7 @@
 /**
  * The read-only questions Computer Use can answer: whether the backend, OCR and
- * accessibility are ready, and whether a bounded condition has become true. A
- * wait reads predicate state only, so it never invalidates the refs the caller
- * is holding and never returns pixels.
+ * accessibility are ready (diagnose), and whether a bounded condition has become
+ * true (verify, in verify-window.ts).
  */
 import { elapsedMs } from '../shared/common';
 import type { ComputerCommand, ComputerCommandResult } from '../shared/types';

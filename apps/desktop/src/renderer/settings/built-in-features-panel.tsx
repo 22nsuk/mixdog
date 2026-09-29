@@ -64,6 +64,47 @@ function voiceProgress(snapshot: unknown): { text: string; percent: number | nul
   };
 }
 
+/** Desktop settings and the Git / LibreOffice dependency status the cards depend on. */
+function useDesktopFeatureStatus(api: PanelContext['api']) {
+  const [settings, setSettings] = useState<DesktopSettings | null>(
+    () => desktopSettingsCache.get(api as object) ?? null
+  );
+  const [gitStatus, setGitStatus] = useState<DesktopGitCliStatus | null>(null);
+  const [officeDependency, setOfficeDependency] = useState<DesktopLibreOfficeStatus | null>(null);
+  useEffect(() => {
+    let live = true;
+    void api
+      .readSettings?.()
+      .then((next) => {
+        desktopSettingsCache.set(api as object, next);
+        if (live) setSettings(next);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [api]);
+  useEffect(() => {
+    let live = true;
+    void api
+      .gitCliStatus?.()
+      .then((next) => {
+        if (live) setGitStatus(next);
+      })
+      .catch(() => {});
+    void api
+      .libreOfficeStatus?.()
+      .then((next) => {
+        if (live) setOfficeDependency(next);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [api]);
+  return { settings, setSettings, gitStatus, setGitStatus, officeDependency, setOfficeDependency };
+}
+
 type FeatureState = {
   feature: BuiltInFeatureDefinition;
   /** Built-in skills that install and toggle with this feature. */
@@ -231,11 +272,8 @@ export function BuiltInFeaturesPanel({
   initialFeature?: BuiltInFeatureId | null;
 }) {
   const localActions = useLocalProviderActions(run, pending);
-  const [settings, setSettings] = useState<DesktopSettings | null>(
-    () => desktopSettingsCache.get(api as object) ?? null
-  );
-  const [gitStatus, setGitStatus] = useState<DesktopGitCliStatus | null>(null);
-  const [officeDependency, setOfficeDependency] = useState<DesktopLibreOfficeStatus | null>(null);
+  const { settings, setSettings, gitStatus, setGitStatus, officeDependency, setOfficeDependency } =
+    useDesktopFeatureStatus(api);
   const [action, setAction] = useState<FeatureAction | null>(null);
   // Optimistic toggle state: the switch flips immediately and rolls back if
   // the round trip fails, instead of sitting still until the daemon answers.
@@ -265,44 +303,15 @@ export function BuiltInFeaturesPanel({
       const owner = record(record(skill).owner);
       if (owner.kind !== 'builtin' || typeof owner.feature !== 'string') continue;
       const feature = owner.feature as BuiltInFeatureId;
-      (byFeature[feature] ??= []).push(record(skill));
+      const list = byFeature[feature] ?? [];
+      list.push(record(skill));
+      byFeature[feature] = list;
     }
     return byFeature;
   }, [data.skills]);
   useEffect(() => {
     if (voice.installed === true) setVoiceInstalled(true);
   }, [voice.installed]);
-  useEffect(() => {
-    let live = true;
-    void api
-      .readSettings?.()
-      .then((next) => {
-        desktopSettingsCache.set(api as object, next);
-        if (live) setSettings(next);
-      })
-      .catch(() => {});
-    return () => {
-      live = false;
-    };
-  }, [api]);
-  useEffect(() => {
-    let live = true;
-    void api
-      .gitCliStatus?.()
-      .then((next) => {
-        if (live) setGitStatus(next);
-      })
-      .catch(() => {});
-    void api
-      .libreOfficeStatus?.()
-      .then((next) => {
-        if (live) setOfficeDependency(next);
-      })
-      .catch(() => {});
-    return () => {
-      live = false;
-    };
-  }, [api]);
 
   const installed = useMemo<Record<BuiltInFeatureId, boolean>>(
     () => ({

@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 import i18next from 'i18next';
 import { UsageStatsBody, resolveUsageTrendGrouping } from './UsageStatsSurface.tsx';
 import { CommandSurface } from './CommandSurface.tsx';
@@ -15,12 +15,12 @@ import { resolveUsageStatsPeriod } from '../../../../src/standalone/usage-stats-
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 function harness(context, Component = UsageStatsBody) {
-  const dom = new JSDOM('<!doctype html><html><body><main></main></body></html>', { url: 'https://mixdog.test/' });
-  globalThis.window = dom.window;
-  globalThis.document = dom.window.document;
-  globalThis.HTMLElement = dom.window.HTMLElement;
-  globalThis.Node = dom.window.Node;
-  globalThis.history = dom.window.history;
+  const { dom } = installTestDom(null, {
+    html: '<!doctype html><html><body><main></main></body></html>',
+    jsdom: { url: 'https://mixdog.test/' },
+    expose: ['HTMLElement', 'Node', 'history'],
+    actEnvironment: false,
+  });
   const root = createRoot(document.querySelector('main'));
   context.after(async () => {
     await act(async () => root.unmount());

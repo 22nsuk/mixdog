@@ -13,7 +13,7 @@ import { type BrowserGuestStateStore, pushBounded } from './guest-state';
 import { type BrowserSessionRegistry, DEFAULT_BROWSER_SESSION_ID } from './session-registry';
 import { createBrowserPageOwner } from './page-owner';
 import { assertBackgroundTabCapacity, backgroundPageIdle, normalizeBackgroundTabName } from './tab-policy';
-import type { BackgroundPage } from './tabs';
+import type { BackgroundPage } from './tabs-contract';
 import { type BrowserUrlPolicy, normalizePageUrl, normalizeRestoredPageUrl } from './url-policy';
 
 export interface BrowserGuestLifecycleHost {
@@ -47,6 +47,9 @@ export function browserSharedTextureRendering(): boolean {
  *  fixed: hidden, unfocusable, offscreen-composited (unless natively presented)
  *  and never throttled. */
 function offscreenWindowOptions(nativeView = false): Electron.BrowserWindowConstructorOptions {
+  let offscreen: boolean | { useSharedTexture: true } = true;
+  if (nativeView) offscreen = false;
+  else if (browserSharedTextureRendering()) offscreen = { useSharedTexture: true };
   return {
     show: false,
     focusable: false,
@@ -71,7 +74,7 @@ function offscreenWindowOptions(nativeView = false): Electron.BrowserWindowConst
       nodeIntegration: false,
       // These page owners are never shown. Offscreen rendering gives Chromium
       // a live compositor without activating a native window.
-      offscreen: nativeView ? false : browserSharedTextureRendering() ? { useSharedTexture: true } : true,
+      offscreen,
       // Keep rendering/timers running while the window is hidden.
       backgroundThrottling: false,
     },

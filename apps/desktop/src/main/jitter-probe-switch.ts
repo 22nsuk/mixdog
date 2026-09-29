@@ -12,14 +12,13 @@ import {
   type PaintProbeBounds,
   type PaintFrameSample,
 } from './jitter-probe-metrics';
-import { clickProbeSession, COLLECT_SWITCH_FRAMES_SCRIPT, waitForProbeSessionRow } from './jitter-probe-session';
+import { clickProbeSession, COLLECT_SWITCH_FRAMES_SCRIPT, sleep, waitForProbeSessionRow } from './jitter-probe-session';
 
 interface SwitchProbeDeps {
   window: BrowserWindow;
   outPath: string;
 }
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export async function runSwitchProbe({ window, outPath }: SwitchProbeDeps): Promise<{ reversals: number }> {
   const clickSession = (id: string, waitMs: number) => clickProbeSession(window, id, waitMs);

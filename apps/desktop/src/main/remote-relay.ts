@@ -26,6 +26,7 @@ import { createRemoteMethods, type RemoteMethodDependencies } from './remote-met
 export { remoteTranscriptSnapshot } from './remote-transcript';
 import { createPushSubscriptionStore } from './push-subscription-store';
 import { loadOrCreateRelayE2EEIdentity } from './remote-e2ee';
+import type { RemoteClientClaim } from './remote-relay-claim';
 import { createRelayClientLifecycle } from './remote-relay-client-lifecycle';
 import { createRelayCatalogs } from './remote-relay-catalog';
 import { createRelayClientCallDispatch } from './remote-relay-client-calls';
@@ -47,6 +48,7 @@ import { createRelaySessionWiring } from './remote-relay-session-wiring';
 import { decodeRelayBinaryFrame, encodeRelayBinaryFrame } from '../../../relay/lib/relay-binary-frame.mjs';
 
 export { resolveRelayUrl, rotateRemoteDevice } from './remote-relay-device';
+export type { RemoteClientClaim } from './remote-relay-claim';
 export { clientReadsLane } from './remote-relay-clients';
 export { encodeRelayClientSessionState } from './remote-relay-session-state';
 
@@ -71,17 +73,6 @@ interface RemoteRelayOptions extends RemoteMethodDependencies {
   /** Ask the user to approve one credential-less container. Resolving false
    *  (or throwing) denies it; the relay never decides this. */
   onClientClaim?: (claim: RemoteClientClaim) => Promise<boolean>;
-}
-
-/** One browser container asking this desktop for access. It holds no
- *  credential: the answer here is the credential. */
-export interface RemoteClientClaim {
-  claimId: string;
-  clientId: string;
-  name: string;
-  platform: string;
-  browser: string;
-  expiresAt: number;
 }
 
 export interface RemoteRelayHandle {
@@ -597,11 +588,19 @@ export async function startRemoteRelay(options: RemoteRelayOptions): Promise<Rem
     });
     ws.on('message', (raw, isBinary) => {
       heartbeat.markAlive();
-      void (async () => {
+      try {
         const envelope = readRelayEnvelope(raw, isBinary);
         if (!envelope) return;
         dispatchRelayEnvelope(envelope);
-      })();
+      } catch {
+        // A frame this leg cannot process ends the leg; the close handler
+        // redials with a clean state.
+        try {
+          ws.terminate();
+        } catch {
+          /* already gone */
+        }
+      }
     });
     ws.on('error', () => {
       /* connection errors surface as close */

@@ -167,13 +167,23 @@ export function createBrowserPerformanceCommands(host: BrowserPerformanceCommand
     if (operation === 'stop') {
       const active = tracesByGuest.get(guest);
       if (!active) return { text: 'No performance trace is running for this page.' };
+      // Aborting this releases the timeout timer once the trace completes first.
+      const timeout = new AbortController();
       try {
         await cdp.call(guest, 'Tracing.end', {}, signal);
+        const timeoutSignal = signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal;
         await Promise.race([
           active.complete,
-          pause(TRACE_COMPLETION_TIMEOUT_MS, signal).then(() => {
-            throw new Error('performance trace completion timed out');
-          }),
+          pause(TRACE_COMPLETION_TIMEOUT_MS, timeoutSignal).then(
+            () => {
+              throw new Error('performance trace completion timed out');
+            },
+            (error) => {
+              // Our own release is not a failure; a caller cancellation is.
+              if (!timeout.signal.aborted) throw error;
+              return new Promise<never>(() => {});
+            }
+          ),
         ]);
         let saved = '';
         if (active.raw) {
@@ -182,6 +192,7 @@ export function createBrowserPerformanceCommands(host: BrowserPerformanceCommand
         }
         return { text: `Performance trace stopped.\n${active.trace.summary()}${saved}` };
       } finally {
+        timeout.abort();
         tracesByGuest.delete(guest);
       }
     }

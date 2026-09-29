@@ -324,7 +324,7 @@ function currentMonacoColors(light: boolean): Record<string, string> {
 }
 
 /** Re-derive the active Monaco theme from the CURRENT --mx-* tokens. */
-export function syncMonacoThemes(): void {
+function syncMonacoThemes(): void {
   if (typeof document === 'undefined') return;
   const light = document.documentElement.dataset.mixdogTheme === 'light';
   const name = light ? 'mixdog-light' : 'mixdog-dark';

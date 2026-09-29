@@ -2,24 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 import { useSideViewSelection, useSideViewReordering } from './app-shell-side-views.ts';
 
 test('useSideViewSelection routes right-side views to paneSideDocks.select and left-side views to sidebarOpen', async () => {
-  const dom = new JSDOM('<!doctype html><div id="root"></div>');
-  const prior = new Map(
-    ['window', 'document', 'IS_REACT_ACT_ENVIRONMENT'].map((key) => [
-      key,
-      Object.getOwnPropertyDescriptor(globalThis, key),
-    ])
-  );
-
-  for (const [key, value] of Object.entries({
-    window: dom.window,
-    document: dom.window.document,
-    IS_REACT_ACT_ENVIRONMENT: true,
-  }))
-    Object.defineProperty(globalThis, key, { configurable: true, value });
+  const { dom, restore } = installTestDom(null, {
+    html: '<!doctype html><div id="root"></div>',
+    jsdom: { url: 'about:blank' },
+  });
 
   let selectedPaneLeafId = null;
   let selectedDockViewId = null;
@@ -102,29 +92,15 @@ test('useSideViewSelection routes right-side views to paneSideDocks.select and l
     await act(async () => {
       root.unmount();
     });
-    dom.window.close();
-    for (const [key, descriptor] of prior) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
+    restore();
   }
 });
 
 test('useSideViewReordering enforces right-side immovable invariant', async () => {
-  const dom = new JSDOM('<!doctype html><div id="root"></div>');
-  const prior = new Map(
-    ['window', 'document', 'IS_REACT_ACT_ENVIRONMENT'].map((key) => [
-      key,
-      Object.getOwnPropertyDescriptor(globalThis, key),
-    ])
-  );
-
-  for (const [key, value] of Object.entries({
-    window: dom.window,
-    document: dom.window.document,
-    IS_REACT_ACT_ENVIRONMENT: true,
-  }))
-    Object.defineProperty(globalThis, key, { configurable: true, value });
+  const { dom, restore } = installTestDom(null, {
+    html: '<!doctype html><div id="root"></div>',
+    jsdom: { url: 'about:blank' },
+  });
 
   let moveGroupCalled = false;
   let moveViewCalled = false;
@@ -176,10 +152,6 @@ test('useSideViewReordering enforces right-side immovable invariant', async () =
     await act(async () => {
       root.unmount();
     });
-    dom.window.close();
-    for (const [key, descriptor] of prior) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
+    restore();
   }
 });

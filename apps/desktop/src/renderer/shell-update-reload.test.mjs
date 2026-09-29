@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 
 import { SHELL_RELOAD_IDLE_MS, shellReloadDelay, useShellUpdateReload } from './use-shell-update-reload';
 import { installShellUpdateState, SHELL_UPDATE_MESSAGE } from './shell-update-state';
@@ -41,21 +41,11 @@ test('an app in use re-decides after the remaining pause', () => {
 });
 
 test('a release received before React mounts is retained and waits for work to finish', async () => {
-  const dom = new JSDOM('<!doctype html><body><main></main></body>', { url: 'https://relay.test/' });
-  const saved = new Map();
-  const globals = {
-    window: dom.window,
-    document: dom.window.document,
-    navigator: dom.window.navigator,
-    HTMLElement: dom.window.HTMLElement,
-    HTMLInputElement: dom.window.HTMLInputElement,
-    HTMLTextAreaElement: dom.window.HTMLTextAreaElement,
-    IS_REACT_ACT_ENVIRONMENT: true,
-  };
-  for (const [key, value] of Object.entries(globals)) {
-    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
-  }
+  const { dom, restore } = installTestDom(null, {
+    html: '<!doctype html><body><main></main></body>',
+    jsdom: { url: 'https://relay.test/' },
+    expose: ['navigator', 'HTMLElement', 'HTMLInputElement', 'HTMLTextAreaElement'],
+  });
   const worker = new dom.window.EventTarget();
   let queries = 0;
   worker.controller = {
@@ -89,10 +79,6 @@ test('a release received before React mounts is retained and waits for work to f
     assert.equal(reloads, 1);
   } finally {
     await act(async () => root.unmount());
-    dom.window.close();
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
+    restore();
   }
 });

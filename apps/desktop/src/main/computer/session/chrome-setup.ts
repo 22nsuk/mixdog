@@ -11,6 +11,7 @@ import {
   chromeSetupControl,
   CHROME_REMOTE_DEBUGGING_URL,
 } from '../../browser/chrome-uia';
+import { CHROME_SETUP_SESSION_ID, sleep } from '../shared/common';
 import type { ComputerWindowRecord } from '../shared/window-transition';
 import type { ComputerCommand, ComputerCommandResult, ComputerElementRecord } from '../shared/types';
 
@@ -24,10 +25,6 @@ export interface ChromeRemoteDebuggingSetup extends ChromeRemoteDebuggingTarget 
   enabledByMixdog: boolean;
 }
 
-/** The session this flow runs under, so the host can exempt its own setup work
- *  from the rules that apply to agent-driven Computer Use. */
-export const CHROME_SETUP_SESSION_ID = '__mixdog_browser_chrome_setup__';
-
 export interface ChromeRemoteDebuggingHost {
   executeSerialized(command: ComputerCommand): Promise<ComputerCommandResult>;
   /** Keep an internal command from returning an automatic fresh capture. */
@@ -35,6 +32,15 @@ export interface ChromeRemoteDebuggingHost {
   readComputerWindows(command: ComputerCommand, includeApp?: boolean): Promise<ComputerWindowRecord[] | null>;
   normalizeElementRecords(value: unknown): ComputerElementRecord[];
 }
+
+/** A step that returns the accessibility tree of the window it just changed. */
+const AX_CAPTURE_AFTER = {
+  include_noninteractive: true,
+  include_structure: true,
+  capture_after: true,
+  capture_after_mode: 'ax',
+  capture_after_max_elements: 1_000,
+} as const;
 
 /** Every step reads the same result shape: a JSON object on the command's text. */
 function parseComputerPayload(result: ComputerCommandResult): Record<string, unknown> {
@@ -164,11 +170,7 @@ async function openChromeSetupPage(
       window_id: target.windowId,
       keys: '^t',
       delivery: 'foreground',
-      include_noninteractive: true,
-      include_structure: true,
-      capture_after: true,
-      capture_after_mode: 'ax',
-      capture_after_max_elements: 1_000,
+      ...AX_CAPTURE_AFTER,
       session_id: CHROME_SETUP_SESSION_ID,
     })
   );
@@ -180,11 +182,7 @@ async function openChromeSetupPage(
       ref: openedAddress.ref,
       text: CHROME_REMOTE_DEBUGGING_URL,
       delivery: 'background',
-      include_noninteractive: true,
-      include_structure: true,
-      capture_after: true,
-      capture_after_mode: 'ax',
-      capture_after_max_elements: 1_000,
+      ...AX_CAPTURE_AFTER,
       session_id: CHROME_SETUP_SESSION_ID,
     })
   );
@@ -199,12 +197,8 @@ async function openChromeSetupPage(
       ref: exactAddress.ref,
       keys: '{ENTER}',
       delivery: 'foreground',
-      include_noninteractive: true,
-      include_structure: true,
-      capture_after: true,
+      ...AX_CAPTURE_AFTER,
       capture_delay_ms: 1_200,
-      capture_after_mode: 'ax',
-      capture_after_max_elements: 1_000,
       session_id: CHROME_SETUP_SESSION_ID,
     })
   );
@@ -251,11 +245,7 @@ async function setChromeRemoteDebugging(
       window_id: target.windowId,
       ref: setupPage.control.ref,
       delivery: 'background',
-      include_noninteractive: true,
-      include_structure: true,
-      capture_after: true,
-      capture_after_mode: 'ax',
-      capture_after_max_elements: 1_000,
+      ...AX_CAPTURE_AFTER,
       session_id: CHROME_SETUP_SESSION_ID,
     })
   );
@@ -339,7 +329,7 @@ async function awaitConsentPromptDismissal(
     if (!remaining?.some((window) => window.id === promptWindowId && window.pid === setup.pid)) {
       return true;
     }
-    await new Promise((resolve) => setTimeout(resolve, 80));
+    await sleep(80);
   }
   throw new Error('Chrome remote-debugging consent remained after its exact allow action.');
 }
@@ -354,7 +344,7 @@ async function acceptChromeRemoteDebuggingConsent(
     await proveChromeRemoteDebuggingTarget(host, setup);
     const prompt = await chromeOwnedConsentPrompt(host, setup);
     if (!prompt) {
-      await new Promise((resolve) => setTimeout(resolve, 80));
+      await sleep(80);
       continue;
     }
     const capture = await captureChromeSetup(host, setup, prompt.id);
@@ -371,7 +361,7 @@ async function acceptChromeRemoteDebuggingConsent(
       await host.executeSerialized(invokeCommand);
       return await awaitConsentPromptDismissal(host, setup, prompt.id);
     }
-    await new Promise((resolve) => setTimeout(resolve, 80));
+    await sleep(80);
   }
   return false;
 }

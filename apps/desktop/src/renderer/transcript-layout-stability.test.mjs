@@ -1,8 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import React, { act } from 'react';
-import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 import { TranscriptAssistantRow } from './TranscriptAssistantRow';
 import { TranscriptRow } from './transcript-row';
 import { ComposerDock } from './ComposerDock';
@@ -13,30 +12,14 @@ import { preloadMarkdownBody } from './markdown-body-loader';
 import { parseStreamingMarkdownAst } from './markdown-worker-client';
 
 function mount(t) {
-  const dom = new JSDOM('<!doctype html><div id="root"></div>', {
-    url: 'https://mixdog.test/',
-    pretendToBeVisual: true,
+  const { dom, root } = installTestDom(t, {
+    html: '<!doctype html><div id="root"></div>',
+    jsdom: { pretendToBeVisual: true },
+    expose: ['HTMLElement', 'Element', 'Node', 'CustomEvent'],
+    rootId: 'root',
   });
-  const names = ['window', 'document', 'HTMLElement', 'Element', 'Node', 'CustomEvent', 'IS_REACT_ACT_ENVIRONMENT'];
-  const previous = new Map(names.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
-  const overrides = { window: dom.window, IS_REACT_ACT_ENVIRONMENT: true };
-  for (const name of names) {
-    Object.defineProperty(globalThis, name, {
-      configurable: true,
-      value: overrides[name] ?? dom.window[name],
-    });
-  }
   dom.window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
   dom.window.mixdogDesktop = {};
-  const root = createRoot(dom.window.document.getElementById('root'));
-  t.after(async () => {
-    await act(async () => root.unmount());
-    dom.window.close();
-    for (const [name, descriptor] of previous) {
-      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
-      else delete globalThis[name];
-    }
-  });
   return { root, document: dom.window.document, window: dom.window };
 }
 
@@ -95,11 +78,7 @@ test('the review slot takes no space until the review bar actually renders, incl
       children: React.createElement('textarea'),
     };
     const render = (busy, reviewItems) =>
-      act(async () =>
-        root.render(
-          React.createElement(ComposerDock, { ...props, reviewItems, reviewBusy: busy })
-        )
-      );
+      act(async () => root.render(React.createElement(ComposerDock, { ...props, reviewItems, reviewBusy: busy })));
     const slot = () => document.querySelector('.turn-review-slot');
     await render(true, items);
     assert.equal(pending.length, 1);
@@ -137,7 +116,14 @@ test('a transcript tail without its prompt row keeps the turn review of that tur
   window.mixdogDesktop.invokeCapability = () => new Promise((resolve) => pending.push(resolve));
   const sessionId = 'review-truncated';
   // An earlier read under the shared `none` scope left an unrelated review.
-  rememberAgentReviews(`${sessionId}:none`, [], '', [{ path: 'stale.ts', additions: 900, deletions: 40 }], 'worktree', 'old');
+  rememberAgentReviews(
+    `${sessionId}:none`,
+    [],
+    '',
+    [{ path: 'stale.ts', additions: 900, deletions: 40 }],
+    'worktree',
+    'old'
+  );
   const edit = (id) => ({ kind: 'tool', id, name: 'apply_patch', args: {}, result: `Updated ${id}` });
   const render = (reviewItems) =>
     act(async () =>

@@ -168,11 +168,7 @@ export function UsageTrend({
         "Peak 0" read as a chart that failed to draw. */}
       {loading && <div className="stats-trend-bars stats-trend-skeleton usage-skeleton" aria-hidden="true" />}
       {!loading && peak > 0 && (
-        <div
-          className="stats-trend-bars"
-          {...detail.hostProps}
-          data-single={series.length === 1 ? 'true' : undefined}
-        >
+        <div className="stats-trend-bars" {...detail.hostProps} data-single={series.length === 1 ? 'true' : undefined}>
           {series.map((entry) => (
             <TrendBar
               key={entry.key}

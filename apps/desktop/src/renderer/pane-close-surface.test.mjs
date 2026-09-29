@@ -1,29 +1,18 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import React, { act } from 'react';
-import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 
 const script = { kind: 'file', project: '/project', rel: 'script.ts' };
 const otherScript = { kind: 'file', project: '/project', rel: 'other.ts' };
 const draft = { kind: 'new', draftId: 'draft-1' };
 
 async function mountPaneWorkspace(t) {
-  const dom = new JSDOM('<!doctype html><html><body><main id="root"></main></body></html>', {
-    url: 'https://mixdog.test/',
+  const { dom, root } = installTestDom(t, {
+    html: '<!doctype html><html><body><main id="root"></main></body></html>',
+    expose: ['navigator', 'Element', 'HTMLElement'],
+    rootId: 'root',
   });
-  const globals = {
-    window: dom.window,
-    document: dom.window.document,
-    navigator: dom.window.navigator,
-    Element: dom.window.Element,
-    HTMLElement: dom.window.HTMLElement,
-    IS_REACT_ACT_ENVIRONMENT: true,
-  };
-  const previous = new Map(Object.keys(globals).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
-  for (const [key, value] of Object.entries(globals)) {
-    Object.defineProperty(globalThis, key, { configurable: true, value });
-  }
   dom.window.matchMedia = () => ({
     matches: false,
     addEventListener() {},
@@ -38,15 +27,6 @@ async function mountPaneWorkspace(t) {
   };
   dom.window.cancelAnimationFrame = (id) => pendingFrames.delete(id);
   const host = document.getElementById('root');
-  const root = createRoot(host);
-  t.after(async () => {
-    await act(async () => root.unmount());
-    dom.window.close();
-    for (const [key, descriptor] of previous) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
-  });
 
   const [{ PaneWorkspace }, { createPaneLeaf }, { navigationKey }] = await Promise.all([
     import('./PaneWorkspace.tsx'),

@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 
-const dom = new JSDOM('<html><body></body></html>', { url: 'https://mixdog.test/' });
-globalThis.window = dom.window;
-globalThis.document = dom.window.document;
-globalThis.Node = dom.window.Node;
-Object.defineProperty(globalThis, 'navigator', { configurable: true, value: dom.window.navigator });
-globalThis.MutationObserver = dom.window.MutationObserver;
+const { dom } = installTestDom(null, {
+  html: '<html><body></body></html>',
+  jsdom: { url: 'https://mixdog.test/' },
+  expose: ['Node', 'navigator', 'MutationObserver'],
+  actEnvironment: false,
+});
 globalThis.ResizeObserver = class {
   observe() {}
   disconnect() {}

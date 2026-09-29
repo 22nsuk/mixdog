@@ -7,7 +7,7 @@ import { VOICE_CALLS } from './remote-call-queue';
 import { filterSessionIds } from './desktop-state';
 import type { createRemoteMethods } from './remote-methods';
 import { executeRemoteFrame } from './remote-methods';
-import type { RelayClientState } from './remote-relay-clients';
+import type { RelayClientState, SendEncryptedFrame } from './remote-relay-clients';
 import { registerAndSynchronizeRelayViews, type ParkedRelayViews } from './remote-view-sync';
 import { isStateResyncFrame } from './state-delta';
 
@@ -53,13 +53,7 @@ export interface RelayClientCallDeps {
   attached(clientId: string, state: RelayClientState): boolean;
   /** …and the leg is open: what a view recovery may still send into. */
   live(clientId: string, state: RelayClientState): boolean;
-  sendEncryptedFrame(
-    clientId: string,
-    payload: unknown,
-    droppable?: boolean,
-    onSent?: (bytes: number) => void,
-    requireDelivery?: boolean
-  ): Promise<void>;
+  sendEncryptedFrame: SendEncryptedFrame;
   /** A paint acknowledgement is consumed here and answers nothing. */
   acknowledgePaintProbe(payload: unknown): { sessionId: string; roundTripMs: number; receiveToPaintMs: number } | null;
   resyncClient(clientId: string, state: RelayClientState): void;

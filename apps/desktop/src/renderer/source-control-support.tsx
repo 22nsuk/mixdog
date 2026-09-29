@@ -13,8 +13,7 @@ export interface SourceControlDiffRequest {
 export const indexOnly = (file: DesktopGitFile): boolean =>
   !file.conflicted && file.index !== ' ' && file.index !== '?' && file.worktree === ' ';
 
-export const stagedInIndex = (file: DesktopGitFile): boolean =>
-  !file.conflicted && file.index !== ' ' && file.index !== '?';
+const stagedInIndex = (file: DesktopGitFile): boolean => !file.conflicted && file.index !== ' ' && file.index !== '?';
 
 export const partiallyStaged = (file: DesktopGitFile): boolean =>
   stagedInIndex(file) && !file.untracked && file.worktree !== ' ';

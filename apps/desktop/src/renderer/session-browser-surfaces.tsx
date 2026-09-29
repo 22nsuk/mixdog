@@ -8,6 +8,8 @@ import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, typ
 import { createRoot, type Root } from 'react-dom/client';
 
 import { BrowserPane } from './lazy-widgets';
+import { useSlotRemeasure } from './surface-slot-remeasure';
+import { preferredSurfaceSlot } from './surface-slots';
 import './session-browser-surfaces.css';
 
 type BrowserSurfaceSlot = {
@@ -52,11 +54,6 @@ interface SessionBrowserSurfaceController {
  *  the way the agent sees them. */
 const REMOTE_VIEWED_PARK = { width: 1280, height: 900 };
 
-function preferredSlot(surface: BrowserSurface): [HTMLDivElement, BrowserSurfaceSlot] | null {
-  const active = [...surface.slots].filter(([, slot]) => slot.active);
-  return active.find(([, slot]) => slot.foreground) ?? active[0] ?? null;
-}
-
 const renderDefaultBrowserSurface: SessionBrowserSurfaceRenderer = (props) => (
   <Suspense fallback={null}>
     <BrowserPane {...props} focusAddressOnActivate={false} />
@@ -75,7 +72,7 @@ export function useSessionBrowserSurfaces(
     if (host && surface.container.parentElement !== host) {
       host.appendChild(surface.container);
     }
-    const selected = preferredSlot(surface);
+    const selected = preferredSurfaceSlot(surface.slots);
     const expanded = surface.expanded && selected?.[1].foreground === true;
     const rect =
       (expanded ? selected?.[0].closest('.main-panel') : null)?.getBoundingClientRect() ??
@@ -254,38 +251,6 @@ export function SessionBrowserSlot({
     controller.registerSlot(sessionId, node, active, foreground);
     return () => controller.unregisterSlot(sessionId, node);
   }, [active, controller, foreground, sessionId]);
-  useLayoutEffect(() => {
-    const node = slotRef.current;
-    if (!node || !active) return undefined;
-    let frame = 0;
-    const refresh = () => controller.refresh(sessionId);
-    const schedule = () => {
-      if (typeof window.requestAnimationFrame !== 'function') {
-        refresh();
-        return;
-      }
-      if (frame) window.cancelAnimationFrame(frame);
-      frame = window.requestAnimationFrame(() => {
-        frame = 0;
-        refresh();
-      });
-    };
-    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(schedule) : null;
-    observer?.observe(node);
-    const workspace = node.closest('.main-panel');
-    if (workspace) observer?.observe(workspace);
-    window.addEventListener('resize', schedule);
-    // The phone dock SLIDES in: only the slot's position changes during the
-    // transform, so a mid-slide rect would pin the guest off-screen. Any
-    // finished transition re-measures.
-    window.addEventListener('transitionend', schedule, true);
-    schedule();
-    return () => {
-      if (frame) window.cancelAnimationFrame(frame);
-      observer?.disconnect();
-      window.removeEventListener('resize', schedule);
-      window.removeEventListener('transitionend', schedule, true);
-    };
-  }, [active, controller, sessionId]);
+  useSlotRemeasure(slotRef, active, controller, sessionId, true);
   return <div ref={slotRef} className="session-browser-slot" data-browser-session-id={sessionId} />;
 }

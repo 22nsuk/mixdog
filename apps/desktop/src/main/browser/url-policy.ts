@@ -63,7 +63,7 @@ function mappedIpv4(hostname: string): string | null {
   return [high >>> 8, high & 255, low >>> 8, low & 255].join('.');
 }
 
-export function isPrivateNetworkAddress(address: string): boolean {
+function isPrivateNetworkAddress(address: string): boolean {
   const host = normalizedHostname(address);
   const mapped = mappedIpv4(host);
   if (mapped) return isPrivateIpv4(mapped);

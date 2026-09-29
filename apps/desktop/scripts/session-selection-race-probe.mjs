@@ -8,6 +8,7 @@
 // position at press time versus which session the app ended up selecting. It
 // also samples the sidebar row order continuously, so a list re-sort that
 // moves rows under the cursor is attributed instead of guessed.
+import { CdpClient } from './cdp-client.mjs';
 import { optionValue } from './cli-args.mjs';
 
 const argumentsList = process.argv.slice(2);
@@ -20,34 +21,10 @@ const watchMs = Number(optionValue('watch', argumentsList) || 0);
 const targets = await fetch(`http://127.0.0.1:${port}/json/list`).then((response) => response.json());
 const target = targets.find((candidate) => candidate.type === 'page');
 if (!target?.webSocketDebuggerUrl) throw new Error('No debuggable page target found.');
-const socket = new WebSocket(target.webSocketDebuggerUrl);
-await new Promise((resolve, reject) => {
-  socket.addEventListener('open', resolve, { once: true });
-  socket.addEventListener('error', () => reject(new Error('CDP websocket failed.')), { once: true });
-});
-let nextId = 1;
-const pending = new Map();
-socket.addEventListener('message', (event) => {
-  const message = JSON.parse(String(event.data));
-  if (!message.id || !pending.has(message.id)) return;
-  const entry = pending.get(message.id);
-  pending.delete(message.id);
-  if (message.error) entry.reject(new Error(message.error.message));
-  else entry.resolve(message.result);
-});
-const request = (method, params = {}) =>
-  new Promise((resolve, reject) => {
-    const id = nextId++;
-    pending.set(id, { resolve, reject });
-    socket.send(JSON.stringify({ id, method, params }));
-  });
-const evaluate = async (expression) => {
-  const result = await request('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
-  if (result.exceptionDetails) {
-    throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text);
-  }
-  return result.result?.value;
-};
+const client = new CdpClient(target.webSocketDebuggerUrl);
+await client.connect();
+const request = (method, params) => client.request(method, params);
+const evaluate = (expression) => client.evaluate(expression);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const orderExpression = `(() => {
@@ -137,7 +114,7 @@ if (watchMs > 0) {
     console.log(`${sample.t}\tactive=${sample.activeId || '-'}\tn=${order.length}\t${moved || '(no move)'}`);
     previous = order;
   }
-  socket.close();
+  client.close();
   process.exit(0);
 }
 const firstY = preflight[0]?.y ?? 160;
@@ -192,5 +169,5 @@ console.log('--- sidebar order / active changes ---');
 for (const sample of watch) {
   console.log(`${sample.t}\tactive=${sample.activeId}\t${sample.key}`);
 }
-socket.close();
+client.close();
 process.exit(0);

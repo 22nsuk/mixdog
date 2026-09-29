@@ -124,7 +124,8 @@ async function stepSettleResult(
       if (signal?.aborted) throw signal.reason || error;
       // The old document has nothing left to render; the navigation the input
       // started is what the caller's load settle and reply observe next.
-      const replaced = !guest.isDestroyed() && DOCUMENT_REPLACED.test(error instanceof Error ? error.message : String(error));
+      const replaced =
+        !guest.isDestroyed() && DOCUMENT_REPLACED.test(error instanceof Error ? error.message : String(error));
       if (replaced) return { outcome: 'completed', text: '' };
       return {
         outcome: 'inconclusive',

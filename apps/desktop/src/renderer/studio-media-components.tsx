@@ -195,16 +195,16 @@ export function StudioDetailViewer({
     const dismiss = (event: PointerEvent) => {
       if (!moreNode.current?.contains(event.target as Node)) setMenuAsset('');
     };
-    const escape = (event: KeyboardEvent) => {
+    const onEscape = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       event.stopPropagation();
       setMenuAsset('');
     };
     window.addEventListener('pointerdown', dismiss, true);
-    window.addEventListener('keydown', escape, true);
+    window.addEventListener('keydown', onEscape, true);
     return () => {
       window.removeEventListener('pointerdown', dismiss, true);
-      window.removeEventListener('keydown', escape, true);
+      window.removeEventListener('keydown', onEscape, true);
     };
   }, [moreOpen]);
 

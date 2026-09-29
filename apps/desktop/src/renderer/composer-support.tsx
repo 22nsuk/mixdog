@@ -47,9 +47,9 @@ const MAX_PERSISTED_PROMPT_HISTORY_CHARS = 2_000_000;
 // One quiet line (user decision): no rotating tips, no syntax lecture.
 export const COMPOSER_PLACEHOLDERS = ['Ask anything…'] as const;
 
-export const PROJECT_CONTEXT_LOCAL = '__mixdog_local__';
+const PROJECT_CONTEXT_LOCAL = '__mixdog_local__';
 
-export function promptHistoryStorageKey(scope: string) {
+function promptHistoryStorageKey(scope: string) {
   return `${PROMPT_HISTORY_STORAGE_PREFIX}${encodeURIComponent(scope || 'new-task')}`;
 }
 

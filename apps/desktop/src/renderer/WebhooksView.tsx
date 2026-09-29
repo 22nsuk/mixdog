@@ -1,9 +1,8 @@
 import { Check, ChevronRight, Copy, Plus, Search, Webhook, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 
-import type { DesktopApi, DesktopCapability, DesktopModelOption, DesktopProjectSummary } from '../shared/contract';
+import type { DesktopApi, DesktopModelOption, DesktopProjectSummary } from '../shared/contract';
 import { t } from './i18n';
-import { ErrorNotice } from './ErrorNotice';
 import { InitialSurface } from './InitialSurface';
 import { filterConfiguredModels } from './model-catalog';
 import { ModelRouteEditor } from './ModelRouteEditor';
@@ -19,12 +18,20 @@ import {
   attachmentsFromRecords,
   type AutomationAttachment,
 } from './automation-attachments';
-import { ModelRouteLabel, modelDisplayName, normalizeModelOptions } from './provider-display';
-import { SidebarPanelAction } from './session-sidebar';
-import { SidebarDialogLayer } from './sidebar-dialog';
+import { ModelRouteLabel, normalizeModelOptions } from './provider-display';
+import {
+  automationFastSuffix,
+  automationProjectOptions,
+  automationRouteSummary,
+  automationWorkflowOptions,
+  splitModelRoute,
+} from './automation-editor-support';
+import { SidebarPanelAction } from './session-sidebar-sections';
+import { EditorDialogFooter, SidebarDialogLayer } from './sidebar-dialog';
 import { useSidebarPanelDismiss } from './sidebar-panel-surface';
 import { useSidebarReferences, type SidebarReferenceKey } from './sidebar-reference-cache';
 import { copyTextToClipboard } from './text-format';
+import { useSidebarCapabilityRunner } from './use-sidebar-capability-runner';
 import { CompactSwitch } from './settings/capability-controls';
 import type { RecordValue } from './desktop-types';
 
@@ -84,13 +91,7 @@ function webhookDraft(webhook: RecordValue | undefined): WebhookDraft {
 function webhookMeta(webhook: RecordValue) {
   const parser = String(webhook.parser || 'github');
   const delivery = webhook.channel ? `channel ${String(webhook.channel)}` : 'session';
-  const ref = parseModelRef(String(webhook.model || ''));
-  let route: { model: string; effort: string; fast: boolean } | null = null;
-  if (ref.route) {
-    const slash = ref.route.indexOf('/');
-    const model = slash > 0 ? modelDisplayName(ref.route.slice(slash + 1), ref.route.slice(0, slash)) : ref.route;
-    route = { model, effort: ref.effort || '', fast: ref.fast };
-  }
+  const route = automationRouteSummary(String(webhook.model || ''));
   return (
     <>
       {parser} · {delivery}
@@ -223,28 +224,21 @@ function WebhookEditor({
   const [fast, setFast] = useState(initialModel.fast);
   const [modelParameters, setModelParameters] = useState(initialModel.modelParameters);
   const [formError, setFormError] = useState('');
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  const slash = model.indexOf('/');
-  const modelProvider = slash > 0 ? model.slice(0, slash) : '';
-  const modelId = slash > 0 ? model.slice(slash + 1) : '';
+  const { provider: modelProvider, id: modelId } = splitModelRoute(model);
   const selected = models.find((option) => option.provider === modelProvider && option.model === modelId);
   const effortValue = selected?.effortOptions.some((entry) => entry.value === effort)
     ? effort
     : preferredModelEffort(selected) || '';
   const selectedModelParameters = preferredModelParameters(selected, modelParameters);
-  const projectOptions = [
-    { value: '__none__', label: 'No project' },
-    ...projects.map((project) => ({
-      value: project.path,
-      label: project.alias?.trim() || project.name?.trim() || project.path,
-    })),
-  ];
-  if (cwd && !projectOptions.some((option) => option.value === cwd)) {
-    projectOptions.push({ value: cwd, label: cwd });
-  }
+  const projectOptions = automationProjectOptions(projects, cwd);
   return (
     <SidebarDialogLayer onClose={onCancel}>
-      <section className="schedules-dialog webhooks-editor-dialog" role="dialog" aria-modal="true" aria-labelledby="webhooks-dialog-title">
+      <section
+        className="schedules-dialog webhooks-editor-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="webhooks-dialog-title"
+      >
         <header>
           <h2 id="webhooks-dialog-title">{editing ? t('Edit webhook') : t('Create webhook')}</h2>
           <div className="schedules-dialog-header-actions">
@@ -269,7 +263,7 @@ function WebhookEditor({
             const text = (name: string) => String(data.get(name) || '').trim();
             setFormError('');
             const effortSuffix = selected && effortValue ? `@${effortValue}` : '';
-            const fastSuffix = selected?.fastCapable && fast ? '+fast' : '';
+            const fastSuffix = automationFastSuffix(selected, effortValue, selectedModelParameters, fast);
             const parameterSuffix = Object.keys(selectedModelParameters).length
               ? `?${new URLSearchParams(selectedModelParameters).toString()}`
               : '';
@@ -454,31 +448,12 @@ function WebhookEditor({
               />
             )}
           </div>
-          <footer>
-            {(formError || error) && <ErrorNotice error={formError || error} />}
-            {editing && onDelete && (
-              <button
-                type="button"
-                className={`danger${confirmDelete ? ' confirming' : ''}`}
-                disabled={busy}
-                onClick={() => {
-                  if (!confirmDelete) {
-                    setConfirmDelete(true);
-                    return;
-                  }
-                  onDelete();
-                }}
-              >
-                {confirmDelete ? t('Confirm delete') : t('Delete')}
-              </button>
-            )}
-            <button type="button" className="secondary" disabled={busy} onClick={onCancel}>
-              {t('Cancel')}
-            </button>
-            <button type="submit" disabled={busy}>
-              {t('Save')}
-            </button>
-          </footer>
+          <EditorDialogFooter
+            error={formError || error}
+            busy={busy}
+            onCancel={onCancel}
+            onDelete={editing ? onDelete : undefined}
+          />
         </form>
       </section>
     </SidebarDialogLayer>
@@ -517,15 +492,12 @@ export function WebhooksPane({
     [values.quickProviderModels, values.providerSetup]
   );
   const projects = values.projects;
-  const workflows = useMemo(
-    () =>
-      values.workflows
-        .map((row) => ({ value: String(row.id || ''), label: String(row.name || row.id || '') }))
-        .filter((option) => option.value),
-    [values.workflows]
-  );
-  const [pending, setPending] = useState('');
-  const [error, setError] = useState('');
+  const workflows = useMemo(() => automationWorkflowOptions(values.workflows), [values.workflows]);
+  const { pending, error, setError, run } = useSidebarCapabilityRunner({
+    api,
+    completeMutation,
+    toastScope: 'webhook',
+  });
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<'all' | 'active' | 'paused'>('all');
   const [editor, setEditor] = useState<{ name: string; draft: WebhookDraft; secret: string } | null>(null);
@@ -535,29 +507,6 @@ export function WebhooksPane({
     setEditor(null);
   });
   const busy = Boolean(pending) || loading;
-  const run = async (
-    capability: DesktopCapability,
-    args: unknown[] = [],
-    errorMode: 'inline' | 'toast' = 'inline'
-  ): Promise<unknown> => {
-    if (!api?.invokeCapability || pending) return undefined;
-    setPending(capability);
-    setError('');
-    try {
-      const result = await api.invokeCapability({ capability, args });
-      // Host-scoped completion: a result that lands after a host swap must not
-      // resurrect the previous host's cache.
-      await completeMutation(capability);
-      return result?.value ?? true;
-    } catch (reason) {
-      const message = reason instanceof Error ? reason.message : String(reason);
-      if (errorMode === 'toast') showDesktopToast(message, 'error', { scope: `webhook:${capability}` });
-      else setError(message);
-      return undefined;
-    } finally {
-      setPending('');
-    }
-  };
 
   const webhooks = rows(setup.webhooks);
   const publicBase = String(record(setup.webhook).publicUrl || '');

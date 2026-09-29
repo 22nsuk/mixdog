@@ -9,7 +9,6 @@ import {
   dirname as pathDirname,
   relative as pathRelative,
   resolve as resolvePath,
-  sep as pathSep,
 } from 'node:path';
 
 import type { DesktopService } from './desktop-service-contract';
@@ -56,8 +55,8 @@ import {
   requiredWorkspaceTextWrites,
 } from './ipc-validation';
 import { absoluteLocalPath } from './local-files';
-import { commonInstructionsFile, legacyCommonInstructionsFile, projectInstructionsFile } from './instructions-file';
-import { MAX_SELECTED_FILE_GRANTS, selectedFileGrantKey } from './selected-file-grants';
+import { instructionsFilesFor } from './instructions-file';
+import { MAX_SELECTED_FILE_GRANTS, owningProject, sameGrantedPath, selectedFileGrantKey } from './selected-file-grants';
 import {
   requiredCommitHash,
   requiredGitIgnoreScope,
@@ -163,11 +162,8 @@ function createSelectedFileGrants(): SelectedFileGrants {
       const granted = fileGrants.get(selectedFileGrantKey(token));
       if (!granted) throw new Error('The selected-file permission is unavailable.');
       const requested = resolvePath(requiredString(projectPath, 'projectPath'), requiredString(relPath, 'relPath'));
-      const same =
-        process.platform === 'win32'
-          ? requested.toLocaleLowerCase() === granted.toLocaleLowerCase()
-          : requested === granted;
-      if (!same) throw new Error('The selected-file permission does not match this path.');
+      if (!sameGrantedPath(granted, requested))
+        throw new Error('The selected-file permission does not match this path.');
       return { root: pathDirname(granted), rel: pathBasename(granted), absolute: granted };
     },
     grantedIf: (accessToken: unknown): boolean => typeof accessToken === 'string' && accessToken.length > 0,
@@ -424,14 +420,7 @@ async function resolveLocalPathEntries(
       size: entry.size,
     };
     if (!row.dir) {
-      const normalizedFile = process.platform === 'win32' ? entry.absolutePath.toLocaleLowerCase() : entry.absolutePath;
-      const owner = projects
-        .map((project) => ({ project, root: resolvePath(project.path) }))
-        .filter(({ root }) => {
-          const normalizedRoot = process.platform === 'win32' ? root.toLocaleLowerCase() : root;
-          return normalizedFile.startsWith(normalizedRoot + pathSep) || normalizedFile === normalizedRoot;
-        })
-        .sort((left, right) => right.root.length - left.root.length)[0];
+      const owner = owningProject(projects, entry.absolutePath);
       if (owner) {
         row.projectPath = owner.project.path;
         row.relPath = pathRelative(owner.root, entry.absolutePath).replace(/\\/g, '/');
@@ -498,11 +487,8 @@ function editorRemoteMethods(deps: {
     if (!userDataPath) throw new Error('Editor backup storage is unavailable.');
     return userDataPath;
   };
-  const instructionsFilePath = async (projectPath: unknown): Promise<string> => {
-    if (projectPath == null || projectPath === '') return commonInstructionsFile();
-    const directory = await host.projectDirectory(requiredString(projectPath, 'projectPath'));
-    return projectInstructionsFile(directory);
-  };
+  const instructionsFiles = (projectPath: unknown) =>
+    instructionsFilesFor(projectPath, (project) => host.projectDirectory(requiredString(project, 'projectPath')));
   return {
     writeProjectFile: ([projectPath, relPath, content, expectedContent, accessToken, encoding]) => {
       const text = requiredTextFileContent(content, 'file content');
@@ -559,16 +545,14 @@ function editorRemoteMethods(deps: {
       return null;
     },
     readInstructions: async ([projectPath]) => {
-      const file = await instructionsFilePath(projectPath);
-      const legacy = projectPath == null || projectPath === '' ? legacyCommonInstructionsFile() : '';
-      return invokeDesktopOperation('readInstructions', [file, legacy]);
+      const { file, legacyFile } = await instructionsFiles(projectPath);
+      return invokeDesktopOperation('readInstructions', [file, legacyFile]);
     },
     writeInstructions: async ([projectPath, content, expectedContent]) => {
       const text = requiredInstructionsContent(content);
-      const file = await instructionsFilePath(projectPath);
+      const { file, legacyFile } = await instructionsFiles(projectPath);
       const expected = expectedContent === undefined ? undefined : requiredInstructionsContent(expectedContent);
-      const legacy = projectPath == null || projectPath === '' ? legacyCommonInstructionsFile() : '';
-      return invokeDesktopOperation('writeInstructions', [file, text, expected, legacy]);
+      return invokeDesktopOperation('writeInstructions', [file, text, expected, legacyFile]);
     },
     saveWorkspace: ([workspaceFile, rawFolders]) => {
       const folders = requiredWorkspaceFolders(rawFolders);

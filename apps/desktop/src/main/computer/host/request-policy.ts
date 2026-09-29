@@ -1,7 +1,6 @@
-import { CHROME_SETUP_SESSION_ID } from '../session/chrome-setup';
+import { CHROME_SETUP_SESSION_ID, USER_WAIT_SESSION_ID } from '../shared/common';
 import { AUTO_CAPTURE_ACTIONS, READ_ACTIONS, HOST_WARMUP_SESSION_ID, isComputerLifecycleControl } from './action-sets';
 import type { ComputerCommand } from '../shared/types';
-import { USER_WAIT_SESSION_ID } from './user-wait-service';
 
 /** Internal authority is never accepted from an authenticated HTTP payload. */
 export function assertPublicComputerRequest(value: unknown): asserts value is ComputerCommand {

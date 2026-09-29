@@ -8,7 +8,12 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { useMobileBack } from './mobile-back';
-import { lspCallHierarchyItem, lspPosition, type EditorCallHierarchyItem } from './editor-lsp-conversion';
+import {
+  lspCallHierarchyItem,
+  lspPosition,
+  projectRelativePath,
+  type EditorCallHierarchyItem,
+} from './editor-lsp-conversion';
 import {
   callHierarchyCalls,
   callHierarchyPreview,
@@ -17,7 +22,6 @@ import {
   hierarchyFailure,
   hierarchyLoading,
   hierarchyResults,
-  projectRelativePath,
   type CallHierarchyDirection,
   type CallHierarchyState,
 } from './editor-call-hierarchy-model';

@@ -17,7 +17,7 @@ const SCROLLBAR_GUTTER_VAR = '--mx-scrollbar-gutter';
 
 /** What the engine actually takes from a scroll container's content box.
  *  0 means overlay scrollbars: nothing is reserved and nothing must be paid. */
-export function measureScrollbarGutter(): number {
+function measureScrollbarGutter(): number {
   if (typeof document === 'undefined') return 0;
   const host = document.body ?? document.documentElement;
   if (!host) return 0;

@@ -1,7 +1,7 @@
 import type { DesktopSessionSummary } from '../shared/contract';
 import { catalogStorageKey, catalogStorageScope } from './catalog-storage-scope';
 
-export const SESSION_CATALOG_STORAGE_KEY = 'mixdog.desktop-session-catalog.v1';
+const SESSION_CATALOG_STORAGE_KEY = 'mixdog.desktop-session-catalog.v1';
 const SESSION_CATALOG_LIMIT = 500;
 
 interface CachedSessionCatalog {
@@ -55,7 +55,7 @@ function cachedSessionRow(value: unknown): DesktopSessionSummary | null {
   };
 }
 
-export function normalizeCachedSessionCatalog(value: unknown): CachedSessionCatalog {
+function normalizeCachedSessionCatalog(value: unknown): CachedSessionCatalog {
   const record =
     value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
   if (record?.version !== 1) return { version: 1, updatedAt: 0, rows: [] };

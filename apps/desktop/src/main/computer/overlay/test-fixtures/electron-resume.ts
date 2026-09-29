@@ -7,15 +7,10 @@ import { createComputerOverlayController } from '../controls';
 import { bindComputerOverlayControls } from '../ipc-controls';
 import { checkOverlayPulse, emulateMotionPreference } from './pill-motion';
 import { nativeOverlayClick } from './native-click';
+import { emit } from './process-output';
 
 app.disableHardwareAcceleration();
 app.setPath('userData', join(process.env.OVERLAY_TEST_DIRECTORY!, 'profile'));
-/** Electron's stdio pipes are asynchronous: text written without waiting for its flush is
- * lost when the process exits, which reads in CI as a successful run with no result. */
-const emit = (stream: NodeJS.WriteStream, text: string) =>
-  new Promise<void>((resolve) => {
-    stream.write(text, () => resolve());
-  });
 // This fixture owns its only window; Electron's default quit-on-last-window-close would
 // otherwise end the process the moment a failing step reaches the finally-block destroy.
 app.on('window-all-closed', () => {});

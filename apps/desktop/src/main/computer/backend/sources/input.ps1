@@ -787,7 +787,6 @@ function Invoke-ForegroundInput($targetHandle, $action, $body, [bool]$pointerMay
         $result.injection_tick = [MixWin32]::LastInjectionTick
         $result.cursor_feedback = $cursorFeedback
         $result.foreground_phase_ms = $phaseMs
-        if ($userWaitMs -gt 0) { $result.user_wait_ms = $userWaitMs }
         return $result
     }
     finally {

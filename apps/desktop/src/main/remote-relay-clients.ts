@@ -90,6 +90,15 @@ export function clientReadsLane(lanes: ReadonlySet<string> | null, lane: string)
   return lanes === null || lanes.has(lane);
 }
 
+/** Sends one payload inside a client's encrypted channel. */
+export type SendEncryptedFrame = (
+  clientId: string,
+  payload: unknown,
+  droppable?: boolean,
+  onSent?: (bytes: number) => void,
+  requireDelivery?: boolean
+) => Promise<void>;
+
 export interface RelayClientRegistryDeps {
   host: DesktopService;
   sendEnvelope(payload: unknown): void;

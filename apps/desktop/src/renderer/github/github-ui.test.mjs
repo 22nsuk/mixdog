@@ -4,7 +4,7 @@ import { registerHooks } from 'node:module';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from '../test-support/test-dom.mjs';
 
 registerHooks({
   resolve(specifier, context, next) {
@@ -12,12 +12,11 @@ registerHooks({
     return next(specifier, context);
   },
 });
-const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'https://mixdog.test/' });
-globalThis.window = dom.window;
-globalThis.document = dom.window.document;
-globalThis.HTMLElement = dom.window.HTMLElement;
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-Object.defineProperty(globalThis, 'navigator', { configurable: true, value: dom.window.navigator });
+installTestDom(null, {
+  html: '<!doctype html><html><body></body></html>',
+  jsdom: { url: 'https://mixdog.test/' },
+  expose: ['HTMLElement', 'navigator'],
+});
 window.HTMLElement.prototype.attachEvent = () => {};
 window.HTMLElement.prototype.detachEvent = () => {};
 const { GithubPanel } = await import('./GithubPanel.tsx');

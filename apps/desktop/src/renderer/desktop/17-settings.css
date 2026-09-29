@@ -11,9 +11,7 @@
   --settings-layer-safe-top: calc(env(titlebar-area-height, 0px) + var(--settings-layer-margin));
   --settings-layer-safe-bottom: var(--settings-layer-margin);
   /* A panel dialog fills everything between those insets. */
-  --settings-panel-height: calc(
-    var(--vvh, 100vh) - var(--settings-layer-safe-top) - var(--settings-layer-safe-bottom)
-  );
+  --settings-panel-height: calc(var(--vvh, 100vh) - var(--settings-layer-safe-top) - var(--settings-layer-safe-bottom));
   position: fixed;
   z-index: 60;
   inset: 0;

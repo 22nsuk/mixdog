@@ -325,7 +325,7 @@ export async function renameProjectEntryIn(root: string, relPath: string, newNam
     throw new TypeError('Entry name is invalid.');
   }
   const source = projectEntryPathIn(root, relPath);
-  if (source === root) throw new Error('Cannot rename the project root.');
+  if (source === resolve(root)) throw new Error('Cannot rename the project root.');
   await rename(source, join(dirname(source), trimmed));
 }
 
@@ -333,7 +333,7 @@ export async function renameProjectEntryIn(root: string, relPath: string, newNam
  *  cut/paste). Never overwrites; a same-name target is a hard error. */
 export async function moveProjectEntryIn(root: string, relPath: string, targetDirRel: string): Promise<void> {
   const source = projectEntryPathIn(root, relPath);
-  if (source === root) throw new Error('Cannot move the project root.');
+  if (source === resolve(root)) throw new Error('Cannot move the project root.');
   const targetDir = projectEntryPathIn(root, targetDirRel);
   if (!(await stat(targetDir)).isDirectory()) throw new Error('Move target is not a folder.');
   if (targetDir === source || targetDir.startsWith(source + sep)) {
@@ -360,7 +360,7 @@ export async function copyProjectEntryIn(
   targetDirRel: string
 ): Promise<{ name: string }> {
   const source = projectEntryPathIn(root, relPath);
-  if (source === root) throw new Error('Cannot copy the project root.');
+  if (source === resolve(root)) throw new Error('Cannot copy the project root.');
   const targetDir = projectEntryPathIn(root, targetDirRel);
   if (!(await stat(targetDir)).isDirectory()) throw new Error('Copy target is not a folder.');
   if (targetDir === source || targetDir.startsWith(source + sep)) {

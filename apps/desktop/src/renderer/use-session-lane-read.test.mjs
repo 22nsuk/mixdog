@@ -2,24 +2,15 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 import { useSessionLaneRead } from './use-session-lane-read.ts';
 
 for (const outcome of ['accepted-without-frame', 'pending', 'rejected', 'resume-owned']) {
   test(`cold pane exposes retry instead of waiting forever: ${outcome}`, async () => {
-    const dom = new JSDOM('<!doctype html><div id="root"></div>');
-    const prior = new Map(
-      ['window', 'document', 'IS_REACT_ACT_ENVIRONMENT'].map((key) => [
-        key,
-        Object.getOwnPropertyDescriptor(globalThis, key),
-      ])
-    );
-    for (const [key, value] of Object.entries({
-      window: dom.window,
-      document: dom.window.document,
-      IS_REACT_ACT_ENVIRONMENT: true,
-    }))
-      Object.defineProperty(globalThis, key, { configurable: true, value });
+    const { dom, restore } = installTestDom(null, {
+      html: '<!doctype html><div id="root"></div>',
+      jsdom: { url: 'about:blank' },
+    });
     const timers = new Map();
     let timerId = 0;
     dom.window.setTimeout = (callback) => {
@@ -69,11 +60,7 @@ for (const outcome of ['accepted-without-frame', 'pending', 'rejected', 'resume-
       assert.equal(timers.size, 0);
     } finally {
       await act(async () => root.unmount());
-      dom.window.close();
-      for (const [key, descriptor] of prior) {
-        if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-        else delete globalThis[key];
-      }
+      restore();
     }
   });
 }

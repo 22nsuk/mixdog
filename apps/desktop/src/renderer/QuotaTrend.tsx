@@ -106,7 +106,11 @@ function stepTicks(from: number, to: number, step: AxisStep, limit = Number.POSI
     else date.setMonth(date.getMonth() + count);
   };
   if (date.getTime() < from) advance(1);
-  const phase = () => (step.unit === 'hour' ? date.getHours() : step.unit === 'month' ? date.getMonth() : 0);
+  const phase = () => {
+    if (step.unit === 'hour') return date.getHours();
+    if (step.unit === 'month') return date.getMonth();
+    return 0;
+  };
   while (phase() % step.size) advance(1);
   const times: number[] = [];
   for (; date.getTime() < to && times.length <= limit; advance(step.size)) times.push(date.getTime());
@@ -246,9 +250,7 @@ export function QuotaTrend({
       label: '',
     });
   const rate = statsNumber(forecast.ratePerHour);
-  const slotModels = rows(active?.models).filter(
-    (row) => statsNumber(row.consumed) > 0 || statsNumber(row.tokens) > 0
-  );
+  const slotModels = rows(active?.models).filter((row) => statsNumber(row.consumed) > 0 || statsNumber(row.tokens) > 0);
   const slotOutside = statsNumber(active?.outside);
   // Chart space with no slot to read ends a hover card; a pinned one stays.
   const idle = {
@@ -380,7 +382,9 @@ export function QuotaTrend({
                 const flexBasis = `${((toMs - fromMs) / span) * 100}%`;
                 // A slot yet to start has nothing to read.
                 if (slot.future === true) {
-                  return <span key={key} className="quota-chart-slot" style={{ flexBasis }} aria-hidden="true" {...idle} />;
+                  return (
+                    <span key={key} className="quota-chart-slot" style={{ flexBasis }} aria-hidden="true" {...idle} />
+                  );
                 }
                 // The slot running now keeps its whole span; what has passed of
                 // it is shaded apart from what is still ahead.

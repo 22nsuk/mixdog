@@ -2,26 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 import { useAppToolProject, LAST_PROJECT_KEY } from './app-shell-tool-project.ts';
 
 test('useAppToolProject tracks active tool project, allows override, and persists to localStorage', async () => {
-  const dom = new JSDOM('<!doctype html><div id="root"></div>', {
-    url: 'https://mixdog.test/',
+  const { dom, restore } = installTestDom(null, {
+    html: '<!doctype html><div id="root"></div>',
+    jsdom: { url: 'https://mixdog.test/' },
   });
-  const prior = new Map(
-    ['window', 'document', 'IS_REACT_ACT_ENVIRONMENT'].map((key) => [
-      key,
-      Object.getOwnPropertyDescriptor(globalThis, key),
-    ])
-  );
-
-  for (const [key, value] of Object.entries({
-    window: dom.window,
-    document: dom.window.document,
-    IS_REACT_ACT_ENVIRONMENT: true,
-  }))
-    Object.defineProperty(globalThis, key, { configurable: true, value });
 
   let hookResult;
   function TestHarness({ navSel }) {
@@ -67,10 +55,6 @@ test('useAppToolProject tracks active tool project, allows override, and persist
     await act(async () => {
       root.unmount();
     });
-    dom.window.close();
-    for (const [key, descriptor] of prior) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
+    restore();
   }
 });

@@ -5,13 +5,15 @@ import test from 'node:test';
 
 import React, { act, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 
-const dom = new JSDOM('<!doctype html><html><body><main></main></body></html>', {
-  url: 'https://mixdog.test/',
+installTestDom(null, {
+  html: '<!doctype html><html><body><main></main></body></html>',
+  jsdom: {
+    url: 'https://mixdog.test/',
+  },
+  actEnvironment: false,
 });
-globalThis.window = dom.window;
-globalThis.document = dom.window.document;
 globalThis.requestAnimationFrame = (callback) => {
   callback(0);
   return 1;

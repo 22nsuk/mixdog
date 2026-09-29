@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { stat } from 'node:fs/promises';
-import { basename, dirname, relative, resolve, sep } from 'node:path';
+import { basename, dirname, relative, resolve } from 'node:path';
 import type { DesktopLocalPathEntry } from '../shared/contract';
 import { absoluteLocalPath } from './local-files';
 import { requiredString } from './ipc-validation';
@@ -8,7 +8,9 @@ import { readSecretFile, writeSecretFile } from './secret-file';
 import { createKeyedSerialQueue } from '../../../../src/runtime/shared/keyed-serial-queue.mjs';
 import {
   MAX_SELECTED_FILE_GRANTS,
+  owningProject,
   parseSelectedFileGrants,
+  sameGrantedPath,
   selectedFileGrantKey,
   serializeSelectedFileGrants,
 } from './selected-file-grants';
@@ -82,14 +84,7 @@ export class SelectedFileAccess {
         size: Number(info.size) || 0,
       };
       if (!row.dir) {
-        const normalizedFile = process.platform === 'win32' ? absolutePath.toLocaleLowerCase() : absolutePath;
-        const owner = projects
-          .map((project) => ({ project, root: resolve(project.path) }))
-          .filter(({ root }) => {
-            const normalizedRoot = process.platform === 'win32' ? root.toLocaleLowerCase() : root;
-            return normalizedFile.startsWith(normalizedRoot + sep) || normalizedFile === normalizedRoot;
-          })
-          .sort((left, right) => right.root.length - left.root.length)[0];
+        const owner = owningProject(projects, absolutePath);
         if (owner) {
           row.projectPath = owner.project.path;
           row.relPath = relative(owner.root, absolutePath).replace(/\\/g, '/');
@@ -131,11 +126,7 @@ export class SelectedFileAccess {
     const granted = this.#grants.get(selectedFileGrantKey(token));
     if (!granted) throw new Error('The selected-file permission is unavailable.');
     const requested = resolve(requiredString(projectPath, 'projectPath'), requiredString(relPath, 'relPath'));
-    const same =
-      process.platform === 'win32'
-        ? requested.toLocaleLowerCase() === granted.toLocaleLowerCase()
-        : requested === granted;
-    if (!same) throw new Error('The selected-file permission does not match this path.');
+    if (!sameGrantedPath(granted, requested)) throw new Error('The selected-file permission does not match this path.');
     return { root: dirname(granted), rel: basename(granted), absolute: granted };
   }
 }

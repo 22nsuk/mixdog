@@ -1266,20 +1266,29 @@ html[data-mixdog-mobile-tabs] .jump-to-latest::before {
   --text-shimmer-rest: 10;
 }
 .live-activity [data-component="text-shimmer"][data-active="true"] [data-slot="text-shimmer-char"],
-.utility-dock .agent-session-heading h2 [data-component="text-shimmer"][data-active="true"] [data-slot="text-shimmer-char"] {
+.utility-dock
+  .agent-session-heading
+  h2
+  [data-component="text-shimmer"][data-active="true"]
+  [data-slot="text-shimmer-char"] {
   position: relative;
   color: inherit;
   background: none;
   animation: none;
 }
 .live-activity [data-component="text-shimmer"][data-active="true"] [data-slot="text-shimmer-char"]::after,
-.utility-dock .agent-session-heading h2 [data-component="text-shimmer"][data-active="true"] [data-slot="text-shimmer-char"]::after {
+.utility-dock
+  .agent-session-heading
+  h2
+  [data-component="text-shimmer"][data-active="true"]
+  [data-slot="text-shimmer-char"]::after {
   content: attr(data-text);
   position: absolute;
   inset: 0;
   pointer-events: none;
   color: transparent;
-  background: linear-gradient(
+  background:
+    linear-gradient(
       90deg,
       transparent 0,
       color-mix(in oklch, var(--mx-accent) 46%, transparent) 1ch,
@@ -1398,7 +1407,11 @@ html[data-mixdog-mobile-tabs] .jump-to-latest::before {
     background: none;
   }
   .live-activity [data-component="text-shimmer"][data-active="true"] [data-slot="text-shimmer-char"]::after,
-  .utility-dock .agent-session-heading h2 [data-component="text-shimmer"][data-active="true"] [data-slot="text-shimmer-char"]::after {
+  .utility-dock
+    .agent-session-heading
+    h2
+    [data-component="text-shimmer"][data-active="true"]
+    [data-slot="text-shimmer-char"]::after {
     content: none;
   }
   .live-activity-status,

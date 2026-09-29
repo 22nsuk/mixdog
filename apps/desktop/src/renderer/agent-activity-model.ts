@@ -16,7 +16,7 @@ import {
 } from '../shared/agent-activity';
 import type { RecordValue } from './desktop-types';
 import { record } from './record-utils';
-import { timeMs } from './TranscriptView';
+import { timeMs } from './transcript-primitives';
 
 export const AGENT_POOL_RECONCILE_MS = 2_000;
 

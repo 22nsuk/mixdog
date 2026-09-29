@@ -179,14 +179,19 @@ async function run(): Promise<void> {
     try {
       await eventually(async () => presented(), Boolean);
     } catch (error) {
-      log(`not presented: last requests ${presentCalls.slice(-3).join(' ')}; window ${JSON.stringify(owner.getBounds())}`);
+      log(
+        `not presented: last requests ${presentCalls.slice(-3).join(' ')}; window ${JSON.stringify(owner.getBounds())}`
+      );
       throw error;
     }
     const rect = await surfaceRect();
     const bounds = owner.getContentBounds();
     const pane = paneOnScreen(rect);
     for (const key of ['x', 'y', 'width', 'height'] as const) {
-      assert.ok(Math.abs(bounds[key] - pane[key]) <= 1, `page window ${key} ${bounds[key]} must match pane ${pane[key]}`);
+      assert.ok(
+        Math.abs(bounds[key] - pane[key]) <= 1,
+        `page window ${key} ${bounds[key]} must match pane ${pane[key]}`
+      );
     }
     assert.equal(BrowserWindow.fromWebContents(guest), owner, 'the page window keeps owning the page');
     assert.equal(owner.isFocused(), false, 'showing the page does not activate it');
@@ -211,7 +216,10 @@ async function run(): Promise<void> {
       setTimeout(() => { document.elementFromPoint = original; resolve(calls); }, 1000);
     })`);
     log(`idle overlap hit tests: ${idleHitTests}/s`);
-    assert.ok(idleHitTests <= 25 * 6, `an idle pane checks overlap a few times a second, not every frame: ${idleHitTests}`);
+    assert.ok(
+      idleHitTests <= 25 * 6,
+      `an idle pane checks overlap a few times a second, not every frame: ${idleHitTests}`
+    );
     {
       // What the screen shows in the middle of the pane. The shell is raised
       // above other windows for the capture (without activation); its owned
@@ -223,7 +231,10 @@ async function run(): Promise<void> {
       const display = screen.getDisplayNearestPoint(centre);
       const sources = await desktopCapturer.getSources({
         types: ['screen'],
-        thumbnailSize: { width: display.size.width * display.scaleFactor, height: display.size.height * display.scaleFactor },
+        thumbnailSize: {
+          width: display.size.width * display.scaleFactor,
+          height: display.size.height * display.scaleFactor,
+        },
       });
       parent.setAlwaysOnTop(false);
       const source = sources.find((entry) => entry.display_id === String(display.id)) ?? sources[0];
@@ -304,14 +315,16 @@ async function run(): Promise<void> {
     app.getAppMetrics();
     await pause(3000);
     const idleCpu = Object.fromEntries(
-      app.getAppMetrics().map((metric) => [
-        metric.pid === shell.getOSProcessId()
-          ? 'shell'
-          : metric.pid === guest.getOSProcessId()
-            ? 'page'
-            : `${metric.type}${metric.pid === process.pid ? '(main)' : ''}`,
-        Math.round(metric.cpu.percentCPUUsage * 10) / 10,
-      ])
+      app
+        .getAppMetrics()
+        .map((metric) => [
+          metric.pid === shell.getOSProcessId()
+            ? 'shell'
+            : metric.pid === guest.getOSProcessId()
+              ? 'page'
+              : `${metric.type}${metric.pid === process.pid ? '(main)' : ''}`,
+          Math.round(metric.cpu.percentCPUUsage * 10) / 10,
+        ])
     );
     log(`idle presented pane cpu: ${JSON.stringify(idleCpu)}`);
 
@@ -360,7 +373,9 @@ async function run(): Promise<void> {
     await eventually(async () => presented(), Boolean);
     log('overlapping shell UI parks the page and shows pixels until it is gone');
 
-    await guest.executeJavaScript(`setTimeout(() => { window.alertDone = alert('Native fixture alert') || true; }, 0); void 0`);
+    await guest.executeJavaScript(
+      `setTimeout(() => { window.alertDone = alert('Native fixture alert') || true; }, 0); void 0`
+    );
     await eventually(() => shell.executeJavaScript(`Boolean(document.querySelector('.browser-page-prompt'))`), Boolean);
     // The pane prompt is drawn by the shell, so the next frame parks the page.
     await eventually(async () => parked(), Boolean);
@@ -380,14 +395,11 @@ async function run(): Promise<void> {
     await eventually(async () => presented(), Boolean);
     const [shellX, shellY] = parent.getPosition();
     parent.setPosition(shellX + 40, shellY + 30);
-    await eventually(
-      async () => {
-        const moved = owner.getContentBounds();
-        const pane = paneOnScreen(await surfaceRect());
-        return Math.abs(moved.x - pane.x) <= 1 && Math.abs(moved.y - pane.y) <= 1;
-      },
-      Boolean
-    );
+    await eventually(async () => {
+      const moved = owner.getContentBounds();
+      const pane = paneOnScreen(await surfaceRect());
+      return Math.abs(moved.x - pane.x) <= 1 && Math.abs(moved.y - pane.y) <= 1;
+    }, Boolean);
     parent.setPosition(shellX, shellY);
     log('the page window hides, returns and moves with the shell');
 
@@ -418,7 +430,10 @@ async function run(): Promise<void> {
     });
     const neverShownFrames = Number(neverShown.text.match(/"frames": (\d+)/)?.[1] ?? 0);
     log(`never-shown page frames after a cross-site navigation: ${neverShownFrames}/s`);
-    assert.ok(neverShownFrames >= 30, `a never-shown page keeps drawing after a cross-site navigation: ${neverShownFrames}/s`);
+    assert.ok(
+      neverShownFrames >= 30,
+      `a never-shown page keeps drawing after a cross-site navigation: ${neverShownFrames}/s`
+    );
     await command({ action: 'close_tab', tab: 'never-shown' });
     await guest.executeJavaScript(`document.body.style.background = 'rgb(200, 30, 60)'`);
     const shot = await command({ action: 'snapshot', mode: 'visual' });

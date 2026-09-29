@@ -8,7 +8,7 @@
  * that signal returned empty parent trees.
  */
 import { screenshotInteger } from '../observation/analysis';
-import { DEFAULT_CAPTURE_AFTER_DELAY_MS, MAX_CAPTURE_AFTER_DELAY_MS, elapsedMs } from '../shared/common';
+import { DEFAULT_CAPTURE_AFTER_DELAY_MS, MAX_CAPTURE_AFTER_DELAY_MS, elapsedMs, sleep } from '../shared/common';
 import type { ComputerCommand } from '../shared/types';
 import {
   computeComputerWindowTransition,
@@ -111,7 +111,7 @@ async function awaitLaunchSuccessor(
   do {
     const remainingMs = Math.max(0, deadline - performance.now());
     if (remainingMs > 0) {
-      await new Promise((resolve) => setTimeout(resolve, Math.min(LAUNCH_POLL_INTERVAL_MS, remainingMs)));
+      await sleep(Math.min(LAUNCH_POLL_INTERVAL_MS, remainingMs));
     }
     host.assertExecutionNotAborted();
     const includeAppMetadata = performance.now() - settleStartedAt >= minimumLaunchSettleMs;
@@ -135,7 +135,7 @@ async function awaitDialogSuccessor(
   let transition = first;
   while (performance.now() < deadline) {
     const remainingMs = Math.max(0, deadline - performance.now());
-    await new Promise((resolve) => setTimeout(resolve, Math.min(DIALOG_POLL_INTERVAL_MS, remainingMs)));
+    await sleep(Math.min(DIALOG_POLL_INTERVAL_MS, remainingMs));
     host.assertExecutionNotAborted();
     const next = await scanTransition(host, input, scan);
     if (!next) break;
@@ -163,7 +163,7 @@ export async function settleWindowTransition(
   if (action === 'launch') {
     outcome = await awaitLaunchSuccessor(host, input, settleStartedAt, settleDelayMs, scan);
   } else {
-    if (settleDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, settleDelayMs));
+    if (settleDelayMs > 0) await sleep(settleDelayMs);
     host.assertExecutionNotAborted();
     let transition = await scanTransition(host, input, scan);
     const watch = dialogSuccessorWatch(action, command.path, transition);

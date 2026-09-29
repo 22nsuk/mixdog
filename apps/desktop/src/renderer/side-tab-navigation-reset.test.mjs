@@ -3,7 +3,7 @@ import test from 'node:test';
 import { registerHooks } from 'node:module';
 import React, { act, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { JSDOM } from 'jsdom';
+import { installTestDom } from './test-support/test-dom.mjs';
 import { SurfaceActiveContext, useSurfaceNavigationReset } from './surface-activity.ts';
 
 registerHooks({
@@ -14,28 +14,17 @@ registerHooks({
 });
 
 async function mount(t) {
-  const dom = new JSDOM('<!doctype html><body><main></main></body>', {
-    url: 'https://mixdog.test/',
-    pretendToBeVisual: true,
-  });
-  const saved = new Map();
-  for (const [key, value] of Object.entries({
-    window: dom.window,
-    document: dom.window.document,
-    navigator: dom.window.navigator,
-    HTMLElement: dom.window.HTMLElement,
-    Node: dom.window.Node,
-    Event: dom.window.Event,
-    CustomEvent: dom.window.CustomEvent,
-    ResizeObserver: class {
-      observe() {}
-      disconnect() {}
+  const { restore } = installTestDom(null, {
+    html: '<!doctype html><body><main></main></body>',
+    jsdom: { pretendToBeVisual: true },
+    expose: ['navigator', 'HTMLElement', 'Node', 'Event', 'CustomEvent'],
+    globals: {
+      ResizeObserver: class {
+        observe() {}
+        disconnect() {}
+      },
     },
-    IS_REACT_ACT_ENVIRONMENT: true,
-  })) {
-    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
-  }
+  });
   window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
   window.HTMLElement.prototype.attachEvent = () => {};
   window.HTMLElement.prototype.detachEvent = () => {};
@@ -49,11 +38,7 @@ async function mount(t) {
   const root = createRoot(host);
   t.after(async () => {
     await act(async () => root.unmount());
-    dom.window.close();
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete globalThis[key];
-    }
+    restore();
   });
   return {
     host,

@@ -37,6 +37,52 @@ test('only session cookies are kept and a stored cookie is recreated without an 
   assert.equal(cookieSetDetails({ ...records[0], domain: 'bad domain' }), null);
 });
 
+test('a save issued before restore finishes waits and never wipes the stored sign-ins', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'mixdog-session-store-'));
+  try {
+    const jar = [sessionCookie()];
+    const codec = {
+      encrypt: async (text) => Buffer.from(text, 'utf8').reverse(),
+      decrypt: async (data) => Buffer.from(data).reverse().toString('utf8'),
+    };
+    const seed = createBrowserSessionStore({
+      cookies: { get: async () => jar, set: async () => {} },
+      directory,
+      ...codec,
+    });
+    assert.equal(await seed.save(), 1);
+
+    let releaseSet;
+    const gate = new Promise((resolve) => {
+      releaseSet = resolve;
+    });
+    const restored = [];
+    const emptyJar = [];
+    const store = createBrowserSessionStore({
+      cookies: {
+        get: async () => emptyJar,
+        set: async (details) => {
+          await gate;
+          restored.push(details);
+          emptyJar.push(sessionCookie());
+        },
+      },
+      directory,
+      ...codec,
+    });
+    const restoring = store.restore();
+    const saving = store.save();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal((await readFile(store.file)).length > 0, true, 'file survives while restore is pending');
+    releaseSet();
+    assert.equal(await restoring, 1);
+    assert.equal(await saving, 1);
+    assert.equal(restored.length, 1);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('the store round-trips session cookies through the sealed file and discards stale files', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'mixdog-session-store-'));
   try {

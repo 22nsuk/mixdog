@@ -154,16 +154,24 @@ async function openCursorWindow(surface: CursorSurface, isCurrent: () => boolean
   }
 }
 
-/** The surface's live window, creating it once; concurrent callers share the
- *  creation. `isCurrent` says whether the surface still belongs to the overlay. */
-export async function ensureCursorWindow(surface: CursorSurface, isCurrent: () => boolean): Promise<BrowserWindow> {
+/** The surface's live window, opening it once; concurrent callers share the
+ *  creation. */
+export async function ensureSurfaceWindow(
+  surface: { window: BrowserWindow | null; creating: Promise<BrowserWindow> | null },
+  open: () => Promise<BrowserWindow>
+): Promise<BrowserWindow> {
   if (surface.creating) return await surface.creating;
   if (surface.window && !surface.window.isDestroyed()) return surface.window;
-  const creating = openCursorWindow(surface, isCurrent);
+  const creating = open();
   surface.creating = creating;
   try {
     return await creating;
   } finally {
     if (surface.creating === creating) surface.creating = null;
   }
+}
+
+/** `isCurrent` says whether the surface still belongs to the overlay. */
+export function ensureCursorWindow(surface: CursorSurface, isCurrent: () => boolean): Promise<BrowserWindow> {
+  return ensureSurfaceWindow(surface, () => openCursorWindow(surface, isCurrent));
 }

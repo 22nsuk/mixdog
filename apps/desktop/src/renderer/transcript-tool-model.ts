@@ -141,7 +141,8 @@ export function desktopToolActivityItemPresentation(
   const structured = toolActivityStructuredRows(normalizedName, args, resultValue);
   const title = desktopToolActivityUnitLabel(name, item.args);
   let agentTitle = '';
-  if (normalizedName === 'agent') agentTitle = model.isAgentResponse ? agentResponseTitle(args, 1) : agentActionTitle(args);
+  if (normalizedName === 'agent')
+    agentTitle = model.isAgentResponse ? agentResponseTitle(args, 1) : agentActionTitle(args);
   const subject = toolActivityRedactInlineSecrets(
     agentTitle || toolActivitySubject(normalizedName, args, oneLine(String(model.summaryText || ''))),
     args
@@ -195,15 +196,12 @@ export function desktopToolActivityItemPresentation(
   const targetPath = toolActivityFirstText(args, 'file_path', 'filePath', 'path', 'file', 'target');
   const previewLanguage = previewText ? toolActivityCodeLanguage(targetPath) : '';
   const replacementLanguage = beforeText || afterText ? toolActivityCodeLanguage(targetPath) : '';
+  const rawOutput = item.result ?? model.displayedResultBodyText ?? item.rawResult;
   let outputText =
     normalizedName === 'git'
-      ? String(item.result ?? model.displayedResultBodyText ?? item.rawResult ?? '').trimEnd()
+      ? String(rawOutput ?? '').trimEnd()
       : toolActivityCleanOutput(
-          toolActivityOutputText(
-            normalizedName === 'read'
-              ? readRowsForDisplay(item.result ?? model.displayedResultBodyText ?? item.rawResult)
-              : (item.result ?? model.displayedResultBodyText ?? item.rawResult)
-          )
+          toolActivityOutputText(normalizedName === 'read' ? readRowsForDisplay(rawOutput) : rawOutput)
         );
   const backgroundTask = toolActivityBackgroundTask(outputText);
   const metaText = backgroundTask ? backgroundTask.meta : '';

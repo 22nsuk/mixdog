@@ -121,11 +121,11 @@
   color: var(--mx-text-faint);
   font-size: var(--mx-font-meta);
 }
-.transcript-artifact-file[aria-disabled='true'] {
+.transcript-artifact-file[aria-disabled="true"] {
   cursor: default;
   color: var(--mx-text-faint);
 }
-.transcript-artifact-file[aria-disabled='true']:hover {
+.transcript-artifact-file[aria-disabled="true"]:hover {
   background: var(--mx-bg-layer-1);
 }
 .transcript-artifact-preview {
@@ -826,31 +826,6 @@
 .tool-detail-line em[data-delta="-"] {
   color: var(--mx-danger);
 }
-/* Structured Input grid: muted key column,
-   mono value column — replaces the raw args JSON dump. */
-.tool-args {
-  grid-template-columns: max-content minmax(0, 1fr);
-  gap: 2px 14px;
-}
-.tool-args [data-slot="key"] {
-  color: var(--mx-text-muted);
-  font-size: var(--mx-font-meta);
-  font-weight: var(--mx-weight-regular);
-  line-height: var(--mx-line-ui);
-  white-space: nowrap;
-}
-.tool-args [data-slot="value"] {
-  min-width: 0;
-  font-family: var(--mx-font-mono);
-  font-size: var(--mx-font-code);
-  line-height: var(--mx-line-ui);
-  color: var(--mx-text-muted);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.tool-args pre[data-slot="value"] {
-  line-height: var(--mx-line-minor);
-}
 .tool-detail-copy {
   width: 24px;
   height: 24px;
@@ -872,30 +847,6 @@
 .tool-detail-copy[data-copied="true"] {
   color: var(--mx-text);
 }
-.tool-output {
-  position: relative;
-  width: 100%;
-  min-width: 0;
-  color: var(--mx-text-muted);
-}
-.tool-output pre {
-  margin: 0;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  color: inherit;
-  background: transparent;
-  box-shadow: none;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.tool-output code {
-  font-family: var(--mx-font-mono);
-  /* One mono scale across the whole tool card: expanding must not re-render
-     the same text a size larger (user: "펼치면 다른 폰트로 바뀜"). */
-  font-size: var(--mx-font-code);
-  line-height: var(--mx-line-ui);
-}
 .shell-output {
   overflow: hidden;
   border: 1px solid var(--mx-border-muted);
@@ -904,16 +855,6 @@
 }
 .shell-output pre {
   padding: 12px;
-}
-.tool-result-summary {
-  min-width: 0;
-  padding: 0 8px 6px 28px;
-  overflow: hidden;
-  color: var(--mx-text-faint);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: var(--mx-font-minor);
-  line-height: var(--mx-line-ui);
 }
 /* Transcript notices are a card, not bare text: without an inset the copy sat
    flush against the hairline and read as a broken quote block (user: 오류

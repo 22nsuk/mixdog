@@ -66,6 +66,24 @@ test('a paint at another size releases the waiting read instead of holding it to
   }
 });
 
+test('concurrent reads of one guest share the pending frame instead of orphaning the first', async () => {
+  const { guest, stream, paint } = fixture();
+  try {
+    const first = stream(guest, 'document');
+    const second = stream(guest, 'document');
+    paint(image('shared'));
+    const results = await Promise.race([
+      Promise.all([first, second]),
+      new Promise((resolve) => setTimeout(() => resolve('hung'), 500)),
+    ]);
+    assert.notEqual(results, 'hung');
+    assert.equal(results[0].data, 'shared');
+    assert.equal(results[1].data, 'shared');
+  } finally {
+    guest.emit('destroyed');
+  }
+});
+
 test('destruction releases a pending display read rather than retaining listeners or pixels', async () => {
   const { guest, stream } = fixture();
   const waiting = stream(guest, 'document');

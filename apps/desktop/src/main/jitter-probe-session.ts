@@ -1,5 +1,7 @@
 import type { BrowserWindow } from 'electron';
 
+export const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 /** A transcript tool disclosure: a single tool card, or the grouped tool
  *  activity that now wraps consecutive calls. */
 export const TOOL_DISCLOSURE = '.tool-card, .tool-activity';

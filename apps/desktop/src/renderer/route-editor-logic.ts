@@ -99,7 +99,7 @@ export function routeFlyoutFitsBeside(
 }
 
 /** Back header of a drilled pane. */
-export const ROUTE_DRILL_HEADER_HEIGHT = 34;
+const ROUTE_DRILL_HEADER_HEIGHT = 34;
 
 /** Drilled height: the back header plus the pane, capped to a comfortable
  *  share of the surface so one long list never swallows the whole screen. */

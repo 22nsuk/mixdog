@@ -1,4 +1,5 @@
 import type { BrowserWindow } from 'electron';
+import { sleep } from '../shared/common';
 import { nativeToDip } from '../shared/native-coordinates';
 
 /** Return only readiness, never field contents or application text. */
@@ -59,7 +60,7 @@ export async function waitForElectronTypingTarget(
       if (timer) clearTimeout(timer);
     }
     if (performance.now() >= deadline) return false;
-    await new Promise((resolve) => setTimeout(resolve, Math.min(25, deadline - performance.now())));
+    await sleep(Math.min(25, deadline - performance.now()));
   } while (performance.now() < deadline);
   return false;
 }

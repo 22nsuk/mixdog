@@ -43,11 +43,7 @@ function useProblems(active: boolean) {
 }
 
 export const ProjectProblemCount = memo(function ProjectProblemCount({ projectPath }: { projectPath: string }) {
-  const language = React.useSyncExternalStore(
-    subscribeEditorLanguageStore,
-    getEditorLanguageSnapshot,
-    getEditorLanguageSnapshot
-  );
+  const language = useProblems(true);
   const count = projectProblems(projectPath, language.problems).length;
   return count ? <i className="bottom-panel-tab-count">{count}</i> : null;
 });
@@ -89,11 +85,7 @@ export const WorkbenchProblemsSeverityActions = memo(function WorkbenchProblemsS
   onFilter(next: ProblemsPanelFilter): void;
   onCollapseAll(): void;
 }) {
-  const language = React.useSyncExternalStore(
-    subscribeEditorLanguageStore,
-    getEditorLanguageSnapshot,
-    getEditorLanguageSnapshot
-  );
+  const language = useProblems(true);
   const rows = projectProblems(projectPath, language.problems);
   const count = (severity: number) => rows.filter((problem) => problem.severity === severity).length;
   const errors = count(1);
@@ -252,6 +244,11 @@ export const WorkbenchProblemsPane = memo(function WorkbenchProblemsPane({
   };
   const openProblem = (problem: EditorProblem) =>
     onOpenFile?.(problem.projectPath, problem.relPath, problem.startLineNumber);
+  const problemRowKeyDown = (event: KeyboardEvent<HTMLElement>, problem: EditorProblem) => {
+    if (event.key === 'ArrowDown') focusTreeSibling(event, 1);
+    else if (event.key === 'ArrowUp') focusTreeSibling(event, -1);
+    else if (event.key === 'Enter') openProblem(problem);
+  };
 
   if (!projectPath) return <p className="utility-dock-empty">{t('Open a project to view problems.')}</p>;
   if (!rows.length) {
@@ -279,11 +276,7 @@ export const WorkbenchProblemsPane = memo(function WorkbenchProblemsPane({
             className="problem-table-row"
             data-severity={problem.severity}
             onClick={() => openProblem(problem)}
-            onKeyDown={(event) => {
-              if (event.key === 'ArrowDown') focusTreeSibling(event, 1);
-              else if (event.key === 'ArrowUp') focusTreeSibling(event, -1);
-              else if (event.key === 'Enter') openProblem(problem);
-            }}
+            onKeyDown={(event) => problemRowKeyDown(event, problem)}
           >
             <span>
               <ProblemSeverityIcon severity={problem.severity} />
@@ -345,11 +338,7 @@ export const WorkbenchProblemsPane = memo(function WorkbenchProblemsPane({
                     className="problem-tree-row"
                     data-severity={problem.severity}
                     onClick={() => openProblem(problem)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'ArrowDown') focusTreeSibling(event, 1);
-                      else if (event.key === 'ArrowUp') focusTreeSibling(event, -1);
-                      else if (event.key === 'Enter') openProblem(problem);
-                    }}
+                    onKeyDown={(event) => problemRowKeyDown(event, problem)}
                   >
                     <ProblemSeverityIcon severity={problem.severity} />
                     <span>

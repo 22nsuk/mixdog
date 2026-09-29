@@ -23,7 +23,7 @@ export function childrenText(node: ReactNode): string {
 export const MarkdownProjectContext = createContext('');
 /** Opens a Project file in Mixdog's editor at a line; the conversation host
  *  supplies it. Binary documents/media never come here — they go to the OS. */
-export type MarkdownOpenFile = (project: string, rel: string, line?: number, accessToken?: string) => void;
+type MarkdownOpenFile = (project: string, rel: string, line?: number, accessToken?: string) => void;
 export const MarkdownOpenFileContext = createContext<MarkdownOpenFile | null>(null);
 
 function displayPath(project: string, rel: string, suffix: string): string {
@@ -31,7 +31,7 @@ function displayPath(project: string, rel: string, suffix: string): string {
   return `${project.replace(/[\\/]+$/, '')}${separator}${rel.replace(/\//g, separator)}${suffix}`;
 }
 
-export interface LocalLinkTarget {
+interface LocalLinkTarget {
   /** False for web URLs, anchors and unsupported schemes. */
   local: boolean;
   /** True only after an automatic mention's resolved target has been statted. */

@@ -51,6 +51,26 @@ export function elapsedMs(startedAt: number): number {
   return Number((performance.now() - startedAt).toFixed(2));
 }
 
+/** The session Chrome remote-debugging setup runs under, so the host can exempt
+ *  its own setup work from the rules that apply to agent-driven Computer Use. */
+export const CHROME_SETUP_SESSION_ID = '__mixdog_browser_chrome_setup__';
+
+/** The session idle-resume observation runs under; bridge callers cannot use it. */
+export const USER_WAIT_SESSION_ID = '__computer_user_wait__';
+
+/** Drop the least recently inserted entries until the map fits `maxEntries`. */
+export function evictOldest(entries: Map<string, unknown>, maxEntries: number): void {
+  while (entries.size > maxEntries) {
+    const oldestKey = entries.keys().next().value;
+    if (oldestKey === undefined) break;
+    entries.delete(oldestKey);
+  }
+}
+
+export function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /** Where the host publishes its script, its discovery file, and run history. */
 export function mixdogDataDirectory(): string {
   return process.env.MIXDOG_DATA_DIR || join(process.env.MIXDOG_HOME || join(homedir(), '.mixdog'), 'data');

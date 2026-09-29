@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { BrowserNetworkLedger, formatNetworkHeaders } from './network.ts';
+import { BrowserNetworkLedger } from './network.ts';
+import { formatNetworkHeaders } from './network-report.ts';
 import { BrowserConsoleLedger } from './console.ts';
 import {
   browserDownloadExceedsLimit,
