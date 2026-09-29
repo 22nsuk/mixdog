@@ -38,6 +38,21 @@ function labelQuotaHistory(history, accountPool) {
   };
 }
 
+// The account each subscription is used through now, as its account pool
+// says: the one a question naming no account is about.
+function accountsInUse(accountPool) {
+  const inUse = {};
+  for (const provider of ACCOUNT_PROVIDERS) {
+    try {
+      const id = quotaText(accountPool(provider).selectedId);
+      if (id) inUse[provider] = id;
+    } catch {
+      /* an unreadable pool leaves the choice to the ledger */
+    }
+  }
+  return inUse;
+}
+
 /** `null` = all time. `0` = today. Anything else is a trailing day count. */
 function normalizeDays(value) {
   if (value === null || value === undefined || value === 'all') return null;
@@ -155,6 +170,7 @@ export function createUsageStatsApi({
       const selection = {
         provider: quotaText(options?.provider),
         account: quotaText(options?.account),
+        inUse: accountsInUse(accountPool),
         label: quotaText(options?.window),
       };
       if (options?.page != null) return store.quotaWindowsAsync({ ...selection, page: Number(options.page), now });

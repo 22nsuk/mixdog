@@ -6,6 +6,7 @@ import { JSDOM } from 'jsdom';
 import { CommandSurface } from './CommandSurface.tsx';
 import { focusQuotaUsage, peekQuotaFocus } from './usage-surface-mode.ts';
 import { prefetchQuotaUsage } from './quota-usage-cache.ts';
+import { applyAccountUsageWindows } from './usage-dashboard-store.ts';
 import { t } from './i18n.ts';
 import { usageMoney } from './usage-format.ts';
 import { UsageLedger, makeUsageRecord } from '../../../../src/runtime/shared/llm/usage-ledger.mjs';
@@ -36,13 +37,17 @@ function harness(context) {
 }
 
 // The real statistics API over `ledger` behind the usage dialog, read at
-// `viewedAt`, with `accounts` in every provider's account pool.
-function usageHost(context, ledger, { viewedAt = now, accounts = [{ id: 'default', label: 'Account 1' }] } = {}) {
+// `viewedAt`, with `accounts` in every provider's account pool, `pool.selectedId` in use.
+function usageHost(
+  context,
+  ledger,
+  { viewedAt = now, accounts = [{ id: 'default', label: 'Account 1' }], pool = { selectedId: null } } = {}
+) {
   context.mock.method(Date, 'now', () => viewedAt);
   const usage = createUsageStatsApi({
     ledger: () => ledger,
     importHistory: async () => {},
-    accountPool: () => ({ accounts }),
+    accountPool: () => ({ accounts, selectedId: pool.selectedId }),
   });
   const calls = [];
   const pages = [];
@@ -150,7 +155,6 @@ test('the usage dialog header switches to subscription usage and opens there nex
   assert.equal(window.localStorage.getItem('mixdog.desktop.usage-surface-mode.v1'), 'quota');
   assert.deepEqual(JSON.parse(window.localStorage.getItem('mixdog.desktop.usage-quota-subscription.v1')), {
     provider: 'anthropic-oauth',
-    account: 'default',
     window: '7D',
   });
 
@@ -259,8 +263,9 @@ test('subscription usage opens at once from its last answer, on the subscription
   await render({ ...props, open: false });
   gate.hold = true;
   await render(props);
-  // Codex has no weekly window here, so its five-hour one was shown — and is asked for again.
-  assert.deepEqual(calls.at(-1), { provider: 'openai-oauth', account: 'default', window: '5H', view: 'window' });
+  // Codex has no weekly window here, so its five-hour one was shown — and is
+  // asked for again, on the account in use.
+  assert.deepEqual(calls.at(-1), { provider: 'openai-oauth', account: '', window: '5H', view: 'window' });
   assert.equal(document.querySelector('.quota-surface').dataset.loading, undefined, 'the last answer paints at once');
   assert.equal(document.querySelectorAll('.stats-card > b')[0].textContent, '4%');
   await act(async () => gate.release());
@@ -457,4 +462,54 @@ test("a subscription is listed once and its accounts are picked beside it", asyn
     'another subscription opens on its account in use'
   );
   assert.equal(document.querySelector('.quota-account'), null, 'one account needs no second choice');
+});
+
+test('subscription usage follows the account in use when it switches', async (context) => {
+  const render = harness(context);
+  const ledger = new UsageLedger(':memory:');
+  context.after(() => ledger.close());
+  const reading = (account, ts, usedPct) => ({
+    provider: 'anthropic-oauth',
+    account,
+    label: '7D',
+    ts,
+    usedPct,
+    resetAt: resetAt + 5 * 24 * HOUR,
+  });
+  // Account 1 moved last, but the pool has Account 2 in use.
+  ledger.recordQuota([reading('work', at(0, 10), 100)]);
+  ledger.recordQuota([reading('default', at(0, 20), 30)]);
+  const pool = { selectedId: 'work' };
+  const { calls, api } = usageHost(context, ledger, {
+    accounts: [
+      { id: 'default', label: 'Account 1' },
+      { id: 'work', label: 'Account 2' },
+    ],
+    pool,
+  });
+  window.localStorage.setItem('mixdog.desktop.usage-surface-mode.v1', 'quota');
+  const props = { surface: 'stats', open: true, onClose() {}, api };
+  await render(props);
+  const shownAccount = () => document.querySelector('.quota-account .mx-select-value').textContent;
+  assert.equal(shownAccount(), 'Account 2', 'the account in use opens, not the one that moved last');
+  assert.equal(document.querySelectorAll('.stats-card > b')[0].textContent, '100%');
+
+  // The exhausted account is swapped out while the dialog is open.
+  pool.selectedId = 'default';
+  await act(async () => applyAccountUsageWindows('openai-oauth', undefined));
+  assert.equal(shownAccount(), 'Account 2', "another provider's switch changes nothing");
+  await act(async () => applyAccountUsageWindows('anthropic-oauth', undefined));
+  assert.deepEqual(calls.at(-1), { provider: 'anthropic-oauth', account: '', window: '7D', view: 'window' });
+  assert.equal(shownAccount(), 'Account 1');
+  assert.equal(document.querySelectorAll('.stats-card > b')[0].textContent, '30%');
+
+  // A reopening starts on the account in use again, whatever was picked before.
+  await act(async () => document.querySelector('.quota-account [role="combobox"]').click());
+  await act(async () =>
+    [...document.querySelectorAll('.mx-menu [role="option"]')].find((node) => node.textContent === 'Account 2').click()
+  );
+  assert.equal(shownAccount(), 'Account 2');
+  await render({ ...props, open: false });
+  await render(props);
+  assert.equal(shownAccount(), 'Account 1');
 });

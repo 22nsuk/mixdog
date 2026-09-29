@@ -86,6 +86,7 @@ let cadenceApi: UsageApi | undefined;
 let accountChangesApi: UsageApi | undefined;
 let releaseAccountChanges: (() => void) | null = null;
 const latestAccountChanges = new Map<string, { accountId: string; at: number }>();
+let accountSwitchListeners = new Set<(provider: string) => void>();
 let retirementQueued = false;
 const timers = new Set<number>();
 
@@ -254,6 +255,7 @@ function ensureHost(): Window | null {
   cadenceApi = undefined;
   latestAccountChanges.clear();
   listeners = new Set();
+  accountSwitchListeners = new Set();
   host = active;
   hostGeneration += 1;
   snapshot = active ? { dashboard: readCache(active), refreshedAt: 0, loading: false, status: 'idle' } : EMPTY_SNAPSHOT;
@@ -340,6 +342,17 @@ export function publishUsageDashboard(dashboard: unknown): boolean {
   return true;
 }
 
+/** Hears every switch of a provider's account in use — automatic or picked
+ *  by hand — so subscription usage can follow it to the new account. */
+export function subscribeAccountSwitches(listener: (provider: string) => void): () => void {
+  ensureHost();
+  accountSwitchListeners.add(listener);
+  const owner = accountSwitchListeners;
+  return () => {
+    owner.delete(listener);
+  };
+}
+
 /** Account switch repaint: the newly selected account's own last-known quota
  *  windows replace that provider's meters at once, so the surface never keeps
  *  showing the PREVIOUS account's numbers while the confirming refresh is in
@@ -351,6 +364,7 @@ export function applyAccountUsageWindows(provider: string, windows: unknown): bo
   const win = ensureHost();
   if (!win) return false;
   const id = String(provider || '');
+  if (id) for (const listener of [...accountSwitchListeners]) listener(id);
   const rows = Array.isArray(snapshot.dashboard.rows) ? (snapshot.dashboard.rows as UsageRecord[]) : [];
   const index = rows.findIndex((row) => String(row?.id || '') === id);
   if (!id || index < 0) return false;

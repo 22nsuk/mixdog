@@ -38,6 +38,7 @@ import {
   type StatsView,
 } from './usage-stats-model';
 import { clearQuotaFocus, writeQuotaSubscription } from './usage-surface-mode';
+import { subscribeAccountSwitches } from './usage-dashboard-store';
 
 type QuotaView = StatsView | 'window';
 type QuotaQuery = {
@@ -390,7 +391,9 @@ export function QuotaUsageBody({ api }: { api: QuotaApi }) {
           // The next opening asks for what was shown, which may differ from
           // what was asked (a default window, a window this one lacks).
           rememberQuotaAnswer(api, quotaArgs({ ...query, ...resolved }), answer);
-          writeQuotaSubscription(resolved);
+          // Openings ask for the account in use without naming it.
+          if (!query.account) rememberQuotaAnswer(api, quotaArgs({ ...query, ...resolved, account: '' }), answer);
+          writeQuotaSubscription({ provider: resolved.provider, window: resolved.window });
         }
       })
       .catch((reason) => {
@@ -410,6 +413,23 @@ export function QuotaUsageBody({ api }: { api: QuotaApi }) {
   const provider = String(selection.provider || query.provider);
   const account = String(selection.account || '');
   const label = String(selection.label || query.window);
+
+  // The shown subscription switching its account in use (an exhausted one
+  // replaced automatically, or another picked by hand) moves to the new one.
+  useEffect(
+    () =>
+      subscribeAccountSwitches((switched) => {
+        if (switched !== provider) return;
+        setQuery((current) => ({
+          ...current,
+          provider,
+          account: '',
+          window: label,
+          ...(current.view === 'window' ? { anchor: undefined } : {}),
+        }));
+      }),
+    [provider, label]
+  );
 
   // The window history is read on its own, a page at a time, for the
   // subscription and window on show; another one starts at its newest page.

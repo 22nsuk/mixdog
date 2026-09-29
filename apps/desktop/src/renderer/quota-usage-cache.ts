@@ -64,12 +64,13 @@ export function readQuotaAnswer(api: QuotaApi, question: Row): Promise<Row> {
 }
 
 /** What subscription usage opens on: the meter that asked, else the
- *  subscription and window shown last, else the one in use. */
+ *  subscription and window shown last, else the one in use — always on the
+ *  account in use, which an account switch may have changed since. */
 export function openingQuotaQuestion(focus: QuotaFocus | null = peekQuotaFocus()) {
   const last = focus ? null : readQuotaSubscription();
   return {
     provider: focus?.provider || last?.provider || '',
-    account: last?.account || '',
+    account: '',
     window: focus?.window || last?.window || '',
     view: 'window' as const,
   };

@@ -148,10 +148,14 @@ function listQuotaSeries(db) {
 // on its shortest.
 const WEEKLY_WINDOW = /^(?:7D|W)$/i;
 
-function pickSelection(series, { provider, account, label }) {
+// No account asked for: the one its account pool has in use (`inUse`, per
+// provider), else the one whose meter moved last.
+function pickSelection(series, { provider, account, label, inUse = {} }) {
+  const chosen = provider || series[0]?.provider;
+  const accountId = account || inUse[chosen] || '';
   const entry =
-    series.find((row) => row.provider === provider && row.account === account) ||
-    series.find((row) => row.provider === provider) ||
+    series.find((row) => row.provider === chosen && row.account === accountId) ||
+    series.find((row) => row.provider === chosen) ||
     series[0];
   if (!entry) return null;
   const wanted = String(label || '').toLowerCase();
@@ -577,10 +581,20 @@ function readQuotaRows(db, { provider, account, label }) {
  */
 export function readQuotaHistory(
   db,
-  { provider = '', account = '', label = '', view = 'window', anchor = null, fromMs = null, toMs = null, now = Date.now() } = {}
+  {
+    provider = '',
+    account = '',
+    label = '',
+    inUse = {},
+    view = 'window',
+    anchor = null,
+    fromMs = null,
+    toMs = null,
+    now = Date.now(),
+  } = {}
 ) {
   const subscriptions = listQuotaSeries(db);
-  const selection = pickSelection(subscriptions, { provider, account, label });
+  const selection = pickSelection(subscriptions, { provider, account, label, inUse });
   const base = { generatedAt: now, view, subscriptions, selection };
   if (!selection) return { ...base, period: null };
   const rows = readQuotaRows(db, selection);
@@ -731,8 +745,11 @@ export function readQuotaHistory(
  * opened, with its peak, the shape it rose in and what the requests behind it
  * cost. `page` is clamped to the pages there are.
  */
-export function readQuotaWindows(db, { provider = '', account = '', label = '', page = 0, now = Date.now() } = {}) {
-  const selection = pickSelection(listQuotaSeries(db), { provider, account, label });
+export function readQuotaWindows(
+  db,
+  { provider = '', account = '', label = '', inUse = {}, page = 0, now = Date.now() } = {}
+) {
+  const selection = pickSelection(listQuotaSeries(db), { provider, account, label, inUse });
   const base = { generatedAt: now, selection, page: 0, pageCount: 0, total: 0, windows: [] };
   if (!selection) return base;
   const listed = quotaInstances(readQuotaRows(db, selection), selection.label, now)
