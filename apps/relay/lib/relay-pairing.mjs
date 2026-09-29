@@ -6,7 +6,13 @@ import { randomUUID } from 'node:crypto';
 
 import { clientProfile } from './device-store.mjs';
 import { isRoutingId } from './ids.mjs';
-import { browserSocketOriginAllowed, clientIp, decodedRequestPath, desktopLegOpen } from './relay-http.mjs';
+import {
+  browserSocketOriginAllowed,
+  clientIp,
+  decodedRequestPath,
+  desktopLegOpen,
+  requestUrl,
+} from './relay-http.mjs';
 import { pairingCookieHeaders, parseCookieToken } from './static-http.mjs';
 
 export const MAX_PENDING_CLAIMS = 64;
@@ -51,8 +57,9 @@ function readBoundedJson(request, maxBytes = 8 * 1024) {
 /** The registration's request URL and JSON body, or null when either is
  *  malformed or oversized. */
 async function registrationInput(request) {
+  const url = requestUrl(request);
+  if (!url) return null;
   try {
-    const url = new URL(request.url || '/', 'http://localhost');
     return { url, body: await readBoundedJson(request) };
   } catch {
     return null;

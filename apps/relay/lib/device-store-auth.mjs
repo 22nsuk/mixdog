@@ -30,7 +30,7 @@ function hashesMatch(expectedHex, candidate) {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-export function readDeviceCredentials(request, _url) {
+export function readDeviceCredentials(request) {
   const authorization = String(request.headers?.authorization || '');
   const match = /^Basic\s+([A-Za-z0-9+/]+={0,2})$/i.exec(authorization);
   if (match) {

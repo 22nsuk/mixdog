@@ -50,6 +50,7 @@ import {
   clientIp,
   desktopLegOpen,
   phoneClientCapacityAvailable,
+  requestUrl,
 } from './lib/relay-http.mjs';
 import { MAX_HOOK_PENDING_PER_DEVICE, failHookPending, handleHookRequest, runHookLeg } from './lib/relay-hook.mjs';
 import { failMediaPending, handleMediaRequest } from './lib/relay-media-proxy.mjs';
@@ -396,29 +397,29 @@ function rejectUpgrade(rawSocket, status = 401, reason = 'Unauthorized') {
   rawSocket.destroy();
 }
 
+function rejectLeg(rawSocket, status) {
+  rejectUpgrade(rawSocket, status, status === 429 ? 'Too Many Requests' : 'Unauthorized');
+}
+
 // Trust-on-first-use keeps setup zero-config, but only a bounded number of
 // NEW ids may be minted per source; a known device re-dialing is free.
 // A FAILED attempt is charged to the caller either way — otherwise a known
 // device id is a free oracle for guessing its secret at network speed.
 // authenticateLeg answers 0 = authenticated, otherwise the HTTP status to
 // reject the upgrade with.
-function rejectLeg(rawSocket, status) {
-  rejectUpgrade(rawSocket, status, status === 429 ? 'Too Many Requests' : 'Unauthorized');
-}
-
 /** The device id a desktop or hook leg authenticated as, or null once the
  *  upgrade has been rejected. */
-function authenticatedLegDevice(relay, request, url, rawSocket) {
+function authenticatedLegDevice(relay, request, rawSocket) {
   const { store, registerLimiter, unauthorizedLimiter } = relay;
-  const { deviceId, secret } = readDeviceCredentials(request, url);
+  const { deviceId, secret } = readDeviceCredentials(request);
   const denied = authenticateLeg(store, registerLimiter, unauthorizedLimiter, request, deviceId, secret);
   if (!denied) return deviceId;
   rejectLeg(rawSocket, denied);
   return null;
 }
 
-function upgradeDesktopLeg(relay, request, url, rawSocket, head) {
-  const deviceId = authenticatedLegDevice(relay, request, url, rawSocket);
+function upgradeDesktopLeg(relay, request, rawSocket, head) {
+  const deviceId = authenticatedLegDevice(relay, request, rawSocket);
   if (deviceId === null) return;
   relay.wss.handleUpgrade(request, rawSocket, head, (socket) =>
     runDesktopLeg(
@@ -503,8 +504,8 @@ function closeUnpairedPhone(relay, request, rawSocket, head) {
 
 // Channel-worker webhook tunnel: same trust-on-first-use device model as the
 // desktop leg (worker mints its own id/secret pair).
-function upgradeHookLeg(relay, request, url, rawSocket, head) {
-  const deviceId = authenticatedLegDevice(relay, request, url, rawSocket);
+function upgradeHookLeg(relay, request, rawSocket, head) {
+  const deviceId = authenticatedLegDevice(relay, request, rawSocket);
   if (deviceId === null) return;
   relay.wss.handleUpgrade(request, rawSocket, head, (socket) =>
     runHookLeg(relay.liveHooks, deviceId, socket, { ingress: relay.legIngress, rawSocket })
@@ -512,15 +513,13 @@ function upgradeHookLeg(relay, request, url, rawSocket, head) {
 }
 
 function handleUpgrade(relay, request, rawSocket, head) {
-  let url;
-  try {
-    url = new URL(request.url || '/', 'http://localhost');
-  } catch {
+  const url = requestUrl(request);
+  if (!url) {
     rawSocket.destroy();
     return;
   }
   if (url.pathname === '/desktop') {
-    upgradeDesktopLeg(relay, request, url, rawSocket, head);
+    upgradeDesktopLeg(relay, request, rawSocket, head);
     return;
   }
   if (url.pathname === '/ws') {
@@ -528,7 +527,7 @@ function handleUpgrade(relay, request, rawSocket, head) {
     return;
   }
   if (url.pathname === '/hookleg') {
-    upgradeHookLeg(relay, request, url, rawSocket, head);
+    upgradeHookLeg(relay, request, rawSocket, head);
     return;
   }
   rawSocket.destroy();

@@ -4,7 +4,8 @@
 // Payloads pass through un-inspected; HMAC verification stays on the agent.
 import { randomUUID } from 'node:crypto';
 
-import { clientIp, desktopLegOpen, upstreamStatus } from './relay-http.mjs';
+import { isRoutingId } from './ids.mjs';
+import { clientIp, desktopLegOpen, requestUrl, upstreamStatus } from './relay-http.mjs';
 import { guarded, noteIngressDelivery, releaseIngressLeg, trackLegIngress } from './relay-transport.mjs';
 
 const MAX_HOOK_BODY_BYTES = 1024 * 1024;
@@ -40,15 +41,13 @@ function destroyRequest(request) {
 // caller itself on refusal and returns null; otherwise the leg entry plus the
 // parsed route.
 function admitHookRequest(liveHooks, hookLimiter, maxPending, request, response) {
-  let url;
-  try {
-    url = new URL(request.url || '/', 'http://localhost');
-  } catch {
+  const url = requestUrl(request);
+  if (!url) {
     response.writeHead(400).end();
     return null;
   }
-  const match = url.pathname.match(/^\/hook\/([0-9a-f-]{8,64})(\/.*)?$/);
-  if (!match) {
+  const match = url.pathname.match(/^\/hook\/([^/]+)(\/.*)?$/);
+  if (!match || !isRoutingId(match[1])) {
     response.writeHead(404, { 'Content-Type': 'application/json' }).end('{"error":"not found"}');
     return null;
   }
@@ -190,7 +189,7 @@ export function failHookPending(entry) {
 }
 
 export function runHookLeg(liveHooks, deviceId, socket, options = {}) {
-  const { ingress = undefined, rawSocket = null } = options;
+  const { ingress, rawSocket = null } = options;
   trackLegIngress(socket, rawSocket, { ...ingress, limit: MAX_HOOK_BODY_BYTES });
   const previous = liveHooks.get(deviceId);
   if (previous) {

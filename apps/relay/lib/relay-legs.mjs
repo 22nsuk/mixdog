@@ -220,7 +220,7 @@ export function runDesktopLeg(context, deviceId, socket) {
     liveDesktops,
     claims,
     maxFrameBytes = MAX_FRAME_BYTES,
-    ingress = undefined,
+    ingress,
     rawSocket = null,
   } = context;
   const entry = attachDesktop(deviceId, socket);
@@ -385,7 +385,7 @@ export function runClientLeg(entry, sendJson, socket, browserClientId = null, op
   const {
     maxFrameBytes = MAX_FRAME_BYTES,
     inflightCeiling = MAX_INFLIGHT_BYTES,
-    ingress = undefined,
+    ingress,
     rawSocket = null,
   } = options;
   const clientId = randomUUID();

@@ -5,7 +5,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { parseMediaRequest } from './media-http.mjs';
-import { desktopLegOpen, endText, rejectUnauthorizedText, upstreamStatus } from './relay-http.mjs';
+import { desktopLegOpen, endText, rejectUnauthorizedText, requestUrl, upstreamStatus } from './relay-http.mjs';
 import { parseCookieToken } from './static-http.mjs';
 
 // A desktop that goes quiet mid-clip must not pin an open response forever:
@@ -42,10 +42,8 @@ function decodePathname(pathname) {
  * response. Payloads pass through un-inspected, exactly like /hook.
  */
 export function handleMediaRequest(store, liveDesktops, unauthorizedLimiter, request, response) {
-  let url;
-  try {
-    url = new URL(request.url || '/', 'http://localhost');
-  } catch {
+  const url = requestUrl(request);
+  if (!url) {
     response.writeHead(400).end();
     return;
   }

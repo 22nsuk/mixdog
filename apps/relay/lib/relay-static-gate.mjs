@@ -13,6 +13,7 @@ import {
   sendDeviceManifest,
   sendStaticFile,
 } from './static-http.mjs';
+import { isRoutingId } from './ids.mjs';
 import { decodedRequestPath, endText, rejectUnauthorizedText } from './relay-http.mjs';
 
 export const PUBLIC_APP_ASSETS = new Set([
@@ -26,8 +27,8 @@ export const PUBLIC_APP_ASSETS = new Set([
  *  is a routing label, never a credential: it opens the shell that asks for
  *  approval and nothing else. */
 export function parseDeviceRoute(pathname) {
-  const match = /^\/d\/([0-9a-f-]{8,64})(\/.*)?$/.exec(String(pathname || ''));
-  if (!match) return null;
+  const match = /^\/d\/([^/]+)(\/.*)?$/.exec(String(pathname || ''));
+  if (!match || !isRoutingId(match[1])) return null;
   const rest = match[2] || '';
   return {
     deviceId: match[1],

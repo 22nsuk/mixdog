@@ -40,11 +40,21 @@ export function desktopLegOpen(entry) {
   return Boolean(entry) && entry.socket.readyState === entry.socket.OPEN;
 }
 
+/** The request line as a URL, or null when it cannot be parsed. */
+export function requestUrl(request) {
+  try {
+    return new URL(request.url || '/', 'http://localhost');
+  } catch {
+    return null;
+  }
+}
+
 /** `{ url, pathname }` for the request line, or null when it cannot be parsed
  *  (malformed URL or percent-encoding). */
 export function decodedRequestPath(request) {
+  const url = requestUrl(request);
+  if (!url) return null;
   try {
-    const url = new URL(request.url || '/', 'http://localhost');
     return { url, pathname: decodeURIComponent(url.pathname) };
   } catch {
     return null;
