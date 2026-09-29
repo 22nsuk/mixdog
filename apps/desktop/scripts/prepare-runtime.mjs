@@ -5,7 +5,8 @@ import { dirname, join, relative, resolve, sep } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { createPackageWithOptions, listPackage, statFile } from '@electron/asar';
+import { listPackage, statFile } from '@electron/asar';
+import { createAsarPackage } from './asar-pack.mjs';
 import { embeddingRuntimeTarget, pruneEmbeddingRuntime } from '../../../scripts/prune-embedding-runtime.mjs';
 import { pruneDesktopPtyPackage, pruneDesktopRuntime } from '../../../scripts/prune-desktop-runtime.mjs';
 import { nativeBinaryRunsOn } from '../../../scripts/native-binary-arch.mjs';
@@ -622,7 +623,7 @@ async function prepareRuntime(manifest, fingerprint) {
     await timed('asar-create', async () => {
       for (let attempt = 1; ; attempt += 1) {
         try {
-          await createPackageWithOptions(stagingDir, runtimeArchive, {
+          await createAsarPackage(stagingDir, runtimeArchive, {
             dot: true,
             // @electron/asar matches this against absolute Windows paths with
             // matchBase enabled. A basename glob is therefore portable; **/*.node is

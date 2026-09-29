@@ -4,7 +4,8 @@ import { createRequire } from 'node:module';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { createPackageWithOptions, extractFile, listPackage, statFile } from '@electron/asar';
+import { extractFile, listPackage, statFile } from '@electron/asar';
+import { createAsarPackage } from './asar-pack.mjs';
 
 const require = createRequire(import.meta.url);
 const { readAsarHeader } = require('app-builder-lib/out/asar/asar.js');
@@ -817,7 +818,7 @@ async function stageShell({ installDir, artifactDir }) {
   await rm(join(stagingRoot, 'out', 'main', 'capture-window.js'), { force: true });
   await rm(join(stagingRoot, ...ptyPackageSegments), { recursive: true, force: true });
   try {
-    await createPackageWithOptions(stagingRoot, artifactArchive, fastDirectAsarOptions());
+    await createAsarPackage(stagingRoot, artifactArchive, fastDirectAsarOptions());
   } finally {
     // The cache keeps only the immutable installed shell. Current build output
     // is short-lived so a failed stage cannot be mistaken for a clean template.

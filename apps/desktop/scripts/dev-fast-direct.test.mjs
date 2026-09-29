@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import test from 'node:test';
 
-import { createPackageWithOptions, extractAll, statFile } from '@electron/asar';
+import { extractAll, statFile } from '@electron/asar';
+import { createAsarPackage } from './asar-pack.mjs';
 
 import {
   asarPath,
@@ -76,7 +77,7 @@ test('FastDirect keeps Electron ESM entry points packed', async (context) => {
     await writeFile(target, file);
   }
 
-  await createPackageWithOptions(staging, archive, fastDirectAsarOptions());
+  await createAsarPackage(staging, archive, fastDirectAsarOptions());
 
   assert.equal(Boolean(statFile(archive, asarPath('out/main/index.js'), false).unpacked), false);
   assert.equal(Boolean(statFile(archive, asarPath('out/preload/index.js'), false).unpacked), false);
@@ -322,7 +323,7 @@ async function packProductionDependencyFixture(context, files) {
     await writeFile(target, typeof contents === 'string' ? contents : `${JSON.stringify(contents)}\n`);
   }
   const archive = join(root, 'app.asar');
-  await createPackageWithOptions(staging, archive, {});
+  await createAsarPackage(staging, archive, {});
   return { root, archive };
 }
 
@@ -499,7 +500,7 @@ async function packStagedShellFixture(context) {
     await writeFile(target, content);
   }
   const archive = join(root, 'app.asar');
-  await createPackageWithOptions(source, archive, {
+  await createAsarPackage(source, archive, {
     unpack: '{daemon.cjs,*.node}',
     unpackDir: asarPath('out/renderer'),
   });
