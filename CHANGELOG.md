@@ -5,6 +5,8 @@ the Unreleased section is empty, and stamps it with the released version.
 
 ## Unreleased
 
+## v0.9.174 - 2026-09-29
+
 - The usage dialog now answers a second question: how a subscription's quota
   was used up. Next to token usage, a Subscription usage tab follows each
   provider's own limit windows — Codex, Claude, Grok, Cursor, Antigravity and
