@@ -132,13 +132,16 @@ bench-results/
 /*.pptx
 /*.mixdog-preview.pdf
 /*.mixdog-preview-page-*.png
-# Office/design outputs and run-investigation scratch. Files already tracked
-# inside stay tracked; new renders, edits and probe dumps are never product
-# inputs and are regenerated on demand.
+# Office/design outputs, local build output and run-investigation scratch:
+# renders, edits, probe dumps and screenshots are never product inputs and
+# are regenerated on demand.
 /.runtime/
 /deliverables/
+/dist/
 /output/
 /outputs/
+/.tm-*.png
+/.tmp-*.txt
 __pycache__/
 
 apps/desktop/.tmp-dev/
