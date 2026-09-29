@@ -776,7 +776,15 @@ function xlsxCellDigest(cell, defaults) {
 function xlsxDocumentDigest(document) {
   if (document?.format !== 'xlsx' || !Array.isArray(document.sheets)) return document;
   const defaults = document.defaultStyle || null;
-  return { ...document, sheets: document.sheets.map((sheet) => xlsxSheetDigest(sheet, defaults)) };
+  const digest = { ...document, sheets: document.sheets.map((sheet) => xlsxSheetDigest(sheet, defaults)) };
+  // A workbook with no defined names and no calculation settings said so as definedNames:[], definedNameCount:0,
+  // and calculation:{ mode:'', fullCalcOnLoad:false, forceFullCalc:false }; absent reads the same.
+  if (Array.isArray(digest.definedNames) && !digest.definedNames.length) {
+    delete digest.definedNames;
+    if (digest.definedNameCount === 0) delete digest.definedNameCount;
+  }
+  if (plainObject(digest.calculation) && Object.values(digest.calculation).every((value) => !value)) delete digest.calculation;
+  return digest;
 }
 
 // A Word paragraph of one plain run repeats its text in that run, and the main
@@ -929,11 +937,13 @@ function docxDocumentDigest(document) {
     digest.sections = digest.sections.map((section) => {
       if (!section || typeof section !== 'object') return section;
       const rest = { ...section };
-      for (const key of ['topMargin', 'bottomMargin', 'leftMargin', 'rightMargin']) {
+      for (const key of ['topMargin', 'bottomMargin', 'leftMargin', 'rightMargin', 'columnSpacing']) {
         if (typeof rest[key] === 'number') rest[key] = round2(rest[key]);
       }
       if (rest.orientation === 0) rest.orientation = 'portrait';
       else if (rest.orientation === 1) rest.orientation = 'landscape';
+      // A single column is every section's default; a section says so only when it lays its text out in more.
+      if (rest.columns === 1) delete rest.columns;
       // A story Word breaks into paragraphs with \r reads with \n, as the portable reader joins them; an empty header
       // or footer (Word keeps one on every section) says nothing.
       if (Array.isArray(rest.stories)) {

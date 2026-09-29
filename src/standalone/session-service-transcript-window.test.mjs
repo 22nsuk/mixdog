@@ -53,7 +53,10 @@ test('a paging view receives a bounded tail, live patches against it, and older 
   try {
     await service.createSession({ sessionId: id });
     const first = await service.subscribeSession({ sessionId: id, ...TAIL }, viewer);
-    assert.deepEqual(ids(first.full.items), Array.from({ length: 32 }, (_, index) => `i${68 + index}`));
+    assert.deepEqual(
+      ids(first.full.items),
+      Array.from({ length: 32 }, (_, index) => `i${68 + index}`)
+    );
     assert.equal(first.full.transcriptHasOlder, true);
     let baseline = first.full;
     let revision = first.revision;
@@ -73,7 +76,10 @@ test('a paging view receives a bounded tail, live patches against it, and older 
     const older = await service.readSession({ sessionId: id, baseRevision: revision, transcriptItemLimit: 64 });
     baseline = older.patch ? applySessionStatePatch(baseline, older.patch) : older.full;
     revision = older.revision;
-    assert.deepEqual(ids(baseline.items), Array.from({ length: 64 }, (_, index) => `i${37 + index}`));
+    assert.deepEqual(
+      ids(baseline.items),
+      Array.from({ length: 64 }, (_, index) => `i${37 + index}`)
+    );
     assert.equal(baseline.transcriptHasOlder, true);
 
     // Live work arriving after the page still patches the grown baseline.
@@ -84,7 +90,10 @@ test('a paging view receives a bounded tail, live patches against it, and older 
     assert.equal(afterPage.baseRevision, revision);
     assert.deepEqual(afterPage.patch.itemsAppend, { from: 64, values: [item('i101')] });
     baseline = applySessionStatePatch(baseline, afterPage.patch);
-    assert.deepEqual(ids(baseline.items), Array.from({ length: 65 }, (_, index) => `i${37 + index}`));
+    assert.deepEqual(
+      ids(baseline.items),
+      Array.from({ length: 65 }, (_, index) => `i${37 + index}`)
+    );
     assert.equal(new Set(ids(baseline.items)).size, baseline.items.length, 'no duplicates');
 
     // Paging to the start reports that nothing older exists.
@@ -230,10 +239,16 @@ test('a cold paging view reads a bounded stored tail and grows it on demand', as
   try {
     const tail = await service.subscribeSession({ sessionId: id, ...TAIL }, { clientToken: 'viewer' });
     // Ten 200 KB rows exceed the 1 MB budget; the floor keeps eight.
-    assert.deepEqual(ids(tail.full.items), Array.from({ length: 8 }, (_, index) => `c${92 + index}`));
+    assert.deepEqual(
+      ids(tail.full.items),
+      Array.from({ length: 8 }, (_, index) => `c${92 + index}`)
+    );
     assert.equal(tail.full.transcriptHasOlder, true);
     const page = await service.readSession({ sessionId: id, transcriptItemLimit: 80 });
-    assert.deepEqual(ids(page.full.items), Array.from({ length: 80 }, (_, index) => `c${20 + index}`));
+    assert.deepEqual(
+      ids(page.full.items),
+      Array.from({ length: 80 }, (_, index) => `c${20 + index}`)
+    );
     assert.equal(page.full.transcriptHasOlder, true);
     // An old client names no window and keeps the 512-item resume page.
     const legacy = await service.readSession({ sessionId: id, open: {} });
@@ -276,7 +291,9 @@ function coldHistoryService(history) {
 
 test('a cold older-history page reveals up to 64 rows within its byte budget, keeping every held row', async () => {
   // Oldest 40 rows are 150 KB, the newest 100 are 1 KB.
-  const history = Array.from({ length: 140 }, (_, index) => item(`p${index}`, 'z'.repeat(index < 40 ? 150_000 : 1_000)));
+  const history = Array.from({ length: 140 }, (_, index) =>
+    item(`p${index}`, 'z'.repeat(index < 40 ? 150_000 : 1_000))
+  );
   const service = coldHistoryService(history);
   const viewer = { clientToken: 'viewer' };
   try {
@@ -340,7 +357,10 @@ test('a live older-history page is byte-budgeted, and so is durable history abov
     // 18 small rows, then three 300 KB rows fit; a fourth would pass 1 MB.
     const grown = await service.readSession({ sessionId: id, baseRevision: tail.revision, ...page(32) }, viewer);
     const items = grown.patch ? applySessionStatePatch(tail.full, grown.patch).items : grown.full.items;
-    assert.deepEqual(ids(items), Array.from({ length: 53 }, (_, index) => `l${47 + index}`));
+    assert.deepEqual(
+      ids(items),
+      Array.from({ length: 53 }, (_, index) => `l${47 + index}`)
+    );
   } finally {
     await service.stop('test complete');
   }
@@ -385,7 +405,13 @@ function adoptionService() {
     sessionExists: async () => true,
     readStoredSession: async (sessionId, options) => {
       const limit = options.transcriptItemLimit;
-      return { sessionId, projectionStamp: `s${limit}`, items: history.slice(-limit), transcriptHasOlder: true, queued: [] };
+      return {
+        sessionId,
+        projectionStamp: `s${limit}`,
+        items: history.slice(-limit),
+        transcriptHasOlder: true,
+        queued: [],
+      };
     },
     createSessionRuntime: async () => {
       let state = { sessionId: '', items: [], queued: [] };

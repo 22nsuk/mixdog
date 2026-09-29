@@ -1,29 +1,15 @@
-import type React from 'react';
 import type { DesktopCapability, DesktopModelSelection } from '../shared/contract';
-import type { CommandSurface as CommandSurfaceName } from './slash-commands';
+import type { CommandSurface as CommandSurfaceName, SettingsSection } from './slash-commands';
+import type { SurfaceApi } from './command-surface-cache';
 import { commandSurfaceDisplaySnapshot } from './command-surface-state';
-import { t } from './i18n';
 import { ContextBody } from './ContextBody';
-import { UsageStatsBody } from './UsageStatsSurface';
+import { UsageSurfaceBody } from './UsageSurface';
+import type { UsageSurfaceMode } from './usage-surface-mode';
 import { UsageBody } from './command-surface-usage';
 import { InheritBody } from './command-surface-inherit';
+import { DoctorBody } from './command-surface-doctor';
 
 type SurfaceRun = (capability: DesktopCapability, args?: unknown[]) => Promise<unknown>;
-
-export function pretty(value: unknown): string {
-  return typeof value === 'string' ? value : JSON.stringify(value, null, 2);
-}
-
-export function Group({ title, children }: React.PropsWithChildren<{ title: string }>) {
-  return (
-    <section className="settings-group">
-      <header>
-        <h3>{title}</h3>
-      </header>
-      <div className="settings-group-body">{children}</div>
-    </section>
-  );
-}
 
 export function SurfaceBody({
   surface,
@@ -32,10 +18,13 @@ export function SurfaceBody({
   sessionId,
   onInherit,
   onClose,
+  onOpenSettings,
   loading,
   pending,
   run,
   request,
+  api,
+  usageMode = 'tokens',
 }: {
   surface: CommandSurfaceName;
   data: Record<string, unknown>;
@@ -43,10 +32,15 @@ export function SurfaceBody({
   sessionId?: string;
   onInherit?: (sourceSessionId: string, route: DesktopModelSelection) => Promise<void>;
   onClose?: () => void;
+  /** /doctor only: open the settings page that fixes a failing check. */
+  onOpenSettings?: (section: SettingsSection) => void;
   loading?: boolean;
   pending: string;
   run: SurfaceRun;
   request: SurfaceRun;
+  api: SurfaceApi;
+  /** Which question the usage dialog shows (its header tabs choose). */
+  usageMode?: UsageSurfaceMode;
 }) {
   const busy = Boolean(pending);
   if (surface === 'context') {
@@ -63,7 +57,7 @@ export function SurfaceBody({
     return <UsageBody data={data} />;
   }
   if (surface === 'stats') {
-    return <UsageStatsBody data={data} request={request} loading={loading} />;
+    return <UsageSurfaceBody data={data} request={request} api={api} loading={loading} mode={usageMode} />;
   }
   if (surface === 'inherit') {
     return (
@@ -78,12 +72,12 @@ export function SurfaceBody({
   }
   if (surface === 'doctor') {
     return (
-      <Group title={t('Diagnostic result')}>
-        <pre className="tool-detail">{pretty(data.runDoctor) || t('No data available.')}</pre>
-        <button type="button" disabled={busy} onClick={() => void run('runDoctor')}>
-          {t('Run diagnostics again')}
-        </button>
-      </Group>
+      <DoctorBody
+        value={data.runDoctor}
+        running={busy}
+        onRerun={() => void run('runDoctor')}
+        onOpenSettings={onOpenSettings}
+      />
     );
   }
   return null;

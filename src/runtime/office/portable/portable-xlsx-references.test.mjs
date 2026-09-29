@@ -9,6 +9,7 @@ import JSZip from 'jszip';
 import { zipText } from './portable-opc.mjs';
 import { createPortableChartWorkbook } from './portable-package.mjs';
 import { applyXlsx } from './portable-xlsx.mjs';
+import { resolveCellStyles } from './portable-sheet-styles.mjs';
 
 const SHEET = 'xl/worksheets/sheet1.xml';
 
@@ -59,7 +60,10 @@ test('a pivot table records the source range it read', async () => {
 test('a line chart draws the line without a marker on every point, as Excel draws chartType line', async () => {
   const zip = await workbook();
   await applyXlsx(zip, [{ op: 'add_chart', chartType: 'line', range: 'A1:C4', cell: 'E2' }]);
-  const chart = await zipText(zip, Object.keys(zip.files).find((name) => /^xl\/charts\/chart\d+\.xml$/.test(name)));
+  const chart = await zipText(
+    zip,
+    Object.keys(zip.files).find((name) => /^xl\/charts\/chart\d+\.xml$/.test(name))
+  );
   assert.match(chart, /<c:lineChart>[\s\S]*<c:ser>[\s\S]*?<c:marker><c:symbol val="none"\/><\/c:marker>/);
 });
 
@@ -73,7 +77,9 @@ test('a numeric field across the top lays out one column per value, and the pivo
       ['Government', 2014, 8501527.89],
     ])
   );
-  await applyXlsx(zip, [{ op: 'add_pivot_table', source: 'A1:C5', destination: 'E1', rows: 'Segment', columns: 'Year', values: 'Profit' }]);
+  await applyXlsx(zip, [
+    { op: 'add_pivot_table', source: 'A1:C5', destination: 'E1', rows: 'Segment', columns: 'Year', values: 'Profit' },
+  ]);
   const sheet = await zipText(zip, SHEET);
   // Heading row, then the years as numbers in order, then the grand total.
   assert.match(sheet, /<c r="F2"[^>]*><v>2013<\/v><\/c><c r="G2"[^>]*><v>2014<\/v><\/c>/);
@@ -82,7 +88,40 @@ test('a numeric field across the top lays out one column per value, and the pivo
     await zipText(zip, 'xl/pivotCache/pivotCacheDefinition1.xml'),
     /<cacheField name="Year" numFmtId="0"><sharedItems[^>]*count="2"><n v="2014"\/><n v="2013"\/><\/sharedItems>/
   );
-  const widths = Object.fromEntries([...sheet.matchAll(/<col min="(\d+)" max="\d+" width="([\d.]+)"/g)].map((m) => [m[1], Number(m[2])]));
+  const widths = Object.fromEntries(
+    [...sheet.matchAll(/<col min="(\d+)" max="\d+" width="([\d.]+)"/g)].map((m) => [m[1], Number(m[2])])
+  );
   assert.ok(widths[5] >= 16, `the Segment column fits "Channel Partners" (${widths[5]})`);
   assert.ok(widths[8] >= 10, `the Grand Total column fits its figures (${widths[8]})`);
+});
+
+// Excel lays a pivot's figures out in their source column's format and names the column field over its items; the
+// portable pivot had written 7043 plain under a #,##0 source, and a refresh would head the years "Column Labels".
+test("a pivot's figures take their source column's format, and its column header names the field", async () => {
+  const zip = await JSZip.loadAsync(
+    await createPortableChartWorkbook([
+      ['Segment', 'Year', 'Profit'],
+      ['Channel Partners', 2014, 1026913],
+      ['Government', 2013, 2886645],
+      ['Channel Partners', 2013, 289889],
+      ['Government', 2014, 8501527],
+    ])
+  );
+  await applyXlsx(zip, [
+    { op: 'set_style', range: 'C2:C5', properties: { numberFormat: '#,##0' } },
+    { op: 'add_pivot_table', source: 'A1:C5', destination: 'E1', rows: 'Segment', columns: 'Year', values: 'Profit' },
+  ]);
+  const sheet = await zipText(zip, SHEET);
+  const styles = resolveCellStyles(await zipText(zip, 'xl/styles.xml'));
+  const formatAt = (ref) => styles[Number(new RegExp(`<c r="${ref}"[^>]*\\bs="(\\d+)"`).exec(sheet)?.[1] ?? 0)]?.numberFormat;
+  // Row 3 holds the first segment's figures under the two years and its total; row 5 the grand totals.
+  for (const ref of ['F3', 'G3', 'H3', 'F5', 'H5']) assert.equal(formatAt(ref), '#,##0', `${ref} reads #,##0`);
+  assert.equal(formatAt('E3'), undefined, 'the segment names keep no number format');
+  assert.equal(formatAt('F2'), undefined, 'the years across the top keep theirs');
+  const table = await zipText(zip, 'xl/pivotTables/pivotTable1.xml');
+  assert.match(table, /colHeaderCaption="Year"/);
+  // Excel lays the pivot out again from its definition on open: the value field names the format it prints in.
+  const id = /<dataField\b[^>]*\bnumFmtId="(\d+)"/.exec(table)?.[1];
+  assert.ok(id, table.slice(0, 600));
+  assert.match(await zipText(zip, 'xl/styles.xml'), new RegExp(`<numFmt numFmtId="${id}" formatCode="#,##0"/>`));
 });

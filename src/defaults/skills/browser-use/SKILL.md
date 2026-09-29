@@ -1,7 +1,7 @@
 ---
 name: browser-use
 description: Drive the built-in browser tool (Mixdog Browser Use) on a live web page.
-when_to_use: 'Mixdog browser for interactive pages, forms, sign-in, web-app tests; not URL text or external apps.'
+when_to_use: 'Mixdog browser: interactive pages, forms, sign-in, web-app tests; not URL text or user-viewed tabs.'
 metadata:
   requires: browser
 dependencies:
@@ -35,10 +35,10 @@ file is a `browser` action.
 - Browser Use is a fallback only when retrieval cannot access required
   rendered, authenticated, or visual content. If fallback is necessary and
   the user did not ask to reveal the page, use a background page.
-- User-designated external browser windows (including web pages), OS chrome,
-  dialogs outside the page, and native apps → Computer Use (`computer`).
-  `browser` cannot attach to an external Chrome/Edge/Firefox window; do not
-  substitute an in-app page for the user's selected window or login session.
+- The external browser window the user is viewing or hands over (its pages
+  too), OS chrome, dialogs outside the page, and native apps → Computer Use
+  (`computer`); never substitute an in-app page. Web work Mixdog does on its
+  own stays here, sign-in included, even when the user names Chrome.
 - A refused or unfinished page action stays on this route for recovery or
   user handoff. An unavailable bridge is not an external-window task; never
   switch tools or browser windows to bypass a block, CAPTCHA/2FA, or user stop.

@@ -64,6 +64,9 @@ export async function runToolPhase(state, round, sent, onToolCall) {
     throwIfAborted: state.throwIfAborted,
     repeatFailLimit: REPEAT_FAIL_LIMIT,
   }));
+  // A turn recovered from a stream cut that dropped an in-flight tool call
+  // carries a runtime notice for the model, delivered after its results.
+  if (response.recoveryNotice) messages.push(response.recoveryNotice);
   const toolsEndedAt = Date.now();
   try {
     opts.onToolPhaseCompleted?.({

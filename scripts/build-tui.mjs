@@ -7,13 +7,14 @@
  * ESM bundle at src/tui/dist/index.mjs.
  *
  * What is bundled vs external:
- *   - bundled: our JSX only.
- *   - external: React and Mixdog's patched Ink runtime dependency.
+ *   - bundled: our JSX and the local modules it imports, plus Mixdog's patched
+ *     Ink with its whole dependency tree (see bundleInkPlugin).
+ *   - external: React and every package our own code imports.
  *
  * Run:  node scripts/build-tui.mjs   (or `npm run build:tui`)
  */
 import { build } from 'esbuild';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -41,6 +42,30 @@ const sessionClientExternalPlugin = {
   },
 };
 
+// Ink's ESM build is ~500 small files (es-toolkit alone is ~430), and loading
+// them one by one cost ~150 ms of every TUI start, so Ink and everything it
+// imports are bundled. React stays external so Ink's reconciler and our
+// components share one React instance; packages our own code imports stay
+// external. Ink's optional React DevTools bridge (DEV=true) is left out: it
+// would pull ws and the uninstalled react-devtools-core into the bundle.
+const bundleInkPlugin = {
+  name: 'mixdog-bundle-ink',
+  setup(build) {
+    build.onResolve({ filter: /^[^./]/ }, ({ path, importer, kind }) => {
+      if (kind === 'entry-point' || isAbsolute(path)) return undefined;
+      if (path === 'react' || path.startsWith('react/')) return { path, external: true };
+      if (path === 'ink' || /[\\/]node_modules[\\/]/.test(importer)) return undefined;
+      return { path, external: true };
+    });
+    build.onResolve({ filter: /^\.\/devtools\.js$/ }, ({ importer }) =>
+      /[\\/]node_modules[\\/]ink[\\/]/.test(importer)
+        ? { path: 'ink-devtools', namespace: 'mixdog-omitted' }
+        : undefined
+    );
+    build.onLoad({ filter: /.*/, namespace: 'mixdog-omitted' }, () => ({ contents: '' }));
+  },
+};
+
 await build({
   entryPoints: [join(SRC, 'index.jsx')],
   outfile: join(SRC, 'dist', 'index.mjs'),
@@ -49,11 +74,9 @@ await build({
   platform: 'node',
   target: 'node22',
   jsx: 'automatic',
-  // Keep package imports external like the original CLI flow. Local shared
-  // helpers are bundled so relative paths stay valid from src/tui/dist/.
-  // Process shutdown stays external so the CLI and checked-in TUI bundle use
-  // the same process-global lifecycle state.
-  packages: 'external',
+  // Local shared helpers are bundled so relative paths stay valid from
+  // src/tui/dist/. Process shutdown stays external so the CLI and checked-in
+  // TUI bundle use the same process-global lifecycle state.
   // Bundled CJS helpers (e.g. src/lib/mixdog-debug.cjs) compile to esbuild's
   // __require shim, which throws "Dynamic require of ..." in plain ESM.
   // Provide a real module-scope require so those requires resolve at runtime.
@@ -73,7 +96,7 @@ await build({
     '../../runtime/channels/lib/voice-runtime-fetcher.mjs',
     '../../runtime/channels/lib/whisper-server.mjs',
   ],
-  plugins: [sharedRuntimeExternalPlugin, sessionClientExternalPlugin],
+  plugins: [sharedRuntimeExternalPlugin, sessionClientExternalPlugin, bundleInkPlugin],
   logLevel: 'info',
 });
 

@@ -552,7 +552,9 @@ class MarkdownBlockScanner {
     for (;;) {
       const parent = this.tip.kind;
       const fits =
-        parent === 'list' ? kind === 'item' : (parent === 'document' || parent === 'quote' || parent === 'item') && kind !== 'item';
+        parent === 'list'
+          ? kind === 'item'
+          : (parent === 'document' || parent === 'quote' || parent === 'item') && kind !== 'item';
       if (fits) break;
       this.finalize(this.tip);
     }

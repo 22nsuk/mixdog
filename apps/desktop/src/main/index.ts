@@ -610,6 +610,10 @@ function currentSystemMemory() {
   };
 }
 
+// Dropped caches shrink the renderer only once V8 collects them: read at once,
+// afterKb always equalled beforeKb (8 of 8 records), so the record waits.
+const RENDERER_RECLAIM_SETTLE_MS = 60_000;
+
 const DIAGNOSTICS_EVENT_LOOP_INTERVAL_MS = 1_000;
 const DIAGNOSTICS_EVENT_LOOP_LAG_MS = 250;
 
@@ -1191,8 +1195,7 @@ async function createWindow(): Promise<void> {
     const overlayComputerHost = computerHost;
     computerUseOverlay = createComputerUseOverlay(
       {
-        resume: (generation, signal) => overlayComputerHost.resumeAfterTakeover(generation, signal),
-        // The toggle and control-renderer recovery pause input without cancelling the task.
+        // Control-renderer recovery pauses input without cancelling the task.
         pause: async () => overlayComputerHost.takeOver('user_pause'),
         configureIdleResume: (seconds) => overlayComputerHost.configureIdleResume(seconds),
         // Stop native input immediately, independently of the daemon's turn
@@ -1244,11 +1247,15 @@ async function createWindow(): Promise<void> {
       const startedAt = Date.now();
       const beforeKb = rendererWorkingSetKb();
       await purgeRendererMemory(window.webContents);
-      diagnostics?.write('renderer-idle-reclaim', {
-        beforeKb,
-        afterKb: rendererWorkingSetKb(),
-        totalMs: Date.now() - startedAt,
-      });
+      const totalMs = Date.now() - startedAt;
+      setTimeout(() => {
+        diagnostics?.write('renderer-idle-reclaim', {
+          beforeKb,
+          afterKb: rendererWorkingSetKb(),
+          totalMs,
+          settleMs: RENDERER_RECLAIM_SETTLE_MS,
+        });
+      }, RENDERER_RECLAIM_SETTLE_MS).unref();
     },
   });
   window.on('focus', () => {
@@ -1472,6 +1479,15 @@ if (!app.requestSingleInstanceLock()) {
         }
       });
       session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+        // The policy governs the app's own documents: the built renderer
+        // (file:) or the dev server. Other responses keep their headers —
+        // stamped onto a previewed PDF and onto Chromium's built-in viewer
+        // page, `frame-ancestors 'none'` left the editor's PDF preview blank.
+        const rendererOrigin = process.env.ELECTRON_RENDERER_URL;
+        if (!details.url.startsWith('file:') && !(rendererOrigin && details.url.startsWith(rendererOrigin))) {
+          callback({});
+          return;
+        }
         const development = Boolean(process.env.ELECTRON_RENDERER_URL);
         // GitHub avatar hosts are allowed in img-src for the onboarding /
         // settings account cards (github.com redirects to avatars host).

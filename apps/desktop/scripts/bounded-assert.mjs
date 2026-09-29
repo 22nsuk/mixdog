@@ -19,8 +19,8 @@
 // deepEqual, match, doesNotMatch and their strict aliases. `ok` and the
 // callable `assert(value)` form are not wrapped: a failing `ok` only inspects a
 // falsy value, which is always a primitive.
-import strictAssert, { AssertionError } from "node:assert/strict";
-import { inspect, isDeepStrictEqual } from "node:util";
+import strictAssert, { AssertionError } from 'node:assert/strict';
+import { inspect, isDeepStrictEqual } from 'node:util';
 
 const MAX_SUMMARY_CHARS = 512;
 // node appends its own diff of the (already summarised) operands to whatever
@@ -31,40 +31,45 @@ const MAX_STACK_CHARS = 4000;
 // depth 1000 with no array limit, so a *sampled* render is not a safe proxy.
 const MAX_GRAPH_NODES = 100;
 
-const isObjectLike = (value) => value !== null
-  && (typeof value === "object" || typeof value === "function");
+const isObjectLike = (value) => value !== null && (typeof value === 'object' || typeof value === 'function');
 
-const truncate = (text, limit) => (text.length > limit
-  ? `${text.slice(0, limit)}… (${text.length} chars truncated)`
-  : text);
+const truncate = (text, limit) =>
+  text.length > limit ? `${text.slice(0, limit)}… (${text.length} chars truncated)` : text;
 
 /** Frames of the current throw site, captured fresh — the source error's own
  *  stack is an accessor and is never invoked. Materialised to a string right
  *  away so the copy holds no frame objects. */
 function callsite() {
   const carrier = {};
-  if (typeof Error.captureStackTrace === "function") Error.captureStackTrace(carrier, inertError);
-  else carrier.stack = new Error("callsite").stack;
-  return String(carrier.stack ?? "").split("\n").slice(1).join("\n");
+  if (typeof Error.captureStackTrace === 'function') Error.captureStackTrace(carrier, inertError);
+  else carrier.stack = new Error('callsite').stack;
+  return String(carrier.stack ?? '')
+    .split('\n')
+    .slice(1)
+    .join('\n');
 }
 
 export function summarise(value) {
   let rendered;
   try {
     rendered = inspect(value, {
-      depth: 2, breakLength: 120, maxArrayLength: 20, maxStringLength: 512, getters: false,
+      depth: 2,
+      breakLength: 120,
+      maxArrayLength: 20,
+      maxStringLength: 512,
+      getters: false,
     });
   } catch {
-    rendered = "[unrenderable value]";
+    rendered = '[unrenderable value]';
   }
-  if (typeof rendered !== "string") rendered = "[unrenderable value]";
+  if (typeof rendered !== 'string') rendered = '[unrenderable value]';
   return truncate(rendered, MAX_SUMMARY_CHARS);
 }
 
 /** True when node can render this operand in full without walking a large
  *  graph: a bounded traversal of everything node's own inspect would reach. */
 function isRenderable(value) {
-  if (typeof value === "string") return value.length <= MAX_SUMMARY_CHARS;
+  if (typeof value === 'string') return value.length <= MAX_SUMMARY_CHARS;
   if (!isObjectLike(value)) return true;
   const seen = new Set();
   const stack = [value];
@@ -79,7 +84,7 @@ function isRenderable(value) {
       for (const key of keys) {
         const descriptor = Object.getOwnPropertyDescriptor(current, key);
         // Accessors are rendered as [Getter]; node never invokes them here.
-        if (descriptor && "value" in descriptor) stack.push(descriptor.value);
+        if (descriptor && 'value' in descriptor) stack.push(descriptor.value);
       }
       if (current instanceof Map || current instanceof Set) {
         if (current.size > MAX_GRAPH_NODES) return false;
@@ -108,19 +113,19 @@ export function inertError(error) {
   const inert = Object.create(Object.getPrototypeOf(error));
   for (const key of Reflect.ownKeys(descriptors)) {
     const descriptor = descriptors[key];
-    if (!("value" in descriptor)) continue;
+    if (!('value' in descriptor)) continue;
     const { value } = descriptor;
     let copied = isObjectLike(value) ? summarise(value) : value;
-    if (key === "message" && typeof copied === "string") copied = truncate(copied, MAX_MESSAGE_CHARS);
+    if (key === 'message' && typeof copied === 'string') copied = truncate(copied, MAX_MESSAGE_CHARS);
     define(inert, key, copied, descriptor.enumerable);
   }
   // Fallbacks, composed only from descriptors already copied above. V8 stores
   // `stack` as a lazy accessor, so a dropped stack is the normal case: the copy
   // gets a freshly captured callsite instead, never the source's.
-  if (!Object.hasOwn(inert, "message")) define(inert, "message", "", false);
-  if (!Object.hasOwn(inert, "stack")) {
-    const name = typeof descriptors.name?.value === "string" ? descriptors.name.value : "Error";
-    define(inert, "stack", truncate(`${name}: ${inert.message}\n${callsite()}`, MAX_STACK_CHARS), false);
+  if (!Object.hasOwn(inert, 'message')) define(inert, 'message', '', false);
+  if (!Object.hasOwn(inert, 'stack')) {
+    const name = typeof descriptors.name?.value === 'string' ? descriptors.name.value : 'Error';
+    define(inert, 'stack', truncate(`${name}: ${inert.message}\n${callsite()}`, MAX_STACK_CHARS), false);
   }
   return inert;
 }
@@ -152,27 +157,27 @@ const SPECS = {
   },
   notStrictEqual: {
     passes: (actual, expected) => !Object.is(actual, expected),
-    message: (actual, expected) =>
-      `Expected "actual" to be strictly unequal to:\n\n${summarise(expected)}\n`,
+    message: (actual, expected) => `Expected "actual" to be strictly unequal to:\n\n${summarise(expected)}\n`,
   },
   deepStrictEqual: {
     passes: isDeepStrictEqual,
-    message: (actual, expected) => "Expected values to be strictly deep-equal:\n"
-      + `+ actual - expected\n\n+ ${summarise(actual)}\n- ${summarise(expected)}\n`,
+    message: (actual, expected) =>
+      'Expected values to be strictly deep-equal:\n' +
+      `+ actual - expected\n\n+ ${summarise(actual)}\n- ${summarise(expected)}\n`,
   },
   match: {
     // Invalid operands keep node's own error class/code/message; only the
     // fields node attaches to the error are sanitised.
-    valid: (string, regexp) => typeof string === "string" && regexp instanceof RegExp,
+    valid: (string, regexp) => typeof string === 'string' && regexp instanceof RegExp,
     passes: matchesOnce,
     message: (string, regexp) =>
       `The input did not match the regular expression ${regexp}. Input:\n\n${summarise(string)}\n`,
   },
   doesNotMatch: {
-    valid: (string, regexp) => typeof string === "string" && regexp instanceof RegExp,
+    valid: (string, regexp) => typeof string === 'string' && regexp instanceof RegExp,
     passes: (string, regexp) => !matchesOnce(string, regexp),
-    message: (string, regexp) => "The input was expected to not match the regular expression "
-      + `${regexp}. Input:\n\n${summarise(string)}\n`,
+    message: (string, regexp) =>
+      'The input was expected to not match the regular expression ' + `${regexp}. Input:\n\n${summarise(string)}\n`,
   },
 };
 
@@ -180,13 +185,12 @@ function createComparisons(base) {
   const comparisons = {};
   for (const [name, spec] of Object.entries(SPECS)) {
     const native = base[name];
-    if (typeof native !== "function") continue;
+    if (typeof native !== 'function') continue;
     const bounded = function boundedComparison(actual, expected, message) {
       // Operands node can render in full — and operands node must reject
       // itself — are handed over whole, so the comparison runs exactly once
       // with node's own semantics, `lastIndex` on a /g or /y regexp included.
-      if ((spec.valid && !spec.valid(actual, expected))
-        || (isRenderable(actual) && isRenderable(expected))) {
+      if ((spec.valid && !spec.valid(actual, expected)) || (isRenderable(actual) && isRenderable(expected))) {
         return delegate(native, base, [actual, expected, message]);
       }
       // Oversized operand: the comparison is evaluated here, exactly once.
@@ -214,12 +218,16 @@ function createComparisons(base) {
   };
 }
 
-const define = (target, name, value, enumerable = true) => Object.defineProperty(target, name, {
-  value, writable: true, enumerable, configurable: true,
-});
+const define = (target, name, value, enumerable = true) =>
+  Object.defineProperty(target, name, {
+    value,
+    writable: true,
+    enumerable,
+    configurable: true,
+  });
 
 // Installing twice would capture the wrappers as "natives" and recurse.
-const INSTALLED = Symbol.for("mixdog.bounded-assert.installed");
+const INSTALLED = Symbol.for('mixdog.bounded-assert.installed');
 
 /** Replace the comparison helpers on a `node:assert/strict` namespace object in
  *  place. The desktop test preload (scripts/test-env.mjs) installs this before
@@ -228,7 +236,7 @@ const INSTALLED = Symbol.for("mixdog.bounded-assert.installed");
 export function installBoundedAssertions(target = strictAssert) {
   if (target[INSTALLED]) return target;
   for (const [name, implementation] of Object.entries(createComparisons(target))) {
-    if (typeof target[name] !== "function" || typeof implementation !== "function") continue;
+    if (typeof target[name] !== 'function' || typeof implementation !== 'function') continue;
     define(target, name, implementation);
   }
   Object.defineProperty(target, INSTALLED, { value: true, configurable: true });
@@ -240,7 +248,7 @@ export function installBoundedAssertions(target = strictAssert) {
 export function createBoundedAssert(base = strictAssert) {
   const facade = Object.create(base);
   for (const [name, implementation] of Object.entries(createComparisons(base))) {
-    if (typeof implementation === "function") define(facade, name, implementation);
+    if (typeof implementation === 'function') define(facade, name, implementation);
   }
   return facade;
 }

@@ -41,16 +41,31 @@ pub fn start_x11(shared: Arc<Shared>) {
 
 fn watch_raw(shared: &Shared) -> Result<(), String> {
     let (conn, root) = connect()?;
-    let version = conn.xinput_xi_query_version(2, 2).map_err(|error| error.to_string())?.reply().map_err(|error| error.to_string())?;
+    let version = conn
+        .xinput_xi_query_version(2, 2)
+        .map_err(|error| error.to_string())?
+        .reply()
+        .map_err(|error| error.to_string())?;
     if version.major_version < 2 {
         return Err("XInput2 is not available".into());
     }
-    let raw = XIEventMask::RAW_KEY_PRESS | XIEventMask::RAW_KEY_RELEASE | XIEventMask::RAW_BUTTON_PRESS | XIEventMask::RAW_BUTTON_RELEASE | XIEventMask::RAW_MOTION;
+    let raw = XIEventMask::RAW_KEY_PRESS
+        | XIEventMask::RAW_KEY_RELEASE
+        | XIEventMask::RAW_BUTTON_PRESS
+        | XIEventMask::RAW_BUTTON_RELEASE
+        | XIEventMask::RAW_MOTION;
     let masks = [
-        xinput::EventMask { deviceid: xinput::Device::ALL_MASTER.into(), mask: vec![raw] },
-        xinput::EventMask { deviceid: xinput::Device::ALL.into(), mask: vec![XIEventMask::HIERARCHY] },
+        xinput::EventMask {
+            deviceid: xinput::Device::ALL_MASTER.into(),
+            mask: vec![raw],
+        },
+        xinput::EventMask {
+            deviceid: xinput::Device::ALL.into(),
+            mask: vec![XIEventMask::HIERARCHY],
+        },
     ];
-    conn.xinput_xi_select_events(root, &masks).map_err(|error| error.to_string())?;
+    conn.xinput_xi_select_events(root, &masks)
+        .map_err(|error| error.to_string())?;
     conn.flush().map_err(|error| error.to_string())?;
     let mut xtest = xtest_devices(&conn);
     shared.set_ready(true);
@@ -58,7 +73,9 @@ fn watch_raw(shared: &Shared) -> Result<(), String> {
         let event = conn.wait_for_event().map_err(|error| error.to_string())?;
         let source = match &event {
             Event::XinputRawKeyPress(raw) | Event::XinputRawKeyRelease(raw) => Some(raw.sourceid),
-            Event::XinputRawButtonPress(raw) | Event::XinputRawButtonRelease(raw) | Event::XinputRawMotion(raw) => Some(raw.sourceid),
+            Event::XinputRawButtonPress(raw)
+            | Event::XinputRawButtonRelease(raw)
+            | Event::XinputRawMotion(raw) => Some(raw.sourceid),
             Event::XinputHierarchy(_) => {
                 xtest = xtest_devices(&conn);
                 None
@@ -104,7 +121,10 @@ fn watch_screensaver(shared: &Shared) {
     use x11rb::protocol::screensaver::ConnectionExt as _;
     let Ok((conn, root)) = connect() else { return };
     watch_idle(shared, || {
-        conn.screensaver_query_info(root).ok().and_then(|cookie| cookie.reply().ok()).map(|info| info.ms_since_user_input as u64)
+        conn.screensaver_query_info(root)
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+            .map(|info| info.ms_since_user_input as u64)
     });
 }
 
@@ -114,21 +134,45 @@ pub fn start_session_idle(shared: Arc<Shared>) {
     std::thread::Builder::new()
         .name("mixdog input observation".into())
         .spawn(move || {
-            let Ok(bus) = zbus::blocking::Connection::session() else { return };
+            let Ok(bus) = zbus::blocking::Connection::session() else {
+                return;
+            };
             let mutter = |bus: &zbus::blocking::Connection| -> Option<u64> {
                 let reply = bus
-                    .call_method(Some("org.gnome.Mutter.IdleMonitor"), "/org/gnome/Mutter/IdleMonitor/Core", Some("org.gnome.Mutter.IdleMonitor"), "GetIdletime", &())
+                    .call_method(
+                        Some("org.gnome.Mutter.IdleMonitor"),
+                        "/org/gnome/Mutter/IdleMonitor/Core",
+                        Some("org.gnome.Mutter.IdleMonitor"),
+                        "GetIdletime",
+                        &(),
+                    )
                     .ok()?;
                 reply.body().deserialize::<u64>().ok()
             };
             let freedesktop = |bus: &zbus::blocking::Connection| -> Option<u64> {
                 let reply = bus
-                    .call_method(Some("org.freedesktop.ScreenSaver"), "/org/freedesktop/ScreenSaver", Some("org.freedesktop.ScreenSaver"), "GetSessionIdleTime", &())
+                    .call_method(
+                        Some("org.freedesktop.ScreenSaver"),
+                        "/org/freedesktop/ScreenSaver",
+                        Some("org.freedesktop.ScreenSaver"),
+                        "GetSessionIdleTime",
+                        &(),
+                    )
                     .ok()?;
-                reply.body().deserialize::<u32>().ok().map(|seconds| seconds as u64 * 1000)
+                reply
+                    .body()
+                    .deserialize::<u32>()
+                    .ok()
+                    .map(|seconds| seconds as u64 * 1000)
             };
             let use_mutter = mutter(&bus).is_some();
-            watch_idle(&shared, || if use_mutter { mutter(&bus) } else { freedesktop(&bus) });
+            watch_idle(&shared, || {
+                if use_mutter {
+                    mutter(&bus)
+                } else {
+                    freedesktop(&bus)
+                }
+            });
         })
         .ok();
 }

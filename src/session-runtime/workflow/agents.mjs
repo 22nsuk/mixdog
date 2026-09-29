@@ -64,9 +64,7 @@ export function createWorkflowAgents({ rootDir, dataDir, readMarkdownDocument, n
   function listCustomAgentIds(dir) {
     const userRoot = join(dir || dataDir, 'agents');
     const shippedRoot = join(rootDir, 'agents');
-    return [
-      ...agentListCache.fresh(`${userRoot}\n${shippedRoot}`, () => scanCustomAgentIds(userRoot, shippedRoot)),
-    ];
+    return [...agentListCache.fresh(`${userRoot}\n${shippedRoot}`, () => scanCustomAgentIds(userRoot, shippedRoot))];
   }
 
   // Agents the Lead may actually delegate to: on disk, not hidden, not a

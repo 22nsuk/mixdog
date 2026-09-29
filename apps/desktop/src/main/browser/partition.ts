@@ -10,7 +10,6 @@ import type { Session, WebContents } from 'electron';
 import { session } from 'electron';
 
 import { BROWSER_PARTITION } from './command';
-import { clearBrowserData, type BrowserDataClearResult, type BrowserDataScope } from './browsing-data';
 import { createBrowserDownloadLedger } from './downloads';
 import { clearBrowserPermissionHandlers, lockDownBrowserPermissions } from './permissions';
 import { redactBrowserText } from './redaction';
@@ -71,14 +70,6 @@ export function createBrowserPartition(host: BrowserPartitionHost) {
   return {
     session: partitionSession,
     downloadLedger,
-    /** Every Browser Use page shares this partition, so clearing it is the
-     * only way a person can reclaim the disk it accumulated. */
-    clearBrowsingData(
-      scopes: readonly BrowserDataScope[],
-      options?: { persistCookieState?: () => Promise<void> }
-    ): Promise<BrowserDataClearResult> {
-      return clearBrowserData(partitionSession, scopes, options);
-    },
     dispose(): void {
       partitionSession.removeListener('will-download', downloadLedger.onWillDownload);
       clearBrowserPermissionHandlers(partitionSession);

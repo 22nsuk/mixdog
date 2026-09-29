@@ -26,6 +26,7 @@ export function createLazyRuntimeModules({ rt, cfgMod }) {
         init: () => runtime.init(),
         handleToolCall: (...args) => runtime.handleToolCall(...args),
         buildSessionCoreMemoryPayload: (...args) => runtime.buildSessionCoreMemoryPayload(...args),
+        warmupEmbedding: () => runtime.warmupEmbedding(),
       };
     });
     const mod = await rt.memoryModPromise;

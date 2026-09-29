@@ -67,10 +67,16 @@ export function shouldFocusSurfaceInput(
  *  of those actually owns the keyboard. */
 const PARKED_SURFACE_SELECTOR = '[inert],[aria-hidden="true"],[data-surface-active="false"]';
 
-export function modalDialogPresented(): boolean {
-  return Array.from(document.querySelectorAll<HTMLElement>('[aria-modal="true"]')).some(
+/** The topmost presented modal dialog (last in document order), or null. */
+export function presentedModalDialog(): HTMLElement | null {
+  const presented = Array.from(document.querySelectorAll<HTMLElement>('[aria-modal="true"]')).filter(
     (dialog) => !dialog.closest(PARKED_SURFACE_SELECTOR)
   );
+  return presented[presented.length - 1] ?? null;
+}
+
+export function modalDialogPresented(): boolean {
+  return presentedModalDialog() !== null;
 }
 
 export function surfaceOwnsKeyboard(target: EventTarget | null): boolean {

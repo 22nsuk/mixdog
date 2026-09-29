@@ -14,7 +14,7 @@
   display: block;
   height: 10px;
   width: 72%;
-  border-radius: 4px;
+  border-radius: var(--mx-radius-sm);
   background: var(--mx-border-muted);
 }
 .initial-surface-shapes > i:nth-child(2) {

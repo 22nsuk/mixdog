@@ -8,7 +8,12 @@ import { createSnapshotDeltaEncoder, isNoDelta } from './state-delta.ts';
 // read; only a real change to the job set may reach the lanes.
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
-const JOB = { taskId: 'shell_idle', command: 'npm run watch', cwd: 'C:/project', startedAt: '2026-03-01T10:00:00.000Z' };
+const JOB = {
+  taskId: 'shell_idle',
+  command: 'npm run watch',
+  cwd: 'C:/project',
+  startedAt: '2026-03-01T10:00:00.000Z',
+};
 
 function fixture(listed = (jobs) => jobs) {
   let reads = 0;

@@ -48,7 +48,9 @@ export function createCompletionWakeScheduler({ getCurrentSessionId, getTurnApi 
               ` executionId=${executionId || 'unknown'} queuedMs=${delayMs}\n`
           );
         }
-        await turnApi.ask('', { submittedAt: queuedAt });
+        // The wake continues the user turn that launched the worker, so its
+        // review keeps that turn's Lead edits and worker diffs.
+        await turnApi.ask('', { submittedAt: queuedAt, continueTurn: true });
       } catch (err) {
         try {
           process.stderr.write(

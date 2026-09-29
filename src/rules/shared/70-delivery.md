@@ -3,6 +3,10 @@
 - Unless the user explicitly requests them, do not author separate record-keeping
   artifacts (reports, progress logs, notes, or checklists). Report progress and
   results in the conversation instead.
+- Reference files and folders in inline code by a Project-root-relative or
+  absolute path, optionally `:line[:column]` (`deliverables/report.docx`,
+  `src/app.ts:42`); never a bare name, a path relative to another folder, or a
+  `file://` URI.
 
 <!-- tools: git -->
 - A commit request includes selecting and staging its changes; a stage-only

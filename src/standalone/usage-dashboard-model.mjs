@@ -5,7 +5,7 @@ export function clean(value) {
   return s || '';
 }
 
-function money(value) {
+export function money(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return 'N/A';
   if (n === 0) return '$0';
@@ -15,7 +15,7 @@ function money(value) {
   return `$${n.toFixed(4)}`;
 }
 
-function compactNumber(value) {
+export function compactNumber(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return '';
   if (Math.abs(n) >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`;

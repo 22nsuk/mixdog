@@ -21,6 +21,7 @@ import {
   xmlEncode,
 } from './portable-xml.mjs';
 import {
+  LIST_HANGING_POINTS,
   SETTINGS_CONTENT_TYPE,
   SETTINGS_ORDER,
   WORD_2010_NS,
@@ -36,6 +37,8 @@ import {
   forgetCommentIdentity,
   markRunsDeleted,
   nextRevisionId,
+  numberedListScheme,
+  numberingAfter,
   registerCommentIdentity,
   registerCommentThread,
   revisionAttributes,
@@ -55,6 +58,9 @@ import {
   paragraphFormatXml,
   replaceDocxTable,
   replaceWordProperties,
+  checkDocxColumn,
+  missingDocxCellError,
+  missingDocxRowError,
   rewriteTableColumns,
   rowCellMatches,
   sectionTextWidth,
@@ -131,8 +137,12 @@ function nextCommentId(commentsXml) {
   return Math.max(0, ...ids) + 1;
 }
 
-function commentStamp() {
-  return new Date().toISOString().replace(/\.\d+Z$/, 'Z');
+// Word keeps a comment's w:date in local wall-clock time (under a Z it does not mean) and the instant itself in
+// commentsExtensible's dateUtc. Written in UTC, a comment added in Seoul read nine hours early in Word's thread.
+function commentStamps() {
+  const now = new Date();
+  const stamp = (date) => date.toISOString().replace(/\.\d+Z$/, 'Z');
+  return { local: stamp(new Date(now.getTime() - now.getTimezoneOffset() * 60_000)), utc: stamp(now) };
 }
 
 function commentEntryPattern(id) {
@@ -143,13 +153,13 @@ function commentEntryPattern(id) {
 // identity records that carry its author and timestamp.
 async function appendComment(zip, comments, op, text, thread = {}) {
   const id = nextCommentId(comments.xml);
-  const stamp = commentStamp();
+  const stamps = commentStamps();
   zip.file(
     comments.part,
-    comments.xml.replace('</w:comments>', `${commentEntryXml(id, op, text, stamp)}</w:comments>`)
+    comments.xml.replace('</w:comments>', `${commentEntryXml(id, op, text, stamps.local)}</w:comments>`)
   );
   await registerCommentThread(zip, { commentId: id, ...thread });
-  await registerCommentIdentity(zip, { commentId: id, date: stamp });
+  await registerCommentIdentity(zip, { commentId: id, date: stamps.utc });
   return id;
 }
 
@@ -226,25 +236,40 @@ export async function replaceDocxText(zip, op, { parts, tracking }) {
   return { op: op.op, changed: count > 0, count, ...tracked };
 }
 
+// On an item this call puts in a list, indentLeft places its mark and the text hangs one list step after it, as the
+// Word backend sets it: read as the text's edge, as a Word left indent is, a callout's 12 pt inset hung the bullet
+// 6 pt outside the field and into the page margin. An indentFirstLine given with it is taken as it stands.
+function listItemIndent(properties, numbering) {
+  if (!numbering || properties.indentLeft === undefined || properties.indentFirstLine !== undefined) return properties;
+  return {
+    ...properties,
+    indentLeft: Number(properties.indentLeft) + LIST_HANGING_POINTS,
+    indentFirstLine: -LIST_HANGING_POINTS,
+  };
+}
+
 export async function appendDocxText(zip, op, { tracking }) {
   const current = await zipText(zip, DOCUMENT_PART);
   const properties = op.properties || {};
   const listKind = String(properties.listKind || '').toLowerCase();
   let numbering = null;
   // listKind:'none' is a plain paragraph, as Word's backend reads it; it had drawn a bullet here.
-  if (listKind === 'number') numbering = await appendedNumbering(zip, current);
+  if (listKind === 'number')
+    numbering = await appendedNumbering(zip, current, {
+      continued: Boolean(properties.listContinue),
+      scheme: numberedListScheme(op.text, properties.listNumbering),
+    });
   else if (listKind && listKind !== 'none') numbering = await ensureNumbering(zip, 'bullet');
   const requestedStyle = op.style || properties.style || (numbering ? 'List Paragraph' : '');
   const { id: style, found: styleFound } = await documentStyleId(zip, requestedStyle);
   const format = paragraphFormatXml(
-    properties,
+    listItemIndent(properties, numbering),
     numbering ? { numId: numbering.numId, level: properties.listLevel } : null
   );
   const styleXml = style ? `<w:pStyle w:val="${xmlEncode(style)}"/>` : '';
   const paragraphProperties = style || format ? `<w:pPr>${styleXml}${format}</w:pPr>` : '';
   const runProperties = wordRunProperties(properties);
-  const run =
-    `<w:r>${runProperties ? `<w:rPr>${runProperties}</w:rPr>` : ''}${wordTextContent(op.text || '')}</w:r>`;
+  const run = `<w:r>${runProperties ? `<w:rPr>${runProperties}</w:rPr>` : ''}${wordTextContent(op.text || '')}</w:r>`;
   const content = tracking
     ? // The reviewer's label comes where it does on every other tracked edit —
       // beside the operation — and the older nested spelling still works.
@@ -338,10 +363,10 @@ export async function setDocxTableCell(zip, op, { tracking }) {
   const table = docxTable(current, op.table);
   const rows = tableRowMatches(table[0]);
   const row = rows[Number(op.row) - 1];
-  if (!row) throw new Error(`DOCX table row ${op.row} not found`);
+  if (!row) throw missingDocxRowError(op, table[0]);
   const cells = rowCellMatches(row[0]);
   const cell = cells[Number(op.col) - 1];
-  if (!cell) throw new Error(`DOCX table cell ${op.col} not found`);
+  if (!cell) throw missingDocxCellError(op, cells);
   let nextCell;
   if (tracking) {
     // The first paragraph takes the new text as a tracked rewrite; any
@@ -409,14 +434,28 @@ export async function setDocxTableStyle(zip, requested) {
 export async function setDocxParagraphFormat(zip, op) {
   const properties = op.properties || {};
   const listKind = String(properties.listKind || '').toLowerCase();
-  let numbering = null;
-  if (listKind) numbering = await ensureNumbering(zip, listKind === 'number' ? 'number' : 'bullet');
   const current = await zipText(zip, DOCUMENT_PART);
   const model = docxBodyModel(current);
   const paragraph = bodyParagraphAt(model, op.paragraph);
+  let numbering = null;
+  // listKind:'none' takes the paragraph out of its list, as set_list does; it had drawn a bullet here.
+  if (listKind === 'number')
+    numbering = await numberingAfter(zip, model.body.inner.slice(0, paragraph.start), {
+      continued: Boolean(properties.listContinue),
+      scheme: numberedListScheme(paragraphTexts(paragraph.xml, 'w:t').join(''), properties.listNumbering),
+    });
+  else if (listKind && listKind !== 'none') numbering = await ensureNumbering(zip, 'bullet');
+  let source = paragraph.xml;
+  if (listKind === 'none') {
+    // The paragraph's own list reference, not the one a tracked formatting change records under it.
+    const own = /<w:numPr>[\s\S]*?<\/w:numPr>/.exec(source);
+    const change = source.indexOf('<w:pPrChange');
+    if (own && (change < 0 || own.index < change))
+      source = source.slice(0, own.index) + source.slice(own.index + own[0].length);
+  }
   const nextParagraph = patchParagraphFormat(
-    paragraph.xml,
-    properties,
+    source,
+    listItemIndent(properties, numbering),
     numbering ? { numId: numbering.numId, level: properties.listLevel } : null
   );
   zip.file(DOCUMENT_PART, replaceBodyParagraph(current, model, paragraph, nextParagraph));
@@ -472,9 +511,14 @@ export async function editDocxTableRowsOrColumns(zip, op) {
     if (op.op === 'delete_table_row') {
       if (rows.length <= 1) throw new Error('A table must keep at least one row');
       const row = rows[Number(op.row) - 1];
-      if (!row) throw new Error(`DOCX table row ${op.row} not found`);
+      if (!row) throw missingDocxRowError(op, table[0]);
       nextTable = `${table[0].slice(0, row.index)}${table[0].slice(row.index + row[0].length)}`;
     } else {
+      // A row past the end was taken as the end: row 4 of a two-row table added a row to it, and the cells written
+      // into "row 5" next failed against a table the caller had not meant. Word refuses it too.
+      if (op.row != null && !(Number.isInteger(Number(op.row)) && op.row >= 1 && op.row <= rows.length + 1)) {
+        throw missingDocxRowError(op, table[0]);
+      }
       const position = Math.max(1, Math.min(Number(op.row) || rows.length + 1, rows.length + 1));
       const template = rows[Math.min(position, rows.length) - 1];
       const blank = blankTableCells(template[0]);
@@ -484,7 +528,7 @@ export async function editDocxTableRowsOrColumns(zip, op) {
           : `${table[0].slice(0, template.index)}${blank}${table[0].slice(template.index)}`;
     }
   } else {
-    const columnIndex = Math.max(1, Number(op.column) || 1);
+    const columnIndex = checkDocxColumn(op, table[0]);
     nextTable = rewriteTableColumns(table[0], columnIndex, op.op === 'delete_table_column' ? 'delete' : 'insert');
   }
   zip.file(DOCUMENT_PART, replaceDocxTable(current, table, nextTable));
@@ -492,15 +536,29 @@ export async function editDocxTableRowsOrColumns(zip, op) {
 }
 
 export async function setDocxList(zip, op) {
-  const kind = String(op.kind || 'bullet').toLowerCase() === 'number' ? 'number' : 'bullet';
-  const numbering = await ensureNumbering(zip, kind);
-  // List Paragraph as the document names it ("a6" in a Korean Word document).
-  const { id: listStyle } = await documentStyleId(zip, 'List Paragraph');
+  const requested = String(op.kind || 'bullet').toLowerCase();
   const current = await zipText(zip, DOCUMENT_PART);
   const model = docxBodyModel(current);
   const paragraph = bodyParagraphAt(model, op.paragraph);
-  const level = Math.max(0, Math.min(2, Number(op.level) || 0));
   const existing = /<w:pPr(?:\s[^>]*)?>([\s\S]*?)<\/w:pPr>/.exec(paragraph.xml)?.[1] || '';
+  // kind:'none' takes the paragraph out of its list and leaves its style, as Word's RemoveNumbers does: read as a
+  // bullet, it had put one on the paragraph it was asked to clear.
+  if (requested === 'none') {
+    const unlisted = existing.replace(/<w:numPr\b[^>]*?(?:\/>|>[\s\S]*?<\/w:numPr>)/, '');
+    const nextParagraph = replaceWordProperties(paragraph.xml, 'p', 'pPr', unlisted);
+    zip.file(DOCUMENT_PART, replaceBodyParagraph(current, model, paragraph, nextParagraph));
+    return { op: op.op, changed: nextParagraph !== paragraph.xml, paragraph: Number(op.paragraph), kind: 'none' };
+  }
+  const kind = requested === 'number' ? 'number' : 'bullet';
+  const numbering =
+    kind === 'number'
+      ? await numberingAfter(zip, model.body.inner.slice(0, paragraph.start), {
+          scheme: numberedListScheme(paragraphTexts(paragraph.xml, 'w:t').join(''), op.numbering),
+        })
+      : await ensureNumbering(zip, 'bullet');
+  // List Paragraph as the document names it ("a6" in a Korean Word document).
+  const { id: listStyle } = await documentStyleId(zip, 'List Paragraph');
+  const level = Math.max(0, Math.min(2, Number(op.level) || 0));
   const cleaned = existing
     .replace(/<w:numPr\b[^>]*?(?:\/>|>[\s\S]*?<\/w:numPr>)/, '')
     .replace(/<w:pStyle\b[^>]*\/>/, '');
@@ -619,12 +677,31 @@ export async function replyOrResolveDocxComment(zip, op) {
   const marks =
     `<w:commentRangeStart w:id="${id}"/><w:commentRangeEnd w:id="${id}"/>` +
     `<w:r><w:commentReference w:id="${id}"/></w:r>`;
+  // The reply spans its parent's words, as Word writes a reply: its start beside the parent's start, its end and
+  // reference after the parent's reference. Marked as an empty range before the parent's end, Word read it as a
+  // second comment of its own on no text rather than as an answer in the thread.
   // The parent may be anchored in any story — the body, a header, a footer, a
   // note. A reply marked only where the body happens to hold the id reached no
   // story at all, and the next accept-all pruned it as orphaned.
+  const startPattern = new RegExp(`<w:commentRangeStart\\b[^>]*\\bw:id="${parent}"[^>]*\\/>`);
+  const referencePattern = new RegExp(
+    `<w:r\\b[^>]*>(?:(?!<\\/w:r>)[\\s\\S])*?<w:commentReference\\b[^>]*\\bw:id="${parent}"[^>]*\\/>(?:(?!<\\/w:r>)[\\s\\S])*?<\\/w:r>`
+  );
   const pattern = new RegExp(`<w:commentRangeEnd\\b[^>]*\\bw:id="${parent}"[^>]*\\/>`);
   for (const part of docxStoryPartNames(zip)) {
     const story = await zipText(zip, part);
+    const start = startPattern.exec(story);
+    const reference = referencePattern.exec(story);
+    if (start && reference && start.index < reference.index) {
+      const opened = start.index + start[0].length;
+      const closed = reference.index + reference[0].length;
+      zip.file(
+        part,
+        `${story.slice(0, opened)}<w:commentRangeStart w:id="${id}"/>${story.slice(opened, closed)}` +
+          `<w:commentRangeEnd w:id="${id}"/><w:r><w:commentReference w:id="${id}"/></w:r>${story.slice(closed)}`
+      );
+      break;
+    }
     const anchor = pattern.exec(story);
     if (!anchor) continue;
     zip.file(part, `${story.slice(0, anchor.index)}${marks}${story.slice(anchor.index)}`);
@@ -659,8 +736,11 @@ export async function deleteDocxComment(zip, op) {
 
 export async function insertDocxToc(zip, op) {
   const current = await zipText(zip, DOCUMENT_PART);
-  const lower = Math.max(1, Number(op.lowerHeadingLevel) || 1);
-  const upper = Math.max(lower, Number(op.upperHeadingLevel) || 3);
+  // The two bounds of the levels listed, in either order: Word's own API calls the first level (1) the upper one,
+  // and a caller writing upperHeadingLevel:1, lowerHeadingLevel:2 got a list of the level 2 headings alone.
+  const bounds = [Number(op.lowerHeadingLevel) || 1, Number(op.upperHeadingLevel) || 3];
+  const lower = Math.max(1, Math.min(...bounds));
+  const upper = Math.min(9, Math.max(...bounds));
   const instruction = ` TOC \\o "${lower}-${upper}" \\h \\z \\u `;
   const cached = docxTocCacheRuns(docxTocEntries(current, lower, upper, await docxHeadingLevels(zip)), lower);
   const block = `<w:p><w:fldSimple w:instr="${xmlEncode(instruction)}">${cached}</w:fldSimple></w:p>`;
@@ -717,7 +797,7 @@ export async function setDocxHeaderFooter(zip, op) {
       written.relationshipId
     );
     return kind === 'first' && !/<w:titlePg\b/.test(referenced)
-      ? upsertSectionChild(referenced, 'titlePg', '<w:titlePg/>', ['pgMar', 'pgSz'])
+      ? upsertSectionChild(referenced, 'titlePg', '<w:titlePg/>')
       : referenced;
   });
   zip.file(DOCUMENT_PART, next);

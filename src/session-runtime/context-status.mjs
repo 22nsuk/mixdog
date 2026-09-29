@@ -49,8 +49,7 @@ export function createContextStatus({
     // Do not even evaluate live native definitions when an in-flight request
     // scope owns the complete immutable provider surface.
     const scopedRequest = scopedProviderRequestTools(session, requestProvider, messages);
-    const requestTools =
-      scopedRequest?.requestTools || cache.requestTools(session, requestProvider, messages);
+    const requestTools = scopedRequest?.requestTools || cache.requestTools(session, requestProvider, messages);
     const requestToolsSignature = toolSchemaSignature(requestTools);
     const key = cache.keyFor(session, route, env(), {
       messages,

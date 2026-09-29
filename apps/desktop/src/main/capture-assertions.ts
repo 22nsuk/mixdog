@@ -4,6 +4,11 @@ export const schemaVersion = 1;
 export const captureTitle = `Mixdog Capture ${process.pid}`;
 export const targetSize = { width: 1_113, height: 687 };
 const captureStepTimeoutMs = 5_000;
+/** The left rail's Sessions view button while the session sidebar is
+ *  collapsed: the button toggles, so a click on THIS match always expands. */
+export const COLLAPSED_SESSIONS_TOGGLE = '.app-shell.sidebar-collapsed .activity-rail [data-side-view="sessions"]';
+/** The active rail destination, which re-inks to full text in every theme. */
+export const ACTIVE_RAIL_ICON = '.activity-rail .workbench-side-icon-bar.is-vertical > button.active';
 
 export async function withCaptureTimeout<T>(
   promise: Promise<T>,
@@ -104,11 +109,17 @@ export interface LiveCaptureAssertions {
       backdropStyle: { display: string; visibility: string; opacity: number };
       sidebar: RectMeasurement;
       backdrop: RectMeasurement;
+      railDocked: boolean;
+      railExposed: boolean;
+      sidebarBesideRail: boolean;
+      rail: RectMeasurement;
     };
     closed: {
       sidebarHidden: boolean;
       mainVisible: boolean;
-      mainMatchesViewport: boolean;
+      railDocked: boolean;
+      mainFillsBesideRail: boolean;
+      rail: RectMeasurement;
       viewportEdgeTolerance: number;
       mainEdgeDeltas: { left: number; right: number; width: number };
       composerVisible: boolean;
@@ -187,11 +198,11 @@ interface SettingsPhoneAssertions {
 interface LightThemeAssertions {
   theme: string;
   colorScheme: string;
-  titlebarIconColor: string;
+  railIconColor: string;
   iconTokenColor: string;
   activeTabColor: string;
   textTokenColor: string;
-  titlebarIconMatchesToken: boolean;
+  railIconMatchesToken: boolean;
   activeTabMatchesToken: boolean;
 }
 
@@ -228,10 +239,10 @@ export async function readDesktopAssertions(window: BrowserWindow): Promise<Live
     const main = required('.workspace');
     const composer = required('.composer');
     const modelTrigger = required('.model-trigger');
-    // The active tab owns the pane title; task context/actions live in the
-    // focused workspace's session header below the tab strip.
+    // The active tab owns the pane title; the pane's control cluster docks at
+    // the tab strip's trailing end.
     const headerTitle = required('.pane-cell.is-focused .workspace-tab.active .workspace-tab-main span');
-    const headerStatus = required('.pane-cell.is-focused .workspace > .session-header .session-header-status');
+    const headerStatus = required('.pane-cell.is-focused .workspace-tabs-trailing > .pane-dock-toggles');
     const textarea = required('textarea[aria-label="Message Mixdog"]');
     // The send button's aria-label mutates with busy state (Queue/Stop);
     // select by its stable class so state races cannot break the capture.
@@ -411,8 +422,8 @@ export async function readPhoneSettingsAssertions(window: BrowserWindow): Promis
       let categoryOverflowFree = [
         body,
         ...body.querySelectorAll(
-          '.settings-group, .settings-group-body, .core-memory-manager, .core-memory-add-card, '
-          + '.core-memory-list, .settings-shortcut-list, .settings-connection-grid',
+          '.settings-group, .settings-group-body, .core-memory-list, .settings-shortcut-list, '
+          + '.settings-connection-grid',
         ),
       ].every((element) => element instanceof HTMLElement && overflowFree(element));
       for (const row of rows) {
@@ -434,8 +445,7 @@ export async function readPhoneSettingsAssertions(window: BrowserWindow): Promis
         categoryLabelsSeparated = categoryLabelsSeparated
           && (!(first instanceof HTMLElement) || rect(first).right <= controlRect.left + 1);
         const fillTargets = Array.from(control.querySelectorAll(
-          '.settings-select.mx-select-root, .effort-control, '
-          + '.fast-control, input:not([type="checkbox"])',
+          '.settings-select.mx-select-root, .effort-control, input:not([type="checkbox"])',
         )).filter((element) => element instanceof HTMLElement && visible(element));
         for (const target of fillTargets) {
           const targetRect = rect(target);
@@ -499,14 +509,14 @@ export async function readPhoneSettingsAssertions(window: BrowserWindow): Promis
 export async function readLightThemeAssertions(window: BrowserWindow): Promise<LightThemeAssertions> {
   return window.webContents.executeJavaScript(`(() => {
     const root = document.documentElement;
-    const icon = document.querySelector('.toolbar-dock');
+    const icon = document.querySelector(${JSON.stringify(ACTIVE_RAIL_ICON)});
     const activeTab = document.querySelector('.workspace-tab.active');
     if (!(icon instanceof HTMLElement) || !(activeTab instanceof HTMLElement)) {
       return {
         theme: root.dataset.mixdogTheme || '',
         colorScheme: getComputedStyle(root).colorScheme,
-        titlebarIconColor: '', iconTokenColor: '', activeTabColor: '', textTokenColor: '',
-        titlebarIconMatchesToken: false, activeTabMatchesToken: false,
+        railIconColor: '', iconTokenColor: '', activeTabColor: '', textTokenColor: '',
+        railIconMatchesToken: false, activeTabMatchesToken: false,
       };
     }
     const resolveColor = (token) => {
@@ -517,19 +527,19 @@ export async function readLightThemeAssertions(window: BrowserWindow): Promise<L
       probe.remove();
       return color;
     };
-    const titlebarIconColor = getComputedStyle(icon).color;
+    const railIconColor = getComputedStyle(icon).color;
     const activeTabColor = getComputedStyle(activeTab).color;
-    // The remaining titlebar dock toggle carries the label ink.
+    // The active rail destination re-inks to the label ink.
     const iconTokenColor = resolveColor('--mx-text');
     const textTokenColor = resolveColor('--mx-text');
     return {
       theme: root.dataset.mixdogTheme || '',
       colorScheme: getComputedStyle(root).colorScheme,
-      titlebarIconColor,
+      railIconColor,
       iconTokenColor,
       activeTabColor,
       textTokenColor,
-      titlebarIconMatchesToken: titlebarIconColor === iconTokenColor,
+      railIconMatchesToken: railIconColor === iconTokenColor,
       activeTabMatchesToken: activeTabColor === textTokenColor,
     };
   })()`) as Promise<LightThemeAssertions>;
@@ -568,8 +578,9 @@ export async function readMobileOpenAssertions(
   return window.webContents.executeJavaScript(`(() => {
     const sidebar = document.querySelector('.sidebar');
     const backdrop = document.querySelector('.sidebar-backdrop');
-    if (!(sidebar instanceof HTMLElement) || !(backdrop instanceof HTMLElement)) {
-      throw new Error('Mobile sidebar or backdrop is missing.');
+    const rail = document.querySelector('.activity-rail');
+    if (!(sidebar instanceof HTMLElement) || !(backdrop instanceof HTMLElement) || !(rail instanceof HTMLElement)) {
+      throw new Error('Mobile sidebar, backdrop or rail is missing.');
     }
     const rect = (element) => {
       const value = element.getBoundingClientRect();
@@ -599,7 +610,22 @@ export async function readMobileOpenAssertions(
     };
     const sidebarState = state(sidebar);
     const backdropState = state(backdrop);
+    // A PC window keeps the Activity Rail docked beside the open sheet: at the
+    // window edge, uncovered (a rail click still lands), the sheet to its right.
+    const railRect = rect(rail);
+    const railButton = rail.querySelector('button');
+    const railButtonRect = railButton ? rect(railButton) : null;
+    const railHit = railButtonRect
+      ? document.elementFromPoint(
+        railButtonRect.left + railButtonRect.width / 2,
+        railButtonRect.top + railButtonRect.height / 2,
+      )
+      : null;
     return {
+      railDocked: state(rail).visible && Math.abs(railRect.left) <= 1,
+      railExposed: Boolean(railHit && rail.contains(railHit)),
+      sidebarBesideRail: rect(sidebar).left >= railRect.right - 1,
+      rail: railRect,
       sidebarVisible: sidebarState.visible,
       backdropVisible: backdropState.visible,
       sidebarComputedVisible: sidebarState.computedVisible,
@@ -638,6 +664,7 @@ export async function readMobileClosedAssertions(
     };
     const sidebar = required('.sidebar');
     const main = required('.main-panel');
+    const rail = required('.activity-rail');
     const composer = required('.composer');
     const modelTrigger = required('.model-trigger');
     const send = required('button.send-button');
@@ -647,12 +674,14 @@ export async function readMobileClosedAssertions(
     const sendRect = rect(send);
     const sidebarStyle = getComputedStyle(sidebar);
     const tolerance = 1;
+    // The thread fills the window beside the docked 48px Activity Rail.
+    const railRect = rect(rail);
     const mainEdgeDeltas = {
-      left: Math.abs(mainRect.left),
+      left: Math.abs(mainRect.left - railRect.right),
       right: Math.abs(mainRect.right - innerWidth),
-      width: Math.abs(mainRect.width - innerWidth),
+      width: Math.abs(mainRect.width - (innerWidth - railRect.right)),
     };
-    const mainMatchesViewport = Object.values(mainEdgeDeltas)
+    const mainFillsBesideRail = Object.values(mainEdgeDeltas)
       .every((delta) => delta <= tolerance);
     const contained = (inner, outer) => inner.left >= outer.left - tolerance
       && inner.top >= outer.top - tolerance && inner.right <= outer.right + tolerance
@@ -665,7 +694,9 @@ export async function readMobileClosedAssertions(
     return {
       sidebarHidden: sidebarStyle.visibility === 'hidden' || rect(sidebar).right <= 0,
       mainVisible: visible(main),
-      mainMatchesViewport,
+      railDocked: visible(rail) && Math.abs(railRect.left) <= tolerance,
+      mainFillsBesideRail,
+      rail: railRect,
       viewportEdgeTolerance: tolerance,
       mainEdgeDeltas,
       composerVisible: visible(composer) && composerContained,

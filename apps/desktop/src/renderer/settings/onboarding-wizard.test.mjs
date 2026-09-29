@@ -208,7 +208,9 @@ test('a finished GitHub sign-in shows the account at once instead of offering Si
     intervals.at(-1)();
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
-  assert.ok(![...document.querySelectorAll('button')].some((entry) => entry.textContent.trim() === 'Sign in with GitHub'));
+  assert.ok(
+    ![...document.querySelectorAll('button')].some((entry) => entry.textContent.trim() === 'Sign in with GitHub')
+  );
   assert.doesNotMatch(document.body.textContent, /ABCD-1234/);
   assert.match(document.querySelector('.onboarding-card-title').textContent, /tester/);
 });

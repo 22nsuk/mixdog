@@ -131,15 +131,6 @@ export interface DesktopBrowserPageResample {
   resample: true;
 }
 
-/** Cache costs a page only a slower reload; site data drops what a page saved
- * locally; cookies end the sessions the user is signed in to. */
-export type DesktopBrowserDataScope = 'cache' | 'siteData' | 'cookies';
-
-export interface DesktopBrowserDataClearResult {
-  cleared: DesktopBrowserDataScope[];
-  errors: Partial<Record<DesktopBrowserDataScope, string>>;
-}
-
 export interface DesktopBrowserPageFrame extends DesktopRemoteBrowserFrame {
   /** Local-only GPU frame, received separately by the trusted preload. */
   textureId?: string;

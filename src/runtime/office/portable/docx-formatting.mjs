@@ -27,6 +27,11 @@ function mergeAttributes(previous, patch, name) {
       if (updates.has(`w:${slot}`)) values.delete(`w:${slot === 'cs' ? 'cstheme' : `${slot}Theme`}`);
     }
   }
+  // The first line is either hung or indented: left beside a new one, the old w:hanging outranks a w:firstLine.
+  if (name === 'w:ind') {
+    if (updates.has('w:hanging')) values.delete('w:firstLine');
+    if (updates.has('w:firstLine')) values.delete('w:hanging');
+  }
   for (const [key, value] of updates) values.set(key, value);
   return `<${name}${[...values].map(([key, value]) => ` ${key}="${value}"`).join('')}/>`;
 }

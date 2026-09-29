@@ -80,8 +80,17 @@ export async function handleAddChart(context, op) {
 // used to be written again from the generic template around the new values, which kept a list of properties and
 // lost the rest ("1,420" came back "1510" in a bold label face with an axis line drawn). When the new data has the
 // chart's own series and every series one value per category, the caches and ranges are rewritten in place;
-// anything else (another series count, a type or title change) takes the rebuild below.
-const REBUILD_FIELDS = ['chartType', 'title', 'showValues', 'showLegend', 'zeroBaseline', 'valueNumberFormat', 'dataLabelPosition', 'dataLabelColor'];
+// anything else (another series count or a type change) takes the rebuild below. A new title is words, set in the
+// chart's own title block either way (retitledChart).
+const REBUILD_FIELDS = [
+  'chartType',
+  'showValues',
+  'showLegend',
+  'zeroBaseline',
+  'valueNumberFormat',
+  'dataLabelPosition',
+  'dataLabelColor',
+];
 function refreshChartDataInPlace(xml, categories, series, op) {
   if (REBUILD_FIELDS.some((field) => op[field] !== undefined)) return null;
   const blocks = [...String(xml).matchAll(/<c:ser>[\s\S]*?<\/c:ser>/g)];
@@ -90,7 +99,9 @@ function refreshChartDataInPlace(xml, categories, series, op) {
   if (series.some((entry) => !Array.isArray(entry?.values) || entry.values.length !== count)) return null;
   const lastRow = count + 1;
   const toRow = (formula) => formula.replace(/\$(\d+)$/, () => `$${lastRow}`);
-  const categoryPoints = categories.map((entry, index) => `<c:pt idx="${index}"><c:v>${xmlEncode(String(entry ?? ''))}</c:v></c:pt>`).join('');
+  const categoryPoints = categories
+    .map((entry, index) => `<c:pt idx="${index}"><c:v>${xmlEncode(String(entry ?? ''))}</c:v></c:pt>`)
+    .join('');
   let next = String(xml);
   for (let index = blocks.length - 1; index >= 0; index -= 1) {
     let block = blocks[index][0];
@@ -113,10 +124,14 @@ function refreshChartDataInPlace(xml, categories, series, op) {
     if (entry.name != null) {
       // A name read from the sheet keeps its reference and takes the new cache; one written as text is rewritten.
       block = /<c:tx>\s*<c:v>/.test(block)
-        ? block.replace(/<c:tx>\s*<c:v>[\s\S]*?<\/c:v>\s*<\/c:tx>/, `<c:tx><c:v>${xmlEncode(String(entry.name))}</c:v></c:tx>`)
+        ? block.replace(
+            /<c:tx>\s*<c:v>[\s\S]*?<\/c:v>\s*<\/c:tx>/,
+            `<c:tx><c:v>${xmlEncode(String(entry.name))}</c:v></c:tx>`
+          )
         : block.replace(
             /(<c:tx>\s*<c:strRef>[\s\S]*?<c:strCache>)[\s\S]*?(<\/c:strCache>)/,
-            (_, open, close) => `${open}<c:ptCount val="1"/><c:pt idx="0"><c:v>${xmlEncode(String(entry.name))}</c:v></c:pt>${close}`
+            (_, open, close) =>
+              `${open}<c:ptCount val="1"/><c:pt idx="0"><c:v>${xmlEncode(String(entry.name))}</c:v></c:pt>${close}`
           );
     }
     if (/<c:cat>[\s\S]*?<c:multiLvlStrCache>/.test(block)) {
@@ -131,17 +146,29 @@ function refreshChartDataInPlace(xml, categories, series, op) {
       );
     } else return null;
     const valuePoints = entry.values
-      .map((value, point) => (value === null || value === '' || !Number.isFinite(Number(value)) ? '' : `<c:pt idx="${point}"><c:v>${Number(value)}</c:v></c:pt>`))
+      .map((value, point) =>
+        value === null || value === '' || !Number.isFinite(Number(value))
+          ? ''
+          : `<c:pt idx="${point}"><c:v>${Number(value)}</c:v></c:pt>`
+      )
       .join('');
     block = block
       .replace(
         /(<c:val>[\s\S]*?<c:numCache>\s*(?:<c:formatCode>[\s\S]*?<\/c:formatCode>\s*)?)[\s\S]*?(<\/c:numCache>)/,
         (_, open, close) => `${open}<c:ptCount val="${count}"/>${valuePoints}${close}`
       )
-      .replace(/(<c:cat>[\s\S]*?<c:f>)([^<]*)(<\/c:f>)/, (_, open, formula, close) => `${open}${toRow(formula)}${close}`)
-      .replace(/(<c:val>[\s\S]*?<c:f>)([^<]*)(<\/c:f>)/, (_, open, formula, close) => `${open}${toRow(formula)}${close}`)
+      .replace(
+        /(<c:cat>[\s\S]*?<c:f>)([^<]*)(<\/c:f>)/,
+        (_, open, formula, close) => `${open}${toRow(formula)}${close}`
+      )
+      .replace(
+        /(<c:val>[\s\S]*?<c:f>)([^<]*)(<\/c:f>)/,
+        (_, open, formula, close) => `${open}${toRow(formula)}${close}`
+      )
       // A point override past the new last point has nothing to colour.
-      .replace(/<c:dPt>[\s\S]*?<\/c:dPt>/g, (point) => (Number(/<c:idx val="(\d+)"/.exec(point)?.[1]) < count ? point : ''));
+      .replace(/<c:dPt>[\s\S]*?<\/c:dPt>/g, (point) =>
+        Number(/<c:idx val="(\d+)"/.exec(point)?.[1]) < count ? point : ''
+      );
     next = `${next.slice(0, blocks[index].index)}${block}${next.slice(blocks[index].index + blocks[index][0].length)}`;
   }
   return next;
@@ -151,17 +178,82 @@ function refreshChartDataInPlace(xml, categories, series, op) {
 // light grey title turned heavy on the first refresh. The chart's own title block stays — its faces, size and colour —
 // and only its words change: the first run keeps its properties and takes the new text, the other runs go.
 function keepTitleTreatment(existing, rebuilt, text) {
-  const own = /<c:title>[\s\S]*?<\/c:title>/.exec(String(existing))?.[0] || '';
-  const fresh = /<c:title>[\s\S]*?<\/c:title>/.exec(String(rebuilt))?.[0] || '';
+  const own = chartTitleBlock(existing);
+  const fresh = chartTitleBlock(rebuilt);
   if (!own || !fresh || !/<a:r>/.test(own)) return rebuilt;
+  return rebuilt.replace(fresh, () => titleWords(own, text));
+}
+
+// The chart's own title, not an axis's: it stands between <c:chart> and the plot area.
+function chartTitleBlock(xml) {
+  return /<c:chart>(?:(?!<c:plotArea>)[\s\S])*?(<c:title>[\s\S]*?<\/c:title>)/.exec(String(xml))?.[1] || '';
+}
+
+// A title block with new words: its first run keeps its properties and takes the text, the other runs go.
+function titleWords(own, text) {
   let first = true;
-  const retitled = own.replace(/<a:r>([\s\S]*?)<\/a:r>/g, (_, inner) => {
+  return own.replace(/<a:r>([\s\S]*?)<\/a:r>/g, (_, inner) => {
     if (!first) return '';
     first = false;
     const properties = /<a:rPr\b[\s\S]*?(?:\/>|<\/a:rPr>)/.exec(inner)?.[0] || '';
     return `<a:r>${properties}<a:t>${xmlEncode(text)}</a:t></a:r>`;
   });
-  return rebuilt.replace(fresh, () => retitled);
+}
+
+// A title is words, not structure: it changes inside the chart's own title block and the chart around it stays as
+// it stands, as PowerPoint sets it. Rebuilt for a title alone, a template's bar chart turned its categories over and
+// redrew its legend in the runtime's own treatment. title:'' takes the title away; a chart without a title block of
+// words to change is rebuilt instead (null).
+function retitledChart(xml, text) {
+  const own = chartTitleBlock(xml);
+  if (!text) {
+    const untitled = own ? xml.replace(own, '') : xml;
+    return /<c:autoTitleDeleted\b[^>]*\/>/.test(untitled)
+      ? untitled.replace(/<c:autoTitleDeleted\b[^>]*\/>/, '<c:autoTitleDeleted val="1"/>')
+      : untitled.replace('<c:chart>', '<c:chart><c:autoTitleDeleted val="1"/>');
+  }
+  if (!/<a:r>/.test(own)) return null;
+  return xml.replace(own, () => titleWords(own, text));
+}
+
+// The order a horizontal bar chart lists its categories in. 'topDown' reads them from the top in the order given, as the
+// runtime's own bar charts read; 'bottomUp' is PowerPoint's default, which a template's bar chart usually carries: a
+// template's monthly bars read 9월 to 6월 from the top under a title about three months of decline. For topDown the
+// category axis runs the other way and the value axis crosses it at the far end, so it stays under the bars.
+const CATEGORY_ORDERS = Object.freeze({ topdown: 'maxMin', bottomup: 'minMax' });
+function categoryOrientationFor(op) {
+  if (op.categoryOrder == null || op.categoryOrder === '') return '';
+  const orientation = CATEGORY_ORDERS[String(op.categoryOrder).replace(/[\s_-]/g, '').toLowerCase()];
+  if (!orientation) throw new Error("set_chart_data categoryOrder must be 'topDown' or 'bottomUp'");
+  return orientation;
+}
+
+function categoryOrientationOf(xml) {
+  const categoryAxis = /<c:catAx>[\s\S]*?<\/c:catAx>/.exec(xml)?.[0] || '';
+  return /<c:orientation val="(minMax|maxMin)"\/>/.exec(categoryAxis)?.[1] || 'minMax';
+}
+
+function withCategoryOrientation(xml, orientation) {
+  const categoryAxis = /<c:catAx>[\s\S]*?<\/c:catAx>/.exec(xml)?.[0];
+  const valueAxis = /<c:valAx>[\s\S]*?<\/c:valAx>/.exec(xml)?.[0];
+  if (!categoryAxis || !valueAxis) return xml;
+  const element = `<c:orientation val="${orientation}"/>`;
+  let oriented;
+  if (/<c:orientation val="[^"]*"\/>/.test(categoryAxis)) {
+    oriented = categoryAxis.replace(/<c:orientation val="[^"]*"\/>/, element);
+  } else if (categoryAxis.includes('<c:scaling/>')) {
+    oriented = categoryAxis.replace('<c:scaling/>', `<c:scaling>${element}</c:scaling>`);
+  } else {
+    oriented = categoryAxis.replace('<c:scaling>', `<c:scaling>${element}`);
+  }
+  const crosses = orientation === 'maxMin' ? 'max' : 'autoZero';
+  let crossed = valueAxis;
+  if (/<c:crosses val="[^"]*"\/>/.test(valueAxis)) {
+    crossed = valueAxis.replace(/<c:crosses val="[^"]*"\/>/, `<c:crosses val="${crosses}"/>`);
+  } else if (!/<c:crossesAt\b/.test(valueAxis)) {
+    crossed = valueAxis.replace(/(<c:crossAx val="[^"]*"\/>)/, `$1<c:crosses val="${crosses}"/>`);
+  }
+  return xml.replace(categoryAxis, oriented).replace(valueAxis, crossed);
 }
 
 export async function handleSetChartData(context, op) {
@@ -169,6 +261,7 @@ export async function handleSetChartData(context, op) {
   const { part: chartPart, xml: existing } = await resolveSlideChart(zip, context.slides, op);
   const series = Array.isArray(op.series) ? op.series : [];
   if (!series.length) throw new Error('set_chart_data requires series');
+  const orientation = categoryOrientationFor(op);
   const categories = Array.isArray(op.categories) ? op.categories : chartCategories(existing);
   const chartRelationships = await zipText(zip, partRelationshipPath(chartPart));
   const embedded = relationshipTargetByType(chartRelationships, 'package');
@@ -209,30 +302,42 @@ export async function handleSetChartData(context, op) {
     const filled = entry.color === undefined && kept.seriesColors[index] ? { color: kept.seriesColors[index] } : {};
     return Object.keys(carried).length || Object.keys(filled).length ? { ...entry, ...filled, ...carried } : entry;
   });
-  const refreshed = refreshChartDataInPlace(existing, categories, series, op);
+  const inPlace = refreshChartDataInPlace(existing, categories, series, op);
+  const refreshed = inPlace && op.title != null ? retitledChart(inPlace, String(op.title)) : inPlace;
   const rebuilt = refreshed
     ? null
     : chartXml({
-      chartType: op.chartType || detectChartType(existing),
-      title: op.title ?? chartTitleText(existing),
-      categories,
-      series: coloured,
-      showValues: op.showValues === undefined ? kept.showValues : op.showValues === true,
-      dataLabelPosition: op.dataLabelPosition ?? kept.dataLabelPosition,
-      dataLabelColor: op.dataLabelColor ?? kept.dataLabelColor,
-      valueNumberFormat: op.valueNumberFormat ?? kept.valueNumberFormat,
-      showLegend: op.showLegend ?? kept.showLegend,
-      zeroBaseline: op.zeroBaseline === undefined ? kept.zeroBaseline : op.zeroBaseline === true,
-      axis: kept.axis,
-      externalDataId: 'rId1',
-      text: CHART_TEXT.slide,
-    });
+        chartType: op.chartType || detectChartType(existing),
+        title: op.title ?? chartTitleText(existing),
+        categories,
+        series: coloured,
+        showValues: op.showValues === undefined ? kept.showValues : op.showValues === true,
+        dataLabelPosition: op.dataLabelPosition ?? kept.dataLabelPosition,
+        dataLabelColor: op.dataLabelColor ?? kept.dataLabelColor,
+        valueNumberFormat: op.valueNumberFormat ?? kept.valueNumberFormat,
+        showLegend: op.showLegend ?? kept.showLegend,
+        zeroBaseline: op.zeroBaseline === undefined ? kept.zeroBaseline : op.zeroBaseline === true,
+        // Another type is another chart: its categories read the way that type reads them.
+        axis:
+          op.chartType && op.chartType !== detectChartType(existing) ? { ...kept.axis, categoryOrientation: '' } : kept.axis,
+        externalDataId: 'rId1',
+        text: CHART_TEXT.slide,
+      });
+  const written = refreshed || keepTitleTreatment(existing, rebuilt, op.title ?? chartTitleText(existing));
+  const horizontal = /<c:barDir val="bar"\/>/.test(written);
+  if (orientation && !horizontal) {
+    throw new Error("set_chart_data categoryOrder orders a horizontal bar chart's categories; this chart is not one");
+  }
+  const chart = orientation ? withCategoryOrientation(written, orientation) : written;
   await writePresentationChart(zip, {
     chartPart,
     embeddingPart,
-    chart: refreshed || keepTitleTreatment(existing, rebuilt, op.title ?? chartTitleText(existing)),
+    chart,
     rows: chartWorkbookRows(categories, coloured),
   });
+  // Bars left reading from the bottom up are named, with the field that turns them over: nothing else tells the caller
+  // that its first category landed at the bottom.
+  const bottomUp = horizontal && !orientation && categoryOrientationOf(chart) === 'minMax';
   // A zero baseline is already reported on its own; the axis line is what the
   // caller could not have asked for: a hidden axis, a zoomed range, no grid.
   const axisKept =
@@ -256,8 +361,12 @@ export async function handleSetChartData(context, op) {
     slide: Number(op.slide),
     chart: chartPart,
     ...(preserved.length ? { preserved } : {}),
+    ...(bottomUp ? { readingOrder: 'bottomUp', note: BOTTOM_UP_NOTE } : {}),
   };
 }
+
+export const BOTTOM_UP_NOTE =
+  "The bars read from the bottom up, the first category lowest, as this chart was authored; categoryOrder:'topDown' lists them from the top in the order given.";
 
 // Rewrites the chart's series blocks in place. `wanted` is a 1-based series
 // number; anything else (no number, 0, NaN) means every series. `changed` says
@@ -402,7 +511,13 @@ const TRENDLINE_TYPES = Object.freeze({
 });
 
 function trendlineXml(op) {
-  const type = TRENDLINE_TYPES[String(op.type || 'linear').trim().toLowerCase().replace(/[\s_-]+/g, '')];
+  const type =
+    TRENDLINE_TYPES[
+      String(op.type || 'linear')
+        .trim()
+        .toLowerCase()
+        .replace(/[\s_-]+/g, '')
+    ];
   if (!type) {
     throw new Error(
       'set_chart_trendline type must be linear, exponential, logarithmic, polynomial, power, or moving_average'

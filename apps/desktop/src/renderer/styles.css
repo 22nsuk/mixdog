@@ -150,7 +150,6 @@ button {
   display: none;
 }
 .task-link,
-.projects-link,
 .session-row {
   width: 100%;
   min-width: 0;
@@ -160,8 +159,7 @@ button {
   background: transparent;
   text-align: left;
 }
-.task-link,
-.projects-link {
+.task-link {
   -webkit-app-region: no-drag;
 }
 .session-sidebar-scroll {
@@ -303,8 +301,7 @@ button {
 .markdown > :last-child {
   margin-bottom: 0;
 }
-.markdown pre,
-.detail-block pre {
+.markdown pre {
   overflow-x: auto;
   white-space: pre-wrap;
 }
@@ -377,17 +374,6 @@ button {
   display: flex;
   align-items: center;
 }
-.tool-content {
-  margin: 0;
-  display: grid;
-}
-.detail-block > span {
-  display: block;
-}
-.detail-block pre {
-  margin: 0;
-  overflow: auto;
-}
 .turn-status,
 .live-activity {
   display: flex;
@@ -452,7 +438,7 @@ button {
 }
 .slash-palette {
   position: fixed;
-  z-index: var(--mx-menu-z-index, 10010);
+  z-index: var(--mx-menu-z-index);
   visibility: hidden;
   overflow-y: auto;
 }
@@ -528,9 +514,6 @@ button {
   text-align: left;
 }
 .effort-control select {
-  height: 28px;
-}
-.fast-control {
   height: 28px;
 }
 .queue-list,

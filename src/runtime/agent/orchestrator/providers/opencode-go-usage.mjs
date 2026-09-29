@@ -4,6 +4,7 @@ import { resolvePluginData } from '../../../shared/plugin-paths.mjs';
 import { getAgentApiKey, getOpenCodeGoConsoleKey } from '../../../shared/config.mjs';
 import { round, cleanString as clean } from './lib/usage-primitives.mjs';
 import { JsonMemoryCache } from './lib/json-memory-cache.mjs';
+import { recordQuotaReadings } from './lib/quota-readings.mjs';
 
 const CACHE_FILE = 'opencode-go-usage-cache.json';
 const LIVE_TTL_MS = 5 * 60_000;
@@ -164,6 +165,8 @@ export async function fetchOpenCodeGoUsageSnapshot(_config = {}, { force = false
     }
     const snapshot = { ...parsed, cachedAt: Date.now() };
     writeJson(cachePath(), { version: 1, updatedAt: Date.now(), snapshot });
+    // One console key serves the whole subscription: a single account.
+    void recordQuotaReadings('opencode-go', 'default', snapshot);
     return snapshot;
   } finally {
     clearTimeout(timer);

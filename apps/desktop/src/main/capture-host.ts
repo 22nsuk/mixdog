@@ -55,10 +55,13 @@ export const CAPTURE_SETTINGS_VALUES: Record<string, unknown> = {
     channel: {},
     webhooks: [],
   },
+  // The composer shows its mic only once the voice runtime is installed (the
+  // install consent lives in Extensions), so captures run installed and the
+  // dictation smoke drives the composer chain.
   getVoiceStatus: {
-    installed: false,
-    enabled: false,
-    components: { whisper: false, model: false, ffmpeg: false },
+    installed: true,
+    enabled: true,
+    components: { whisper: true, model: true, ffmpeg: true },
   },
   listWorkflows: [{ id: 'solo', name: 'Solo', active: true }],
   listOutputStyles: {
@@ -157,7 +160,7 @@ export class CaptureService implements DesktopService {
   private jitterStoredSnapshot: SessionSnapshot = null;
   private jitterLiveSnapshot: SessionSnapshot = null;
   private jitterColdSnapshot: SessionSnapshot = null;
-  private visibleProbeSessions = new Set<string>();
+  private visibleSessions = new Set<string>();
   private snapshot: SessionSnapshot = {
     sessionId: '',
     items: [],
@@ -267,12 +270,16 @@ export class CaptureService implements DesktopService {
     return true;
   }
   async setVisibleSessions(sessionIds: string[] = []): Promise<boolean> {
-    if (jitterProbeEnabled()) {
-      for (const sessionId of sessionIds) {
-        if (!this.visibleProbeSessions.has(sessionId)) void this.openProbeSession(sessionId);
-      }
-      this.visibleProbeSessions = new Set(sessionIds);
+    // A pane shows a session by making it visible, and the host answers with
+    // that session's lane: probe sessions after their modelled load delay, the
+    // capture's own session (the tool showcase) at once, so a frame published
+    // before the pane opened its lane is never lost.
+    for (const sessionId of sessionIds) {
+      if (this.visibleSessions.has(sessionId)) continue;
+      if (jitterProbeEnabled()) void this.openProbeSession(sessionId);
+      else if (sessionId === String(this.snapshot?.sessionId || '')) this.publish(this.snapshot);
     }
+    this.visibleSessions = new Set(sessionIds);
     return true;
   }
   async searchProjectFiles(): Promise<string[]> {
@@ -501,9 +508,6 @@ export class CaptureService implements DesktopService {
     if (capability === 'setTheme') {
       this.captureTheme = String(args[0] || 'basic');
       return { value: this.captureTheme as T, snapshot: this.getSnapshot() };
-    }
-    if (capability === 'getVoiceStatus') {
-      return { value: { enabled: false, installed: false } as T, snapshot: this.getSnapshot() };
     }
     if (capability === 'toggleVoice') {
       return { value: { enabled: true, installed: true } as T, snapshot: this.getSnapshot() };

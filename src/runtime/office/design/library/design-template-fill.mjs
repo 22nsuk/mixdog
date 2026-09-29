@@ -95,7 +95,10 @@ export function selectTemplatePage(document, request) {
     .sort((left, right) => (follows ? Number(right.follow) - Number(left.follow) : 0));
   // The page that takes the items with the least room left over; when none holds
   // them the widest one answers and the fill reports how far it falls short.
-  const fits = sized.filter((entry) => entry.size >= items && (!follows || entry.follow || !sized.some((other) => other.follow && other.size >= items)));
+  const fits = sized.filter(
+    (entry) =>
+      entry.size >= items && (!follows || entry.follow || !sized.some((other) => other.follow && other.size >= items))
+  );
   const chosen = fits.length
     ? fits.sort((left, right) => left.size - right.size)[0]
     : sized.sort((left, right) => right.size - left.size)[0];
@@ -173,8 +176,7 @@ export function templatePageFill(page, content) {
   const lead = { subtitle: 'body', body: 'subtitle' };
   for (const field of ['eyebrow', 'subtitle', 'body', 'source']) {
     const partner = lead[field];
-    const shape =
-      slots.get(field) ?? (partner && !String(content?.[partner] || '') ? slots.get(partner) : undefined);
+    const shape = slots.get(field) ?? (partner && !String(content?.[partner] || '') ? slots.get(partner) : undefined);
     const text = String(content?.[field] || '');
     if (text && !shape) {
       throw new Error(
@@ -216,7 +218,8 @@ export function templatePageFill(page, content) {
 // A page's chart, table, and picture arrive holding the template's own data: its fill writes words, not numbers or
 // photographs, so a filled page kept "Coverage 62% · Latency 820ms" and the template's logo unless the caller went on
 // to replace them, and nothing said so. Each carrier is named with its shape as it stands after the fill and the
-// operation that replaces its content.
+// operation that replaces its content. A chart's title is the template's words too, and new numbers keep it: a chart
+// of monthly errors stood under "Cycle time · seconds". The record carries it, for set_chart_data's title to replace.
 const CARRIER_FIX = Object.freeze({ chart: 'set_chart_data', table: 'set_table_data', image: 'replace_image' });
 function templateCarriers(page, deletes, slide) {
   return (page?.shapes || [])
@@ -224,7 +227,8 @@ function templateCarriers(page, deletes, slide) {
     .map((shape) => {
       const index = Number(shape.index);
       const at = index - deletes.filter((deleted) => deleted < index).length;
-      return { slide, shape: at, holds: shape.slot, replaceWith: CARRIER_FIX[shape.slot] };
+      const title = shape.slot === 'chart' ? String(shape.chart?.title || '') : '';
+      return { slide, shape: at, holds: shape.slot, replaceWith: CARRIER_FIX[shape.slot], ...(title ? { title } : {}) };
     });
 }
 
@@ -232,6 +236,17 @@ function templateCarriers(page, deletes, slide) {
 export async function expandTemplatePageOperations(format, operations, carriers = []) {
   if (format !== 'pptx' || !operations.some((operation) => operation?.op === 'use_template_page')) return operations;
   const expanded = [];
+  // A deck filled page by page reads its template once: read for every page, a seven-page batch read it seven times.
+  const documents = new Map();
+  const templateDocument = async (path) => {
+    if (!documents.has(path)) {
+      documents.set(
+        path,
+        await overlayTemplateSidecar(annotatePptxSnapshotRoles(await snapshotPortableOoxml(path, 'pptx')), path)
+      );
+    }
+    return documents.get(path);
+  };
   for (const operation of operations) {
     if (operation?.op !== 'use_template_page') {
       expanded.push(operation);
@@ -243,10 +258,7 @@ export async function expandTemplatePageOperations(format, operations, carriers 
         'use_template_page needs after: the slide the new page follows, 0 to put it at the front of the deck'
       );
     }
-    const document = await overlayTemplateSidecar(
-      annotatePptxSnapshotRoles(await snapshotPortableOoxml(operation.path, 'pptx')),
-      operation.path
-    );
+    const document = await templateDocument(operation.path);
     const page = selectTemplatePage(document, operation);
     const { sets, deletes } = templatePageFill(page, operation);
     const slide = after + 1;

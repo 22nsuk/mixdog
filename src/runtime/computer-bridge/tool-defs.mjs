@@ -5,7 +5,7 @@ import { COMPUTER_INPUT_SCHEMA, COMPUTER_OBSERVATION_ACTIONS } from './action-sc
 // recovery, and flows live in the built-in `computer-use` skill; the schema
 // below owns every field.
 const COMPUTER_TOOL_DESCRIPTION = [
-  'Operate local desktop apps (Windows, macOS, Linux), OS dialogs, and external browser windows (a user-named one comes here directly). Last resort after an MCP tool, shell/CLI, and Browser Use where applicable; never a stand-in for a page action browser refused.',
+  'Operate local desktop apps (Windows, macOS, Linux), OS dialogs, and user-viewed or handed-over browser tabs (no Browser Use trial). Only for steps no built-in, mcp__* (deferred too), shell/CLI, or Browser Use tool covers; never a stand-in for a page action browser refused.',
   'Load the computer-use skill before first use.',
   'At most one computer call per model turn; other tools may run in the same turn. Chain same-window steps inside one act.',
   'Every window action names one exact target (window_id, or app resolving to one window); zoom instead inherits its target from frame_id. Input requires a fresh observation from capture or the previous result.',

@@ -17,7 +17,7 @@
      WCO). Only the CARD keeps clear of the min/max/close controls
      (user: 팝업이 위에 - ㅁ x 를 가린다). */
   inset: 0;
-  z-index: 940;
+  z-index: var(--mx-dialog-z-index);
   display: grid;
   place-items: center;
   /* SYMMETRIC block padding: the one-sided caption reserve pushed every
@@ -47,7 +47,7 @@
 }
 /* A confirmation always paints above the card that raised it. */
 .settings-confirm-layer {
-  z-index: 950;
+  z-index: calc(var(--mx-dialog-z-index) + 10);
 }
 .onboarding-dialog,
 .schedules-dialog,
@@ -57,7 +57,10 @@
   box-sizing: border-box;
   min-width: 0;
   max-width: 100%;
-  max-height: 100%;
+  /* Each family caps its card through --mx-dialog-max-height (user: 팝업
+     상하 최대 크기 팝업마다 다르게); the layer's own height still wins on a
+     short window. Unset keeps the old fill-the-layer behavior. */
+  max-height: min(var(--mx-dialog-max-height, 100%), 100%);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -515,19 +518,12 @@
 .workspace-tab.active {
   color: var(--mx-text);
 }
-.session-sidebar-panels .schedules-row-copy small,
-.utility-dock .agent-activity-copy small {
+.session-sidebar-panels .schedules-row-copy small {
   color: var(--mx-text-muted);
 }
 .session-sidebar-panels .agent-route-summary .model-route-label-model,
 .utility-dock .agent-activity-page .agent-route-summary .model-route-label-model {
   color: var(--mx-text);
-}
-.session-panel-section-title,
-.sidebar-section-title {
-  color: var(--mx-text);
-  font-size: var(--mx-font-category);
-  font-weight: var(--mx-weight-semibold);
 }
 /* ── Rail gutter ───────────────────────────────────────────────────────────
    ONE token drives every left/right inset in both rails (user: 공통값으로
@@ -575,20 +571,11 @@ html:not([data-mixdog-mobile-tabs]) :is(.session-sidebar, .session-sidebar-panel
 .session-sidebar .session-panel-header-actions > .session-panel-action:last-child {
   margin-right: calc(var(--mx-rail-trailing-center) - 14px);
 }
-/* Grouped panel headers reserve 2px inside their divider edge. Their 28px
-   desktop action spends the remaining 4px before its 14px half-width. */
-.session-sidebar .sidebar-view-section-actions > .session-panel-action:last-child {
-  margin-right: calc(var(--mx-rail-trailing-center) - 2px - 14px);
-}
 /* In-card controls start after the card's 12px inner gutter. Position their
    24px desktop box by glyph center, not by its outer pill edge. */
 .session-sidebar-panels .schedules-row .row-overflow-trigger,
 .session-sidebar-panels .schedules-row .session-panel-action {
   margin-right: calc(var(--mx-rail-trailing-center) - var(--mx-rail-gutter) - 12px);
-}
-.session-sidebar .session-group h2,
-.session-sidebar .sidebar-section-heading {
-  padding-inline: 0;
 }
 /* Recent/Automations/Remote/Archived rows share one inner frame inset while
    the trailing gutter stays reserved for spinner/unread/actions. */

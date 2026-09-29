@@ -146,55 +146,6 @@
 .dock-file-row.git-dir-changed .dock-file-changed {
   background: var(--mx-warning);
 }
-/* A single-column `auto` grid track sizes to MAX-CONTENT, so one long symbol
-   or message name widened the entire list past the dock. Pin the column to
-   the container width and let the rows ellipsis inside it. */
-.dock-language-list {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  align-content: start;
-  min-width: 0;
-}
-.dock-language-toolbar {
-  flex: 0 0 34px;
-  height: 34px;
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  padding: 4px 12px;
-}
-.dock-language-search {
-  height: 26px;
-  min-width: 0;
-  flex: 1;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 8px;
-  border: 0.5px solid var(--mx-border-muted);
-  border-radius: var(--mx-radius-md);
-  color: var(--mx-text-muted);
-  background: var(--mx-workspace-sheet);
-}
-/* Problems places its search bare in the pane (no toolbar): same 12px gutter
-   and the same 34px band as the Outline toolbar. */
-.utility-dock-pane > .dock-language-search {
-  flex: 0 0 26px;
-  margin: 0 12px 8px;
-}
-.dock-language-search input {
-  width: 100%;
-  min-width: 0;
-  border: 0;
-  outline: 0;
-  color: var(--mx-text);
-  background: transparent;
-  font: inherit;
-  font-size: var(--mx-font-ui);
-  font-weight: var(--mx-weight-regular);
-  line-height: var(--mx-line-ui);
-  letter-spacing: 0;
-}
 /* The search box itself — box, icon, field and clear button — is declared
    ONCE, next to .workbench-explorer-search below. */
 .workbench-search-results {
@@ -240,96 +191,6 @@
 .workbench-search-results small {
   color: var(--mx-text-muted);
   font-size: var(--mx-font-micro);
-}
-.dock-language-toolbar > button {
-  width: 25px;
-  height: 25px;
-  display: grid;
-  place-items: center;
-  padding: 0;
-  border: 0;
-  border-radius: var(--mx-radius-sm);
-  color: var(--mx-text-muted);
-  background: transparent;
-  font-size: var(--mx-font-meta);
-  cursor: pointer;
-}
-.dock-language-toolbar > button:hover,
-.dock-language-toolbar > button[aria-pressed="true"] {
-  color: var(--mx-text);
-  background: var(--mx-hover);
-}
-.dock-problem-file {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  padding: 5px 12px 3px;
-  color: var(--mx-text-muted);
-  background: var(--mx-workspace-sheet);
-  font-size: var(--mx-font-ui);
-  font-weight: var(--mx-weight-regular);
-  line-height: var(--mx-line-ui);
-  letter-spacing: 0;
-}
-.dock-language-row {
-  width: 100%;
-  min-height: 34px;
-  display: flex;
-  align-items: flex-start;
-  gap: 7px;
-  padding: 5px 12px;
-  border: 0;
-  color: var(--mx-text);
-  background: transparent;
-  text-align: left;
-  cursor: pointer;
-}
-.dock-language-row:hover {
-  background: var(--mx-hover);
-}
-.dock-language-row > svg {
-  flex: 0 0 auto;
-  margin-top: 2px;
-  color: var(--mx-icon-muted);
-}
-.dock-language-row[data-severity="1"] > svg {
-  color: var(--mx-danger);
-}
-.dock-language-row[data-severity="2"] > svg {
-  color: var(--mx-warning);
-}
-.dock-language-row > span {
-  min-width: 0;
-  flex: 1;
-  display: grid;
-  gap: 2px;
-}
-.dock-language-row b {
-  overflow: hidden;
-  font-size: var(--mx-font-ui);
-  font-weight: var(--mx-weight-regular);
-  line-height: var(--mx-line-ui);
-  letter-spacing: 0;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.dock-language-row small {
-  overflow: hidden;
-  color: var(--mx-text-muted);
-  font-size: var(--mx-font-meta);
-  font-weight: var(--mx-weight-regular);
-  line-height: var(--mx-line-meta);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.dock-language-row > em {
-  flex: 0 0 auto;
-  color: var(--mx-text-faint);
-  font-family: var(--mx-font-mono);
-  font-size: var(--mx-font-micro);
-  font-weight: var(--mx-weight-regular);
-  line-height: 1.4;
-  font-style: normal;
 }
 /* Source Control: compact staged workflow over the
    existing desktop Git IPCs. */
@@ -598,7 +459,7 @@
   /* Reference width 365px (app/styles/ui/_branches.scss:3-16); ours is capped
      to the room the window has and positioned by anchored-panel.ts. */
   position: fixed;
-  z-index: 60;
+  z-index: var(--mx-menu-z-index);
   width: 300px;
   max-width: calc(100vw - 16px);
   max-height: min(420px, calc(100vh - 96px));
@@ -694,12 +555,6 @@
   font-size: var(--mx-font-ui);
   text-align: left;
 }
-.dock-scm-branch-create {
-  color: var(--mx-text);
-}
-.dock-scm-branch-create > svg {
-  color: var(--mx-icon-muted);
-}
 .dock-scm-branch-main > svg {
   flex: 0 0 auto;
   color: var(--mx-icon-muted);
@@ -742,8 +597,7 @@
 .dock-scm-branch-action.danger:hover {
   color: var(--mx-danger);
 }
-.dock-scm-file-actions button,
-.dock-scm-group-actions button {
+.dock-scm-file-actions button {
   width: 22px;
   height: 22px;
   display: grid;
@@ -755,13 +609,11 @@
   background: transparent;
   cursor: pointer;
 }
-.dock-scm-file-actions button:hover,
-.dock-scm-group-actions button:hover {
+.dock-scm-file-actions button:hover {
   color: var(--mx-text);
   background: var(--mx-hover);
 }
-.dock-scm-file-actions button:disabled,
-.dock-scm-group-actions button:disabled {
+.dock-scm-file-actions button:disabled {
   opacity: var(--mx-op-disabled);
   cursor: default;
 }
@@ -807,27 +659,23 @@
    uniform across the workbench). */
 .dock-scm-scroll,
 .dock-scm-history,
-.dock-files,
-.dock-task-list {
+.dock-files {
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
 }
 .dock-scm-scroll::-webkit-scrollbar,
 .dock-scm-history::-webkit-scrollbar,
-.dock-files::-webkit-scrollbar,
-.dock-task-list::-webkit-scrollbar {
+.dock-files::-webkit-scrollbar {
   width: var(--mx-scrollbar-size);
 }
 .dock-scm-scroll::-webkit-scrollbar-track,
 .dock-scm-history::-webkit-scrollbar-track,
-.dock-files::-webkit-scrollbar-track,
-.dock-task-list::-webkit-scrollbar-track {
+.dock-files::-webkit-scrollbar-track {
   background: transparent;
 }
 .dock-scm-scroll::-webkit-scrollbar-thumb,
 .dock-scm-history::-webkit-scrollbar-thumb,
-.dock-files::-webkit-scrollbar-thumb,
-.dock-task-list::-webkit-scrollbar-thumb {
+.dock-files::-webkit-scrollbar-thumb {
   border: 2px solid transparent;
   border-radius: var(--mx-radius-pill);
   background: var(--mx-scrollbar-thumb);
@@ -1026,86 +874,6 @@
 .dock-scm-commit-split > button:first-child > svg {
   flex: 0 0 auto;
 }
-/* Quiet list grammar shared with Search and Tasks. */
-.dock-scm-group {
-  margin: 0 8px 2px;
-  padding: 0;
-}
-.dock-scm-group > header {
-  position: relative;
-  height: 28px;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  padding: 0;
-  background: transparent;
-}
-.dock-scm-group-toggle {
-  min-width: 0;
-  height: 28px;
-  flex: 1;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  padding: 0 4px;
-  border: 0;
-  border-radius: var(--mx-radius-sm);
-  color: var(--mx-text-muted);
-  background: transparent;
-  text-align: left;
-  cursor: pointer;
-}
-.dock-scm-group-toggle:hover,
-.dock-scm-group-toggle:focus-visible {
-  color: var(--mx-text);
-  background: var(--mx-hover);
-  outline: 0;
-}
-.dock-scm-group-toggle > b {
-  order: 1;
-}
-.dock-scm-group-toggle > span {
-  order: 2;
-}
-.dock-scm-group-toggle > svg {
-  order: 0;
-  flex: 0 0 auto;
-  transition: transform var(--mx-motion-ink);
-}
-.dock-scm-group[data-collapsed] .dock-scm-group-toggle > svg {
-  transform: rotate(-90deg);
-}
-.dock-scm-group-toggle > b {
-  min-width: 0;
-  flex: 0 1 auto;
-  overflow: hidden;
-  color: inherit;
-  font-size: var(--mx-font-minor);
-  font-weight: var(--mx-weight-semibold);
-  line-height: var(--mx-line-minor);
-  letter-spacing: 0;
-  text-overflow: ellipsis;
-  text-transform: none;
-  white-space: nowrap;
-}
-.dock-scm-group-toggle > span {
-  min-width: 0;
-  margin-left: auto;
-  padding: 0;
-  color: var(--mx-text-faint);
-  background: transparent;
-  font-size: var(--mx-font-micro);
-  font-weight: var(--mx-weight-regular);
-  line-height: var(--mx-line-minor);
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-.dock-scm-group-actions {
-  display: flex;
-  align-items: center;
-  gap: 1px;
-  padding-right: 2px;
-}
 /* Changes header: the tri-state select-all row on a 29px band. */
 /* The header band sits OUTSIDE .dock-scm-scroll, so it pays the dock gutter
    itself: left = --dock-scm-gutter, right = that gutter plus the scrollbar
@@ -1210,7 +978,7 @@
   flex: 0 0 auto;
   margin-left: 4px;
   padding: 2px 5px;
-  border-radius: 20px;
+  border-radius: var(--mx-radius-pill);
   color: var(--mx-text);
   background: var(--mx-pressed);
   font-size: var(--mx-font-micro);
@@ -1260,14 +1028,6 @@
   width: 16px;
   height: 18px;
   flex: 0 0 16px;
-}
-/* Section actions reveal on hover/focus without moving the count. */
-.dock-scm-group-actions {
-  opacity: 0;
-}
-.dock-scm-group > header:hover .dock-scm-group-actions,
-.dock-scm-group > header:focus-within .dock-scm-group-actions {
-  opacity: 1;
 }
 .dock-scm-file-main {
   min-width: 0;
@@ -1325,52 +1085,6 @@
   line-height: inherit;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.dock-scm-dir {
-  width: 100%;
-  min-height: 28px;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  padding: 0 4px;
-  border: 0;
-  border-radius: var(--mx-radius-sm);
-  color: var(--mx-text-muted);
-  background: transparent;
-  font-size: var(--mx-font-minor);
-  line-height: var(--mx-line-minor);
-  text-align: left;
-  cursor: pointer;
-}
-.dock-scm-dir:hover,
-.dock-scm-dir:focus-visible {
-  color: var(--mx-text);
-  background: var(--mx-hover);
-  outline: 0;
-}
-.dock-scm-dir > svg {
-  flex: 0 0 auto;
-}
-.dock-scm-dir > span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-/* Tree indent guides: one 12px cell per depth with a 1px rail. */
-.dock-scm-indent {
-  position: relative;
-  width: 12px;
-  flex: 0 0 12px;
-  align-self: stretch;
-}
-.dock-scm-indent::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 5px;
-  border-left: 1px solid var(--mx-border-muted);
 }
 /* In-flow action slot that costs NOTHING at rest: zero width + clipped, so
    the file name keeps the full row width until the row is hovered/focused.
@@ -1492,7 +1206,7 @@
   content: "›";
   display: inline-block;
   color: var(--mx-text-muted);
-  transition: transform 120ms ease;
+  transition: transform var(--mx-motion-chrome);
 }
 .source-control-error-details[open] > summary::before {
   transform: rotate(90deg);
@@ -1534,15 +1248,6 @@
 .source-control-error-notice[data-compact] > svg {
   width: 14px;
   height: 14px;
-}
-.dock-scm-loading {
-  height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  color: var(--mx-text-muted);
-  font-size: var(--mx-font-minor);
 }
 /* History rows: ONE-line summary and a
    `author · relative age` byline (no avatar monogram), on a FIXED row height.
@@ -1825,7 +1530,7 @@
    window like the dock's other overlays. */
 .dock-scm-context-menu {
   position: fixed;
-  z-index: 470;
+  z-index: var(--mx-menu-z-index);
   min-width: 200px;
   max-width: min(320px, calc(100vw - 16px));
   display: grid;
@@ -2405,15 +2110,6 @@
   color: var(--mx-text-faint);
   font-size: var(--mx-font-minor);
   line-height: var(--mx-line-ui);
-}
-.dock-pr-checks [data-checks="passing"] {
-  color: var(--mx-success);
-}
-.dock-pr-checks [data-checks="failing"] {
-  color: var(--mx-danger);
-}
-.dock-pr-checks [data-checks="pending"] {
-  color: var(--mx-warning);
 }
 i.dock-pr-row-checks[data-checks="passing"] {
   background: var(--mx-success);
@@ -3296,45 +2992,6 @@ i.dock-pr-row-checks[data-checks="pending"] {
   color: var(--mx-text);
   background: var(--mx-hover);
 }
-/* Diff tab "Editor" renderer (Monaco DiffEditor): fill the body, unsaved bar
-   above the editor surface. */
-.workspace-git-diff-editor {
-  height: 100%;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-}
-.workspace-git-diff-editor > div {
-  min-height: 0;
-  flex: 1;
-}
-.workspace-git-diff-editor-bar {
-  min-height: 30px;
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 0 9px;
-  border-bottom: 1px solid var(--mx-border-muted);
-  background: var(--mx-bg-base);
-  color: var(--mx-text-muted);
-  font-size: var(--mx-font-micro);
-}
-.workspace-git-diff-editor-bar button {
-  min-height: 24px;
-  padding: 0 7px;
-  border: 0;
-  border-radius: var(--mx-radius-sm);
-  color: var(--mx-text);
-  background: var(--mx-hover);
-  font-size: var(--mx-font-meta);
-  cursor: pointer;
-}
-.workspace-git-diff-editor-bar button:disabled {
-  opacity: var(--mx-op-disabled);
-  cursor: default;
-}
 /* Quick Diff defaults to `all`: gutter + minimap gutter + overview
    ruler. These tokens keep all three surfaces on the same dark/light palette. */
 :root {
@@ -3375,7 +3032,7 @@ i.dock-pr-row-checks[data-checks="pending"] {
 }
 .dock-file-menu {
   position: fixed;
-  z-index: 60;
+  z-index: var(--mx-menu-z-index);
   min-width: 180px;
   padding: 4px;
   border: var(--mx-popup-border);

@@ -88,17 +88,12 @@ const { createComputerUseOverlay } = await import('./index.ts');
 const { computerUseCoordinator: coordinator } = await import('../session/coordinator.ts');
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
-test('Pause retains the task and its controls; Resume continues it and emergency Stop remains separate', async () => {
+test('Stop and the emergency shortcut end a paused task, and the overlay offers no other control', async () => {
   fault = '';
   const start = windows.length;
-  let resumed = 0,
-    paused = 0,
+  let paused = 0,
     stopped = 0;
   const overlay = createComputerUseOverlay({
-    resume: async (generation) => {
-      resumed++;
-      coordinator.resumeAfterUserTakeover(generation);
-    },
     pause: async () => {
       paused++;
       coordinator.pauseForUser('user_pause');
@@ -121,35 +116,25 @@ test('Pause retains the task and its controls; Resume continues it and emergency
         },
         { action, generation }
       );
-    for (const action of ['dismiss', 'cancel']) await assert.rejects(invoke(action, 0), /Invalid overlay request/);
-    assert.equal((await invoke('pause', coordinator.snapshot().takeoverGeneration)).accepted, true);
-    assert.equal(paused, 1);
-    assert.equal(stopped, 0);
-    assert.equal(resumed, 0);
+    for (const action of ['dismiss', 'cancel', 'pause', 'resume']) {
+      await assert.rejects(invoke(action, 0), /Invalid overlay request/);
+    }
+    // Reaching for the pill is the user's own input: it pauses without any control.
+    coordinator.pauseForUser('user_input_active');
     assert.equal(coordinator.snapshot().userControlActive, true);
     assert.throws(() => coordinator.assertAutomationAllowed());
     assert.ok(coordinator.snapshot().pausedSessionIds.includes('toggle-fixture'));
     await settle();
     assert.equal(window.isVisible(), true);
-    const generation = coordinator.snapshot().takeoverGeneration;
-    assert.equal((await invoke('resume', generation - 1)).error, 'stale');
-    assert.equal((await invoke('resume', generation)).accepted, true);
-    assert.equal(resumed, 1);
+    // The paused pill's one control ends the task and hands the desktop back.
+    assert.equal((await invoke('stop', coordinator.snapshot().takeoverGeneration)).accepted, true);
+    assert.equal(stopped, 1);
     assert.equal(coordinator.snapshot().userControlActive, false);
-    assert.equal(stopped, 0);
-    assert.equal(
-      (await invoke('pause', generation - 1)).accepted,
-      true,
-      'a stale Pause may block input, never release it'
-    );
+    coordinator.beginCommand({ sessionId: 'toggle-fixture', action: 'capture', mode: 'background' });
     stopShortcut();
     await settle();
-    assert.equal(stopped, 1, 'the emergency shortcut ends the task');
-    assert.equal(coordinator.snapshot().userControlActive, false);
-    // The check state's Stop control reaches the same path over the trusted
-    // channel, so a latched pause is not left with a dead toggle alone.
-    assert.equal((await invoke('stop', coordinator.snapshot().takeoverGeneration)).accepted, true);
-    assert.equal(stopped, 2);
+    assert.equal(stopped, 2, 'the emergency shortcut ends the task');
+    assert.equal(paused, 0, 'the overlay never pauses');
   } finally {
     overlay.dispose();
     coordinator.reset();
@@ -160,14 +145,14 @@ for (const stage of ['load', 'script']) {
   test(`failed overlay ${stage} is destroyed and a subsequent update can recover`, async () => {
     fault = stage;
     const start = windows.length;
-    const overlay = createComputerUseOverlay({ stop: async () => {}, resume: async () => {} });
+    const overlay = createComputerUseOverlay({ stop: async () => {} });
     try {
       coordinator.beginCommand({ sessionId: 'fixture', action: 'capture', mode: 'background' });
       await settle();
       assert.equal(windows.length, start + 1);
       assert.equal(windows[start].isDestroyed(), true);
       fault = '';
-      coordinator.finishCommand('fixture');
+      coordinator.beginCommand({ sessionId: 'fixture', action: 'capture', mode: 'background' });
       await settle();
       assert.equal(windows.length, start + 2);
       assert.equal(windows[start + 1].isVisible(), true);
@@ -179,12 +164,14 @@ for (const stage of ['load', 'script']) {
   });
 }
 
-test('an unresponsive control window is retired and its replacement waits for explicit Resume', async () => {
+test('an unresponsive control window is retired and its replacement keeps input paused behind a live Stop', async () => {
   fault = '';
   const start = windows.length;
   const overlay = createComputerUseOverlay({
-    stop: async () => {},
-    resume: async (generation) => coordinator.resumeAfterUserTakeover(generation),
+    stop: async () => {
+      coordinator.cancelSession('hung-fixture');
+      coordinator.resumeAfterUserTakeover();
+    },
     pause: async () => coordinator.pauseForUser('user_pause'),
   });
   try {
@@ -207,15 +194,14 @@ test('an unresponsive control window is retired and its replacement waits for ex
     await settle();
     assert.equal(windows.length, start + 2, 'late events from the retired renderer must not retire its replacement');
     assert.throws(() => coordinator.assertAutomationAllowed());
-    const resumed = await replacement.control(
+    const stopped = await replacement.control(
       {
         sender: replacement.webContents,
         senderFrame: replacement.webContents.mainFrame,
       },
-      { action: 'resume', generation: coordinator.snapshot().takeoverGeneration }
+      { action: 'stop', generation: coordinator.snapshot().takeoverGeneration }
     );
-    assert.equal(resumed.accepted, true);
-    assert.equal(replacement.isVisible(), true);
+    assert.equal(stopped.accepted, true);
     assert.equal(coordinator.snapshot().userControlActive, false);
   } finally {
     overlay.dispose();
@@ -228,7 +214,6 @@ test('a hung initial load does not block replacement or resurrect the retired wi
   const start = windows.length;
   const overlay = createComputerUseOverlay({
     stop: async () => {},
-    resume: async () => {},
     pause: async () => coordinator.pauseForUser('user_pause'),
   });
   try {
@@ -267,7 +252,6 @@ test('repeated unresponsive renderers are removed without an automatic restart l
     stop: async () => {
       stopped++;
     },
-    resume: async () => {},
     pause: async () => coordinator.pauseForUser('user_pause'),
   });
   try {
@@ -297,7 +281,6 @@ test('a crashed control renderer pauses input and is replaced with live controls
   const start = windows.length;
   const overlay = createComputerUseOverlay({
     stop: async () => {},
-    resume: async () => {},
     pause: async () => coordinator.pauseForUser('user_pause'),
   });
   try {

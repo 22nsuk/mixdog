@@ -3,16 +3,16 @@
 // swap the adjacent panel; creation actions live in the Sessions panel header.
 // Usage and Settings live at the rail foot.
 import type React from 'react';
-import { lazy, Suspense, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 
 import { DESKTOP_SIDEBAR_DEFAULT_WIDTH } from '../shared/window-layout';
-import { desktopFeatureEnabled, desktopSidebarDestinationEnabled } from './desktop-feature-config';
+import { desktopFeatureEnabled } from './desktop-feature-config';
 import { t } from './i18n';
 import { useMobileBack } from './mobile-back';
 import { commitImmediateOverlay, useImmediateOverlayClickGuard } from './immediate-overlay';
 import { ProviderIcon } from './provider-display';
 import { InitialSurface } from './InitialSurface';
-import { loadSidebarUsageModule, useUsageRailPin } from './use-usage-rail-pin';
+import { loadedSidebarUsageModule, loadSidebarUsageModule, useUsageRailPin } from './use-usage-rail-pin';
 import {
   getUsageDashboardSnapshot,
   holdUsageDashboardCadence,
@@ -21,24 +21,15 @@ import {
   type UsageApi,
 } from './usage-dashboard-store';
 import { displayUsagePercent, usageToneClass } from './usage-percent';
-import type { SidebarPanelKey } from './app-shell-components';
-import {
-  SIDEBAR_GROUP_MIME,
-  SIDEBAR_VIEW_MIME,
-  sidebarGroupDragId,
-  sidebarViewDragId,
-  type SidebarViewGroup,
-  type SidebarViewPlacement,
-} from './sidebar-view-layout';
-import { viewGroupContainerDropProps } from './view-group-layout';
 import { useDockVisibilityMenu, type DockIconEntry } from './dock-icon-visibility';
 
-// The flyout body loads on hover/focus intent (or the open itself), not with
-// the rail; its data is already warm in the shared usage store.
-const SidebarUsage = lazy(() => loadSidebarUsageModule().then((module) => ({ default: module.SidebarUsage })));
+// The flyout body loads in the post-boot warm-up lane, on hover/focus intent,
+// or on the open itself — not with the rail; its data is already warm in the
+// shared usage store. A loaded module renders directly: React.lazy suspended
+// every first mount even when the chunk was cached, and React's fallback
+// throttle then held an empty popup for 300ms+.
 const prefetchSidebarUsage = () => void loadSidebarUsageModule().catch(() => undefined);
 
-type ActivityRailSurface = 'projects' | 'schedules' | 'webhooks' | 'settings';
 function usagePinGlyph(rows: ReturnType<typeof useUsageRailPin>['usagePinRows'], loading: boolean) {
   if (rows.length) {
     return (
@@ -67,37 +58,17 @@ function usagePinGlyph(rows: ReturnType<typeof useUsageRailPin>['usagePinRows'],
 }
 
 export function ActivityRail({
-  activeSurface,
-  sidebarOpen,
-  onToggleSessions,
-  onOpenProjects,
-  onPrefetchProjects,
-  onOpenSchedules,
-  onPrefetchSchedules,
-  onOpenWebhooks,
-  onPrefetchWebhooks,
-  onCloseActiveSurface,
+  settingsOpen,
   onOpenSettings,
   onOpenProviders,
   onOpenUsageStats,
   onPrefetchSettings,
   usageApi,
-  viewGroups,
-  onMoveViewGroup,
-  onMoveView,
   primaryNavigation,
   navigationItems,
 }: {
-  activeSurface: ActivityRailSurface | null;
-  sidebarOpen: boolean;
-  onToggleSessions(): void;
-  onOpenProjects(): void;
-  onPrefetchProjects?(): void;
-  onOpenSchedules(): void;
-  onPrefetchSchedules?(): void;
-  onOpenWebhooks(): void;
-  onPrefetchWebhooks?(): void;
-  onCloseActiveSurface(): void;
+  /** The settings surface is open, so the rail-foot button reads selected. */
+  settingsOpen: boolean;
   onOpenSettings(): void;
   onOpenProviders?(): void;
   /** Opens the token-usage statistics dialog from the usage flyout header. */
@@ -105,82 +76,12 @@ export function ActivityRail({
   onPrefetchSettings?(): void;
   /** Overridable only for tests; the rail warms usage through the host API. */
   usageApi?: UsageApi;
-  viewGroups?: readonly SidebarViewGroup[];
-  onMoveViewGroup?(sourceRoot: SidebarPanelKey, targetRoot: SidebarPanelKey, placement: 'before' | 'after'): void;
-  onMoveView?(sourceId: SidebarPanelKey, targetId: SidebarPanelKey, placement: SidebarViewPlacement): void;
-  primaryNavigation?: React.ReactNode;
-  navigationItems?: readonly DockIconEntry[];
+  /** The left side-view icon bar: every rail destination, Sessions first. It
+   *  owns its own drag reorder, including the gaps between its buttons. */
+  primaryNavigation: React.ReactNode;
+  /** Visibility-menu entries for the destinations above. */
+  navigationItems: readonly DockIconEntry[];
 }) {
-  // Codicon names (user: 레일 아이콘이 오히려 흐려 — B안 확장): the rail
-  // renders codicon activity-bar font glyphs, pixel-crisp at their native
-  // sizes, instead of scaled lucide SVG strokes.
-  const surfaces: ReadonlyArray<{
-    id: ActivityRailSurface;
-    label: string;
-    tooltip: string;
-    icon: string;
-    onOpen(): void;
-    onPrefetch?(): void;
-  }> = (
-    [
-      {
-        id: 'projects',
-        label: 'Open projects',
-        tooltip: 'Projects',
-        icon: 'folder',
-        onOpen: onOpenProjects,
-        onPrefetch: onPrefetchProjects,
-      },
-      {
-        id: 'schedules',
-        label: 'Open schedules',
-        tooltip: 'Schedules',
-        icon: 'calendar',
-        onOpen: onOpenSchedules,
-        onPrefetch: onPrefetchSchedules,
-      },
-      {
-        id: 'webhooks',
-        label: 'Open webhooks',
-        tooltip: 'Webhooks',
-        icon: 'plug',
-        onOpen: onOpenWebhooks,
-        onPrefetch: onPrefetchWebhooks,
-      },
-    ] as const
-  ).filter((surface) => desktopSidebarDestinationEnabled(surface.id));
-  const orderedSurfaceGroups = (
-    viewGroups?.length ? viewGroups : surfaces.map((surface) => [surface.id] as SidebarViewGroup)
-  )
-    .map((group) => ({
-      group,
-      surface: surfaces.find((candidate) => candidate.id === group[0]),
-    }))
-    .filter(
-      (
-        entry
-      ): entry is {
-        group: SidebarViewGroup;
-        surface: (typeof surfaces)[number];
-      } => Boolean(entry.surface)
-    );
-  const [railDrop, setRailDrop] = useState<{
-    target: SidebarPanelKey;
-    placement: SidebarViewPlacement;
-  } | null>(null);
-  // The rail column between and around the tab buttons accepts the drag too:
-  // without this every gap flashed the browser's no-drop cursor mid-reorder
-  // (user: 드래그할 때 자꾸 금지 표기가 떠) and a slightly-off drop cancelled.
-  const railGapDropProps = viewGroupContainerDropProps<SidebarPanelKey>({
-    viewMime: SIDEBAR_VIEW_MIME,
-    groupMime: SIDEBAR_GROUP_MIME,
-    axis: 'y',
-    viewDragId: sidebarViewDragId,
-    groupDragId: sidebarGroupDragId,
-    setDrop: setRailDrop,
-    moveGroup: onMoveViewGroup,
-    moveView: onMoveView,
-  });
   // Subscription usage moved off the session panel (user decision): the rail
   // hosts an account toggle and the panel stays a pure session
   // list. Only the dashboard MARKUP is flyout-scoped; its data lives in the
@@ -188,10 +89,7 @@ export function ActivityRail({
   const [usageOpen, setUsageOpen] = useState(false);
   const { isVisible, menuProps, menu } = useDockVisibilityMenu(
     [
-      ...(navigationItems ?? [
-        ...(desktopFeatureEnabled('sessions') ? [{ id: 'sessions', label: 'Sessions' }] : []),
-        ...orderedSurfaceGroups.map(({ surface }) => ({ id: surface.id, label: surface.tooltip })),
-      ]),
+      ...navigationItems,
       ...(desktopFeatureEnabled('usage') ? [{ id: 'usage', label: 'Usage' }] : []),
       ...(desktopFeatureEnabled('settings') ? [{ id: 'settings', label: 'Settings' }] : []),
     ],
@@ -225,6 +123,23 @@ export function ActivityRail({
     const bounds = element.getBoundingClientRect();
     preparedUsageAnchor.current = Math.max(8, Math.round(window.innerHeight - bounds.bottom));
   };
+  const [fetchedUsageModule, setFetchedUsageModule] = useState(loadedSidebarUsageModule);
+  const usageModule = fetchedUsageModule ?? loadedSidebarUsageModule();
+  useEffect(() => {
+    if (!usageOpen || usageModule) return undefined;
+    let live = true;
+    loadSidebarUsageModule().then(
+      (module) => {
+        if (live) setFetchedUsageModule(module);
+      },
+      // A failed chunk keeps the placeholder; the next open retries the load.
+      () => undefined
+    );
+    return () => {
+      live = false;
+    };
+  }, [usageOpen, usageModule]);
+  const SidebarUsage = usageModule?.SidebarUsage;
   const toggleUsage = (element: HTMLButtonElement) => {
     if (!usageOpen && preparedUsageAnchor.current === null) rememberUsageAnchor(element);
     commitImmediateOverlay(() => {
@@ -267,99 +182,9 @@ export function ActivityRail({
     };
   }, [usageOpen]);
   return (
-    <aside className="activity-rail" aria-label={t('Activity Bar')} ref={railRef} {...menuProps} {...railGapDropProps}>
+    <aside className="activity-rail" aria-label={t('Activity Bar')} ref={railRef} {...menuProps}>
       <nav className="sidebar-primary-nav" aria-label={t('Sidebar')} ref={navRef}>
-        {primaryNavigation ?? (
-          <>
-            {/* The Sessions toggle behaves like an Explorer button: pressing it
-            expands/collapses the session panel. is-active (not selected)
-            tracks the OPEN panel so surface selection stays separate. */}
-            {desktopFeatureEnabled('sessions') && isVisible('sessions') && (
-              <button
-                type="button"
-                className={`sessions-link ${sidebarOpen ? 'is-active' : ''}`}
-                aria-label={t('Sessions')}
-                aria-expanded={sidebarOpen}
-                aria-controls="session-sidebar"
-                data-tooltip={t('Sessions')}
-                onClick={onToggleSessions}
-              >
-                <span className="codicon codicon-comment-discussion" aria-hidden="true" />
-              </button>
-            )}
-            {/* Workbench tools (Explorer/Search/SCM/Debug/Tests) live ONLY on the
-            right utility dock (user: 원래 의도 — 좌측은 앱 목적지, 우측은
-            코드 도구). Duplicating them here split one destination across
-            both rails. */}
-            {orderedSurfaceGroups
-              .filter(({ surface }) => isVisible(surface.id))
-              .map(({ group, surface }) => {
-                const { id, label, tooltip, icon, onOpen, onPrefetch } = surface;
-                const rootId = group[0];
-                const selected = activeSurface !== null && group.includes(activeSurface as SidebarPanelKey);
-                return (
-                  <button
-                    key={id}
-                    type="button"
-                    className={`projects-link ${selected ? 'selected' : ''}`}
-                    aria-label={t(label)}
-                    aria-current={selected ? 'page' : undefined}
-                    data-tooltip={t(tooltip)}
-                    data-view-group={rootId}
-                    data-drop-position={railDrop?.target === rootId ? railDrop.placement : undefined}
-                    draggable
-                    onDragStart={(event) => {
-                      event.dataTransfer.effectAllowed = 'move';
-                      event.dataTransfer.setData(SIDEBAR_GROUP_MIME, rootId);
-                      event.dataTransfer.setData('text/plain', rootId);
-                    }}
-                    onDragOver={(event) => {
-                      const types = Array.from(event.dataTransfer.types);
-                      const groupDrag = types.includes(SIDEBAR_GROUP_MIME);
-                      const viewDrag = types.includes(SIDEBAR_VIEW_MIME);
-                      if (!groupDrag && !viewDrag) return;
-                      event.preventDefault();
-                      event.dataTransfer.dropEffect = 'move';
-                      const bounds = event.currentTarget.getBoundingClientRect();
-                      const ratio = (event.clientY - bounds.top) / Math.max(1, bounds.height);
-                      let placement: SidebarViewPlacement = 'inside';
-                      if (groupDrag) placement = ratio < 0.5 ? 'before' : 'after';
-                      else if (ratio < 0.25) placement = 'before';
-                      else if (ratio > 0.75) placement = 'after';
-                      setRailDrop({ target: rootId, placement });
-                    }}
-                    onDragLeave={(event) => {
-                      if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-                        setRailDrop((current) => (current?.target === rootId ? null : current));
-                      }
-                    }}
-                    onDrop={(event) => {
-                      event.preventDefault();
-                      const placement = railDrop?.target === rootId ? railDrop.placement : 'inside';
-                      const groupSource = sidebarGroupDragId(event.nativeEvent);
-                      const viewSource = sidebarViewDragId(event.nativeEvent);
-                      if (groupSource && placement !== 'inside') {
-                        onMoveViewGroup?.(groupSource, rootId, placement);
-                      } else if (viewSource) {
-                        onMoveView?.(viewSource, rootId, placement);
-                        if (placement === 'inside' && !selected) onOpen();
-                      }
-                      setRailDrop(null);
-                    }}
-                    onDragEnd={() => setRailDrop(null)}
-                    onPointerEnter={onPrefetch}
-                    onFocus={onPrefetch}
-                    onPointerDown={(event) => {
-                      if (event.button === 0) onPrefetch?.();
-                    }}
-                    onClick={selected ? onCloseActiveSurface : onOpen}
-                  >
-                    <span className={`codicon codicon-${icon}`} aria-hidden="true" />
-                  </button>
-                );
-              })}
-          </>
-        )}
+        {primaryNavigation}
       </nav>
       <div className="activity-rail-spacer" />
       {desktopFeatureEnabled('usage') && isVisible('usage') && (
@@ -400,9 +225,9 @@ export function ActivityRail({
         <button
           type="button"
           ref={settingsRef}
-          className={`sidebar-settings-button ${activeSurface === 'settings' ? 'selected' : ''}`}
+          className={`sidebar-settings-button ${settingsOpen ? 'selected' : ''}`}
           aria-label={t('Open settings')}
-          aria-current={activeSurface === 'settings' ? 'page' : undefined}
+          aria-current={settingsOpen ? 'page' : undefined}
           data-tooltip={t('Settings')}
           onPointerEnter={onPrefetchSettings}
           onFocus={onPrefetchSettings}
@@ -431,7 +256,7 @@ export function ActivityRail({
         >
           {/* The popup shares the rail's host API so its open-time revalidation
             hits the same store entry the rail already prewarmed. */}
-          <Suspense fallback={<InitialSurface />}>
+          {SidebarUsage ? (
             <SidebarUsage
               sidebarOpen
               api={usageApi}
@@ -450,7 +275,9 @@ export function ActivityRail({
               pinned={usagePinned}
               onTogglePin={toggleUsagePin}
             />
-          </Suspense>
+          ) : (
+            <InitialSurface />
+          )}
         </div>
       )}
       {menu}

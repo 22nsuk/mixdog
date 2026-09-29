@@ -3,8 +3,8 @@
 // the chart part cites, and the graphic frame the drawing anchors.
 import { posix } from 'node:path';
 import { chartXml } from './portable-chart.mjs';
-import { fitDrawingSheetOnePageWide, worksheetGeometry } from './portable-sheet-page.mjs';
-import { columnLabel, columnNumber, parseCellRef } from './portable-cells.mjs';
+import { fitDrawingSheetOnePageWide, workbookDigitWidth, worksheetGeometry } from './portable-sheet-page.mjs';
+import { columnLabel, columnNumber, parseCellRef, workbookSheets } from './portable-cells.mjs';
 import {
   CHART_CONTENT_TYPE,
   addPackageRelationship,
@@ -12,7 +12,7 @@ import {
   partRelationshipPath,
   zipText,
 } from './portable-opc.mjs';
-import { OFFICE_RELATIONSHIP_BASE, xmlDecode } from './portable-xml.mjs';
+import { OFFICE_RELATIONSHIP_BASE, xmlDecode, xmlEncode } from './portable-xml.mjs';
 import { ensureWorksheetDrawing } from './portable-sheet-parts.mjs';
 import { parseAreaRange, quoteSheetName, sheetQualifiedAreas } from './portable-sheet-xml.mjs';
 import { countDrawingAnchors, frameAnchorXml } from './portable-xlsx-drawings.mjs';
@@ -130,6 +130,58 @@ async function readChartData(zip, xml, sheet, op, { plotByRows, area, lanes }) {
   return { categories, series, references: { sheet: sheetReference, category, names, values } };
 }
 
+// A chart part carries a copy of the cells it reads, and a viewer that draws from the copy (a mail or phone preview)
+// shows the chart as it was written: a column of formulas written before it had values stood there as zeros. Once
+// the workbook is calculated each copy is taken again from its cells.
+export async function refreshChartCaches(zip) {
+  const sheets = await workbookSheets(zip);
+  const readers = new Map();
+  const cellReader = async (name) => {
+    const sheet = sheets.find((entry) => entry.name.toLowerCase() === name.toLowerCase());
+    if (!sheet) return null;
+    if (!readers.has(sheet.path)) readers.set(sheet.path, await sheetCellReader(zip, await zipText(zip, sheet.path)));
+    return readers.get(sheet.path);
+  };
+  // The cells a reference reads, in order; null for one that names no sheet here or no bounded block of cells.
+  const referenced = async (formula) => {
+    const values = [];
+    for (const { sheet, area } of sheetQualifiedAreas(xmlDecode(formula))) {
+      const cellValue = sheet ? await cellReader(sheet) : null;
+      const bounds = /^[A-Z]+\d+(?::[A-Z]+\d+)?$/i.test(area) ? parseAreaRange(area) : null;
+      if (!cellValue || !bounds) return null;
+      for (let row = bounds.startRow; row <= bounds.endRow; row += 1) {
+        for (let column = bounds.startCol; column <= bounds.endCol; column += 1) values.push(cellValue(column, row));
+      }
+    }
+    return values;
+  };
+  const reference = /<c:(num|str)Ref>\s*(<c:f>([^<]*)<\/c:f>)\s*<c:\1Cache>([\s\S]*?)<\/c:\1Cache>\s*<\/c:\1Ref>/g;
+  for (const name of Object.keys(zip.files).filter((entry) => /^xl\/charts\/chart\d+\.xml$/i.test(entry))) {
+    const xml = await zipText(zip, name);
+    let next = '';
+    let last = 0;
+    for (const match of xml.matchAll(reference)) {
+      const values = await referenced(match[3]);
+      if (!values) continue;
+      const [, kind, formula, , cache] = match;
+      const formatCode = kind === 'num' ? /<c:formatCode>[\s\S]*?<\/c:formatCode>/.exec(cache)?.[0] || '' : '';
+      const points = values
+        .map((value, index) => {
+          if (kind === 'str') return `<c:pt idx="${index}"><c:v>${xmlEncode(String(value ?? ''))}</c:v></c:pt>`;
+          const number = value === '' || value == null ? Number.NaN : Number(value);
+          return Number.isFinite(number) ? `<c:pt idx="${index}"><c:v>${number}</c:v></c:pt>` : '';
+        })
+        .join('');
+      next +=
+        xml.slice(last, match.index) +
+        `<c:${kind}Ref>${formula}<c:${kind}Cache>${formatCode}<c:ptCount val="${values.length}"/>${points}` +
+        `</c:${kind}Cache></c:${kind}Ref>`;
+      last = match.index + match[0].length;
+    }
+    if (last && `${next}${xml.slice(last)}` !== xml) zip.file(name, `${next}${xml.slice(last)}`);
+  }
+}
+
 function nextChartPart(zip) {
   let chartOrdinal = 1;
   while (zip.file(`xl/charts/chart${chartOrdinal}.xml`)) chartOrdinal += 1;
@@ -137,13 +189,13 @@ function nextChartPart(zip) {
 }
 
 // A frame placed at cell and ended at toColumn takes the width of the columns it spans, as the sheet has them now.
-function spannedWidth(xml, op) {
+function spannedWidth(xml, op, digitWidth) {
   if (!op.toColumn) return null;
   if (!op.cell) throw new Error('XLSX add_chart toColumn ends a frame placed at cell; give cell as well');
   const first = columnNumber(parseCellRef(op.cell).col);
   const last = columnNumber(String(op.toColumn).trim().toUpperCase());
   if (!(last >= first)) throw new Error(`XLSX add_chart toColumn ${op.toColumn} lies left of ${op.cell}`);
-  const { columnPoints } = worksheetGeometry(xml);
+  const { columnPoints } = worksheetGeometry(xml, digitWidth);
   let width = 0;
   for (let column = first; column <= last; column += 1) width += columnPoints(column);
   return width;
@@ -214,7 +266,7 @@ export async function addWorksheetChart(zip, sheet, xml, op, sheets) {
   );
   const drawingXml = await zipText(zip, drawingPart);
   const anchorCount = countDrawingAnchors(drawingXml);
-  const width = spannedWidth(xml, op) ?? op.width;
+  const width = spannedWidth(xml, op, await workbookDigitWidth(zip)) ?? op.width;
   const anchor = chartFrameAnchor({ ...op, width }, anchorCount, chartRelationshipId);
   zip.file(drawingPart, drawingXml.replace('</xdr:wsDr>', `${anchor}</xdr:wsDr>`));
   return {

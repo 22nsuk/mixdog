@@ -52,6 +52,28 @@ function backgroundLightness(color) {
   return relativeLuminance(color) ?? 0;
 }
 
+// A running head or foot: a hairline in the page's edge band that the page's own small chrome text
+// (the deck name, the section, the page number) sits against — a document's header rule, which
+// divides the chrome from the body. A bar at the edge with no chrome beside it stays ornament.
+const CHROME_TEXT_SIZE = 14;
+const CHROME_GAP = 16;
+function isRunningRule(shape, shapes) {
+  const height = num(shape.height);
+  if (height > 2) return false;
+  const top = num(shape.top);
+  const left = num(shape.left);
+  const right = left + num(shape.width);
+  return shapes.some((other) => {
+    if (other === shape || !String(other.text || '').trim()) return false;
+    const size = num(other.font?.size);
+    if (!size || size > CHROME_TEXT_SIZE) return false;
+    if (num(other.left) + num(other.width) <= left || num(other.left) >= right) return false;
+    const above = top - (num(other.top) + num(other.height));
+    const below = num(other.top) - (top + height);
+    return (above >= -2 && above <= CHROME_GAP) || (below >= -2 && below <= CHROME_GAP);
+  });
+}
+
 // A thin rule is ornamentation when it hugs a slide edge or underlines a title;
 // a hairline separating two rows of content is a separator, not a stripe.
 export function isOrnamentalStripe(shape, shapes, size) {
@@ -77,7 +99,7 @@ export function isOrnamentalStripe(shape, shapes, size) {
     if (hanging) return false;
     return left < EDGE_ZONE || left + width > size.width - EDGE_ZONE;
   }
-  if (top < EDGE_ZONE || top + height > size.height - EDGE_ZONE) return true;
+  if (top < EDGE_ZONE || top + height > size.height - EDGE_ZONE) return !isRunningRule(shape, shapes);
   if (width >= size.width * 0.95) return true;
   // An underline shares the title's columns; a level line in a diagram beside a hero numeral does not.
   return shapes.some((other) => {

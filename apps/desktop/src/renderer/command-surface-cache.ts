@@ -174,6 +174,14 @@ export function holdStatsDataCache(api: SurfaceApi, { background = true }: { bac
       // getter and reports its error through the normal surface lifecycle.
       void refreshStatsDataCache(api).catch(() => undefined);
     };
+    // A hidden window cannot open the dialog: its usage re-reads (a ledger
+    // rollup of ~150ms in the service, once per usage change) wait until it is
+    // shown again, as the turn review's re-reads already do.
+    const page = typeof document === 'undefined' ? null : document;
+    const hidden = () => page?.visibilityState === 'hidden';
+    const onVisibility = () => {
+      if (!hidden() && cache.acceptedRevision !== cache.revision) warm();
+    };
     const update = (snapshot: SessionSnapshot, sessionId = String(snapshot?.sessionId || '')) => {
       if (!snapshot?.stats) return;
       const stats = record(snapshot.stats);
@@ -194,13 +202,15 @@ export function holdStatsDataCache(api: SurfaceApi, { background = true }: { bac
         return;
       }
       cache.revision += 1;
-      warm();
+      if (!hidden()) warm();
     };
     const unsubscribeState = api.subscribeState?.(update);
     const unsubscribeSession = api.subscribeSessionState?.(({ sessionId, snapshot }) => update(snapshot, sessionId));
+    if (background) page?.addEventListener('visibilitychange', onVisibility);
     cache.release = () => {
       unsubscribeState?.();
       unsubscribeSession?.();
+      page?.removeEventListener('visibilitychange', onVisibility);
       clearStaleRefresh(cache);
     };
     if (background) warm();

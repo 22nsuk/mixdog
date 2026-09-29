@@ -12,6 +12,7 @@ import { resolvePluginData } from '../plugin-paths.mjs';
 import { usageRollupDayKey, isConversationUsageSource } from './usage-rollup.mjs';
 import { priceUsage } from './cost.mjs';
 import { rollupUsage } from './usage-ledger-rollup.mjs';
+import { QUOTA_SCHEMA, readQuotaHistory, readQuotaWindows, recordQuotaSamples } from './usage-ledger-quota.mjs';
 import { SHARE_ENV } from 'node:worker_threads';
 import { createWorkerRequestClient } from '../worker-requests.mjs';
 
@@ -62,6 +63,11 @@ const COMPACT_SCHEMA = `
         cost_usd REAL, duration_ms REAL NOT NULL
     ) WITHOUT ROWID;
     CREATE INDEX IF NOT EXISTS usage_events_time ON usage_events(ts);
+    -- Every column a period read sums, so a time range is read from this
+    -- index alone: one primary-key search per record in this WITHOUT ROWID
+    -- table made a week of real records take ~400 ms instead of ~100 ms.
+    CREATE INDEX IF NOT EXISTS usage_events_time_usage ON usage_events(
+        ts,route,day,session,input,output,cache_read,cache_write,cost_usd,duration_ms);
 `;
 
 // Preserve the old read surface. Only storage changes: every field, including
@@ -109,6 +115,9 @@ function compactEventWriter(db) {
       row.rates ?? null,
       String(row.origin),
       row.rank,
+      // The provider account arrived later: a record without one keeps the
+      // route it always had.
+      ...(row.account ? [String(row.account)] : []),
     ]);
     insertRoute.run(signature);
     const route = findRoute.get(signature).id;
@@ -263,6 +272,7 @@ export function makeUsageRecord(args) {
     costSource: usageCostSource({ kind, costUsd, subscription, reported }),
     rates,
     responseId: text(args.responseId),
+    account: text(args.account),
     origin: args.origin || 'live',
     durationMs: number(args.durationMs),
   };
@@ -286,6 +296,7 @@ export class UsageLedger {
     this.pendingRollups = new Map();
     this.writeQueue = [];
     this.writing = null;
+    this.quotaWrites = new Set();
     this.captureBegun = false;
     if (existing) {
       this.migration = null;
@@ -326,6 +337,7 @@ export class UsageLedger {
                 PRIMARY KEY(day,rank,session_id)
             );
             CREATE TABLE IF NOT EXISTS legacy_days (day TEXT PRIMARY KEY, document TEXT NOT NULL);
+            ${QUOTA_SCHEMA}
             PRAGMA user_version=2;
         `);
     this.prepareStatements();
@@ -478,7 +490,8 @@ export class UsageLedger {
         (outcomes) => {
           batch.forEach((entry, index) => {
             const outcome = outcomes[index];
-            if (outcome.error) entry.reject(Object.assign(new Error(outcome.error.message), { code: outcome.error.code }));
+            if (outcome.error)
+              entry.reject(Object.assign(new Error(outcome.error.message), { code: outcome.error.code }));
             else entry.resolve();
           });
         },
@@ -498,6 +511,36 @@ export class UsageLedger {
       this.pumpWrites();
       await this.writing;
     }
+    // Quota readings post on their own; a failed one already reported itself.
+    await Promise.allSettled(this.quotaWrites);
+  }
+
+  /** Readings of subscription quota windows (usage-ledger-quota.mjs). */
+  recordQuota(samples) {
+    return recordQuotaSamples(this.db, samples);
+  }
+
+  /** recordQuota() on the ledger worker's own connection, off the event loop. */
+  recordQuotaQueued(samples) {
+    const write =
+      this.path === ':memory:'
+        ? Promise.resolve().then(() => this.recordQuota(samples))
+        : this.workerRequest('recordQuota', { samples });
+    const tracked = write.finally(() => this.quotaWrites.delete(tracked));
+    this.quotaWrites.add(tracked);
+    return tracked;
+  }
+
+  /** The quota history of one limit window, read on the ledger worker. */
+  quotaHistoryAsync(options) {
+    if (this.path === ':memory:') return Promise.resolve().then(() => readQuotaHistory(this.db, options));
+    return this.workerRequest('quotaHistory', { options });
+  }
+
+  /** One page of a limit window's history, read on the ledger worker. */
+  quotaWindowsAsync(options) {
+    if (this.path === ':memory:') return Promise.resolve().then(() => readQuotaWindows(this.db, options));
+    return this.workerRequest('quotaWindows', { options });
   }
 
   preserveLegacyDays(days) {

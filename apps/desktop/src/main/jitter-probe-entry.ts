@@ -7,7 +7,12 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { BrowserWindow } from 'electron';
 import { coldHistoryItems } from './jitter-probe-fixtures';
-import { waitForProbeSessionRow } from './jitter-probe-session';
+import {
+  TOOL_DISCLOSURE,
+  TOOL_DISCLOSURE_HEADERS,
+  TOOL_DISCLOSURE_OPEN,
+  waitForProbeSessionRow,
+} from './jitter-probe-session';
 import { contentMotion, type RowSample } from './jitter-probe-metrics';
 
 interface EntryProbeDeps {
@@ -253,7 +258,7 @@ diff --git a/src/probe.ts b/src/probe.ts
     transcripts: document.querySelectorAll('.transcript').length,
     coldVisible: (document.body.textContent || '').includes('cold entry question'),
     rows: el ? el.querySelectorAll('.transcript-virtual-space > .transcript-virtual-row').length : 0,
-    toolCards: el ? el.querySelectorAll('.tool-card').length : 0,
+    toolCards: el ? el.querySelectorAll(${JSON.stringify(TOOL_DISCLOSURE)}).length : 0,
     reviewBarHeight: Math.round(shell.querySelector('.turn-review-bar')?.getBoundingClientRect().height || 0),
     markdownPlainFallbacks: Math.max(0, ...window.__entry.samples.map((sample) => Number(sample.plain || 0))),
     settledMarkdownPlainFallbacks: Math.max(
@@ -378,7 +383,7 @@ diff --git a/src/probe.ts b/src/probe.ts
     const el = ${pickTranscript};
     if (!el) return false;
     let box = el.getBoundingClientRect();
-    const headers = [...el.querySelectorAll('.tool-card .tool-header')]
+    const headers = [...el.querySelectorAll(${JSON.stringify(TOOL_DISCLOSURE_HEADERS)})]
       .filter((node) => !node.disabled);
     const visible = headers.filter((node) => {
       const rect = node.getBoundingClientRect();
@@ -403,7 +408,7 @@ diff --git a/src/probe.ts b/src/probe.ts
     const header = window.__entryHeader;
     if (!el || !header || !header.isConnected) return null;
     const box = el.getBoundingClientRect();
-    const card = header.closest('.tool-card');
+    const card = header.closest(${JSON.stringify(TOOL_DISCLOSURE)});
     const row = card.closest('.transcript-virtual-row');
     const space = el.querySelector('.transcript-virtual-space');
     const before = {
@@ -515,7 +520,7 @@ diff --git a/src/probe.ts b/src/probe.ts
   const expandedReentrySamples = (await window.webContents.executeJavaScript(stop)) as RowSample[];
   const expandedReentry = contentMotion(expandedReentrySamples);
   const expandedReentryOpenTools = (await window.webContents.executeJavaScript(
-    `document.querySelectorAll('.tool-card[data-open="true"]').length`
+    `document.querySelectorAll(${JSON.stringify(TOOL_DISCLOSURE_OPEN)}).length`
   )) as number;
   const pinnedCollapse = await toggle('pinned-collapse', true, false);
   const pinnedExpandAgain = await toggle('pinned-expand-again', true, true);

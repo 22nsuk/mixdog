@@ -107,8 +107,23 @@ export function classifyError(err) {
   return classifyByStatus(err, status) || classifyByTransport(err, chain, status) || 'unknown';
 }
 
+// A turn that ended on a malformed or unexpected tool call produced no usable
+// call at all (the typed finish reason says so); the reference client re-asks
+// the same request, bounded, instead of failing the turn.
+const INVALID_TOOL_CALL_FINISH_REASONS = new Set(['MALFORMED_FUNCTION_CALL', 'UNEXPECTED_TOOL_CALL']);
+
+function isInvalidToolCallFinish(err) {
+  if (err?.providerIncomplete !== true) return false;
+  const reason = String(err.finishReason || '')
+    .replace(/^FINISH_REASON_/, '')
+    .toUpperCase();
+  if (!INVALID_TOOL_CALL_FINISH_REASONS.has(reason)) return false;
+  return !(Array.isArray(err.partialToolCalls) && err.partialToolCalls.length > 0);
+}
+
 // Transport symptoms, consulted only once no status verdict applied.
 function classifyByTransport(err, chain, status) {
+  if (isInvalidToolCallFinish(err)) return 'transient';
   // A stream that closed WITHOUT its terminal frame is a transport symptom,
   // not a model verdict: the socket carries no HTTP status and no Node errno,
   // so without this it classified as 'unknown' and no loop-level replay was
@@ -125,7 +140,7 @@ function classifyByTransport(err, chain, status) {
 
   // Socket-level codes (Node errno) — DNS / reset / refused / timeout are all
   // transient: we can retry the same request and may succeed.
-  if (chain.some((item) => TRANSIENT_ERROR_CODES.has(String(item?.code || '')))) return 'transient';
+  if (chain.some((item) => isTransientErrorCode(item?.code))) return 'transient';
   // Anthropic/OpenAI SDK connection + timeout classes, plus undici timeout
   // names, may not carry a Node errno. Native fetch wraps errno in cause.code,
   // which the bounded chain check above already covers.
@@ -160,7 +175,7 @@ const MAX_CAUSE_CHAIN_DEPTH = 8;
 // closes mid-stream and may not attach a cause).
 const BARE_FETCH_TRANSPORT_MESSAGE_RE =
   /^(?:fetch failed|failed to fetch|couldn'?t fetch\.?|load failed|network error|terminated|other side closed|socket hang up)$/i;
-export const TRANSIENT_ERROR_CODES = new Set([
+const TRANSIENT_ERROR_CODES = new Set([
   'ECONNRESET',
   'ETIMEDOUT',
   'ESOCKETTIMEDOUT',
@@ -190,7 +205,21 @@ export const TRANSIENT_ERROR_CODES = new Set([
   'ERR_HTTP2_SESSION_ERROR',
   'ERR_HTTP2_INVALID_SESSION',
   'ERR_SOCKET_CONNECTION_TIMEOUT',
+  'ERR_SSL_WRONG_VERSION_NUMBER',
+  'ERR_STREAM_PREMATURE_CLOSE',
 ]);
+
+// TLS record corruption on a flaky link or a meddling proxy. Node builds the
+// ERR_SSL_* code from the OpenSSL reason string, which differs across OpenSSL
+// versions (…SSLV3_ALERT_BAD_RECORD_MAC, …SSL/TLS_ALERT_BAD_RECORD_MAC,
+// …DECRYPTION_FAILED_OR_BAD_RECORD_MAC), so the stable suffix names the class.
+const TLS_RECORD_FAILURE_RE = /^ERR_SSL_[A-Z0-9_/]*BAD_RECORD_MAC$/i;
+
+/** True for a socket/TLS errno that describes a transient transport fault. */
+export function isTransientErrorCode(code) {
+  const value = String(code || '');
+  return TRANSIENT_ERROR_CODES.has(value) || TLS_RECORD_FAILURE_RE.test(value);
+}
 
 // Cursor's HTTP/2 bridge preserves provider-specific codes in `cursorCode`.
 // These codes all describe an incomplete transport turn, not a model verdict.
@@ -251,24 +280,113 @@ const CONNECTION_FAILURE_CODES = new Set([
   'UND_ERR_CLOSED',
   'ERR_STREAM_DESTROYED',
   'ERR_SOCKET_CONNECTION_TIMEOUT',
+  'ERR_SSL_WRONG_VERSION_NUMBER',
+  'ERR_STREAM_PREMATURE_CLOSE',
 ]);
 
 /**
  * True when the failure is the NETWORK dropping, not the provider refusing or
- * faulting. The distinction matters for retry budgeting: a lost uplink returns
- * on its own schedule (a lift, a sleeping laptop, a router reboot) and the same
- * request succeeds once it does, so this class earns a far longer ladder than
- * an ordinary transport fault. A typed HTTP status disqualifies the failure —
- * the server answered, so the network was up.
+ * faulting: the connection could not be made, or it broke mid-response. This
+ * is a transport symptom the loop may recover from (replay after retraction,
+ * or continuing from completed tool calls). A typed HTTP status disqualifies
+ * the failure — the server answered, so the network was up.
  */
 export function isConnectionFailure(err) {
   if (!err || (typeof err !== 'object' && typeof err !== 'function')) return false;
   const chain = boundedCauseChain(err);
   if (chain.some(isExplicitUserAbortError)) return false;
   if (Number(err.httpStatus || err.status || err.response?.status || 0) || 0) return false;
-  if (chain.some((item) => CONNECTION_FAILURE_CODES.has(String(item?.code || '')))) return true;
+  if (
+    chain.some((item) => {
+      const code = String(item?.code || '');
+      return CONNECTION_FAILURE_CODES.has(code) || TLS_RECORD_FAILURE_RE.test(code);
+    })
+  ) {
+    return true;
+  }
   if (chain.some((item) => TRANSIENT_SDK_NAMES.has(String(item?.name || '')))) return true;
   return chain.some((item) => BARE_FETCH_TRANSPORT_MESSAGE_RE.test(String(item?.message || '').trim()));
+}
+
+/**
+ * True when a stream ended WITHOUT its terminal frame because the transport
+ * gave out: a stall, a truncation, a non-terminal close or a dropped
+ * connection. A typed provider refusal that also lacks a terminal frame is
+ * not a cut.
+ */
+export function isStreamCut(err) {
+  const outcome = readStreamOutcome(err);
+  if (outcome.terminalObserved === true) return false;
+  return (
+    outcome.stallObserved === true ||
+    outcome.truncatedStream === true ||
+    isNonTerminalStreamClose(err) ||
+    isConnectionFailure(err)
+  );
+}
+
+/**
+ * A cut while a tool call's arguments were still streaming. That call never
+ * ran, and re-sending the identical request tends to be cut at the same place
+ * (large arguments stream for minutes; proxies and CDNs cut long responses),
+ * so no layer re-issues it unchanged: the agent loop replays it with a notice
+ * telling the model to split the content into smaller calls.
+ */
+export function isToolInputCut(err) {
+  return readStreamOutcome(err).pendingToolInput === true && isStreamCut(err);
+}
+
+// The provider was never reached: name resolution, routing, refusal or the
+// connect handshake failed, so nothing was sent or received. Only this class
+// is worth waiting out for minutes — the identical request succeeds once the
+// network is back (a lift, a sleeping laptop, a router reboot), and the
+// reference client keeps a sampling turn alive until such a connection
+// recovers. A stream that dropped mid-response is not this class: it keeps
+// the short, bounded retry budget.
+const CONNECT_FAILURE_CODES = new Set([
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'EAI_NODATA',
+  'ECONNREFUSED',
+  'ENETUNREACH',
+  'EHOSTUNREACH',
+  'UND_ERR_CONNECT',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'ERR_SOCKET_CONNECTION_TIMEOUT',
+]);
+
+/** True when the connection itself could not be established (see above). */
+export function isConnectFailure(err) {
+  if (!isConnectionFailure(err)) return false;
+  return boundedCauseChain(err).some((item) => CONNECT_FAILURE_CODES.has(String(item?.code || '')));
+}
+
+// The provider is reachable but temporarily unable to serve: a typed 5xx
+// (overload included) or 408, a retryable provider wire error other than a
+// rate limit, a transient RPC status, or a response that never arrived in
+// time. Deterministic refusals (4xx, quota, auth) and rate limits are never
+// this class. The agent loop may wait out a provider ladder spent on it with
+// bounded recovery cycles, but only while nothing has reached the user.
+const SERVER_TIMEOUT_CODES = new Set([
+  'EPROVIDERTIMEOUT',
+  'EGEMINITIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_BODY_TIMEOUT',
+]);
+const SERVER_TIMEOUT_NAMES = new Set(['APIConnectionTimeoutError', 'HeadersTimeoutError', 'BodyTimeoutError']);
+
+export function isServerUnavailable(err) {
+  if (!err || (typeof err !== 'object' && typeof err !== 'function')) return false;
+  const chain = boundedCauseChain(err);
+  if (chain.some(isExplicitUserAbortError)) return false;
+  const status = Number(err.httpStatus || err.status || err.response?.status || 0) || 0;
+  if (status) return status === 408 || (status >= 500 && status < 600 && !TERMINAL_EDGE_STATUSES.has(status));
+  if (isRetryableWireErrorEvent(err)) return typedErrorCode(err) !== RATE_LIMIT_EXCEEDED;
+  return chain.some((item) => {
+    const rpc = [item?.geminiStatus, item?.error?.status, typeof item?.status === 'string' ? item.status : ''];
+    if (rpc.some((field) => GEMINI_TRANSIENT_RPC_CODES.has(String(field || '').toUpperCase()))) return true;
+    return SERVER_TIMEOUT_CODES.has(String(item?.code || '')) || SERVER_TIMEOUT_NAMES.has(String(item?.name || ''));
+  });
 }
 
 /**
@@ -290,6 +408,9 @@ export function canFallbackNonStreaming(err, { signal } = {}) {
   // Exposure/dispatch fails closed — re-running would duplicate output or a
   // side effect.
   if (outcome.replaySafe !== true) return false;
+  // A cut mid tool-argument stream is replayed by the loop with a split-call
+  // notice, never re-issued unchanged here.
+  if (isToolInputCut(err)) return false;
   return classifyError(err) === 'transient' || outcome.stallObserved === true || outcome.truncatedStream === true;
 }
 

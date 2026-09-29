@@ -13,7 +13,9 @@ pub const POINTER_MARKER: &str = "@@MIXDOG_POINTER@@";
 static STDOUT: Mutex<()> = Mutex::new(());
 
 pub fn write_line(prefix: &str, value: &Value) {
-    let _guard = STDOUT.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _guard = STDOUT
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut out = std::io::stdout().lock();
     let _ = writeln!(out, "{prefix}{value}");
     let _ = out.flush();

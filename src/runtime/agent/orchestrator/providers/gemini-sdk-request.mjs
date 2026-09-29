@@ -10,7 +10,7 @@ import {
   geminiTimeoutError,
   createGeminiTextLeakGuard,
   consumeGeminiSdkStream,
-  stampGeminiRpcError,
+  normalizeGeminiSdkError,
 } from './gemini-stream.mjs';
 
 export function geminiTextLeakGuardFor({ tools, callbacks }) {
@@ -82,7 +82,7 @@ export async function streamGeminiSdkAttempt(genModel, stream, attemptSignal) {
       if (controller.signal.aborted) {
         throw controller.signal.reason instanceof Error ? controller.signal.reason : err;
       }
-      throw stampGeminiRpcError(err);
+      throw normalizeGeminiSdkError(err, 'Gemini SDK streamGenerateContent');
     }
     // First byte / headers received: drop the connect-phase timer but KEEP
     // the parent link attached so a later abort during streaming still

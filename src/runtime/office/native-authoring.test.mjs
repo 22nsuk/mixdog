@@ -64,7 +64,10 @@ test('PDF blocks keep explicit typography and spacing without implicit preset st
   // heading, paragraph or table produced blocks the block contract refused.
   for (const profile of ['executive', 'editorial', 'technical', 'data']) {
     const styled = applyPdfDesign(blocks, { profile });
-    assert.ok(styled.blocks.every((block) => !('font' in block)), `${profile}: ${JSON.stringify(styled.blocks)}`);
+    assert.ok(
+      styled.blocks.every((block) => !('font' in block)),
+      `${profile}: ${JSON.stringify(styled.blocks)}`
+    );
   }
   // Peer headings under a cover share one colour; only a title is set apart.
   const peers = applyPdfDesign(

@@ -53,7 +53,13 @@ import {
   transcriptRowNamespace,
 } from './transcript-virtual-cache';
 import { TRANSCRIPT_HISTORY_TOP_PX, useTranscriptHistory, useTranscriptHistoryFill } from './use-transcript-history';
-import { LiveActivity, resetToolDisclosureScope, ToolActivityGroup, TranscriptRow } from './TranscriptView';
+import {
+  commandShowsActivity,
+  LiveActivity,
+  resetToolDisclosureScope,
+  ToolActivityGroup,
+  TranscriptRow,
+} from './TranscriptView';
 import { useTranscriptFollow } from './use-transcript-follow';
 import { useTranscriptReveal } from './use-transcript-reveal';
 import {
@@ -404,6 +410,7 @@ export function Conversation({
   reviewActive = true,
   warmPaintHandoff = false,
   transcriptPending = false,
+  onEntryRevealed,
 }: {
   snapshot: Snapshot;
   routeSnapshot: Snapshot;
@@ -467,6 +474,9 @@ export function Conversation({
    *  frame): the timeline mounts once, with the real rows, so the entry
    *  offset is resolved exactly once. */
   transcriptPending?: boolean;
+  /** This session's entry settled: rows laid out and every entry-pending
+   *  chrome (the review bar's first read) decided. */
+  onEntryRevealed?: (sessionKey: string) => void;
 }) {
   const conversation = useRef<HTMLElement>(null);
   const viewport = useRef<HTMLDivElement>(null);
@@ -779,6 +789,7 @@ export function Conversation({
       }),
     [failedTurns, settledRowItems, settledTurnKeys, transcriptSessionKey]
   );
+  const commandActivityVisible = commandShowsActivity(snapshot);
   const transcriptRows = useMemo(
     () =>
       appendLiveTranscriptRows({
@@ -786,7 +797,12 @@ export function Conversation({
         settled: settledProjection,
         pendingItems: transcriptPendingPromptItems,
         liveItem: activeStreamingTail,
-        thinking: Boolean(snapshot.busy || snapshot.commandBusy || activeStreamingTail || optimisticActivityStartedAt),
+        thinking: Boolean(
+          snapshot.busy ||
+            (snapshot.commandBusy && commandActivityVisible) ||
+            activeStreamingTail ||
+            optimisticActivityStartedAt
+        ),
       }),
     [
       optimisticActivityStartedAt,
@@ -794,6 +810,7 @@ export function Conversation({
       transcriptPendingPromptItems,
       snapshot.busy,
       snapshot.commandBusy,
+      commandActivityVisible,
       activeStreamingTail,
     ]
   );
@@ -822,8 +839,12 @@ export function Conversation({
     draft: draftMode || transcriptSessionKey === 'new-task',
     viewport,
     content,
+    scope: conversation,
     hasScrollGesture: hasTranscriptScrollGesture,
   });
+  useLayoutEffect(() => {
+    if (transcriptRevealed) onEntryRevealed?.(transcriptSessionKey);
+  }, [onEntryRevealed, transcriptRevealed, transcriptSessionKey]);
   // A short first window (down to 8 huge rows) may not fill the pane, and
   // with nothing to scroll the top threshold is never crossed.
   useTranscriptHistoryFill(viewport, requestEarlierTranscript, settledItems.length, transcriptRevealed);
@@ -967,6 +988,7 @@ export function Conversation({
     <section
       className={`conversation${readOnly ? ' conversation-read-only' : ''}`}
       ref={conversation}
+      data-transcript-entering={transcriptRevealed ? undefined : 'true'}
       onKeyDownCapture={(event) =>
         conversationKeyDownCapture(event, { readOnly, viewport, onTranscriptKey: handleTranscriptKeyDown })
       }

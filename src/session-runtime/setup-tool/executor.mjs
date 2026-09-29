@@ -7,7 +7,7 @@ import { builtinFeatureActive, builtinFirstUseApproval } from '../builtin-featur
 import { ORCHESTRATION_MODES } from '../../runtime/shared/orchestration.mjs';
 import { SETUP_DESKTOP_DOMAINS, SETUP_HANDOFFS } from './settings-contract.mjs';
 import { executeExtendedSetupAction, publicAutomation, validateMcpInput } from './extended-actions.mjs';
-import { createSetupUiRequests } from './ui-requests.mjs';
+import { SETUP_DESKTOP_UNCLAIMED, createSetupUiRequests } from './ui-requests.mjs';
 import {
   SETUP_ACTIONS,
   SETUP_ACTION_FIELDS,
@@ -288,6 +288,10 @@ function mcpServerInput(args) {
 }
 
 const DESKTOP_HOSTED_FEATURES = ['browser', 'computer', 'voice'];
+// Git and Office installs bring their system dependency (Git, LibreOffice) in
+// through the Desktop's guided installers, the same steps as the Built-in card.
+// A request no Desktop window takes keeps the runtime-only install.
+const DESKTOP_PREPARED_FEATURES = ['git', 'office'];
 const SETUP_INSTALLABLE_FEATURES = ['git', 'memory', 'office', 'tidy', 'localProvider', 'browser', 'computer', 'voice'];
 
 // Action handlers: (rt, args, { requestDesktop, readStatus, openSurface }).
@@ -363,9 +367,16 @@ const SETUP_ACTION_HANDLERS = {
     const name = requireEnum(args.name, ['browser', 'computer'], 'name');
     return rt.setBridgeFirstUseApproval(name, requireBoolean(args.enabled));
   },
-  install_builtin: (rt, args, { requestDesktop }) => {
+  install_builtin: async (rt, args, { requestDesktop }) => {
     const name = requireEnum(args.name, SETUP_INSTALLABLE_FEATURES, 'name');
     if (DESKTOP_HOSTED_FEATURES.includes(name)) return requestDesktop(args);
+    if (DESKTOP_PREPARED_FEATURES.includes(name)) {
+      try {
+        return await requestDesktop(args);
+      } catch (error) {
+        if (error?.code !== SETUP_DESKTOP_UNCLAIMED) throw error;
+      }
+    }
     return rt.installBuiltinFeature(name);
   },
   install_local_model: async (rt, args) =>

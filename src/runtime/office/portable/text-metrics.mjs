@@ -276,6 +276,36 @@ export function wrapParagraph(text, width, font = {}) {
   return lines.length ? lines : [''];
 }
 
+// A paragraph whose text carries soft breaks ('\n') is laid out as one line group per break, each at the
+// size of its own runs: "GPT-5.6 Sol" at 14 pt over "Codex CLI 대비" at 10 pt is two lines, not one
+// unbroken word wrapped three times. Space before and after stay with the paragraph's first and last line.
+function softBreakLines(paragraph) {
+  const text = String(paragraph.text ?? '');
+  if (!text.includes('\n')) return [paragraph];
+  const runs = Array.isArray(paragraph.runs) ? paragraph.runs : [{ text, fontSize: paragraph.fontSize }];
+  const lines = [[]];
+  for (const run of runs) {
+    String(run.text ?? '')
+      .split('\n')
+      .forEach((part, index) => {
+        if (index > 0) lines.push([]);
+        if (part) lines[lines.length - 1].push({ ...run, text: part });
+      });
+  }
+  const { runs: _runs, spaceBefore, spaceAfter, ...rest } = paragraph;
+  return lines.map((lineRuns, index) => {
+    const sizes = lineRuns.map((run) => Number(run.fontSize) || 0).filter(Boolean);
+    return {
+      ...rest,
+      text: lineRuns.map((run) => run.text).join(''),
+      fontSize: sizes.length ? Math.max(...sizes) : paragraph.fontSize,
+      ...(new Set(sizes).size > 1 ? { runs: lineRuns } : {}),
+      ...(index === 0 && spaceBefore ? { spaceBefore } : {}),
+      ...(index === lines.length - 1 && spaceAfter ? { spaceAfter } : {}),
+    };
+  });
+}
+
 // lineSpacing: the PowerPoint multiple (1.0 = single); a paragraph's own
 // `lineSpacing` (read from lnSpc) overrides it. `lineHeightRatio` is the legacy
 // pitch-per-em override for callers that already resolved spacing themselves.
@@ -287,7 +317,7 @@ export function measureTextBlock(paragraphs = [], { width = 0, lineSpacing = 1, 
   // wrap breaks such a run between characters, the laid-out width no longer
   // shows that the measure is narrower than the text it has to carry.
   let longestRun = 0;
-  for (const paragraph of paragraphs) {
+  for (const paragraph of paragraphs.flatMap(softBreakLines)) {
     const font = {
       fontName: paragraph.fontName,
       fontSize: paragraph.fontSize,
@@ -300,7 +330,10 @@ export function measureTextBlock(paragraphs = [], { width = 0, lineSpacing = 1, 
     // Runs of different sizes ("+4.3" at 47 pt, "%p" at 19 pt) are measured each at its own size: read at the first
     // run's size, a figure with its small unit was reported as breaking mid-word and overflowing its box. When the
     // whole paragraph fits one line that way, it is one line.
-    const runs = Array.isArray(paragraph.runs) && new Set(paragraph.runs.map((run) => run.fontSize)).size > 1 ? paragraph.runs : null;
+    const runs =
+      Array.isArray(paragraph.runs) && new Set(paragraph.runs.map((run) => run.fontSize)).size > 1
+        ? paragraph.runs
+        : null;
     if (runs) {
       const total = runs.reduce((sum, run) => sum + measureTextWidth(run.text, { ...font, fontSize: run.fontSize }), 0);
       if (!(width > 0) || total <= width) {

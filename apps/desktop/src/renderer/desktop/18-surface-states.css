@@ -34,6 +34,11 @@
   border-radius: 0;
   box-shadow: none;
 }
+/* A conversation entry that is still loading shows its spinner early; only a
+   switch that settles within a few frames stays silent. */
+.pane-surface-cover > .desktop-loading-surface--delayed {
+  animation-delay: 150ms;
+}
 .session-unavailable {
   align-items: center;
   justify-content: center;

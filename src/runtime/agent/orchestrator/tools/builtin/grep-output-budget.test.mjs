@@ -9,7 +9,7 @@ import { formatGrepOutput, formatGrepContextOutput, grepNoMatchesBody } from './
 import { expandGrepAnchorContextOutput } from './lib/grep-context-expander.mjs';
 import { extractGrepChunkResultLines } from './lib/search-grep-chunks.mjs';
 
-test('grep rendered output is capped at 10 KiB', async () => {
+test('grep rendered output is capped at 5 KiB', async () => {
   const root = await mkdtemp(join(tmpdir(), 'mixdog-grep-budget-'));
   try {
     const file = join(root, 'large.txt');
@@ -31,8 +31,8 @@ test('grep rendered output is capped at 10 KiB', async () => {
       },
       root
     );
-    assert.ok(Buffer.byteLength(out, 'utf8') <= 10 * 1024);
-    assert.match(out, /\[grep output capped at 10240 bytes;/);
+    assert.ok(Buffer.byteLength(out, 'utf8') <= 5 * 1024);
+    assert.match(out, /\[grep output capped at 5120 bytes;/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

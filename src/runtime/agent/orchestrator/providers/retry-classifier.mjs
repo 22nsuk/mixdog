@@ -29,6 +29,7 @@
 export {
   canFallbackNonStreaming,
   classifyError,
+  isConnectFailure,
   isConnectionFailure,
   isContextOverflowError,
   isCursorTransientTransportError,
@@ -36,6 +37,10 @@ export {
   isNonTerminalStreamClose,
   isRetryableStreamErrorEvent,
   isRetryableWireErrorEvent,
+  isServerUnavailable,
+  isStreamCut,
+  isToolInputCut,
+  isTransientErrorCode,
   retryAfterMsFromError,
   shouldDropPreviousResponseId,
   typedErrorCode,
@@ -63,6 +68,7 @@ export {
 } from './retry-midstream.mjs';
 export {
   createStreamSafetyStamps,
+  emitProviderRetryStage,
   isProviderRecoveryExhausted,
   markProviderRecoveryExhausted,
   retryDelayLabel,

@@ -735,14 +735,15 @@ export function createRemoteMethods({
         requiredTranscriptItemLimit(itemLimit),
         typeof readTraceId === 'string' ? readTraceId : undefined
       ) ?? false,
-    searchProjectFiles: ([projectIdOrWorkspaceId, query, limit]) => {
+    searchProjectFiles: ([projectIdOrWorkspaceId, query, limit, includeIgnored]) => {
       if (typeof query !== 'string' || query.length > 1_024) {
         throw new TypeError('query is invalid.');
       }
       return host.searchProjectFiles(
         requiredString(projectIdOrWorkspaceId, 'projectIdOrWorkspaceId'),
         query,
-        requiredFileSearchLimit(limit)
+        requiredFileSearchLimit(limit),
+        includeIgnored === true
       );
     },
     getSnapshot: () => host.getSnapshot(),

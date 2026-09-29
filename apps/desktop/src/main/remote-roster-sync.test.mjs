@@ -78,11 +78,20 @@ function desktop(sessions = roster()) {
     const sync = async (rosterParam) => {
       const frames = [];
       const params = rosterParam === undefined ? [[], null] : [[], null, undefined, rosterParam];
-      const value = await registerAndSynchronizeRelayViews(host, clientId, state, params, () => true, async (frame) => {
-        frames.push(plain(frame));
-        delivered(frame);
-      });
-      const sessions = frames.filter((frame) => frame.event === 'sessions' || frame.payload?.frame?.event === 'sessions');
+      const value = await registerAndSynchronizeRelayViews(
+        host,
+        clientId,
+        state,
+        params,
+        () => true,
+        async (frame) => {
+          frames.push(plain(frame));
+          delivered(frame);
+        }
+      );
+      const sessions = frames.filter(
+        (frame) => frame.event === 'sessions' || frame.payload?.frame?.event === 'sessions'
+      );
       const bytes = sessions.reduce((total, frame) => total + JSON.stringify(frame).length, 0);
       return { value, frames, sessions, bytes };
     };
@@ -156,7 +165,10 @@ async function persisted(d, storage) {
   const first = phone(storage);
   const full = await d.connect(first).sync(await first.claim());
   assert.deepEqual(first.view.sessions, plain(d.host.sessions));
-  await until(() => first.stamped !== null && storage.record?.version === first.stamped, 'the decoded roster is persisted');
+  await until(
+    () => first.stamped !== null && storage.record?.version === first.stamped,
+    'the decoded roster is persisted'
+  );
   return full;
 }
 
@@ -192,7 +204,9 @@ test('a cold open with an unchanged persisted roster sends one tiny frame, and l
   const next = await d.connect(again).sync(await again.claim());
   assert.ok(next.bytes < 300, `${next.bytes} bytes`);
   assert.deepEqual(again.view.sessions, plain(d.host.sessions));
-  console.info(`[roster] full=${full.bytes}B unchanged-cold-open=${cold.bytes}B claim=${JSON.stringify(claim).length}B`);
+  console.info(
+    `[roster] full=${full.bytes}B unchanged-cold-open=${cold.bytes}B claim=${JSON.stringify(claim).length}B`
+  );
 });
 
 test('a few changed, added and deleted rows send just those and rebuild the identical roster', async () => {
@@ -214,9 +228,9 @@ test('a few changed, added and deleted rows send just those and rebuild the iden
   d.host.sessions = [
     ...added,
     ...touched,
-    ...rows.filter((row, index) => !deleted.has(row.id) && index !== 5 && index !== 900).map((row) =>
-      row.id === heartbeat.id ? heartbeat : row
-    ),
+    ...rows
+      .filter((row, index) => !deleted.has(row.id) && index !== 5 && index !== 900)
+      .map((row) => (row.id === heartbeat.id ? heartbeat : row)),
   ];
 
   const reopened = phone(storage);
@@ -224,7 +238,10 @@ test('a few changed, added and deleted rows send just those and rebuild the iden
   const cold = await leg.sync(await reopened.claim());
   const payload = cold.sessions[0].payload.__listCatch;
   assert.ok(payload, 'answered with a catch-up');
-  assert.deepEqual(payload.upsert.map(([key]) => key).sort(), [...added, ...touched, heartbeat].map((row) => row.id).sort());
+  assert.deepEqual(
+    payload.upsert.map(([key]) => key).sort(),
+    [...added, ...touched, heartbeat].map((row) => row.id).sort()
+  );
   assert.deepEqual(payload.removed.sort(), [...deleted].sort());
   assert.deepEqual(reopened.view.sessions, plain(d.host.sessions));
   assertEncoderMatchesBaseline(leg.state, d.host.sessions);

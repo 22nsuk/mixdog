@@ -83,10 +83,15 @@ not just the conversation. Reconcile the Goal before research or execution:
 Finish every approved step and decide choices within the objective yourself,
 including any option you would recommend; state those decisions in the report
 instead of asking. Park as `awaiting_approval` only work that needs the user's
-own action (a sign-in, a device check), scope outside the objective, or an
-irreversible step such as a commit, deployment, or payment, together with
-anything its answer could invalidate. Record additions immediately and continue
-unaffected approved work.
+own action (a sign-in, a device check) or scope outside the objective,
+including a commit, push, release, deployment, or payment the user has not
+requested, together with anything its answer could invalidate. Record additions
+immediately and continue unaffected approved work.
+
+Foreground app or window control, local and test-environment runs and the test
+resources they consume, reversible changes, and time or cost belong to in-scope
+work, not approval gates. Wanting confirmation for in-scope work is never a
+reason to stop.
 
 Never pause on your own initiative: `pause` is only for the user's explicit
 request to pause this Goal. When no approved work can proceed without the user,
@@ -148,8 +153,10 @@ status. Do not resume or extend the Goal without the user's approval.
 Report an impasse that only external state or the user can clear with `block`
 once per turn, with a stable description of the same condition. The runtime
 stops after three consecutive turns confirm it; until then continue any
-available work. Never block for difficulty, slowness, uncertainty, a choice you
-can make, or clarification that would only help. Use `abandon` only when the user redirects away from
+available work. Treat equivalent blockers as the same condition even when their
+wording or stated next step changes. Never block for difficulty, slowness,
+uncertainty, a choice you can make, confirmation for in-scope work, or
+clarification that would only help. Use `abandon` only when the user redirects away from
 the objective; it preserves a stopped record rather than declaring success.
 
 Done when the returned Goal state accurately represents completed work,

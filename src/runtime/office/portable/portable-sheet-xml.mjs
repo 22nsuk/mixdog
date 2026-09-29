@@ -324,6 +324,18 @@ export function displayWidth(text) {
   return width;
 }
 
+// A column width counts characters of the workbook's default size (the first
+// cell style's face), so a cell set larger needs proportionally more of it.
+// Bold type runs about a fifth wider: a 27 pt bold "47.0%" measured 12.3
+// characters by size alone, passed in a 14-character column, and printed ###
+// (it fits from 14.7). autofit_range sizes a column by this measure and the fit
+// audits check against it: sized by size alone, a bold header autofit had just
+// fitted was reported cut, with "run autofit_range" as the remedy.
+const BOLD_WIDTH = 1.2;
+export function cellWidthScale(style, baseSize, { isDefault = false } = {}) {
+  return ((Number(style?.fontSize) || baseSize) / baseSize) * (style?.bold && !isDefault ? BOLD_WIDTH : 1);
+}
+
 // Excel prints a number through its format, so the characters a column has to
 // hold are the digits it renders plus every literal the format carries — a ₩
 // sign, a "원" suffix, the space an _) reserves. A column narrower than this
@@ -387,7 +399,11 @@ export function generalNumberText(number) {
   const plain = String(number);
   if (plain.length <= 11) return plain;
   const magnitude = Math.abs(number);
-  if (magnitude >= 1e11 || magnitude < 1e-9) return number.toExponential(5).replace(/\.?0+e/, 'e').toUpperCase();
+  if (magnitude >= 1e11 || magnitude < 1e-9)
+    return number
+      .toExponential(5)
+      .replace(/\.?0+e/, 'e')
+      .toUpperCase();
   const integerDigits = magnitude < 1 ? 1 : Math.floor(Math.log10(magnitude)) + 1;
   const decimals = Math.max(0, 10 - (number < 0 ? 1 : 0) - integerDigits);
   return String(Number(number.toFixed(decimals)));

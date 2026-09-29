@@ -49,7 +49,7 @@
   --route-popover-x: 0;
   --route-popover-y: 0;
   position: fixed;
-  z-index: 10010;
+  z-index: var(--mx-menu-z-index);
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
@@ -377,7 +377,7 @@
 }
 .route-context-slider input:disabled {
   cursor: default;
-  opacity: 0.5;
+  opacity: var(--mx-op-disabled);
 }
 .route-sheet,
 .route-sheet-flyout {
@@ -469,13 +469,6 @@
 .model-catalog-panel .model-row-copy > small {
   display: none;
 }
-.model-catalog-panel .list-item-selected-icon {
-  width: auto;
-  height: auto;
-  color: var(--mx-text);
-  background: transparent;
-  box-shadow: none;
-}
 .model-catalog-panel .model-provider-add {
   width: 28px;
   height: 28px;
@@ -484,12 +477,6 @@
 .effort-control {
   width: auto;
   flex: 0 0 auto;
-}
-.fast-control,
-.route-controls > .fast-control {
-  width: 28px;
-  min-width: 28px;
-  flex: 0 0 28px;
 }
 .send-button {
   flex: 0 0 28px;
@@ -594,7 +581,6 @@
 .composer-attachments > div.image .attachment-remove:focus-visible {
   opacity: 1;
 }
-.composer-error,
 .composer-notice {
   /* Banner ABOVE the input card: full column width, card-language radius. */
   margin: 0 0 6px;
@@ -608,7 +594,6 @@
   align-items: flex-start;
   gap: 8px;
 }
-.composer-error > span,
 .composer-notice > span {
   flex: 1 1 auto;
 }
@@ -629,9 +614,6 @@
 .composer-banner-close:hover {
   opacity: 1;
   background: var(--mx-hover);
-}
-.composer-error {
-  box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--mx-danger) 25%, transparent);
 }
 .composer-notice {
   box-shadow: inset 0 0 0 0.5px var(--mx-border);
@@ -716,10 +698,7 @@
     560px,
     calc(var(--vvh, 100vh) - var(--settings-layer-safe-top, 16px) - var(--settings-layer-safe-bottom, 16px))
   );
-  max-height: min(
-    760px,
-    calc(var(--vvh, 100vh) - var(--settings-layer-safe-top, 16px) - var(--settings-layer-safe-bottom, 16px))
-  );
+  max-height: var(--settings-panel-height);
   border-radius: var(--mx-radius-xl);
 }
 /* ONE frame (user: 프레임이 내측과 바깥쪽 두 개인데 내측만 남긴 원프레임으로,
@@ -736,10 +715,7 @@
   box-shadow: var(--mx-popup-shadow);
 }
 .command-surface[data-surface="context"] .mixdog-settings__panel {
-  max-height: min(
-    760px,
-    calc(var(--vvh, 100vh) - var(--settings-layer-safe-top, 16px) - var(--settings-layer-safe-bottom, 16px))
-  );
+  max-height: var(--settings-panel-height);
   background: transparent;
 }
 /* The title bar becomes the card's first band: it lets the frame's gradient
@@ -756,10 +732,7 @@
    pane gate's unlayered display:block/min-height:100% (settings.css) sits in
    that chain, so it is re-pinned to 100% height here. */
 .command-surface[data-surface="context"] {
-  height: min(
-    760px,
-    calc(var(--vvh, 100vh) - var(--settings-layer-safe-top, 16px) - var(--settings-layer-safe-bottom, 16px))
-  );
+  height: var(--settings-panel-height);
 }
 .command-surface[data-surface="context"] .mixdog-settings__body {
   flex: 1 1 auto;
@@ -935,6 +908,177 @@
 .inherit-surface-actions > button:active:not(:disabled) {
   background: var(--mx-flat-press-contrast);
 }
+/* /doctor wears the same ONE frame: verdict band, one row per check with its
+   fix, and the re-run action on the card's own footer hairline. The old
+   surface dumped the text report into a <pre> inside a boxed group. */
+.command-surface[data-surface="doctor"] {
+  width: min(560px, calc(100vw - 32px));
+  height: auto;
+  max-height: min(
+    720px,
+    calc(var(--vvh, 100vh) - var(--settings-layer-safe-top, 16px) - var(--settings-layer-safe-bottom, 16px))
+  );
+  border: var(--mx-popup-border);
+  border-radius: var(--mx-popup-radius-card);
+  background: var(--mx-popup-bg);
+  box-shadow: var(--mx-popup-shadow);
+}
+.command-surface[data-surface="doctor"] .mixdog-settings__panel {
+  max-height: 100%;
+  background: transparent;
+}
+.command-surface[data-surface="doctor"] .mixdog-settings__header {
+  padding: 0 12px 0 20px;
+  border-bottom: 0.5px solid var(--mx-border-muted);
+  background: transparent;
+}
+.command-surface[data-surface="doctor"] .mixdog-settings__body {
+  flex: 0 1 auto;
+  gap: 0;
+  padding: 0;
+  overflow-y: auto;
+  scrollbar-gutter: auto;
+}
+.command-surface[data-surface="doctor"] .settings-loading {
+  padding: 20px;
+}
+.doctor-surface {
+  min-width: 0;
+  display: grid;
+}
+.doctor-surface [data-level="ok"] > svg,
+.doctor-surface-counts > [data-level="ok"] {
+  color: var(--mx-success);
+}
+.doctor-surface [data-level="warn"] > svg,
+.doctor-surface-counts > [data-level="warn"] {
+  color: var(--mx-warning);
+}
+.doctor-surface [data-level="fail"] > svg,
+.doctor-surface-counts > [data-level="fail"] {
+  color: var(--mx-danger);
+}
+.doctor-surface-note {
+  margin: 0;
+  padding: 18px 20px;
+  color: var(--mx-text-muted);
+  font-size: var(--mx-font-meta);
+  line-height: var(--mx-line-meta);
+}
+.doctor-surface-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 20px;
+  border-bottom: 0.5px solid var(--mx-border-muted);
+}
+.doctor-surface-summary > svg {
+  flex: 0 0 auto;
+}
+.doctor-surface-summary strong {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--mx-text);
+  font-size: var(--mx-font-ui);
+  font-weight: var(--mx-weight-semibold);
+}
+.doctor-surface-counts {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  font-size: var(--mx-font-minor);
+  font-variant-numeric: tabular-nums;
+}
+.doctor-surface-counts > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.doctor-surface-list {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 8px;
+  list-style: none;
+}
+.doctor-check {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: var(--mx-radius-md);
+}
+.doctor-check[data-level="warn"] {
+  background: color-mix(in srgb, var(--mx-warning-bg) 55%, transparent);
+}
+.doctor-check[data-level="fail"] {
+  background: color-mix(in srgb, var(--mx-danger-bg) 55%, transparent);
+}
+.doctor-check > svg {
+  margin-top: 2px;
+}
+.doctor-check-text {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.doctor-check-label {
+  color: var(--mx-text);
+  font-size: var(--mx-font-ui);
+  font-weight: var(--mx-weight-semibold);
+}
+.doctor-check-detail,
+.doctor-check-hint {
+  color: var(--mx-text-muted);
+  font-size: var(--mx-font-minor);
+  line-height: var(--mx-line-minor);
+  overflow-wrap: anywhere;
+}
+.doctor-check-hint {
+  color: var(--mx-text);
+}
+.doctor-check-hint::before {
+  content: "→ ";
+}
+.doctor-check-fix {
+  align-self: center;
+  min-height: 26px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--mx-radius-md);
+  color: var(--mx-text);
+  background: transparent;
+  box-shadow: inset 0 0 0 0.5px var(--mx-border-strong);
+  font-size: var(--mx-font-minor);
+  cursor: pointer;
+}
+.doctor-check-fix:hover {
+  background: var(--mx-hover);
+}
+.doctor-surface-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 12px 16px;
+  border-top: 0.5px solid var(--mx-border-muted);
+}
+.doctor-surface-actions > button {
+  min-height: 30px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: var(--mx-radius-md);
+  color: var(--mx-grey-100);
+  background: var(--mx-bg-contrast);
+  box-shadow: var(--mx-button-contrast);
+  font-size: var(--mx-font-ui);
+  font-weight: var(--mx-weight-semibold);
+  cursor: pointer;
+}
+.doctor-surface-actions > button:hover:not(:disabled) {
+  background: var(--mx-flat-hover-contrast);
+}
 .command-surface .settings-group-body {
   min-width: 0;
   overflow: hidden;
@@ -998,23 +1142,6 @@
   min-width: 0;
   max-width: min(52ch, 100%);
   flex: 0 1 auto;
-}
-.session-header-status {
-  min-width: 0;
-  max-width: min(520px, 52vw);
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  /* One 28px slot per control, one 4px rhythm between them (user: the
-     context/review/panel cluster read unevenly spaced). */
-  gap: 4px;
-  flex: 0 1 auto;
-  margin-left: auto;
-  padding: 2px;
-  border: 0.5px solid color-mix(in srgb, var(--mx-border-strong) 5%, transparent);
-  border-radius: var(--mx-radius-pill);
-  background: color-mix(in srgb, var(--mx-bg-base) 4%, transparent);
-  overflow: visible;
 }
 /* Dock toggle rides the session header, in the sidebar-toggle voice: same
    thin stroke, same label ink. */

@@ -14,6 +14,7 @@ import { t } from './i18n';
 import { dataTransferHasLocalFiles, droppedLocalPaths } from './file-drag';
 import { isMobileRemoteSurface } from './mobile-surface';
 import { PaneSplitLayout } from './PaneSplitLayout';
+import { NARROW_SHELL_QUERY, useMediaBand } from './use-responsive-shell-bands';
 import { PersistentPanePortal } from './PaneSurfaceGate';
 import type { NavigationSelection, WorkspaceSelection } from './nav-types';
 import {
@@ -222,9 +223,7 @@ export function PaneWorkspace({
   // them owns an editor tab, so include those ids with every pane session.
   // Not on a phone: its Agents rows read the agent pool and roster, while
   // every observed lane mirrored a whole working transcript over the relay.
-  const visibleSessionIds = mobileSurface
-    ? paneSessionIds
-    : [...new Set([...paneSessionIds, ...observedSessionIds])];
+  const visibleSessionIds = mobileSurface ? paneSessionIds : [...new Set([...paneSessionIds, ...observedSessionIds])];
   useVisibleSessions(visibleSessionIds);
   // Selection is ONE document-wide range, so a drag that starts in one pane
   // and travels over another painted every row in between (user: 왜 드래그가
@@ -361,14 +360,7 @@ export function PaneWorkspace({
   // panes above their floors, so the tree renders as ONE full-size pane at a
   // time — single-session mode (user decision) — and the strip-row pager
   // steps left/right through the panes in visual order.
-  const [narrowShell, setNarrowShell] = useState(() => window.matchMedia?.('(max-width: 760px)').matches === true);
-  useEffect(() => {
-    const query = window.matchMedia?.('(max-width: 760px)');
-    if (!query) return undefined;
-    const onChange = (): void => setNarrowShell(query.matches);
-    query.addEventListener('change', onChange);
-    return () => query.removeEventListener('change', onChange);
-  }, []);
+  const narrowShell = useMediaBand(NARROW_SHELL_QUERY);
   // The band check alone is not enough: on a mid-width window the panel can
   // shrink under the TREE's aggregate floors (side panels open, column
   // splits taller than the window) and the overflow buried panes past the
@@ -581,15 +573,15 @@ export function PaneWorkspace({
     const active = handoff ? paneActiveSelection(handoff.leaf) : null;
     return isConversationSelection(active) ? undefined : handoff;
   };
-  const surfaceLayersFor = (leaf: PaneLeaf) => {
-    const current = currentPaneSurfaces.get(leaf.id)!;
+  // ONE surface layer per pane. Keying layers by the active selection
+  // re-created the layer on every tab switch and remounted every open editor
+  // in the pane: Monaco lost focus and undo history, reloads replayed
+  // "restored" backups and the save handles were dropped. During a handoff
+  // the SAME layer paints the outgoing selection for exactly one more frame
+  // (inert, above the incoming conversation) instead of a fresh copy.
+  const outgoingSurfaceFor = (leaf: PaneLeaf) => {
     const handoff = visualSurfaceHandoffFor(leaf.id);
-    return handoff && handoff.key !== current.key
-      ? [
-          { ...handoff, handoff: true },
-          { ...current, handoff: false },
-        ]
-      : [{ ...current, handoff: false }];
+    return handoff && handoff.key !== currentPaneSurfaces.get(leaf.id)!.key ? handoff : null;
   };
   const renderPaneSurface = (surfaceLeaf: PaneLeaf, focused: boolean, handoff: boolean) => {
     if (workspace.restorePending) {
@@ -607,13 +599,10 @@ export function PaneWorkspace({
       if (active) onFocusSelection(active);
     };
     const fileEditors = renderFileEditors?.(surfaceLeaf, interactive, focusPane);
-    // Utility portals already stay mounted after first activation. During a
-    // handoff their one physical slot stays in the outgoing layer for exactly
-    // one frame; the incoming layer receives it after that layer retires.
-    // This avoids duplicate ids while preserving the last composed utility
-    // frame instead of exposing an empty/rasterizing destination.
-    const activeHandoff = visualSurfaceHandoffFor(surfaceLeaf.id);
-    const utilityTabs = handoff || !activeHandoff ? renderUtilityTabs?.(surfaceLeaf, interactive, focusPane) : null;
+    // Utility portals stay mounted after first activation. Their slots live in
+    // the pane's one layer, so a handoff frame keeps the last composed utility
+    // frame in place and never duplicates a slot id.
+    const utilityTabs = renderUtilityTabs?.(surfaceLeaf, interactive, focusPane);
     // Chat, editors and the utility tabs all render themselves: the mounted
     // layers below ARE the pane, so it needs no chrome of its own. A file tab
     // only qualifies while the host actually renders editors.
@@ -652,19 +641,18 @@ export function PaneWorkspace({
   };
   const renderPaneSurfaceStack = (leaf: PaneLeaf, focused: boolean) => {
     const conversationEntry = conversationEntryByLeaf.get(leaf.id);
+    const outgoing = outgoingSurfaceFor(leaf);
+    const surface = outgoing ?? currentPaneSurfaces.get(leaf.id)!;
     return (
       <div className="pane-surface-stack">
-        {surfaceLayersFor(leaf).map((surface) => (
-          <div
-            key={surface.key}
-            className="pane-surface-handoff-layer"
-            data-pane-surface-handoff={surface.handoff ? 'true' : 'false'}
-            inert={surface.handoff ? true : undefined}
-            aria-hidden={surface.handoff ? true : undefined}
-          >
-            {renderPaneSurface(surface.leaf, focused, surface.handoff)}
-          </div>
-        ))}
+        <div
+          className="pane-surface-handoff-layer"
+          data-pane-surface-handoff={outgoing ? 'true' : 'false'}
+          inert={outgoing ? true : undefined}
+          aria-hidden={outgoing ? true : undefined}
+        >
+          {renderPaneSurface(surface.leaf, focused, Boolean(outgoing))}
+        </div>
         {conversationEntry && conversationSlot(leaf.id, conversationEntry.parked)}
       </div>
     );

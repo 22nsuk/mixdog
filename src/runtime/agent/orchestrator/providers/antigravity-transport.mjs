@@ -6,7 +6,7 @@
  * account-verification URL Google hides in the error details), and the
  * per-attempt hand-off of the live stream to the turn collector.
  */
-import { withRetry } from './retry-classifier.mjs';
+import { emitProviderRetryStage, withRetry } from './retry-classifier.mjs';
 import { createTimeoutSignal } from '../stall-policy.mjs';
 import { getLlmDispatcher } from '../../../shared/llm/http-agent.mjs';
 import { GEMINI_FIRST_BYTE_TIMEOUT_MS } from './gemini-stream.mjs';
@@ -101,12 +101,8 @@ export function createAntigravityRequest({ fetchFn, endpoint, headers, body, opt
       },
       {
         signal,
-        onRetry: ({ attempt, lastErr: retryErr }) => {
-          try {
-            opts.onStageChange?.('requesting');
-          } catch {
-            /* heartbeat */
-          }
+        onRetry: ({ attempt, maxAttempts, lastErr: retryErr, delayMs }) => {
+          emitProviderRetryStage(opts.onStageChange, { attempt: attempt + 1, maxAttempts, lastErr: retryErr, delayMs });
           process.stderr.write(`[antigravity] retry ${attempt + 1} after ${retryErr?.message || 'transient error'}\n`);
         },
       }

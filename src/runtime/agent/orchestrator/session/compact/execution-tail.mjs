@@ -6,14 +6,20 @@ import {
   isProtectedContextAckMessage,
   latestActualUserInstructionIndex,
 } from './messages.mjs';
+import { staleObservations, supersedeObservation } from './observation-supersession.mjs';
 
 export const EXECUTION_RECOVERY_SOURCE = 'compact-execution-recovery';
 const TOOL_HISTORY_CONTEXT_RATIO = 0.05;
+// The working set of recent execution evidence does not grow with the window:
+// above 400k, 5% kept a large block of old tool output after every Compact.
+const TOOL_HISTORY_MAX_TOKENS = 20_000;
 const ARCHIVE_THRESHOLD_TOKENS = 512;
 
 export function toolHistoryBudget(contextWindow) {
   const window = Number(contextWindow);
-  return Number.isFinite(window) && window > 0 ? Math.floor(window * TOOL_HISTORY_CONTEXT_RATIO) : 0;
+  return Number.isFinite(window) && window > 0
+    ? Math.min(Math.floor(window * TOOL_HISTORY_CONTEXT_RATIO), TOOL_HISTORY_MAX_TOKENS)
+    : 0;
 }
 
 // Count arguments and provider replay as well as results. The serialized
@@ -52,10 +58,28 @@ function executionGroups(messages) {
   return groups;
 }
 
+// The assistant's opaque replay: providerReplay (reasoning plus a duplicate of
+// its calls) and legacy encrypted reasoningItems. Every provider lowers
+// content/toolCalls without them.
+function withoutReplay(message) {
+  const { providerReplay: _providerReplay, reasoningItems: _reasoningItems, ...rest } = message;
+  return rest;
+}
+
+// Only the newest assistant message can still need its replay: an in-progress
+// tool loop continues from it. Older replay is dropped at the compaction
+// boundary, which invalidates the prompt-cache prefix anyway.
+function withoutStaleReplay(messages) {
+  const newest = messages.findLastIndex((message) => message?.role === 'assistant');
+  return messages.map((message, index) =>
+    index < newest && message?.role === 'assistant' && (message.providerReplay || message.reasoningItems)
+      ? withoutReplay(message)
+      : message
+  );
+}
+
 // Shrink levels, least evidence lost first. 1: large result bodies. 2: also
-// the assistant's opaque replay: providerReplay (reasoning plus a duplicate of
-// its calls) and legacy encrypted reasoningItems; every provider lowers
-// content/toolCalls without them. 3: also large call arguments. Call ids,
+// the assistant's opaque replay. 3: also large call arguments. Call ids,
 // names, per-call metadata and small results stay verbatim, so every retained
 // call keeps its paired result.
 function shrinkGroup(group, archive, level) {
@@ -70,7 +94,7 @@ function shrinkGroup(group, archive, level) {
       };
     }
     if (level < 2) return message;
-    const { providerReplay: _providerReplay, reasoningItems: _reasoningItems, ...rest } = message;
+    const rest = withoutReplay(message);
     if (level < 3) return rest;
     return {
       ...rest,
@@ -115,9 +139,11 @@ function assembleTail(messages, kept, { anchor, firstKept, preserveConversation 
   return tail;
 }
 
-export function buildExecutionTail(messages, { contextWindow, sessionId, preserveConversation = false } = {}) {
+export function buildExecutionTail(transcript, { contextWindow, sessionId, preserveConversation = false } = {}) {
   const budget = toolHistoryBudget(contextWindow);
+  const messages = withoutStaleReplay(transcript);
   const groups = executionGroups(messages);
+  const stale = staleObservations(messages);
   const previousRecovery = messages.filter((m) => m?.meta?.source === EXECUTION_RECOVERY_SOURCE);
   const kept = new Map();
   let tokens = 0;
@@ -129,7 +155,7 @@ export function buildExecutionTail(messages, { contextWindow, sessionId, preserv
       sessionId,
       toolCallId: 'compact-execution',
       channel: 'compact-execution',
-      content: JSON.stringify({ version: 1, messages }, null, 2),
+      content: JSON.stringify({ version: 1, messages: transcript }, null, 2),
     });
     if (!archive) throw new Error('compact: execution history could not be archived; original context preserved');
     recovery = [
@@ -140,19 +166,34 @@ export function buildExecutionTail(messages, { contextWindow, sessionId, preserv
       },
     ];
   };
+  // An observation a later one of the same page or window replaced keeps only
+  // its outcome and a reference to the archived original.
+  const current = (group) => {
+    if (!group.messages.some((_message, offset) => stale.has(group.start + offset))) return group;
+    ensureArchive();
+    return {
+      ...group,
+      messages: group.messages.map((message, offset) => {
+        const found = stale.get(group.start + offset);
+        const origin = `The original is archived at ${archive.path} (message index ${group.start + offset}).`;
+        return found ? supersedeObservation(message, found, origin) : message;
+      }),
+    };
+  };
   const latestGroup = groups.at(-1);
   // Older groups only shed result bodies and are otherwise omitted. The
   // latest group is the state the session continues from, so it also sheds
   // replay and large arguments rather than refusing compaction forever.
   const keep = (group) => {
     const fits = (selected) => tokens + executionTokens(selected) + executionTokens(recovery) <= budget;
-    let selected = group.messages;
+    const observed = current(group);
+    let selected = observed.messages;
     if (!fits(selected)) {
       ensureArchive();
       const levels = group === latestGroup ? [1, 2, 3] : [1];
       selected = null;
       for (const level of levels) {
-        const shrunk = shrinkGroup(group, archive, level);
+        const shrunk = shrinkGroup(observed, archive, level);
         if (fits(shrunk)) {
           selected = shrunk;
           break;

@@ -255,3 +255,89 @@ test('Local Provider asset installs outlive the ordinary desktop request deadlin
     await client.dispose();
   }
 });
+
+test('built-in dependency installs outlive the ordinary desktop request deadline', async () => {
+  const transport = new ControlledTransport();
+  const client = new DesktopServiceClient({
+    connect: () => transport,
+    sessionOptions: () => ({
+      userDataPath: 'C:/tmp/mixdog',
+      packaged: true,
+      resourcesPath: 'C:/tmp/resources',
+      appPath: 'C:/tmp/resources/app.asar',
+    }),
+    requestTimeoutMs: 20,
+    startupTimeoutMs: 1_000,
+    failureNoticeDelayMs: 1_000,
+  });
+  try {
+    await client.start();
+    // Turning Voice off never downloads, so it keeps the ordinary deadline.
+    await assert.rejects(client.invokeCapability('toggleVoice', [false]), /request timed out/);
+
+    for (const [label, call] of [
+      ['installLibreOffice', () => client.invokeDesktopOperation('installLibreOffice', [])],
+      ['installGitCli', () => client.invokeDesktopOperation('installGitCli', [])],
+      ['toggleVoice on', () => client.invokeCapability('toggleVoice', [true])],
+      ['memory install', () => client.invokeCapability('installBuiltinFeature', ['memory'])],
+      ['office install', () => client.invokeCapability('installBuiltinFeature', ['office'])],
+    ]) {
+      const pending = call();
+      let settled = false;
+      void pending.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        }
+      );
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      assert.equal(settled, false, `${label} must not inherit the 20ms ordinary deadline`);
+      transport.respond(transport.requests.at(-1), { installed: true });
+      assert.deepEqual(await pending, { installed: true });
+    }
+  } finally {
+    await client.dispose();
+  }
+});
+
+test('an omitted trailing argument never reaches the JSON daemon lane as null', async () => {
+  const transport = new ControlledTransport();
+  const client = new DesktopServiceClient({
+    connect: () => transport,
+    sessionOptions: () => ({
+      userDataPath: 'C:/tmp/mixdog',
+      packaged: true,
+      resourcesPath: 'C:/tmp/resources',
+      appPath: 'C:/tmp/resources/app.asar',
+    }),
+  });
+  try {
+    await client.start();
+    // An editor save without an encoding change: JSON.stringify turned the
+    // trailing `undefined` into `null`, which the file writer rejected
+    // ("File encoding is invalid.") — every Ctrl+S failed.
+    const save = client.writeProjectTextFile('C:/tmp/project', 'src/a.ts', 'next', 'prev', undefined);
+    const granted = client.invokeDesktopOperation('writeProjectTextFileIn', [
+      'C:/tmp/project',
+      'src/a.ts',
+      'next',
+      'prev',
+      undefined,
+    ]);
+    await Promise.resolve();
+    await Promise.resolve();
+    const [write, operation] = transport.requests;
+    assert.deepEqual(JSON.parse(JSON.stringify(write.args)), ['C:/tmp/project', 'src/a.ts', 'next', 'prev']);
+    assert.deepEqual(JSON.parse(JSON.stringify(operation.args)), [
+      'writeProjectTextFileIn',
+      ['C:/tmp/project', 'src/a.ts', 'next', 'prev'],
+    ]);
+    transport.respond(write, { mtimeMs: 1 });
+    transport.respond(operation, { mtimeMs: 2 });
+    assert.deepEqual(await Promise.all([save, granted]), [{ mtimeMs: 1 }, { mtimeMs: 2 }]);
+  } finally {
+    await client.dispose();
+  }
+});

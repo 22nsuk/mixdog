@@ -282,10 +282,7 @@ function _trimSessionLoadCache() {
   // first; their validation headers stay (a live/pending copy is then still
   // served without re-reading the file).
   for (const entry of _sessionLoadCache.values()) {
-    if (
-      _sessionLoadCacheDocs <= SESSION_LOAD_CACHE_LIMIT &&
-      _sessionLoadCacheChars <= SESSION_LOAD_CACHE_MAX_CHARS
-    ) {
+    if (_sessionLoadCacheDocs <= SESSION_LOAD_CACHE_LIMIT && _sessionLoadCacheChars <= SESSION_LOAD_CACHE_MAX_CHARS) {
       break;
     }
     _releaseDocument(entry);
@@ -368,7 +365,10 @@ export function _readStoredSessionCached(id, path, { preferInMemory = null } = {
     // writer) drops it and reads strictly below.
     const handoff = _dropHandoff(path);
     if (handoff && handoff.signature === before.signature) {
-      return { exists: true, session: _cacheStable(path, before.signature, handoff.session, preferInMemory, handoff.chars) };
+      return {
+        exists: true,
+        session: _cacheStable(path, before.signature, handoff.session, preferInMemory, handoff.chars),
+      };
     }
     // This realm's OWN last commit is still on disk: its bytes are our strict,
     // valid serialization, so its header validates without re-reading. When

@@ -7,8 +7,36 @@ import { resolvePluginData } from '../runtime/shared/plugin-paths.mjs';
 import { usageStatsSnapshot } from '../standalone/usage-stats-model.mjs';
 import { resolveUsageStatsPeriod } from '../standalone/usage-stats-period.mjs';
 import { usageRollupDayKey } from '../runtime/shared/llm/usage-rollup.mjs';
+import { ACCOUNT_PROVIDERS, readProviderAccountPool } from '../runtime/shared/provider-accounts.mjs';
 
 const MAX_MODEL_LIMIT = 50;
+
+const quotaText = (value) => (typeof value === 'string' ? value.slice(0, 200) : '');
+
+// What the ledger cannot know: each subscription account's label and place in
+// its provider's account pool, the order the account picker lists them in.
+function labelQuotaHistory(history, accountPool) {
+  const rosters = new Map();
+  const rosterOf = (provider) => {
+    if (!ACCOUNT_PROVIDERS.includes(provider)) return [];
+    if (!rosters.has(provider)) {
+      try {
+        rosters.set(provider, accountPool(provider).accounts);
+      } catch {
+        rosters.set(provider, []);
+      }
+    }
+    return rosters.get(provider);
+  };
+  return {
+    ...history,
+    subscriptions: (history.subscriptions || []).map((row) => {
+      const roster = rosterOf(row.provider);
+      const rank = roster.findIndex((entry) => entry.id === row.account);
+      return { ...row, accountLabel: roster[rank]?.label || '', accountRank: rank < 0 ? null : rank };
+    }),
+  };
+}
 
 /** `null` = all time. `0` = today. Anything else is a trailing day count. */
 function normalizeDays(value) {
@@ -55,7 +83,11 @@ function usageRollupQuery(period) {
   };
 }
 
-export function createUsageStatsApi({ ledger = getUsageLedger, importHistory = importUsageHistory } = {}) {
+export function createUsageStatsApi({
+  ledger = getUsageLedger,
+  importHistory = importUsageHistory,
+  accountPool = readProviderAccountPool,
+} = {}) {
   let importing = null;
   let imported = false;
   // Until the first instrumented send establishes the cutover, the legacy
@@ -103,6 +135,40 @@ export function createUsageStatsApi({ ledger = getUsageLedger, importHistory = i
       snapshot.coverage.ledger = true;
       snapshot.coverage.liveSince = liveSince || null;
       return snapshot;
+    },
+
+    /**
+     * How a subscription's own quota meter moved: one limit window since its
+     * last reset (`view: 'window'`, the default, paged by `anchor`), or any
+     * statistics period. `page` asks for the window history instead: one
+     * page of every window that opened, newest first. Readings are recorded
+     * whenever provider usage is measured, so history starts when recording
+     * did.
+     */
+    async getQuotaHistory(options = {}) {
+      const store = ledger();
+      if (!store) throw new Error('Usage ledger is unavailable');
+      // Prices of unpriced records are refreshed by the statistics read the
+      // same dialog makes; repeating it here only queues behind it.
+      await store.settleWrites();
+      const now = Date.now();
+      const selection = {
+        provider: quotaText(options?.provider),
+        account: quotaText(options?.account),
+        label: quotaText(options?.window),
+      };
+      if (options?.page != null) return store.quotaWindowsAsync({ ...selection, page: Number(options.page), now });
+      const view = options?.view == null || options.view === 'window' ? 'window' : options.view;
+      const period = view === 'window' ? null : usagePeriodFor({ ...options, view }, now);
+      const history = await store.quotaHistoryAsync({
+        ...selection,
+        view,
+        anchor: view === 'window' ? quotaText(options?.anchor) || null : null,
+        fromMs: period?.fromMs ?? null,
+        toMs: period?.toMs ?? null,
+        now,
+      });
+      return labelQuotaHistory(period ? { ...history, period } : history, accountPool);
     },
   };
 }

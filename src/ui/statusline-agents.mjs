@@ -8,7 +8,7 @@
 import { forEachSessionRuntime } from '../runtime/agent/orchestrator/session/manager.mjs';
 import { listHiddenAgentNames } from '../runtime/agent/orchestrator/internal-agents.mjs';
 import { classifyToolCategory } from '../runtime/shared/tool-surface.mjs';
-import { num, GRN, R, B } from './statusline-format.mjs';
+import { num, timeMs, GRN, R, B } from './statusline-format.mjs';
 import { positiveInt } from '../runtime/shared/numbers.mjs';
 
 // One table owns both halves of a maintenance agent: which agents are hidden
@@ -264,12 +264,6 @@ export function agentWebSearchStatus({ sessionId = '', clientHostPid = 0 } = {})
     }
   } catch {}
   return { count, startedAt };
-}
-
-function timeMs(value) {
-  if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value;
-  const n = Date.parse(String(value || ''));
-  return Number.isFinite(n) ? n : 0;
 }
 
 function maintenanceLabel(tag) {

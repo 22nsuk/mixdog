@@ -251,13 +251,15 @@ test('lost callers cancel only their parked queue and release its admission budg
   assert.equal((await f.host.executeSerialized({ action: 'capture', session_id: 'a' })).text, 'capture');
 });
 
-test('settled commands retain task activity until explicit execution end', async (t) => {
+test('settled commands retain task activity until explicit execution end without holding the pill on screen', async (t) => {
   const f = fixture(t);
   await f.host.executeSerialized({ action: 'capture', session_id: 'a' });
   await turn();
-  assert.equal(computerUseOverlayPresentation(f.coordinator.snapshot()).visible, true);
-  f.coordinator.endExecution('a');
+  // The task stays reachable by Stop; thinking without a held window shows nothing.
+  assert.deepEqual(computerUseOverlayPresentation(f.coordinator.snapshot()).sessionIds, ['a']);
   assert.equal(computerUseOverlayPresentation(f.coordinator.snapshot()).visible, false);
+  f.coordinator.endExecution('a');
+  assert.deepEqual(computerUseOverlayPresentation(f.coordinator.snapshot()).sessionIds, []);
   assert.deepEqual(computerUseCursorPresentations(f.coordinator.snapshot()), []);
   // The next request starts normally; hiding finished work is not a pause.
   assert.equal((await f.host.executeSerialized({ action: 'capture', session_id: 'a' })).text, 'capture');
@@ -290,8 +292,9 @@ test('a long pause frees the native queue but retains pending task activity with
   await f.host.resumeAfterTakeover(f.coordinator.snapshot().takeoverGeneration);
   await turn();
   assert.deepEqual(f.calls, [], 'returning a paused result must detach the original input');
-  assert.equal(computerUseOverlayPresentation(f.coordinator.snapshot()).visible, true);
+  assert.deepEqual(computerUseOverlayPresentation(f.coordinator.snapshot()).sessionIds, ['a']);
   f.coordinator.endExecution('a');
+  assert.deepEqual(computerUseOverlayPresentation(f.coordinator.snapshot()).sessionIds, []);
   assert.equal(computerUseOverlayPresentation(f.coordinator.snapshot()).visible, false);
 });
 
@@ -338,8 +341,9 @@ test('idle resume recovers transient observation loss, returns fresh evidence an
   assert.equal(result.input_replayed, false);
   assert.deepEqual(f.calls, ['recapture']);
   await turn();
-  assert.equal(computerUseOverlayPresentation(f.coordinator.snapshot()).visible, true);
+  assert.deepEqual(computerUseOverlayPresentation(f.coordinator.snapshot()).sessionIds, ['a']);
   f.coordinator.endExecution('a');
+  assert.deepEqual(computerUseOverlayPresentation(f.coordinator.snapshot()).sessionIds, []);
   assert.equal(computerUseOverlayPresentation(f.coordinator.snapshot()).visible, false);
 });
 

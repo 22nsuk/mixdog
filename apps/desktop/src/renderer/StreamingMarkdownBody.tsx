@@ -155,14 +155,7 @@ const StreamingMarkdownBody = memo(function StreamingMarkdownBody({
   // `parseText` is the healed form of `text` for the live tail: the parser
   // sees closed markers while the source fallback still shows exactly what
   // the model has emitted.
-  return (
-    <ParsedMarkdownBody
-      text={text}
-      parseText={parseText ?? text}
-      parse={parse}
-      copyControl={copyControl}
-    />
-  );
+  return <ParsedMarkdownBody text={text} parseText={parseText ?? text} parse={parse} copyControl={copyControl} />;
 });
 
 export default StreamingMarkdownBody;

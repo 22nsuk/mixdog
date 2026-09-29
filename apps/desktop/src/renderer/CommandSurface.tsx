@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 import type { DesktopModelSelection } from '../shared/contract';
-import type { CommandSurface as CommandSurfaceName } from './slash-commands';
+import type { CommandSurface as CommandSurfaceName, SettingsSection } from './slash-commands';
 import { t } from './i18n';
 import { trappedTabIndex } from './list-navigation';
 import { acquireModalLayer } from './modal-layer';
@@ -12,6 +12,8 @@ import type { SurfaceApi } from './command-surface-cache';
 import { useCommandSurfaceLifecycle } from './command-surface-lifecycle';
 import { SurfaceBody } from './command-surface-body';
 import { UsageSkeleton } from './command-surface-usage';
+import { UsageModeTabs } from './UsageSurface';
+import { useUsageSurfaceMode } from './usage-surface-mode';
 import './settings/settings.css';
 
 export function commandSurfaceTitle(surface: CommandSurfaceName): string {
@@ -25,7 +27,7 @@ export function commandSurfaceTitle(surface: CommandSurfaceName): string {
     case 'inherit':
       return t('Inherit session');
     case 'stats':
-      return t('Token usage');
+      return t('Usage');
   }
 }
 
@@ -36,6 +38,7 @@ export function CommandSurface({
   snapshot,
   sessionId: explicitSessionId = '',
   onInherit,
+  onOpenSettings,
   onClose,
 }: {
   surface: CommandSurfaceName;
@@ -45,6 +48,8 @@ export function CommandSurface({
   sessionId?: string;
   /** /inherit only: hand the source session to the host and open the heir. */
   onInherit?: (sourceSessionId: string, route: DesktopModelSelection) => Promise<void>;
+  /** /doctor only: open the settings page that fixes a failing check. */
+  onOpenSettings?: (section: SettingsSection) => void;
   onClose(): void;
 }) {
   const dialog = useRef<HTMLElement>(null);
@@ -52,12 +57,17 @@ export function CommandSurface({
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
+  // The usage dialog's two questions are its tabs; the dialog keeps its name.
+  const [usageMode, setUsageMode] = useUsageSurfaceMode(surface === 'stats' && open);
   const { data, loading, refreshing, pending, error, sessionId, run, requestCapability } = useCommandSurfaceLifecycle({
     surface,
     open,
     api,
     snapshot,
     sessionId: explicitSessionId,
+    // Subscription usage reads its own history; token statistics wait for
+    // their tab instead of queueing ahead of it on the ledger worker.
+    deferLoad: surface === 'stats' && usageMode === 'quota',
   });
 
   useErrorToast(open && surface !== 'stats' ? error : '', `command:${surface}`);
@@ -142,7 +152,10 @@ export function CommandSurface({
       >
         <div className="mixdog-settings__panel">
           <header className="mixdog-settings__header">
-            <h1 id="command-surface-title">{title}</h1>
+            <h1 id="command-surface-title" className={surface === 'stats' ? 'sr-only' : undefined}>
+              {title}
+            </h1>
+            {surface === 'stats' && <UsageModeTabs mode={usageMode} onChange={setUsageMode} />}
             <div className="command-surface-header-actions">
               {surface === 'stats' && refreshing && !loading && (
                 <span className="stats-refresh-status" role="status">
@@ -189,11 +202,14 @@ export function CommandSurface({
                     snapshot={snapshot}
                     sessionId={sessionId}
                     onInherit={onInherit}
+                    onOpenSettings={onOpenSettings}
                     onClose={onClose}
                     loading={loading}
                     pending={pending}
                     run={run}
                     request={requestCapability}
+                    api={api}
+                    usageMode={usageMode}
                   />
                 )}
               </div>

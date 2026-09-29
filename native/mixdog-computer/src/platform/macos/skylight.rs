@@ -14,7 +14,10 @@ fn private_post() -> Option<PostToPid> {
     *SYMBOL.get_or_init(|| {
         // SAFETY: loading a system framework by path and resolving one symbol.
         unsafe {
-            libc::dlopen(c"/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight".as_ptr(), libc::RTLD_LAZY);
+            libc::dlopen(
+                c"/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight".as_ptr(),
+                libc::RTLD_LAZY,
+            );
             let pointer = libc::dlsym(libc::RTLD_DEFAULT, c"SLEventPostToPid".as_ptr());
             (!pointer.is_null()).then(|| std::mem::transmute::<*mut c_void, PostToPid>(pointer))
         }

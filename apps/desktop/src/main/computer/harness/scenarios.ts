@@ -870,9 +870,6 @@ async function run(): Promise<void> {
           pause: async () => {
             host?.takeOver('user_pause');
           },
-          resume: async (generation, signal) => {
-            await host?.resumeAfterTakeover(generation, signal);
-          },
         },
         'ko'
       );

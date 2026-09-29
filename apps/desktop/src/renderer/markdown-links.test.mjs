@@ -117,6 +117,17 @@ function installProjectFiles(f, entries) {
     throw Object.assign(new Error(`ENOENT: ${project}/${path}`), { code: 'ENOENT' });
   };
   api.searchProjectFiles = async (project) => entries[project] || [];
+  // Main's description of an absolute path: its deepest registered owner.
+  api.resolveLocalPaths = async ([absolutePath]) => {
+    const target = absolutePath.replace(/\/+$/, '');
+    const root = Object.keys(entries)
+      .filter((path) => target.toLowerCase().startsWith(`${path.toLowerCase()}/`))
+      .sort((left, right) => right.length - left.length)[0];
+    const relPath = root ? target.slice(root.length + 1) : '';
+    if (!root || !entries[root].includes(relPath)) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    if (absolutePath.endsWith('/')) return [{ absolutePath: target, dir: true, name: relPath, size: 0 }];
+    return [{ absolutePath: target, dir: false, name: relPath.split('/').at(-1), size: 10, projectPath: root, relPath }];
+  };
 }
 
 for (const [pipeline, render] of Object.entries(renderers)) {
@@ -158,7 +169,7 @@ for (const [pipeline, render] of Object.entries(renderers)) {
     ]);
     assert.deepEqual(f.local, [
       [other, 'output/report.pptx'],
-      [other, 'output'],
+      [`${other}/output`, '.'],
     ]);
     assert.equal(f.links()[0].title, `${other}/favicon.svg`);
     assert.equal(f.toasts.length + f.external.length + f.popups.length, 0);
@@ -278,6 +289,29 @@ for (const [pipeline, render] of Object.entries(renderers)) {
     assert.equal(f.toasts.length + f.external.length + f.popups.length, 0);
   });
 
+  test(`${pipeline}: an extension-less drive path in inline code is a folder link once it exists`, async (t) => {
+    const folder = 'C:/Users/me/AppData/Local/Temp/mixdog-refs-9a64';
+    const f = await mount(
+      t,
+      render,
+      'See `C:\\Users\\me\\AppData\\Local\\Temp\\mixdog-refs-9a64` or `C:\\missing\\refs`.',
+      PROJECT,
+      (f) => {
+        installProjectFiles(f, { [PROJECT]: [] });
+        f.dom.window.mixdogDesktop.resolveLocalPaths = async ([absolutePath]) => {
+          if (absolutePath !== `${folder}/`) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+          return [{ absolutePath: folder, dir: true, name: 'mixdog-refs-9a64', size: 0 }];
+        };
+      }
+    );
+    assert.equal(readableText(f.dom.window.document.querySelector('p')), 'See mixdog-refs-9a64/ or refs/.');
+    assert.deepEqual(f.labels(), ['mixdog-refs-9a64/']);
+    assert.equal(f.links()[0].querySelector('.seti-icon'), null);
+    await f.click(0);
+    assert.deepEqual(f.local, [[folder, '.']]);
+    assert.equal(f.opened.length + f.toasts.length, 0);
+  });
+
   test(`${pipeline}: an external absolute path works without a conversation Project`, async (t) => {
     const f = await mount(t, render, '[source](C:/private/source.ts)', '', (f) => {
       installProjectFiles(f, {});
@@ -322,7 +356,7 @@ for (const [pipeline, render] of Object.entries(renderers)) {
     assert.match(f.toasts[1].text, /File not found/);
   });
 
-  test(`${pipeline}: missing external files, traversal and network links never open or fall back to a namesake`, async (t) => {
+  test(`${pipeline}: missing external, traversal and network files report not found without a namesake fallback`, async (t) => {
     const requests = [];
     const f = await mount(
       t,
@@ -343,8 +377,14 @@ for (const [pipeline, render] of Object.entries(renderers)) {
       }
     );
     for (let index = 0; index < 4; index++) await f.click(index);
-    assert.deepEqual(requests, [['C:/private/missing.ts']]);
+    assert.deepEqual(requests, [
+      ['C:/private/missing.ts'],
+      ['C:/Project/conversation/../../private/missing.ts'],
+      ['//server/share/missing.ts'],
+      ['//server/share/missing.ts'],
+    ]);
     assert.equal(f.toasts.length, 4);
+    assert.ok(f.toasts.every((toast) => /File not found/.test(toast.text)));
     assert.equal(f.opened.length + f.local.length + f.popups.length, 0);
   });
 
@@ -410,7 +450,7 @@ for (const [pipeline, render] of Object.entries(renderers)) {
     assert.equal(f.external.length + f.popups.length + f.toasts.length, 0);
   });
 
-  test(`${pipeline}: absolute paths and file URLs resolve inside the Project; external paths require desktop file access`, async (t) => {
+  test(`${pipeline}: absolute paths and file URLs resolve through their owning Project; missing ones report not found`, async (t) => {
     const f = await mount(
       t,
       render,
@@ -420,7 +460,9 @@ for (const [pipeline, render] of Object.entries(renderers)) {
         '[file](file:///C:/Project/conversation/output/preview.pdf)',
         '[source](C:/Project/conversation/src/app.ts:42)',
         '[posix](/home/user/project/report.md)',
-      ].join('\n\n')
+      ].join('\n\n'),
+      PROJECT,
+      (f) => installProjectFiles(f, { [PROJECT]: ['output/deck.pptx', 'output/preview.pdf', 'src/app.ts'] })
     );
     for (let index = 0; index < 5; index++) {
       assert.ok(f.links()[index].getAttribute('href'));
@@ -434,7 +476,7 @@ for (const [pipeline, render] of Object.entries(renderers)) {
     assert.deepEqual(f.opened, [[PROJECT, 'src/app.ts', 42]]);
     assert.equal(f.links()[3].getAttribute('title'), 'C:/Project/conversation/src/app.ts:42');
     assert.equal(f.toasts.length, 1);
-    assert.match(f.toasts[0].text, /Local file links can only be opened in the desktop app/);
+    assert.match(f.toasts[0].text, /File not found/);
     assert.equal(f.external.length, 0);
   });
 

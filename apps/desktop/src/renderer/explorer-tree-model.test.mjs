@@ -31,6 +31,9 @@ test('path grammar keeps the project root separator-free', () => {
   assert.equal(explorerChildRel('src', 'app'), 'src/app');
   assert.equal(explorerAbsolutePath('C:/demo', 'src/app.ts'), 'C:/demo/src/app.ts');
   assert.equal(explorerAbsolutePath('C:/demo/', 'a.txt'), 'C:/demo/a.txt');
+  // A Windows project path keeps its own separator for the whole path.
+  assert.equal(explorerAbsolutePath('C:\\demo', 'src/app.ts'), 'C:\\demo\\src\\app.ts');
+  assert.equal(explorerAbsolutePath('/home/demo', 'src/app.ts'), '/home/demo/src/app.ts');
 });
 
 test('git decorations badge each change and mark every ancestor folder', () => {

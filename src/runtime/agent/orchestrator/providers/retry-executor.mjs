@@ -3,6 +3,7 @@
 import { PROVIDER_RETRY_JITTER_RATIO, createTimeoutSignal } from '../stall-policy.mjs';
 import { readStreamOutcome } from './lib/stream-outcome.mjs';
 import { recycleLlmDispatcher } from '../../../shared/llm/http-agent.mjs';
+import { retryReasonText, retryStatusLine } from '../../../shared/err-text.mjs';
 import {
   TERMINAL_EDGE_STATUSES,
   headerValue,
@@ -10,6 +11,7 @@ import {
   classifyError,
   isPermanentQuotaError,
   isStaleKeepAliveError,
+  isToolInputCut,
   retryAfterMsFromError,
 } from './retry-classification.mjs';
 import {
@@ -141,7 +143,15 @@ function retryVeto(caught, { opts, attempt, maxAttempts, state }) {
   // an eligible failure is actually retried remains the typed question
   // resolved by classifyError()/status below.
   if (readStreamOutcome(caught).replaySafe !== true) return caught;
+  // A cut mid tool-argument stream is replayed by the agent loop with a
+  // split-call notice; re-issuing the identical request here would tend to be
+  // cut at the same place again.
+  if (isToolInputCut(caught)) return caught;
   recycleDispatcherAfter(caught, status);
+  // Background calls (titles and the like) never retry an overload: during a
+  // capacity cascade every retry multiplies gateway load, and nobody is
+  // waiting on the result.
+  if (status === 529 && opts.retry529 === false) return caught;
   // x-should-retry:false is an explicit server veto on retrying and is
   // honored as-is. Keep this ahead of status defaults, including the
   // request-local 429 path.
@@ -204,6 +214,35 @@ function retryWaitMs(attempt, { nextDelayMs, nextDelayReason }, { backoffMs, ret
   return nextDelayReason === 'retry-after'
     ? Math.max(0, rawWait)
     : jitterDelayMs(rawWait, retryJitterRatio, retryJitterMode);
+}
+
+/**
+ * Display-only 'reconnecting' stage for one retry wait, so it reads as a
+ * reconnect instead of a silent spinner. `attempt` is the attempt about to run
+ * (1-based) of `maxAttempts`. `retryAt` and `reason` let a surface count the
+ * wait down live instead of freezing on the first "in 15s".
+ */
+export function emitProviderRetryStage(
+  onStageChange,
+  { attempt, maxAttempts, lastErr, delayMs, classifier = null, extra = null }
+) {
+  if (typeof onStageChange !== 'function') return;
+  try {
+    const reason = retryReasonText(lastErr);
+    const waitMs = Math.max(0, Number(delayMs) || 0);
+    onStageChange('reconnecting', {
+      ...extra,
+      attempt,
+      max: maxAttempts,
+      waitMs,
+      retryAt: Date.now() + waitMs,
+      reason,
+      classifier: classifier || lastErr?.retryClassifier || lastErr?.code || null,
+      message: retryStatusLine({ reason, attempt, maxAttempts, delayMs: waitMs }),
+    });
+  } catch {
+    /* display-only */
+  }
 }
 
 /** The `, delay 1200ms (reason)` suffix of a retry log line; '' without a finite delay. */

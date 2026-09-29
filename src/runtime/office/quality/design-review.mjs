@@ -116,7 +116,8 @@ function reviewPptxTheme(document, design, issues) {
 
 function comColorHex(value) {
   // Both snapshots report a text colour as RRGGBB; a fill from Microsoft Office is still a BGR long.
-  if (typeof value === 'string' && /^#?[0-9a-f]{6}$/i.test(value.trim())) return value.trim().replace(/^#/, '').toUpperCase();
+  if (typeof value === 'string' && /^#?[0-9a-f]{6}$/i.test(value.trim()))
+    return value.trim().replace(/^#/, '').toUpperCase();
   const number = Number(value);
   if (!Number.isFinite(number) || number < 0) return '';
   const blue = Math.floor(number / 65_536) % 256;

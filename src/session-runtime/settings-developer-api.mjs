@@ -1,6 +1,6 @@
 // Settings → Developer: the data-driven developer options
 // (runtime/shared/developer-options.mjs). Values persist at agent config
-// `developer.<optionId>`; an option's env var forces it on regardless.
+// `developer.<optionId>`.
 import { developerOption, developerSettingsView } from '../runtime/shared/developer-options.mjs';
 
 export function createDeveloperSettings({ getConfig, saveConfigAndAdopt, syncDeveloperOption }) {

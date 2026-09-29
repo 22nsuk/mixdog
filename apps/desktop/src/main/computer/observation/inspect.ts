@@ -80,7 +80,8 @@ function diagnoseReport(diagnosis: Diagnosis): ComputerCommandResult {
       platform: process.platform,
       ready:
         windows !== null && (!requestedWindowId || Boolean(target)) && !inputBlocked && inputObservation.ready === true,
-      backend: process.platform === 'win32' ? 'win32_uia_powershell_electron' : `${process.platform}_mixdog_computer_electron`,
+      backend:
+        process.platform === 'win32' ? 'win32_uia_powershell_electron' : `${process.platform}_mixdog_computer_electron`,
       windows: {
         available: windows !== null,
         count: windows?.length || 0,

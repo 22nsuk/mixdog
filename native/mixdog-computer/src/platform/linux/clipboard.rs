@@ -6,7 +6,10 @@ use super::x11::{connect, Atoms};
 use std::sync::mpsc;
 use std::time::Duration;
 use x11rb::connection::Connection;
-use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _, PropMode, SelectionNotifyEvent, WindowClass, SELECTION_NOTIFY_EVENT};
+use x11rb::protocol::xproto::{
+    AtomEnum, ConnectionExt as _, PropMode, SelectionNotifyEvent, WindowClass,
+    SELECTION_NOTIFY_EVENT,
+};
 use x11rb::protocol::Event;
 use x11rb::wrapper::ConnectionExt as _;
 use x11rb::CURRENT_TIME;
@@ -20,9 +23,28 @@ pub fn own(text: String) -> Result<(), String> {
                 let (conn, root) = connect()?;
                 let atoms = Atoms::intern(&conn)?;
                 let window = conn.generate_id().map_err(|error| error.to_string())?;
-                conn.create_window(0, window, root, -1, -1, 1, 1, 0, WindowClass::INPUT_ONLY, 0, &Default::default()).map_err(|error| error.to_string())?;
-                conn.set_selection_owner(window, atoms.CLIPBOARD, CURRENT_TIME).map_err(|error| error.to_string())?;
-                let owner = conn.get_selection_owner(atoms.CLIPBOARD).map_err(|error| error.to_string())?.reply().map_err(|error| error.to_string())?.owner;
+                conn.create_window(
+                    0,
+                    window,
+                    root,
+                    -1,
+                    -1,
+                    1,
+                    1,
+                    0,
+                    WindowClass::INPUT_ONLY,
+                    0,
+                    &Default::default(),
+                )
+                .map_err(|error| error.to_string())?;
+                conn.set_selection_owner(window, atoms.CLIPBOARD, CURRENT_TIME)
+                    .map_err(|error| error.to_string())?;
+                let owner = conn
+                    .get_selection_owner(atoms.CLIPBOARD)
+                    .map_err(|error| error.to_string())?
+                    .reply()
+                    .map_err(|error| error.to_string())?
+                    .owner;
                 if owner != window {
                     return Err("clipboard_unavailable: another client kept the clipboard".into());
                 }
@@ -40,7 +62,9 @@ pub fn own(text: String) -> Result<(), String> {
             };
             let bytes = text.into_bytes();
             loop {
-                let Ok(event) = conn.wait_for_event() else { return };
+                let Ok(event) = conn.wait_for_event() else {
+                    return;
+                };
                 match event {
                     Event::SelectionClear(clear) if clear.owner == window => return,
                     Event::SelectionRequest(request) => {
@@ -49,10 +73,31 @@ pub fn own(text: String) -> Result<(), String> {
                             property = request.target;
                         }
                         let served = if request.target == atoms.TARGETS {
-                            let targets = [atoms.TARGETS, atoms.UTF8_STRING, AtomEnum::STRING.into(), atoms.TEXT];
-                            conn.change_property32(PropMode::REPLACE, request.requestor, property, AtomEnum::ATOM, &targets).is_ok()
-                        } else if [atoms.UTF8_STRING, u32::from(AtomEnum::STRING), atoms.TEXT].contains(&request.target) {
-                            conn.change_property8(PropMode::REPLACE, request.requestor, property, request.target, &bytes).is_ok()
+                            let targets = [
+                                atoms.TARGETS,
+                                atoms.UTF8_STRING,
+                                AtomEnum::STRING.into(),
+                                atoms.TEXT,
+                            ];
+                            conn.change_property32(
+                                PropMode::REPLACE,
+                                request.requestor,
+                                property,
+                                AtomEnum::ATOM,
+                                &targets,
+                            )
+                            .is_ok()
+                        } else if [atoms.UTF8_STRING, u32::from(AtomEnum::STRING), atoms.TEXT]
+                            .contains(&request.target)
+                        {
+                            conn.change_property8(
+                                PropMode::REPLACE,
+                                request.requestor,
+                                property,
+                                request.target,
+                                &bytes,
+                            )
+                            .is_ok()
                         } else {
                             false
                         };
@@ -65,7 +110,12 @@ pub fn own(text: String) -> Result<(), String> {
                             target: request.target,
                             property: if served { property } else { x11rb::NONE },
                         };
-                        let _ = conn.send_event(false, request.requestor, x11rb::protocol::xproto::EventMask::NO_EVENT, notify);
+                        let _ = conn.send_event(
+                            false,
+                            request.requestor,
+                            x11rb::protocol::xproto::EventMask::NO_EVENT,
+                            notify,
+                        );
                         let _ = conn.flush();
                     }
                     _ => {}
@@ -73,5 +123,7 @@ pub fn own(text: String) -> Result<(), String> {
             }
         })
         .map_err(|error| error.to_string())?;
-    ready_rx.recv_timeout(Duration::from_secs(2)).map_err(|_| "clipboard_unavailable: clipboard owner did not start".to_string())?
+    ready_rx
+        .recv_timeout(Duration::from_secs(2))
+        .map_err(|_| "clipboard_unavailable: clipboard owner did not start".to_string())?
 }

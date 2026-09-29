@@ -1,11 +1,13 @@
 import { FileText, FolderOpen, X } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { TranscriptItem } from './desktop-types';
 import { showDesktopToast } from './desktop-toasts';
 import { errorMessageText } from './ErrorNotice';
 import { t } from './i18n';
-import { MarkdownLink } from './MarkdownLink';
+import { verifyLocalLink } from './local-link-resolver';
+import { MarkdownLink, MarkdownProjectContext } from './MarkdownLink';
 import { MxIcon } from './MxIcon';
+import { parseLocalFileLocation } from '../shared/local-files';
 import { mediaUrl } from './studio-support';
 import { transcriptArtifacts, type TranscriptArtifact } from './transcript-artifacts';
 
@@ -128,6 +130,44 @@ function GeneratedMedia({ artifact }: { artifact: TranscriptArtifact }) {
   );
 }
 
+/** Office outputs are often removed after the turn (smoke tests, cleanups): a
+ *  card whose file is gone reads as deleted instead of offering an open that fails. */
+function DocumentArtifact({ artifact }: { artifact: TranscriptArtifact }) {
+  const project = useContext(MarkdownProjectContext);
+  const href = artifactHref(artifact.path);
+  const [missing, setMissing] = useState(false);
+  useEffect(() => {
+    setMissing(false);
+    if (!window.mixdogDesktop?.statProjectFile) return;
+    let active = true;
+    verifyLocalLink(project, parseLocalFileLocation(href).path).then(
+      () => undefined,
+      () => {
+        if (active) setMissing(true);
+      }
+    );
+    return () => {
+      active = false;
+    };
+  }, [project, href]);
+  if (missing) {
+    return (
+      <span className="transcript-artifact-file" title={artifact.path} aria-disabled="true">
+        <FileText size={16} aria-hidden="true" />
+        <span>{artifact.name}</span>
+        <small>{t('Deleted')}</small>
+      </span>
+    );
+  }
+  return (
+    <MarkdownLink className="transcript-artifact-file" title={artifact.path} href={href}>
+      <FileText size={16} aria-hidden="true" />
+      <span>{artifact.name}</span>
+      <small>{t('Open file')}</small>
+    </MarkdownLink>
+  );
+}
+
 export function TranscriptArtifacts({ items }: { items: readonly TranscriptItem[] }) {
   const artifacts = useMemo(() => transcriptArtifacts(items), [items]);
   if (!artifacts.length) return null;
@@ -137,16 +177,7 @@ export function TranscriptArtifacts({ items }: { items: readonly TranscriptItem[
         artifact.assetId ? (
           <GeneratedMedia key={artifact.key} artifact={artifact} />
         ) : (
-          <MarkdownLink
-            key={artifact.key}
-            className="transcript-artifact-file"
-            title={artifact.path}
-            href={artifactHref(artifact.path)}
-          >
-            <FileText size={16} aria-hidden="true" />
-            <span>{artifact.name}</span>
-            <small>{t('Open file')}</small>
-          </MarkdownLink>
+          <DocumentArtifact key={artifact.key} artifact={artifact} />
         )
       )}
     </div>

@@ -22,6 +22,12 @@ test('Local Provider manifest pins complete HTTPS assets with matching aggregate
     assert.match(asset.sha256, /^[a-f0-9]{64}$/);
     assert.ok(Number.isSafeInteger(asset.size) && asset.size > 0);
   }
+  // A branch URL (resolve/main) serves whatever was uploaded last, so the
+  // pinned size and digest break as soon as upstream re-uploads the file.
+  for (const model of LOCAL_PROVIDER_MANIFEST.models) {
+    assert.match(model.revision, /^[a-f0-9]{40}$/);
+    assert.ok(new URL(model.url).pathname.includes(`/resolve/${model.revision}/`), model.id);
+  }
 });
 
 test('catalog exposes the compatible RTX recommendation before anything is installed', () => {

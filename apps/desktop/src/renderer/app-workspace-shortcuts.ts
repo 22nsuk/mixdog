@@ -5,7 +5,8 @@
 // outranks the table. User-tuned bindings:
 // mod+N new task · ctrl+Tab MRU switcher · ctrl+PageUp/PageDown cycle ·
 // mod+Left/Right tab traversal, crossing pane boundaries in visual order ·
-// mod+Up/Down focus the pane directly above/below ·
+// mod+Up/Down focus the pane directly above/below (both pairs stay with a
+// focused code editor: word jumps and line scrolling are editing keys) ·
 // mod+P Quick Open · shift+mod+P Command Palette ·
 // mod+, settings · mod+B left sidebar · alt+mod+B right utility dock ·
 // mod+J panel ·
@@ -63,6 +64,8 @@ export function useWorkspaceShortcuts(actions: WorkspaceShortcutActions) {
       if (!mod) return null;
       const key = event.key.toLowerCase();
       const plain = !event.shiftKey && !event.altKey;
+      const target = event.target as Partial<Element> | null;
+      if (plain && event.key.startsWith('Arrow') && target?.closest?.('.monaco-editor')) return null;
       if (plain && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
         const offset = event.key === 'ArrowLeft' ? -1 : 1;
         return () => cycleTab(offset, true);

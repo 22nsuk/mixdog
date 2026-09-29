@@ -1,12 +1,20 @@
 // Per-node source-text accessors with fingerprint-keyed runtime caching:
 // raw text, raw lines, masked lines.
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { toDisplayPath } from '../builtin/path-utils.mjs';
 import { _maskNonCodeText } from './text-mask.mjs';
 
 export function _graphRel(absPath, cwd) {
   return toDisplayPath(absPath, cwd);
+}
+
+export function _isExistingFile(abs) {
+  try {
+    return statSync(abs).isFile();
+  } catch {
+    return false;
+  }
 }
 
 export function _getSourceTextForNode(graph, node, fallbackText = null) {

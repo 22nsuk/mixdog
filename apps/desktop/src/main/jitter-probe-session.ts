@@ -1,5 +1,12 @@
 import type { BrowserWindow } from 'electron';
 
+/** A transcript tool disclosure: a single tool card, or the grouped tool
+ *  activity that now wraps consecutive calls. */
+export const TOOL_DISCLOSURE = '.tool-card, .tool-activity';
+/** The toggle row that opens or closes each disclosure above. */
+export const TOOL_DISCLOSURE_HEADERS = '.tool-card > .tool-header, .tool-activity > .tool-activity-header';
+export const TOOL_DISCLOSURE_OPEN = '.tool-card[data-open="true"], .tool-activity[data-open="true"]';
+
 /** Renderer expression resolving to the sidebar row of `id`: the session list
  *  arrives asynchronously after boot, so the row is awaited, not assumed. */
 export function waitForProbeSessionRow(id: string, missing: string): string {

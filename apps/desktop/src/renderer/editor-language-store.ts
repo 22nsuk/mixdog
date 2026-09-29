@@ -2,6 +2,7 @@ import type {
   DesktopApi,
   DesktopLspDiagnostic,
   DesktopLspDiagnosticEvent,
+  DesktopLspServerState,
   DesktopLspStatusEvent,
 } from '../shared/contract';
 
@@ -205,6 +206,30 @@ export function ensureEditorLanguageStore(): void {
       statuses.set(`${event.projectPath}\0${event.languageId}${suffix}`, event);
       publish();
     }) ?? null;
+}
+
+/** A document's own open/sync answer carries its server state. Recorded like
+ *  a status broadcast, because a renderer that subscribed after the server
+ *  announced itself (a reload while the service kept running) never receives
+ *  one and left every palette editor command disabled. */
+export function acceptEditorLspState(
+  projectPath: string,
+  relPath: string,
+  languageId: string,
+  state: DesktopLspServerState
+): void {
+  ensureEditorLanguageStore();
+  const key = `${projectPath}\0${languageId}\0${relPath.replace(/\\/g, '/').toLocaleLowerCase()}`;
+  const previous = statuses.get(key);
+  if (
+    previous &&
+    previous.available === state.available &&
+    previous.status === state.status &&
+    JSON.stringify(previous.capabilities ?? null) === JSON.stringify(state.capabilities ?? null)
+  )
+    return;
+  statuses.set(key, { ...state, projectPath, languageId, relPath });
+  publish();
 }
 
 export function subscribeEditorLanguageStore(listener: () => void): () => void {

@@ -104,14 +104,15 @@ export function registerProjectIpc({
     const expected = expectedContent === undefined ? undefined : requiredInstructionsContent(expectedContent);
     return invokeDesktopOperation('writeInstructions', [file, text, expected, legacyInstructionsFile(projectPath)]);
   });
-  handle(DESKTOP_IPC.searchProjectFiles, (_event, projectIdOrWorkspaceId, query, limit) => {
+  handle(DESKTOP_IPC.searchProjectFiles, (_event, projectIdOrWorkspaceId, query, limit, includeIgnored) => {
     if (typeof query !== 'string' || query.length > 1_024) {
       throw new TypeError('query is invalid.');
     }
     return host.searchProjectFiles(
       requiredString(projectIdOrWorkspaceId, 'projectIdOrWorkspaceId'),
       query,
-      requiredFileSearchLimit(limit)
+      requiredFileSearchLimit(limit),
+      includeIgnored === true
     );
   });
   handle(DESKTOP_IPC.searchWorkspaceText, async (_event, projectPath, rawOptions) => {

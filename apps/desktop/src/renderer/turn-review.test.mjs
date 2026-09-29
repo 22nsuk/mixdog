@@ -15,6 +15,7 @@ test('turn review scope survives steering rows until the outer turn completes', 
     startIndex: 0,
     key: 'prompt-1',
     hasActivity: true,
+    truncated: false,
   });
   assert.deepEqual(turnReviewScope(steered), turnReviewScope(initial));
   assert.deepEqual(turnReviewScope(continued), turnReviewScope(initial));
@@ -33,5 +34,16 @@ test('turn review scope advances only after turndone and the next prompt', () =>
     startIndex: 3,
     key: 'prompt-2',
     hasActivity: false,
+    truncated: false,
   });
+});
+
+test('turn review scope reports a transcript tail that lost its prompt row', () => {
+  assert.deepEqual(turnReviewScope([{ kind: 'tool', id: 'patch-9' }]), {
+    startIndex: -1,
+    key: 'none',
+    hasActivity: true,
+    truncated: true,
+  });
+  assert.equal(turnReviewScope([]).truncated, false);
 });

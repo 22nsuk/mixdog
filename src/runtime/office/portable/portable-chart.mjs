@@ -186,10 +186,16 @@ function axisText(size) {
 // the value axis crosses it at the far end, along the bottom — the default stacked the first category at the foot.
 // A series below zero sets the category names at the foot of the plot (low), not on the zero line, where a loss
 // bar's value label and its category name ran over each other.
-function categoryAxis({ hidden = false, horizontal = false, size = CHART_TEXT.sheet.body, low = false } = {}) {
+function categoryAxis({
+  hidden = false,
+  horizontal = false,
+  reversed = horizontal,
+  size = CHART_TEXT.sheet.body,
+  low = false,
+} = {}) {
   return (
     `<c:catAx><c:axId val="${CATEGORY_AXIS_ID}"/>` +
-    `<c:scaling><c:orientation val="${horizontal ? 'maxMin' : 'minMax'}"/></c:scaling><c:delete val="${hidden ? 1 : 0}"/><c:axPos val="${horizontal ? 'l' : 'b'}"/>` +
+    `<c:scaling><c:orientation val="${reversed ? 'maxMin' : 'minMax'}"/></c:scaling><c:delete val="${hidden ? 1 : 0}"/><c:axPos val="${horizontal ? 'l' : 'b'}"/>` +
     `<c:majorTickMark val="none"/><c:minorTickMark val="none"/><c:tickLblPos val="${low ? 'low' : 'nextTo'}"/>` +
     '<c:spPr><a:ln w="9525"><a:solidFill><a:srgbClr val="C7CBD1"/></a:solidFill></a:ln></c:spPr>' +
     axisText(size) +
@@ -215,6 +221,7 @@ function valueAxis({
   max = null,
   gridlines = true,
   horizontal = false,
+  reversed = horizontal,
   size = CHART_TEXT.sheet.body,
 }) {
   let low = min;
@@ -231,7 +238,7 @@ function valueAxis({
     '<c:majorTickMark val="none"/><c:minorTickMark val="none"/><c:tickLblPos val="nextTo"/>' +
     '<c:spPr><a:ln><a:noFill/></a:ln></c:spPr>' +
     axisText(size) +
-    `<c:crossAx val="${CATEGORY_AXIS_ID}"/><c:crosses val="${horizontal ? 'max' : 'autoZero'}"/><c:crossBetween val="between"/></c:valAx>`
+    `<c:crossAx val="${CATEGORY_AXIS_ID}"/><c:crosses val="${reversed ? 'max' : 'autoZero'}"/><c:crossBetween val="between"/></c:valAx>`
   );
 }
 
@@ -296,6 +303,11 @@ export function chartXml({
   const baseline =
     !negative &&
     (zeroBaseline == null ? family.element === 'barChart' || family.element === 'areaChart' : zeroBaseline === true);
+  // The order the categories read in: a bar chart lists them top-down, unless the chart being rebuilt was authored the
+  // other way (PowerPoint's own bottom-up default, a template's), which it keeps as PowerPoint's refresh keeps it.
+  const reversed = axis?.categoryOrientation
+    ? axis.categoryOrientation === 'maxMin'
+    : family.direction === 'bar';
   const sheet = references?.sheet || 'Sheet1';
   const categoryFormula = references?.category || `${sheet}!$A$2:$A$${rows.length + 1}`;
   const plots = entries
@@ -371,11 +383,13 @@ export function chartXml({
       ? `${categoryAxis({
           hidden: axis?.hideCategoryAxis === true,
           horizontal: family.direction === 'bar',
+          reversed,
           size: text.body,
           low: negative,
         })}${valueAxis({
           size: text.body,
           horizontal: family.direction === 'bar',
+          reversed,
           numberFormat: valueNumberFormat,
           zeroBaseline: baseline,
           hidden: axis?.hideValueAxis === true,
@@ -394,7 +408,7 @@ export function chartXml({
       ? `<c:txPr><a:bodyPr/><a:lstStyle/><a:p><a:pPr><a:defRPr>${runFaces(font)}</a:defRPr></a:pPr>` +
         '<a:endParaRPr lang="en-US"/></a:p></c:txPr>'
       : '') +
-    (externalDataId ?`<c:externalData r:id="${externalDataId}"><c:autoUpdate val="0"/></c:externalData>` : '') +
+    (externalDataId ? `<c:externalData r:id="${externalDataId}"><c:autoUpdate val="0"/></c:externalData>` : '') +
     '</c:chartSpace>'
   );
 }

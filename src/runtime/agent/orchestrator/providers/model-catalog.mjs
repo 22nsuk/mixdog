@@ -80,6 +80,9 @@ const _RELAYED_MODEL_VENDORS = [
   [/^gemini[-.]/, 'google'],
   [/^grok[-.]/, 'xai'],
   [/^deepseek[-.]/, 'deepseek'],
+  [/^kimi[-.]/, 'moonshotai'],
+  [/^glm[-.]/, 'zai'],
+  [/^muse[-.]/, 'meta'],
 ];
 
 function _relayedModelVendor(id) {
@@ -141,139 +144,12 @@ function _bedrockAllowed(mappedProvider) {
   return !mappedProvider || mappedProvider === 'anthropic';
 }
 
-// Polyfill for models the LiteLLM catalog does not list yet. Values mirror
-// the catalog row shape so _normalize works unchanged. Source: each provider's
-// official pricing page; do not extrapolate. Promotional discounts are
-// intentionally NOT encoded — list rates only.
-const XAI_GROK_420_ROW = Object.freeze({
-  litellm_provider: 'xai',
-  input_cost_per_token: 1.25e-6,
-  output_cost_per_token: 2.5e-6,
-  cache_read_input_token_cost: 0.2e-6,
-  long_context_threshold: 200000,
-  long_context_multiplier: 2,
-  max_input_tokens: 1000000,
-  mode: 'chat',
-  supports_vision: true,
-  supports_function_calling: true,
-});
-const XAI_GROK_420_IDS = Object.freeze([
-  // https://docs.x.ai/developers/models/grok-4.20-0309-reasoning
-  'grok-4.20-0309-reasoning',
-  'grok-4.20-reasoning-latest',
-  'grok-4.20',
-  'grok-4.20-reasoning',
-  'grok-4.20-0309',
-  'grok-4.20-beta-0309-reasoning',
-  'grok-4.20-beta',
-  'grok-4.20-beta-0309',
-  'grok-4.20-beta-latest',
-  'grok-4.20-beta-latest-reasoning',
-  'grok-4.20-beta-reasoning',
-  'grok-4.20-experimental-beta-0304-reasoning',
-  'grok-4.20-experimental-beta-0304',
-  'grok-4.20-experimental-beta-reasoning-latest',
-  'grok-4.20-experimental-beta-latest',
-  'grok-4.20-reasoning-gv2',
-  // https://docs.x.ai/developers/models/grok-4.20-0309-non-reasoning
-  'grok-4.20-0309-non-reasoning',
-  'grok-4.20-non-reasoning',
-  'grok-4.20-non-reasoning-latest',
-  'grok-4.20-beta-non-reasoning',
-  'grok-4.20-beta-latest-non-reasoning',
-  'grok-4.20-experimental-beta-0304-non-reasoning',
-  'grok-4.20-experimental-beta-non-reasoning-latest',
-  'grok-4.20-beta-0309-non-reasoning',
-  'grok-4.20-non-reasoning-gv2',
-  // https://docs.x.ai/developers/models/grok-4.20-multi-agent-beta-0309
-  'grok-4.20-multi-agent-0309',
-  'grok-4.20-multi-agent',
-  'grok-4.20-multi-agent-latest',
-  'grok-4.20-beta-0309-multi-agent',
-]);
-
+// Hand-verified rows for SKUs no external catalog prices correctly: ids only
+// served under a relay name, or catalogs carrying promotional rates. A row
+// whose rates LiteLLM/models.dev now publish belongs to those catalogs, not
+// here. Values mirror the LiteLLM row shape so _normalize works unchanged.
+// Source: each provider's official pricing page; list rates only.
 const PRICING_OVERRIDES = {
-  ...Object.fromEntries(XAI_GROK_420_IDS.map((id) => [id, XAI_GROK_420_ROW])),
-  // https://docs.x.ai/developers/models — Grok Build 0.1, 256k context.
-  'grok-build-0.1': {
-    litellm_provider: 'xai',
-    input_cost_per_token: 1e-6,
-    output_cost_per_token: 2e-6,
-    max_input_tokens: 256000,
-    mode: 'chat',
-  },
-  // https://www.anthropic.com/news/claude-opus-4-8 — unchanged from Opus 4.7.
-  'claude-opus-4-8': {
-    litellm_provider: 'anthropic',
-    input_cost_per_token: 5e-6,
-    output_cost_per_token: 25e-6,
-    cache_read_input_token_cost: 0.5e-6,
-    cache_creation_input_token_cost: 6.25e-6,
-    max_input_tokens: 1000000,
-    max_output_tokens: 128000,
-    mode: 'chat',
-    supports_vision: true,
-    supports_function_calling: true,
-    supports_prompt_caching: true,
-  },
-  // https://platform.claude.com/docs/en/models/opus-5-5/overview — verified 2026-09-22.
-  'claude-opus-5-5': {
-    litellm_provider: 'anthropic',
-    input_cost_per_token: 4e-6,
-    output_cost_per_token: 20e-6,
-    cache_read_input_token_cost: 0.2e-6,
-    cache_creation_input_token_cost: 5e-6,
-    max_input_tokens: 1000000,
-    max_output_tokens: 128000,
-    mode: 'chat',
-    supports_vision: true,
-    supports_function_calling: true,
-    supports_prompt_caching: true,
-  },
-  // https://developers.openai.com/api/docs/models/gpt-6-sol — verified 2026-09-22.
-  // Prompts above 272K input tokens: 2x input/cache, 1.5x output. Public API
-  // limits match GPT-5.6; OAuth routes keep their catalog windows.
-  'gpt-6-sol': {
-    litellm_provider: 'openai',
-    max_input_tokens: 1050000,
-    max_output_tokens: 128000,
-    input_cost_per_token: 2e-6,
-    input_cost_per_token_above_272k_tokens: 4e-6,
-    output_cost_per_token: 10e-6,
-    output_cost_per_token_above_272k_tokens: 15e-6,
-    cache_read_input_token_cost: 0.2e-6,
-    cache_read_input_token_cost_above_272k_tokens: 0.4e-6,
-    cache_creation_input_token_cost: 2.5e-6,
-    cache_creation_input_token_cost_above_272k_tokens: 5e-6,
-    reasoning_options: [{ type: 'effort', values: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] }],
-    mode: 'chat',
-    supports_vision: true,
-    supports_function_calling: true,
-    supports_web_search: true,
-    supports_prompt_caching: true,
-    supports_reasoning: true,
-  },
-  // https://developers.openai.com/api/docs/models/gpt-6-luna — verified 2026-09-22.
-  'gpt-6-luna': {
-    litellm_provider: 'openai',
-    max_input_tokens: 1050000,
-    max_output_tokens: 128000,
-    input_cost_per_token: 0.1e-6,
-    input_cost_per_token_above_272k_tokens: 0.2e-6,
-    output_cost_per_token: 0.5e-6,
-    output_cost_per_token_above_272k_tokens: 0.75e-6,
-    cache_read_input_token_cost: 0.01e-6,
-    cache_read_input_token_cost_above_272k_tokens: 0.02e-6,
-    cache_creation_input_token_cost: 0.125e-6,
-    cache_creation_input_token_cost_above_272k_tokens: 0.25e-6,
-    reasoning_options: [{ type: 'effort', values: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] }],
-    mode: 'chat',
-    supports_vision: true,
-    supports_function_calling: true,
-    supports_web_search: true,
-    supports_prompt_caching: true,
-    supports_reasoning: true,
-  },
   // https://ai.google.dev/gemini-api/docs/pricing — Gemini 3 Flash list rates
   // (published for the preview id), verified 2026-09-22.
   'gemini-3-flash': {
@@ -606,6 +482,19 @@ export function resolveModelPricingIdentity(model, provider, { requestedModel, p
   };
 }
 
+// Provider SKUs published only as a fixed multiple of a base SKU's rates.
+// Applied only while no catalog prices the variant itself.
+const PRICED_VARIANTS = Object.freeze({
+  'grok-oauth': Object.freeze({
+    // Grok CLI proxy /models: "Fast variant. 2x the price."
+    'grok-4.7-build-fast': Object.freeze({ base: 'grok-4.7', rateMultiplier: 2 }),
+  }),
+});
+
+function scaledRates(row, factor) {
+  return Object.fromEntries(PRICING_RATE_KEYS.map((key) => [key, row?.[key] == null ? null : row[key] * factor]));
+}
+
 // Both list enrichment and synchronous accounting use this exact resolver.
 function lookupModelMetadata(originalId, provider, catalog, modelsDevCatalog) {
   const id = providerPricingModelSync(provider, originalId);
@@ -655,6 +544,22 @@ function lookupModelMetadata(originalId, provider, catalog, modelsDevCatalog) {
     const relayed = lookupModelMetadata(id, relayVendor, catalog, modelsDevCatalog);
     if (relayed) meta = { ...relayed, contextWindow: null, outputTokens: null };
   }
+  const variant = PRICED_VARIANTS[String(provider || '').toLowerCase()]?.[id];
+  if (variant && !PRICING_RATE_KEYS.some((key) => meta?.[key] != null)) {
+    const base = lookupModelMetadata(variant.base, provider, catalog, modelsDevCatalog);
+    if (base && PRICING_RATE_KEYS.some((key) => base[key] != null)) {
+      meta = {
+        ...meta,
+        ...scaledRates(base, variant.rateMultiplier),
+        pricingTiers: (base.pricingTiers || []).map((tier) => ({
+          ...tier,
+          ...scaledRates(tier, variant.rateMultiplier),
+        })),
+        pricingSource: base.pricingSource,
+        supportsPromptCaching: base.supportsPromptCaching,
+      };
+    }
+  }
   if (providerUsesEndpointScopedLimits(provider) && !providerNative && meta) {
     // OAuth/backend routes can expose smaller account/backend windows than
     // the public API SKU. External catalogs and manual overrides remain useful
@@ -693,12 +598,6 @@ function _normalize(entry) {
     contextWindow: entry.max_input_tokens || entry.max_tokens || null,
     outputTokens: entry.max_output_tokens || null,
     ...litellmPricing(entry),
-    ...(entry.long_context_threshold
-      ? {
-          longContextThreshold: entry.long_context_threshold,
-          longContextMultiplier: entry.long_context_multiplier,
-        }
-      : {}),
     ...(entry.off_peak_multiplier ? { offPeakMultiplier: entry.off_peak_multiplier } : {}),
     supportsVision: entry.supports_vision === true,
     supportsFunctionCalling: entry.supports_function_calling === true,

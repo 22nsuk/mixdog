@@ -55,6 +55,22 @@ function resolveDeferredSelectMode(session) {
   return null;
 }
 
+/**
+ * Read-only sessions (webhook runs, the read-only lead mode) run only what
+ * their surfaces offer: active tools, catalog tools (whose readonly gate is
+ * the call-through below) and skill-list plumbing. Any other name — a write
+ * tool, an adapter alias for one — is outside the read-only bundle.
+ */
+export function isOffReadonlySurface(session, name) {
+  if (resolveDeferredSelectMode(session) !== 'readonly') return false;
+  const key = clean(name);
+  if (!key || INACTIVE_INFRA_BYPASS.has(key)) return false;
+  const lower = key.toLowerCase();
+  const active = Array.isArray(session?.tools) ? session.tools : [];
+  if (active.some((tool) => clean(tool?.name).toLowerCase() === lower)) return false;
+  return lookupDeferredCatalogTool(session, key) === null;
+}
+
 function denyDeferredCallThrough(message) {
   return { deny: message };
 }

@@ -36,6 +36,8 @@ import {
   xmlEncode,
 } from './portable-xml.mjs';
 import { excelPasswordHash, writeWorksheetNote } from './portable-sheet-parts.mjs';
+import { columnFileWidth, workbookDigitWidth } from './portable-sheet-page.mjs';
+import { copiedSheetXml, copySheetParts, inheritedRows, shiftWorksheetCells } from './portable-xlsx-reference-shift.mjs';
 import {
   areaReference,
   composeSheetView,
@@ -45,8 +47,6 @@ import {
   parseAreaRange,
   safeWorkbookTableName,
   sheetViewParts,
-  shiftWorksheetColumns,
-  shiftWorksheetRows,
   updateSheetView,
   upsertDefinedName,
   upsertWorksheetSection,
@@ -75,7 +75,8 @@ export async function setWorksheetCell(zip, sheet, xml, op, sheets) {
       ? normalizeXlsxFormula(op.formula, { backend: 'mixdog-ooxml', sheetNames: sheets.map((entry) => entry.name) })
       : '';
   const anchored = mergedCellAnchor(xml, op.cell);
-  if (!formula && typedDate(op.value) !== null) await writeTypedCells(zip, sheet, xml, [{ ref: parseCellRef(op.cell).ref, value: op.value }]);
+  if (!formula && typedEntry(op.value) !== null)
+    await writeTypedCells(zip, sheet, xml, [{ ref: parseCellRef(op.cell).ref, value: op.value }]);
   else zip.file(sheet.path, setCellInSheet(xml, op.cell, op.value, formula));
   const normalized = formula && formula !== String(op.formula ?? '').replace(/^=/, '');
   const result = {
@@ -108,38 +109,74 @@ function typedDate(value) {
   return (time - EXCEL_EPOCH) / 86_400_000;
 }
 
+// The figures Excel types from a text as it types an entry, and the format it gives each: "1" and "-500000" plain,
+// "1,234" under #,##0 (#,##0.00 with decimals), "15%" as 0.15 under 0% (0.00% with decimals). Through Microsoft
+// Office they arrived as numbers and here as texts the audit then called numbers stored as text. Any other text stays
+// as written on both backends: "007", "1-2", "1e3", "(100)", "TRUE" (the Excel backend keeps Excel from typing them).
+const PLAIN_NUMBER = /^[+-]?(?:(?:0|[1-9]\d*)(?:\.\d+)?|\.\d+)$/;
+const GROUPED_NUMBER = /^[+-]?[1-9]\d{0,2}(?:,\d{3})+(?:\.\d+)?$/;
+
+function typedNumber(value) {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  const percent = text.endsWith('%');
+  const figure = percent ? text.slice(0, -1) : text;
+  const grouped = GROUPED_NUMBER.test(figure);
+  if (!grouped && !PLAIN_NUMBER.test(figure)) return null;
+  const places = figure.split('.')[1]?.length || 0;
+  // 92.8 / 100 is 0.9279999999999999 in binary; Excel stores the 0.928 the text wrote.
+  const plain = Number(figure.replace(/,/g, ''));
+  const number = percent ? Number((plain / 100).toFixed(places + 2)) : plain;
+  const decimals = places > 0;
+  const numberFormat = percent ? (decimals ? '0.00%' : '0%') : grouped ? (decimals ? '#,##0.00' : '#,##0') : null;
+  return { value: number, numberFormat };
+}
+
+// A text a cell takes as a value, with the format it takes under it: an ISO date, a figure, or null for a text.
+function typedEntry(value) {
+  const serial = typedDate(value);
+  return serial === null ? typedNumber(value) : { value: serial, numberFormat: 'yyyy-mm-dd' };
+}
+
 async function writeTypedCells(zip, sheet, xml, entries) {
-  const dated = [];
+  const formatted = [];
+  let dates = 0;
   const typed = entries.map((entry) => {
-    const serial = typedDate(entry.value);
-    if (serial === null) return entry;
-    dated.push(entry.ref);
-    return { ...entry, value: serial };
+    const entered = typedEntry(entry.value);
+    if (entered === null) return entry;
+    if (entered.numberFormat === 'yyyy-mm-dd') dates += 1;
+    if (entered.numberFormat) formatted.push({ ref: entry.ref, numberFormat: entered.numberFormat });
+    return { ...entry, value: entered.value };
   });
   let next = setCellsInSheet(xml, typed);
-  if (dated.length) {
+  if (formatted.length) {
     const stylesPath = 'xl/styles.xml';
     let styles = await zipText(zip, stylesPath);
     if (styles) {
-      const bases = cellStyleIndexes(next, dated);
+      const bases = cellStyleIndexes(
+        next,
+        formatted.map((entry) => entry.ref)
+      );
       const resolved = new Map();
       const styled = [];
-      for (const ref of dated) {
+      for (const { ref, numberFormat } of formatted) {
         const base = bases.get(ref) ?? 0;
+        // The cell's own number format stands, as Excel keeps it under a typed entry.
         if (styleHasNumberFormat(styles, base)) continue;
-        if (!resolved.has(base)) {
-          const applied = applyCellStyle(styles, base, { numberFormat: 'yyyy-mm-dd' });
+        const key = `${base}\u0000${numberFormat}`;
+        if (!resolved.has(key)) {
+          const applied = applyCellStyle(styles, base, { numberFormat });
           styles = applied.xml;
-          resolved.set(base, applied.index);
+          resolved.set(key, applied.index);
         }
-        styled.push({ ref, style: resolved.get(base) });
+        styled.push({ ref, style: resolved.get(key) });
       }
       zip.file(stylesPath, styles);
       if (styled.length) next = setCellStylesInSheet(next, styled);
     }
   }
   zip.file(sheet.path, next);
-  return dated.length;
+  return dates;
 }
 
 export async function setWorksheetRange(zip, sheet, xml, op) {
@@ -158,6 +195,8 @@ export async function setWorksheetRange(zip, sheet, xml, op) {
   return { op: op.op, changed: true, sheet: sheet.name, range: op.range, ...(dates ? { dates } : {}) };
 }
 
+// The appended row takes the last row's formatting — its cells' number formats, fonts, fills and borders, its height —
+// as an inserted row takes the row above's; written into bare cells, 1,200 arrived as 1200 under a table of #,##0.
 export async function appendWorksheetRow(zip, sheet, xml, op) {
   const cells = cellRecords(xml, await sharedStrings(zip));
   const maxRow = cells.reduce((max, cell) => Math.max(max, parseCellRef(cell.ref).row), 0);
@@ -165,7 +204,7 @@ export async function appendWorksheetRow(zip, sheet, xml, op) {
   await writeTypedCells(
     zip,
     sheet,
-    xml,
+    inheritedRows(xml, row, 1),
     (op.values || []).map((value, index) => ({ ref: `${columnLabel(index + 1)}${row}`, value }))
   );
   return { op: op.op, changed: true, sheet: sheet.name, row };
@@ -266,7 +305,11 @@ export function freezeWorksheetPanes(zip, sheet, xml, op) {
     frozenColumns,
     // row and column name the first cell that scrolls, as Excel freezes at the
     // selected cell; a caller who meant "freeze row 1" with row:1 froze nothing.
-    ...(pane ? {} : { note: 'Nothing is frozen: row and column name the first row and column that scroll, so row:2 keeps row 1 in view.' }),
+    ...(pane
+      ? {}
+      : {
+          note: 'Nothing is frozen: row and column name the first row and column that scroll, so row:2 keeps row 1 in view.',
+        }),
   };
 }
 
@@ -288,24 +331,14 @@ export function setWorksheetView(zip, sheet, xml, op) {
   return { op: op.op, changed: true, sheet: sheet.name };
 }
 
-// insert_rows / delete_rows / insert_columns / delete_columns
-export function shiftWorksheetRowsOrColumns(zip, sheet, xml, op) {
-  if (/<f(?:\s[^>]*)?>/.test(xml)) {
-    throw new Error(
-      `Portable ${op.op} cannot rewrite formula references; remove formulas first or run the edit with Microsoft Excel`
-    );
-  }
-  if (mergedRanges(xml).length) {
-    throw new Error(
-      `Portable ${op.op} cannot rewrite merged ranges; unmerge first or run the edit with Microsoft Excel`
-    );
-  }
+// insert_rows / delete_rows / insert_columns / delete_columns: Excel's insert and delete, references included.
+export async function shiftWorksheetRowsOrColumns(zip, sheet, xml, op, sheets = []) {
   const amount = Math.max(1, Number(op.count) || 1);
-  const rowOperation = op.op.endsWith('rows');
-  const from = Math.max(1, Number(rowOperation ? op.row : op.column) || 1);
-  const delta = op.op.startsWith('insert') ? amount : -amount;
-  zip.file(sheet.path, rowOperation ? shiftWorksheetRows(xml, from, delta) : shiftWorksheetColumns(xml, from, delta));
-  return { op: op.op, changed: true, sheet: sheet.name, from, count: amount };
+  const rows = op.op.endsWith('rows');
+  const from = Math.max(1, Number(rows ? op.row : op.column) || 1);
+  const insert = op.op.startsWith('insert');
+  const rewritten = await shiftWorksheetCells(zip, sheets, sheet, xml, { rows, from, amount, insert, op: op.op });
+  return { op: op.op, changed: true, sheet: sheet.name, from, count: amount, referenceAware: true, referencesRewritten: rewritten };
 }
 
 export function setWorksheetAutofilter(zip, sheet, xml, op) {
@@ -383,18 +416,22 @@ function rowOrColumnStart(op, rows) {
 // A report is laid out by its row heights and column widths: a merged title band never grows to its wrapped
 // lines in Excel or LibreOffice, so the title was cut at 15 pt, and a gutter column could not be made narrow.
 // Heights are points (Excel's 0-409), widths Excel's characters (0-255), the units the snapshot reports.
-export function setRowHeightOrColumnWidth(zip, sheet, xml, op) {
+export async function setRowHeightOrColumnWidth(zip, sheet, xml, op) {
   const rows = op.op === 'set_row_height';
   const start = rowOrColumnStart(op, rows);
   if (!Number.isFinite(start) || start < 1) {
     throw new Error(
-      rows ? 'set_row_height requires row (1-based)' : 'set_column_width requires column (a letter such as D, or a 1-based number)'
+      rows
+        ? 'set_row_height requires row (1-based)'
+        : 'set_column_width requires column (a letter such as D, or a 1-based number)'
     );
   }
   const size = Number(rows ? op.height : op.width);
   const limit = rows ? 409 : 255;
   if (!Number.isFinite(size) || size < 0 || size > limit) {
-    throw new Error(rows ? 'set_row_height requires height in points, 0-409' : 'set_column_width requires width in characters, 0-255');
+    throw new Error(
+      rows ? 'set_row_height requires height in points, 0-409' : 'set_column_width requires width in characters, 0-255'
+    );
   }
   const count = Math.max(1, Math.round(Number(op.count) || 1));
   const targets = Array.from({ length: count }, (_, index) => start + index);
@@ -412,10 +449,16 @@ export function setRowHeightOrColumnWidth(zip, sheet, xml, op) {
       );
     }
   } else {
-    next = writeColumnWidths(next, new Map(targets.map((column) => [column, Math.round(size * 100) / 100])));
+    const stored = columnFileWidth(size, await workbookDigitWidth(zip));
+    next = writeColumnWidths(next, new Map(targets.map((column) => [column, stored])));
   }
   zip.file(sheet.path, next);
-  return { op: op.op, changed: true, sheet: sheet.name, ...(rows ? { rows: targets, height: size } : { columns: targets, width: size }) };
+  return {
+    op: op.op,
+    changed: true,
+    sheet: sheet.name,
+    ...(rows ? { rows: targets, height: size } : { columns: targets, width: size }),
+  };
 }
 
 // Hiding a row or a column is how a sheet withholds a working note or a
@@ -531,14 +574,8 @@ export async function copyWorksheet(zip, sheet, xml, op, sheets) {
   const copyPart = `xl/worksheets/sheet${copyOrdinal}.xml`;
   // A table part belongs to the sheet that declares it, so the copy takes the
   // cells without the tableParts entry or the table relationships.
-  zip.file(copyPart, xml.replace(/<tableParts\b[^>]*?(?:\/>|>[\s\S]*?<\/tableParts>)/, ''));
-  const sourceRelationships = await zipText(zip, partRelationshipPath(sheet.path));
-  if (sourceRelationships) {
-    zip.file(
-      partRelationshipPath(copyPart),
-      sourceRelationships.replace(/<Relationship\b[^>]*\bType="[^"]*\/table"[^>]*\/>/g, '')
-    );
-  }
+  const copied = copiedSheetXml(xml.replace(/<tableParts\b[^>]*?(?:\/>|>[\s\S]*?<\/tableParts>)/, ''), sheet.name, label);
+  zip.file(copyPart, copied);
   await ensureContentTypeOverride(zip, `/${copyPart}`, WORKSHEET_CONTENT_TYPE);
   const relationshipId = await addPackageRelationship(
     zip,
@@ -550,6 +587,7 @@ export async function copyWorksheet(zip, sheet, xml, op, sheets) {
   const sheetIds = [...workbook.matchAll(/<sheet\b[^>]*\bsheetId="(\d+)"/g)].map((match) => Number(match[1]));
   const entry = `<sheet name="${xmlEncode(label)}" sheetId="${Math.max(0, ...sheetIds) + 1}" r:id="${relationshipId}"/>`;
   zip.file(WORKBOOK_PATH, workbook.replace('</sheets>', `${entry}</sheets>`));
+  await copySheetParts(zip, sheets, sheet, { name: label, path: copyPart });
   return { op: op.op, changed: true, sheet: label };
 }
 

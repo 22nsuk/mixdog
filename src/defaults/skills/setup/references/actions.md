@@ -121,9 +121,13 @@ Read `status features` and distinguish installation, enabled state, and live
 bridge state.
 
 - Git, Memory, Office, and Local Provider are install-first capabilities.
-- Git installation may prepare system Git.
-- Office installation may prepare LibreOffice dependencies and global Noto
-  fonts as well as the runtime component.
+- Git and Office installation run on the Desktop when this conversation is
+  open there, like the Built-in card: Git installs system Git; Office installs
+  LibreOffice and global Noto fonts as well as the runtime component. When no
+  Desktop takes the request, `install_builtin` activates them from the runtime
+  (Office fonts only), so system Git and LibreOffice must already be present.
+- Memory installation downloads the embedding model; an offline or failed
+  download fails the install.
 - Browser Use, Computer Use, and voice installation/toggles use the same
   `install_builtin` and `set_builtin_enabled` actions through a live Desktop
   receipt. Computer Use runs on Windows, macOS, and Linux desktops. These

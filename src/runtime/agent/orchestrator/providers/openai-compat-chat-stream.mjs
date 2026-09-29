@@ -62,9 +62,11 @@ export async function consumeCompatChatCompletionStream(
     }
     if (state.leakGuard.enabled) flushLeak(state);
   } catch (err) {
-    // Keep exposed partial text without permitting the request to replay.
+    // Keep exposed partial text without permitting the request to replay;
+    // every mid-flight failure carries what the stream completed (a
+    // cancellation keeps the caller's own reason untouched).
     if (state.emittedText) markErrorLiveTextEmitted(err);
-    if (state.emittedText || err?.streamStalled === true) attachPartial(state, err);
+    if (!signal?.aborted) attachPartial(state, err);
     throw stampCompatOutcome(state, markUnsafeRetryIfToolEmitted(err, state.streamEmitState));
   } finally {
     firstByteTimeout.cleanup();

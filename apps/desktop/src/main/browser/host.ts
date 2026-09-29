@@ -86,7 +86,6 @@ import {
 import { createBrowserDisplayCapture } from './display-capture';
 import { createBrowserDisplayTextures } from './display-textures';
 import { createBrowserPartition } from './partition';
-import type { BrowserDataClearResult, BrowserDataScope } from './browsing-data';
 import { createBrowserPerformanceCommands } from './performance';
 import { normalizeBrowserPostcondition, normalizeBrowserSettleMs } from './postcondition';
 import {
@@ -114,6 +113,7 @@ import { createBrowserUrlAdmission } from './url-admission';
 import { browserPageGuardScripts } from './webrtc-guard';
 import type { BrowserUrlPolicy } from './url-policy';
 import { createBrowserInputDispatch } from './input-dispatch';
+import { createBrowserNativeViews, type BrowserNativeRect } from './native-view';
 
 export type {
   BrowserCommand,
@@ -128,6 +128,11 @@ export interface BrowserHost {
     texture?: boolean
   ): Promise<DesktopBrowserPageFrame | DesktopBrowserPageResample>;
   browserPageControl(sessionId: string, input: DesktopBrowserPageControl): Promise<void>;
+  /** Page facts without pixels, for a pane whose page is natively presented. */
+  browserPageMetadata(sessionId: string): Promise<DesktopBrowserPageFrame>;
+  /** Show the session's current page natively at `rect` (shell CSS pixels), or
+   *  park it. `enabled` is false when native presentation is not turned on. */
+  browserPresentNative(sessionId: string, rect: BrowserNativeRect | null): { enabled: boolean; shown: boolean };
   /** Opt-in agent bridge: on serves the runtime's `browser` tool, off tears
    *  it down (server, discovery file, agent offscreen pages). The browser
    *  pane infrastructure stays live either way. */
@@ -138,7 +143,6 @@ export interface BrowserHost {
   browserImportSources(): Promise<BrowserImportSource[]>;
   browserImport(request: BrowserImportRequest): Promise<BrowserImportResult>;
   browserHistorySearch(query: string): Promise<BrowserHistoryEntry[]>;
-  browserClearData(scopes: readonly BrowserDataScope[]): Promise<BrowserDataClearResult>;
   browserCredentialSuggestions(sessionId: string): Promise<BrowserCredentialSuggestion[]>;
   browserCredentialFill(sessionId: string, credentialId: string): Promise<BrowserCredentialFillResult>;
   remoteBrowserFrame(sessionId: string, previousFrameId?: string): Promise<DesktopRemoteBrowserFrame>;
@@ -305,6 +309,7 @@ export function createBrowserHost(
 
   const browserUrlPolicy = browserUrlPolicyFromEnvironment();
   const urls = createBrowserUrlAdmission({ policy: browserUrlPolicy });
+  const nativeView = /^(?:1|true|yes)$/i.test(String(process.env.MIXDOG_BROWSER_NATIVE_VIEW || ''));
 
   const partition = createBrowserPartition({
     assertResolvedResourceUrlAllowed: urls.assertResolvedResourceUrlAllowed,
@@ -376,8 +381,26 @@ export function createBrowserHost(
     isBackgroundBusy: (sessionId, name) => commandChains.has(`session:${sessionId}:background:${name}`),
     waitForLoadSettle: settle.waitForLoadSettle,
     onPopup: (opener, popup) => taskLifecycle.inherit(opener, popup),
-    onGuest: (guest) => displayTextures.attach(guest),
+    onGuest: (guest) => {
+      displayTextures.attach(guest);
+      nativeViews?.watch(guest);
+    },
+    nativeView,
   });
+  const nativeViews = nativeView
+    ? createBrowserNativeViews({
+        shell: window,
+        currentGuest: (sessionId) => browserSessions.currentGuest(sessionId),
+        // Native input bypasses browserPageControl, so it takes over from the
+        // agent here, exactly as a relayed local gesture would.
+        humanInput: (guest) => {
+          if (guest.isDestroyed()) return;
+          const owner = browserSessions.sessionIdForGuest(guest) ?? DEFAULT_BROWSER_SESSION_ID;
+          retainGuest(guest);
+          interruptForLocal({ action: 'remote_control', session_id: owner, tab: state.pageId(guest) });
+        },
+      })
+    : null;
   const taskLifecycle = createBrowserTaskLifecycle<WebContents>({
     current: (sessionId) => browserSessions.currentGuest(sessionId),
     select: (sessionId, guest) => browserSessions.selectGuest(sessionId, guest),
@@ -834,6 +857,13 @@ export function createBrowserHost(
       const owner = browserSessionId(sessionId);
       return presentationReads.read(owner, previousFrameId, texture);
     },
+    browserPageMetadata(sessionId) {
+      return pageSurface.metadata(browserSessionId(sessionId));
+    },
+    browserPresentNative(sessionId, rect) {
+      if (!nativeViews) return { enabled: false, shown: false };
+      return { enabled: true, shown: nativeViews.present(browserSessionId(sessionId), rect) };
+    },
     browserPageControl(sessionId, input) {
       const owner = browserSessionId(sessionId);
       // Validate ownership before allowing an input to cancel this session's
@@ -885,6 +915,7 @@ export function createBrowserHost(
       const ownerSessionId = browserSessionId(sessionId);
       remote.releaseViewer(ownerSessionId);
       presentationReads.release(ownerSessionId);
+      nativeViews?.present(ownerSessionId, null);
       releaseLocal({ action: 'remote_control', session_id: ownerSessionId });
       pageSurface.release(ownerSessionId);
       lifecycle.releaseSession(ownerSessionId, options.restore === true);
@@ -917,13 +948,6 @@ export function createBrowserHost(
         throw new Error('Browser guest is unavailable.');
       }
       await emulation.configureEmulation(guest, browserViewportEmulation(config));
-    },
-    browserClearData(scopes: readonly BrowserDataScope[]): Promise<BrowserDataClearResult> {
-      return partition.clearBrowsingData(scopes, {
-        // Session sign-ins are carried across restarts by this store; leaving
-        // its file untouched would restore what the user just cleared.
-        persistCookieState: () => sessionStore.save().then(() => undefined),
-      });
     },
     async browserImportSources(): Promise<BrowserImportSource[]> {
       return await profileImporter.sources();

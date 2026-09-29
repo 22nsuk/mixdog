@@ -11,6 +11,7 @@ import { createPortableOoxmlDocument } from './portable/portable-package.mjs';
 import { describeOfficeSnapshotViolations, officeSnapshotContractViolations } from './core/snapshot-contract.mjs';
 import { PNG_PIXEL, parts, value, workspace, writeZip } from './office-test-support.mjs';
 import { contrastRatio } from './portable/text-metrics.mjs';
+import { validateXlsxOperations } from './portable/xlsx-contract.mjs';
 
 process.env.MIXDOG_OOXML_VALIDATOR_DISABLED = '1';
 
@@ -477,7 +478,10 @@ test('a document with localized style ids takes styles by the names it gives the
   const styles = await packaged.text('word/styles.xml');
   assert.match(styles, /w:styleId="Caption"><w:name w:val="caption"\/><w:basedOn w:val="a"\/>/);
   assert.match(styles, /w:styleId="TableGrid"><w:name w:val="Table Grid"\/><w:basedOn w:val="a1"\/>/);
-  assert.equal(opened.batch.results.some((result) => result.styleNotFound), false);
+  assert.equal(
+    opened.batch.results.some((result) => result.styleNotFound),
+    false
+  );
 });
 
 // set_paragraph_style wrote the name as the id ("Heading 1"), which no document defines — its own template names
@@ -643,7 +647,10 @@ test('a workbook chart placed at a cell stays beside its table when a later auto
   );
   const drawing = await (await parts(book)).text('xl/drawings/drawing1.xml');
   // Column E is index 4 and row 2 index 1, whatever widths the columns before it took afterwards.
-  assert.match(drawing, /<xdr:oneCellAnchor><xdr:from><xdr:col>4<\/xdr:col><xdr:colOff>0<\/xdr:colOff><xdr:row>1<\/xdr:row>/);
+  assert.match(
+    drawing,
+    /<xdr:oneCellAnchor><xdr:from><xdr:col>4<\/xdr:col><xdr:colOff>0<\/xdr:colOff><xdr:row>1<\/xdr:row>/
+  );
 });
 
 test('a defined name given as Excel shows it (=Sheet1!…) is stored without the = Excel cannot open', async (t) => {
@@ -656,7 +663,14 @@ test('a defined name given as Excel shows it (=Sheet1!…) is stored without the
         path: book,
         mode: 'portable',
         operations: [
-          { op: 'set_range', range: 'A1:B2', values: [['Region', 'Revenue'], ['Korea', 120]] },
+          {
+            op: 'set_range',
+            range: 'A1:B2',
+            values: [
+              ['Region', 'Revenue'],
+              ['Korea', 120],
+            ],
+          },
           { op: 'define_name', name: 'Revenue', refersTo: '=Sheet1!$B$2' },
         ],
       },
@@ -678,7 +692,15 @@ test('a workbook chart ended at toColumn spans the columns as the sheet has them
         path: book,
         mode: 'portable',
         operations: [
-          { op: 'set_range', range: 'A1:B3', values: [['Region', 'Revenue'], ['Korea', 120], ['Japan', 95]] },
+          {
+            op: 'set_range',
+            range: 'A1:B3',
+            values: [
+              ['Region', 'Revenue'],
+              ['Korea', 120],
+              ['Japan', 95],
+            ],
+          },
           { op: 'set_column_width', column: 'A', width: 20 },
           { op: 'set_column_width', column: 'B', width: 10 },
           { op: 'add_chart', range: 'A1:B3', chartType: 'column', cell: 'A5', toColumn: 'B', height: 200 },
@@ -717,8 +739,15 @@ test('a protected form keeps its entry cells unlocked after the recalculation re
   value(await executeOfficeTool({ action: 'render', session: created.session }, { cwd }));
   const issues = value(await executeOfficeTool({ action: 'issues', session: created.session }, { cwd }));
   assert.ok(!issues.issues.some((issue) => issue.code === 'protected_input_locked'), JSON.stringify(issues.issues));
-  const snapshot = value(await executeOfficeTool({ action: 'snapshot', session: created.session, range: 'A2:A2', includeStyles: true }, { cwd }));
-  const cell = snapshot.document.sheets?.[0]?.cells?.find?.((entry) => entry.ref === 'A2') ?? snapshot.document.cells?.find?.((entry) => entry.ref === 'A2');
+  const snapshot = value(
+    await executeOfficeTool(
+      { action: 'snapshot', session: created.session, range: 'A2:A2', includeStyles: true },
+      { cwd }
+    )
+  );
+  const cell =
+    snapshot.document.sheets?.[0]?.cells?.find?.((entry) => entry.ref === 'A2') ??
+    snapshot.document.cells?.find?.((entry) => entry.ref === 'A2');
   if (cell?.style) assert.equal(cell.style.locked, false, JSON.stringify(cell.style));
   value(await executeOfficeTool({ action: 'close', session: created.session }, { cwd }));
 });
@@ -733,7 +762,16 @@ test('a workbook bar chart lists its categories top-down with the value axis und
         path: book,
         mode: 'portable',
         operations: [
-          { op: 'set_range', range: 'A1:B4', values: [['사업부', '매출'], ['반도체', 52], ['모바일', 40], ['가전', 27]] },
+          {
+            op: 'set_range',
+            range: 'A1:B4',
+            values: [
+              ['사업부', '매출'],
+              ['반도체', 52],
+              ['모바일', 40],
+              ['가전', 27],
+            ],
+          },
           { op: 'add_chart', range: 'A1:B4', chartType: 'bar', cell: 'D2' },
         ],
       },
@@ -784,6 +822,21 @@ test('a chart over a row of periods read by columns is refused with the reading 
   value(await executeOfficeTool({ action: 'close', session: drawn.session }, { cwd }));
 });
 
+// plotBy:'rows' reads one block; Excel took two comma-joined areas and drew a chart with no series while the portable
+// writer refused them. The operation contract refuses the shape before either backend draws it.
+test("a chart read by rows over comma-joined areas is refused before any backend draws it", () => {
+  assert.throws(
+    () =>
+      validateXlsxOperations([
+        { op: 'add_chart', range: "'Model'!C3:G3,'Model'!C7:G7", plotBy: 'rows', chartType: 'column', cell: 'A8' },
+      ]),
+    /plotBy:'rows' requires one bounded range/
+  );
+  assert.doesNotThrow(() =>
+    validateXlsxOperations([{ op: 'add_chart', range: "'Model'!A3:G7", plotBy: 'rows', chartType: 'column', cell: 'A8' }])
+  );
+});
+
 test('a workbook keeps its set widths, fits, and band heights through the recalculation a render runs', async (t) => {
   const cwd = await workspace(t);
   const book = join(cwd, 'sized.xlsx');
@@ -794,7 +847,15 @@ test('a workbook keeps its set widths, fits, and band heights through the recalc
         path: book,
         mode: 'portable',
         operations: [
-          { op: 'set_range', range: 'B1:C3', values: [['Hub', 'Volume'], ['Daejeon', 128400], ['Busan', 97300]] },
+          {
+            op: 'set_range',
+            range: 'B1:C3',
+            values: [
+              ['Hub', 'Volume'],
+              ['Daejeon', 128400],
+              ['Busan', 97300],
+            ],
+          },
           { op: 'set_formula', cell: 'C4', formula: '=SUM(C2:C3)' },
           { op: 'autofit_range', range: 'B:C', minWidth: 20 },
           { op: 'set_column_width', column: 'A', width: 3 },
@@ -810,7 +871,10 @@ test('a workbook keeps its set widths, fits, and band heights through the recalc
   const width = (column) =>
     Number(new RegExp(`<col\\b(?=[^>]*\\bmin="${column}")[^>]*\\bwidth="([\\d.]+)"`).exec(sheet)?.[1]);
   assert.ok(width(1) < 4, `the gutter stays narrow: ${sheet.match(/<cols>.*?<\/cols>/)?.[0]}`);
-  assert.ok(width(2) >= 19 && width(3) >= 19, `the fit keeps its minimum width: ${sheet.match(/<cols>.*?<\/cols>/)?.[0]}`);
+  assert.ok(
+    width(2) >= 19 && width(3) >= 19,
+    `the fit keeps its minimum width: ${sheet.match(/<cols>.*?<\/cols>/)?.[0]}`
+  );
   assert.match(sheet, /<row\b[^>]*\br="1"[^>]*\bht="42"/);
 });
 
@@ -839,21 +903,36 @@ await pres.writeFile({ fileName: OUTPUT });`,
         action: 'batch',
         session: authored.session,
         operations: [
-          { op: 'set_chart_data', slide: 1, shape: 1, categories: ['2024', '2025', '2026'], series: [{ name: 'MAU', values: [1040, 1260, 1510] }] },
+          {
+            op: 'set_chart_data',
+            slide: 1,
+            shape: 1,
+            categories: ['2024', '2025', '2026'],
+            series: [{ name: 'MAU', values: [1040, 1260, 1510] }],
+          },
           { op: 'replace_text', find: '올해 상반기에도 12.7% 증가했다.', replace: '3분기까지 19.8% 증가했다.' },
         ],
       },
       { cwd }
     )
   );
-  assert.deepEqual(edited.results.map((entry) => entry.changed), [true, true]);
+  assert.deepEqual(
+    edited.results.map((entry) => entry.changed),
+    [true, true]
+  );
   value(await executeOfficeTool({ action: 'close', session: authored.session }, { cwd }));
   const packaged = await parts(deck);
-  const chartName = Array.from({ length: 20 }, (_, index) => `ppt/charts/chart${index + 1}.xml`).find((name) => packaged.has(name));
+  const chartName = Array.from({ length: 20 }, (_, index) => `ppt/charts/chart${index + 1}.xml`).find((name) =>
+    packaged.has(name)
+  );
   const chart = await packaged.text(chartName);
   assert.match(chart, /<c:v>1510<\/c:v>/);
   assert.doesNotMatch(chart, /<c:v>1420<\/c:v>/);
-  assert.match(chart, /<c:dLbls><c:numFmt formatCode="#,##0;-#,##0;"/, 'the label format the deck was authored with stays');
+  assert.match(
+    chart,
+    /<c:dLbls><c:numFmt formatCode="#,##0;-#,##0;"/,
+    'the label format the deck was authored with stays'
+  );
   const slide = await packaged.text('ppt/slides/slide1.xml');
   assert.ok(slide.includes('3분기까지 19.8% 증가했다.'), 'the phrase across the wrap was found and replaced');
 });
@@ -884,9 +963,22 @@ test('a rendered contents field carries the page each heading lands on, behind a
   value(await executeOfficeTool({ action: 'close', session: created.session }, { cwd }));
   const body = await (await parts(doc)).text('word/document.xml');
   const field = /<w:fldSimple\b[^>]*TOC[\s\S]*?<\/w:fldSimple>/.exec(body)?.[0] || '';
-  const lines = field.split('<w:r><w:br/></w:r>').map((line) => [...line.matchAll(/<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/g)].map((match) => match[1]));
-  assert.deepEqual(lines, [['Summary', '1'], ['Causes', '2']], field);
-  assert.match(body, /<w:tab w:val="right" w:pos="9070" w:leader="dot"\/>/, 'a right tab on the text edge of the A4 section');
+  const lines = field
+    .split('<w:r><w:br/></w:r>')
+    .map((line) => [...line.matchAll(/<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/g)].map((match) => match[1]));
+  assert.deepEqual(
+    lines,
+    [
+      ['Summary', '1'],
+      ['Causes', '2'],
+    ],
+    field
+  );
+  assert.match(
+    body,
+    /<w:tab w:val="right" w:pos="9070" w:leader="dot"\/>/,
+    'a right tab on the text edge of the A4 section'
+  );
 });
 
 test('a tracked replace marks only the words between the ones the find and the replacement share', async (t) => {
@@ -911,7 +1003,9 @@ test('a tracked replace marks only the words between the ones the find and the r
   );
   value(await executeOfficeTool({ action: 'close', session: created.session }, { cwd }));
   const body = await (await parts(doc)).text('word/document.xml');
-  const marks = [...body.matchAll(/<w:(del|ins) [^>]*>[\s\S]*?<\/w:\1>/g)].map((match) => `${match[1]}:${match[0].replace(/<[^>]+>/g, '')}`);
+  const marks = [...body.matchAll(/<w:(del|ins) [^>]*>[\s\S]*?<\/w:\1>/g)].map(
+    (match) => `${match[1]}:${match[0].replace(/<[^>]+>/g, '')}`
+  );
   assert.deepEqual(marks, ['del:원으로', 'ins:원(잠정)으로', 'ins:처음 ', 'del:22%', 'ins:21.6%']);
 });
 
@@ -937,7 +1031,13 @@ test('fill_template writes the Korean particle the filled value takes', async (t
       {
         action: 'batch',
         session: created.session,
-        operations: [{ op: 'fill_template', strict: true, tokens: { company: '모아페이', city: '서울', name: '김하늘', team: '결제팀' } }],
+        operations: [
+          {
+            op: 'fill_template',
+            strict: true,
+            tokens: { company: '모아페이', city: '서울', name: '김하늘', team: '결제팀' },
+          },
+        ],
       },
       { cwd }
     )
@@ -964,7 +1064,14 @@ test('a wide table on a landscape page is measured against that page, not the po
           { op: 'append_text', text: 'Portrait page' },
           { op: 'insert_break', kind: 'section_next' },
           { op: 'set_page', properties: { orientation: 'landscape' } },
-          { op: 'add_table', values: [['Hub', 'Apr', 'May'], ['Daejeon', '118,200', '121,400']], properties: { columnWidths: [300, 200, 200] } },
+          {
+            op: 'add_table',
+            values: [
+              ['Hub', 'Apr', 'May'],
+              ['Daejeon', '118,200', '121,400'],
+            ],
+            properties: { columnWidths: [300, 200, 200] },
+          },
         ],
       },
       { cwd }
@@ -972,7 +1079,11 @@ test('a wide table on a landscape page is measured against that page, not the po
   );
   const issues = value(await executeOfficeTool({ action: 'issues', session: created.session }, { cwd })).issues || [];
   value(await executeOfficeTool({ action: 'close', session: created.session }, { cwd }));
-  assert.equal(issues.some((issue) => issue.code === 'table_wider_than_page'), false, JSON.stringify(issues));
+  assert.equal(
+    issues.some((issue) => issue.code === 'table_wider_than_page'),
+    false,
+    JSON.stringify(issues)
+  );
 });
 
 test('a slide table the caller did not style takes a header rule and row hairlines, figures on the right', async (t) => {
@@ -986,7 +1097,18 @@ test('a slide table the caller did not style takes a header rule and row hairlin
         mode: 'portable',
         operations: [
           { op: 'add_slide' },
-          { op: 'add_table', slide: 1, left: 40, top: 100, width: 600, values: [['지표', '26.1Q', '26.2Q'], ['거래자 (만 명)', '1,340', '1,420'], ['영업이익', '−12', '86']] },
+          {
+            op: 'add_table',
+            slide: 1,
+            left: 40,
+            top: 100,
+            width: 600,
+            values: [
+              ['지표', '26.1Q', '26.2Q'],
+              ['거래자 (만 명)', '1,340', '1,420'],
+              ['영업이익', '−12', '86'],
+            ],
+          },
         ],
       },
       { cwd }
@@ -1014,8 +1136,27 @@ test('a borderless layout table registers with the text column, and a filled cel
         path: doc,
         mode: 'portable',
         operations: [
-          { op: 'add_table', values: [['시니어 엔지니어 · 모아페이', '2023 – 현재'], ['엔지니어 · 도시물류', '2020 – 2023']], properties: { borders: { top: NONE, left: NONE, bottom: NONE, right: NONE, insideH: NONE, insideV: NONE }, headerBold: false, columnWidths: [360, 120] } },
-          { op: 'add_table', values: [['지표', '값'], ['처리량', '12,480']] },
+          {
+            op: 'add_table',
+            values: [
+              ['시니어 엔지니어 · 모아페이', '2023 – 현재'],
+              ['엔지니어 · 도시물류', '2020 – 2023'],
+            ],
+            properties: {
+              borders: { top: NONE, left: NONE, bottom: NONE, right: NONE, insideH: NONE, insideV: NONE },
+              headerBold: false,
+              columnWidths: [360, 120],
+            },
+          },
+          // Spread across the text column: the fit had rebuilt every cell without its margins.
+          { op: 'fit_table', table: 1 },
+          {
+            op: 'add_table',
+            values: [
+              ['지표', '값'],
+              ['처리량', '12,480'],
+            ],
+          },
           { op: 'set_table_cell_style', table: 1, row: 2, col: 1, properties: { fillColor: 'EEF2F7' } },
         ],
       },
@@ -1043,21 +1184,78 @@ test('an ISO date written to a sheet is the date Excel would type, under yyyy-mm
         mode: 'portable',
         operations: [
           { op: 'set_style', range: 'B2', properties: { numberFormat: 'd mmm yyyy' } },
-          { op: 'set_range', range: 'A1:C2', values: [['2026-09-30', '2026-02-30', '마감'], ['2026-10-01', '2026-10-01', 'x']] },
+          {
+            op: 'set_range',
+            range: 'A1:C2',
+            values: [
+              ['2026-09-30', '2026-02-30', '마감'],
+              ['2026-10-01', '2026-10-01', 'x'],
+            ],
+          },
           { op: 'set_cell', cell: 'D1', value: '2026-12-15' },
         ],
       },
       { cwd }
     )
   );
-  const snapshot = value(await executeOfficeTool({ action: 'snapshot', session: created.session, range: 'A1:D2' }, { cwd }));
+  const snapshot = value(
+    await executeOfficeTool({ action: 'snapshot', session: created.session, range: 'A1:D2' }, { cwd })
+  );
   value(await executeOfficeTool({ action: 'close', session: created.session }, { cwd }));
-  const cells = Object.fromEntries(snapshot.document.sheets[0].cells.map((cell) => [cell.address || cell.path.match(/cell\[(\w+)]/)[1], cell]));
+  const cells = Object.fromEntries(
+    snapshot.document.sheets[0].cells.map((cell) => [cell.address || cell.path.match(/cell\[(\w+)]/)[1], cell])
+  );
   assert.equal(cells.A1.value, 46295, 'the serial Excel stores for 2026-09-30');
   assert.equal(cells.A1.style?.numberFormat, 'yyyy-mm-dd');
   assert.equal(cells.B1.value, '2026-02-30', 'a date that does not exist stays the text it was');
   assert.equal(cells.B2.style?.numberFormat, 'd mmm yyyy', "the cell's own format is kept");
   assert.equal(cells.D1.value, 46371);
+});
+
+test('a figure written as text is the number Excel would type, under its format, and any other text stays as written', async (t) => {
+  const cwd = await workspace(t);
+  const book = join(cwd, 'figures.xlsx');
+  const texts = ['1', '1,234', '12,345.6', '15%', '12.5%', '-500000', '.5', '007', '1-2', '1/2', '1e3', '(100)', 'TRUE'];
+  const created = value(
+    await executeOfficeTool(
+      {
+        action: 'create',
+        path: book,
+        mode: 'portable',
+        operations: [
+          { op: 'set_style', range: 'B1', properties: { numberFormat: '0.0' } },
+          { op: 'set_range', range: `A1:A${texts.length}`, values: texts.map((text) => [text]) },
+          { op: 'set_cell', cell: 'B1', value: '2,500' },
+          { op: 'append_row', values: ['1-3', '7', '9%'] },
+        ],
+      },
+      { cwd }
+    )
+  );
+  const snapshot = value(
+    await executeOfficeTool({ action: 'snapshot', session: created.session, range: `A1:C${texts.length + 1}` }, { cwd })
+  );
+  value(await executeOfficeTool({ action: 'close', session: created.session }, { cwd }));
+  const read = snapshot.document.sheets[0].cells.map((cell) => [cell.ref, cell.value, cell.style?.numberFormat || '']);
+  assert.deepEqual(read, [
+    ['A1', 1, ''],
+    ['B1', 2500, '0.0'],
+    ['A2', 1234, '#,##0'],
+    ['A3', 12345.6, '#,##0.00'],
+    ['A4', 0.15, '0%'],
+    ['A5', 0.125, '0.00%'],
+    ['A6', -500000, ''],
+    ['A7', 0.5, ''],
+    ['A8', '007', ''],
+    ['A9', '1-2', ''],
+    ['A10', '1/2', ''],
+    ['A11', '1e3', ''],
+    ['A12', '(100)', ''],
+    ['A13', 'TRUE', ''],
+    ['A14', '1-3', ''],
+    ['B14', 7, ''],
+    ['C14', 0.09, '0%'],
+  ]);
 });
 
 test('a table column narrower than its longest word is reported before the word breaks between letters', async (t) => {
@@ -1072,12 +1270,18 @@ test('a table column narrower than its longest word is reported before the word 
         operations: [
           {
             op: 'add_table',
-            values: [['지표', 'Throughput', '비고'], ['야간 처리량', '12,480', '예시']],
+            values: [
+              ['지표', 'Throughput', '비고'],
+              ['야간 처리량', '12,480', '예시'],
+            ],
             properties: { columnWidths: [120, 30, 120], fontSize: 11 },
           },
           {
             op: 'add_table',
-            values: [['지표', 'Throughput'], ['야간 처리량', '12,480']],
+            values: [
+              ['지표', 'Throughput'],
+              ['야간 처리량', '12,480'],
+            ],
             properties: { columnWidths: [120, 120], fontSize: 11 },
           },
         ],
@@ -1088,7 +1292,11 @@ test('a table column narrower than its longest word is reported before the word 
   const issues = value(await executeOfficeTool({ action: 'issues', session: created.session }, { cwd })).issues || [];
   value(await executeOfficeTool({ action: 'close', session: created.session }, { cwd }));
   const broken = issues.filter((issue) => issue.code === 'table_cell_word_broken');
-  assert.deepEqual(broken.map((issue) => issue.path), ['/body/table[1]/row[1]/cell[2]'], JSON.stringify(broken));
+  assert.deepEqual(
+    broken.map((issue) => issue.path),
+    ['/body/table[1]/row[1]/cell[2]'],
+    JSON.stringify(broken)
+  );
   assert.match(broken[0].message, /"Throughput"/);
 });
 
@@ -1125,6 +1333,11 @@ test('a continuous break starts the next section on the same page and a later he
   assert.match(sections[1], /<w:cols w:num="2"/);
   assert.match(sections[2], /<w:type w:val="nextPage"\/>/);
   for (const section of sections) assert.match(section, /<w:footerReference\b/, 'every section carries the footer');
+  // The snapshot says which sections lay their text out in columns, and how far apart: nothing had said so.
+  const read = value(await executeOfficeTool({ action: 'snapshot', path: doc, mode: 'portable' }, { cwd }));
+  const layouts = read.document.sections.map((section) => [section.columns, section.columnSpacing]);
+  assert.deepEqual(layouts[0], [undefined, undefined], 'a single column is not named');
+  assert.deepEqual(layouts[1], [2, 35.4], 'two columns, Word’s own 708-twip gap');
 });
 
 test('a Word running header takes the type it is given and a table keeps with its caption', async (t) => {
@@ -1137,13 +1350,26 @@ test('a Word running header takes the type it is given and a table keeps with it
         path: doc,
         mode: 'portable',
         operations: [
-          { op: 'add_table', values: [['연도', 'MAU'], ['2025', '1,260']], properties: { keepWithNext: true } },
+          {
+            op: 'add_table',
+            values: [
+              ['연도', 'MAU'],
+              ['2025', '1,260'],
+            ],
+            properties: { keepWithNext: true },
+          },
           { op: 'append_text', text: '표 1. 연도별 사용자' },
           {
             op: 'set_header_footer',
             kind: 'header',
             text: '모아페이 · 주주서한',
-            properties: { name: 'Noto Sans', nameEastAsia: 'Noto Sans KR', size: 8.5, color: '6B7280', alignment: 'right' },
+            properties: {
+              name: 'Noto Sans',
+              nameEastAsia: 'Noto Sans KR',
+              size: 8.5,
+              color: '6B7280',
+              alignment: 'right',
+            },
           },
         ],
       },
@@ -1552,6 +1778,43 @@ test('portable Word tables gain and drop rows and columns', async (t) => {
   const firstRow = /<w:tr>[\s\S]*?<\/w:tr>/.exec(document)[0];
   assert.equal((firstRow.match(/<w:tc>/g) || []).length, 3, 'one column removed and one inserted');
   assert.equal((document.match(/<w:gridCol/g) || []).length, 3);
+
+  // One past the last column adds a column at the end, as one past the last row adds a row; further is refused with
+  // the table's size, as the Office backend now refuses it rather than failing on Word's "no such member".
+  value(
+    await executeOfficeTool(
+      { action: 'batch', session: created.session, operations: [{ op: 'insert_table_column', table: 1, column: 4 }] },
+      { cwd }
+    )
+  );
+  const widened = await (await parts(target)).text('word/document.xml');
+  assert.equal((/<w:tr>[\s\S]*?<\/w:tr>/.exec(widened)[0].match(/<w:tc>/g) || []).length, 4);
+  const past = await executeOfficeTool(
+    { action: 'batch', session: created.session, operations: [{ op: 'insert_table_column', table: 1, column: 6 }] },
+    { cwd }
+  );
+  assert.equal(past.isError, true);
+  assert.match(past.content[0].text, /DOCX table 1 is 3×4, so it has no column 6: insert_table_column column is the position the new column takes, 1 to 5/);
+
+  // bold:false turns a copied bold back to regular, as the Word backend's Font.Bold = 0 does; it had changed nothing.
+  value(
+    await executeOfficeTool(
+      {
+        action: 'batch',
+        session: created.session,
+        operations: [
+          { op: 'set_table_cell', table: 1, row: 2, col: 2, text: '58' },
+          { op: 'set_table_cell_style', table: 1, row: 2, col: 2, properties: { bold: true } },
+          { op: 'set_table_cell_style', table: 1, row: 2, col: 2, properties: { bold: false } },
+        ],
+      },
+      { cwd }
+    )
+  );
+  const regular = await (await parts(target)).text('word/document.xml');
+  const cell = [...[...regular.matchAll(/<w:tr>[\s\S]*?<\/w:tr>/g)][1][0].matchAll(/<w:tc>[\s\S]*?<\/w:tc>/g)][1][0];
+  assert.match(cell, /<w:rPr>(?:(?!<\/w:rPr>)[\s\S])*<w:b w:val="0"\/>[\s\S]*?58/);
+  assert.doesNotMatch(cell, /<w:b\/>/);
 });
 
 test('portable workbook shifts rows and columns and manages sheet metadata', async (t) => {
@@ -2161,6 +2424,32 @@ test('a protected form keeps its entry cells typable and reports the ones it loc
   );
 });
 
+test('a protected form names its locked entry cells in reading order and counts the ones left open', async (t) => {
+  const cwd = await workspace(t);
+  const created = value(
+    await executeOfficeTool(
+      {
+        action: 'create',
+        path: join(cwd, 'claims.xlsx'),
+        mode: 'portable',
+        operations: [
+          { op: 'set_range', range: 'A5:B5', values: [['일자', '항목']] },
+          { op: 'add_validation', range: 'B6:B15', formula1: '"교통비,숙박비"' },
+          // The lower half of the entry column is opened: B6:B10 stay locked, and B10 comes after B9.
+          { op: 'set_style', range: 'B11:B15', properties: { locked: false } },
+          { op: 'protect_sheet' },
+        ],
+      },
+      { cwd }
+    )
+  );
+  const issues = value(await executeOfficeTool({ action: 'issues', session: created.session }, { cwd })).issues || [];
+  const reported = issues.find((issue) => issue.code === 'protected_input_locked');
+  assert.ok(reported, JSON.stringify(issues).slice(0, 400));
+  assert.equal(reported.path, '/sheet[Sheet1]/cell[B6]');
+  assert.match(reported.message, /and 5 of 10 entry cells \(B6, B7, B8, B9, …\) stay locked/);
+});
+
 // Thousands of rows are written in one pass over the sheet, so the values, the
 // styles the cells already carried, and the row order all have to survive it.
 test('a bulk range write keeps cell styles, order, and the next append row', async (t) => {
@@ -2300,6 +2589,42 @@ test('a second footer replaces the first in place instead of leaving it behind',
   value(await executeOfficeTool({ action: 'close', session: created.session }, { cwd }));
 });
 
+// CT_SectPr fixes the order of its children, and a cover's first-page header wrote titlePg straight after pgMar,
+// ahead of the cols every section carries: the schema check failed and finalize refused the report. Whatever a
+// section gains lands where the schema puts it, in the section a break closes as well as the one after it.
+test('a section keeps its properties in the order the schema fixes', async (t) => {
+  const cwd = await workspace(t);
+  const target = join(cwd, 'cover.docx');
+  const created = value(
+    await executeOfficeTool(
+      {
+        action: 'create',
+        path: target,
+        mode: 'portable',
+        operations: [
+          { op: 'append_text', text: '표지' },
+          { op: 'set_header_footer', kind: 'header', variant: 'first', text: '' },
+          { op: 'set_page', properties: { pageSize: 'a4', columns: 2 } },
+          { op: 'insert_break', kind: 'section_next' },
+          { op: 'append_text', text: '본문' },
+        ],
+      },
+      { cwd }
+    )
+  );
+  const order = ['headerReference', 'type', 'pgSz', 'pgMar', 'pgNumType', 'cols', 'titlePg', 'docGrid'];
+  const rank = (name) => order.indexOf(name === 'footerReference' ? 'headerReference' : name);
+  const sections = [...(await (await parts(target)).text('word/document.xml')).matchAll(/<w:sectPr\b[^>]*>([\s\S]*?)<\/w:sectPr>/g)];
+  assert.equal(sections.length, 2);
+  for (const [, inner] of sections) {
+    const names = [...inner.matchAll(/<w:(\w+)\b/g)].map((match) => match[1]);
+    assert.ok(names.includes('titlePg') && names.includes('cols'), inner);
+    assert.ok(names.every((name) => rank(name) >= 0), `a child outside the expected set: ${names}`);
+    assert.deepEqual(names, [...names].sort((a, b) => rank(a) - rank(b)), `the children stand in schema order: ${names}`);
+  }
+  value(await executeOfficeTool({ action: 'close', session: created.session }, { cwd }));
+});
+
 test('a printed sheet keeps every header slot and numbers its pages', async (t) => {
   const cwd = await workspace(t);
   const target = join(cwd, 'ledger.xlsx');
@@ -2388,19 +2713,25 @@ test("portable workbook sorts a range and carries each row's formats with it", a
   assert.equal(at('A2').style.bold, true);
   assert.notEqual(at('A3').style?.bold, true);
 
-  const withFormula = await executeOfficeTool(
-    {
-      action: 'batch',
-      session: created.session,
-      operations: [
-        { op: 'set_formula', cell: 'D2', formula: '=B2*C2' },
-        { op: 'sort_range', range: 'A1:D5', by: 'B' },
-      ],
-    },
-    { cwd }
+  // A formula travels with its row and reads the row it lands on, as Excel moves it: 서울's =B2*C2 sorted to row 5
+  // reads =B5*C5.
+  value(
+    await executeOfficeTool(
+      {
+        action: 'batch',
+        session: created.session,
+        operations: [
+          { op: 'set_formula', cell: 'D2', formula: '=B2*C2' },
+          { op: 'sort_range', range: 'A1:D5', by: 'B' },
+        ],
+      },
+      { cwd }
+    )
   );
-  assert.equal(withFormula.isError, true);
-  assert.match(withFormula.content[0].text, /D2 holds a formula/);
+  const sorted = await read('A1:D5');
+  assert.equal(sorted.find((cell) => cell.ref === 'A5').value, '서울');
+  assert.equal(String(sorted.find((cell) => cell.ref === 'D5').formula).replace(/^=/, ''), 'B5*C5');
+  assert.equal(sorted.find((cell) => cell.ref === 'D2')?.formula, undefined);
 
   // A filtered row keeps its number while the values move, and a merged cell
   // cannot travel with one row: both would misreport the sheet, so both fail.
@@ -4733,7 +5064,11 @@ test('text boxes are measured inside PowerPoint default insets, and an unfittabl
   assert.match(overflow(before.issues).message, /allows 53pt/);
   const fitted = value(
     await executeOfficeTool(
-      { action: 'batch', session: created.session, operations: [{ op: 'fit_text', slide: 1, shape: 1, minFontSize: 8 }] },
+      {
+        action: 'batch',
+        session: created.session,
+        operations: [{ op: 'fit_text', slide: 1, shape: 1, minFontSize: 8 }],
+      },
       { cwd }
     )
   );
@@ -4797,4 +5132,43 @@ test('portable set_table_data rewrites an existing table in place', async (t) =>
   assert.match(slide, /지역/);
   assert.match(slide, /일본/);
   assert.doesNotMatch(slide, /Korea/);
+
+  // One cell retoned: its fill and anchor on the cell, its type on its runs, its alignment on its paragraph; the
+  // cell beside it keeps what it had.
+  const styled = value(
+    await executeOfficeTool(
+      {
+        action: 'batch',
+        session: created.session,
+        operations: [
+          {
+            op: 'set_table_cell_style',
+            slide: 1,
+            shape: 1,
+            row: 2,
+            column: 2,
+            properties: { fillColor: 'F5ECD9', color: '8A5A00', bold: true, horizontalAlignment: 'center', verticalAlignment: 'bottom' },
+          },
+        ],
+      },
+      { cwd }
+    )
+  ).results[0];
+  assert.deepEqual([styled.changed, styled.row, styled.col], [true, 2, 2]);
+  const restyled = await (await parts(target)).text('ppt/slides/slide1.xml');
+  const cell = [...[...restyled.matchAll(/<a:tr\b[\s\S]*?<\/a:tr>/g)][1][0].matchAll(/<a:tc\b[\s\S]*?<\/a:tc>/g)].map((match) => match[0]);
+  assert.match(cell[1], /<a:tcPr\b[^>]*\banchor="b"[^>]*>[\s\S]*<a:solidFill><a:srgbClr val="F5ECD9"(?:\/>|><\/a:srgbClr>)<\/a:solidFill>/);
+  assert.match(cell[1], /<a:rPr\b[^>]*\bb="1"[^>]*>[\s\S]*?<a:srgbClr val="8A5A00"[\s\S]*?95/);
+  assert.match(cell[1], /<a:pPr\b[^>]*\balgn="ctr"/);
+  assert.doesNotMatch(cell[1], /<a:bodyPr\b[^>]*\banchor="(?!b")/, 'the text frame anchors where the cell does');
+  // Each border keeps the fill it had: a hidden border cleared of its noFill is a black line round the cell.
+  const borders = (xml) => [...xml.matchAll(/<a:ln[LRTB]\b[\s\S]*?<\/a:ln[LRTB]>|<a:ln[LRTB]\b[^>]*\/>/g)].map((match) => match[0]);
+  assert.deepEqual(borders(cell[1]), borders([...[...slide.matchAll(/<a:tr\b[\s\S]*?<\/a:tr>/g)][1][0].matchAll(/<a:tc\b[\s\S]*?<\/a:tc>/g)][1][0]));
+  assert.doesNotMatch(cell[0], /F5ECD9|8A5A00/);
+  const outside = await executeOfficeTool(
+    { action: 'batch', session: created.session, operations: [{ op: 'set_table_cell_style', slide: 1, shape: 1, row: 3, col: 1, properties: { bold: true } }] },
+    { cwd }
+  );
+  assert.equal(outside.isError, true);
+  assert.match(outside.content[0].text, /table shape 1 is 2x2; row 3, col 1 is outside it/);
 });

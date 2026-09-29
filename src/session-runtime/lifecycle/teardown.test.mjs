@@ -210,7 +210,10 @@ test('concurrent teardowns close their sessions one per event-loop turn, in orde
     const results = await Promise.all(
       fixtures.map((f) => f.teardown.close('idle and unwatched', { keepBackgroundWork: true }))
     );
-    assert.deepEqual(results, fixtures.map(() => true));
+    assert.deepEqual(
+      results,
+      fixtures.map(() => true)
+    );
     assert.deepEqual(
       closes.map((c) => c.id),
       fixtures.map((_, i) => `evict-${i}`)

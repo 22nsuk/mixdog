@@ -38,6 +38,7 @@ export function createHttpSseResponseState({ body, onToolCall, onTextDelta, mean
     flushLeak: text.flushLeak,
     stallPartial: outcome.stallPartial,
     stampStreamError: outcome.stampStreamError,
+    attachStreamPartial: outcome.attachStreamPartial,
     finish: outcome.finish,
   };
 }

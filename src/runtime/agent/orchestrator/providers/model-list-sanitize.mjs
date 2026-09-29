@@ -361,6 +361,9 @@ export function sanitizeModelList(models, opts = {}) {
     // dropped even if the row falsely claims mode:'chat'. These families are
     // never text-completion LLMs.
     if (_isNonLlmId(lid)) continue;
+    // (a1) asynchronous batch variants (OpenRouter `:batch`) cannot serve an
+    // interactive turn.
+    if (lid.endsWith(':batch')) continue;
     // (a) enriched mode present and not chat-like
     if (_isNonChatMode(row)) continue;
     // (a) non-chat modality id — but an explicit mode:'chat' overrides id regex

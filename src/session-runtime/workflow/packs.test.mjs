@@ -26,7 +26,8 @@ function fixture(t) {
   const data = join(root, 'data');
   mkdirSync(data, { recursive: true });
   writePack(root, 'default', 'Default');
-  const helpers = () => createWorkflowHelpers({ rootDir: root, dataDir: data, readMarkdownDocument, normalizeAgentPermissionOrNone });
+  const helpers = () =>
+    createWorkflowHelpers({ rootDir: root, dataDir: data, readMarkdownDocument, normalizeAgentPermissionOrNone });
   return { root, data, helpers };
 }
 

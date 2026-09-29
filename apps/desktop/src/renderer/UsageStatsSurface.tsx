@@ -10,9 +10,8 @@
  * instead of inside it.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react';
-import { DateRangePicker, type DayRange } from './DateRangePicker';
+import { useMemo, useRef, useState } from 'react';
+import { ChevronDown } from 'lucide-react';
 import { t } from './i18n';
 import { modelDisplayName, providerDisplayName, ProviderIcon } from './provider-display';
 import { record, rows } from './record-utils';
@@ -23,7 +22,6 @@ import {
   periodLabel,
   promptDetail,
   promptTokens,
-  shiftCustomRange,
   statsCount,
   statsMoney,
   statsNumber,
@@ -34,27 +32,34 @@ import {
   unpricedTurns,
 } from './usage-stats-model';
 import type { Row, SortKey, StatsRequest, StatsView } from './usage-stats-model';
+import { UsagePeriodControls, usagePeriodOptions } from './UsagePeriodControls';
 import { UsageTrend } from './UsageTrend';
 
 export { resolveUsageTrendGrouping } from './usage-stats-model';
 
-function StatCard({
+export function StatCard({
   label,
   value,
   detail,
+  note,
+  tone,
   loading,
 }: {
   label: string;
   value: string;
   detail?: string;
+  /** A second line under the figure: what it means right now. */
+  note?: string;
+  tone?: string;
   loading?: boolean;
 }) {
   return (
-    <div className="stats-card">
+    <div className="stats-card" data-tone={tone || undefined}>
       <small title={detail}>{label}</small>
       <b title={detail}>
         <StatsValue value={value} loading={loading} />
       </b>
+      {note && !loading && <em title={note}>{note}</em>}
     </div>
   );
 }
@@ -113,7 +118,7 @@ function TokenMix({ totals, loading }: { totals: Row; loading: boolean }) {
   );
 }
 
-function RouteCells({ route }: { route: Row }) {
+export function RouteCells({ route }: { route: Row }) {
   const incomplete = statsNumber(route.unmeasuredTurns) > 0;
   return (
     <>
@@ -180,34 +185,6 @@ export function UsageStatsBody({
     return { fromMs: toMs - 24 * 60 * 60 * 1000, toMs };
   }, []);
   const [sort, setSort] = useState<SortKey>('tokens');
-  const [customOpen, setCustomOpen] = useState(false);
-  // Editing a custom range selects its tab without replacing the applied data.
-  const activeView = customOpen ? 'custom' : view;
-  const [customStart, setCustomStart] = useState('');
-  const [customEnd, setCustomEnd] = useState('');
-  // Clock times stay optional: empty fields keep the whole selected days.
-  const [customStartTime, setCustomStartTime] = useState('');
-  const [customEndTime, setCustomEndTime] = useState('');
-  const [applied, setApplied] = useState<DayRange | null>(null);
-  const customHost = useRef<HTMLDivElement>(null);
-  // The editor hangs off its chip as a popover, so it dismisses like one.
-  useEffect(() => {
-    if (!customOpen) return undefined;
-    const dismiss = (event: globalThis.PointerEvent) => {
-      const target = event.target instanceof Node ? event.target : null;
-      if (target && customHost.current?.contains(target)) return;
-      setCustomOpen(false);
-    };
-    const keydown = (event: globalThis.KeyboardEvent) => {
-      if (event.key === 'Escape') setCustomOpen(false);
-    };
-    document.addEventListener('pointerdown', dismiss, true);
-    document.addEventListener('keydown', keydown, true);
-    return () => {
-      document.removeEventListener('pointerdown', dismiss, true);
-      document.removeEventListener('keydown', keydown, true);
-    };
-  }, [customOpen]);
   // Models start visible, including providers arriving with a new period.
   // Only explicit collapses are retained.
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set<string>());
@@ -273,69 +250,10 @@ export function UsageStatsBody({
   else if (partialDays > 0) historyNote = t('Historical records may be incomplete; only surviving usage is counted.');
   const tokenInfo = [t('Input, output and cache hits combined.'), historyNote].filter(Boolean).join('\n');
   const waiting = busy || loading;
-  const seedCustomRange = (range: DayRange) => {
-    setCustomStart(range.startDay);
-    setCustomEnd(range.endDay);
-    setCustomStartTime(range.startTime || '');
-    setCustomEndTime(range.endTime || '');
-  };
-  const applyCustom = (range: DayRange) => {
-    setApplied(range);
-    seedCustomRange(range);
-    setCustomOpen(false);
-    reload('custom', undefined, range);
-  };
   // The server's clock, not this renderer's: a served period already knows
   // where "now" is, and tests pin it.
   const today = localDayKey(statsNumber(stats.generatedAt) || Date.now());
-  // A page step measures the SELECTION, never the served period: a range
-  // reaching into the present day is served clamped back to "now".
-  const customApplied = view === 'custom' ? applied : null;
-  const previousRange = customApplied ? shiftCustomRange(customApplied, -1) : null;
-  const nextRange = customApplied ? shiftCustomRange(customApplied, 1) : null;
-  const paged = view !== 'hour' && view !== 'year';
-  const canPrevious = customApplied
-    ? Boolean(previousRange && previousRange.startDay >= '1970-01-01')
-    : Boolean(period.previousAnchor);
-  const canNext = customApplied ? Boolean(nextRange && nextRange.endDay <= today) : Boolean(period.nextAnchor);
-  const page = (direction: 1 | -1) => {
-    const target = direction === -1 ? previousRange : nextRange;
-    if (target) applyCustom(target);
-    else reload(view, String(direction === -1 ? period.previousAnchor : period.nextAnchor));
-  };
-  const openCustom = () => {
-    const seed = customApplied || {
-      startDay: String(period.startDay || record(stats.range).firstDay || localDayKey(initialPeriod.fromMs)),
-      endDay: String(period.endDay || localDayKey(initialPeriod.toMs)),
-    };
-    seedCustomRange(seed);
-    setCustomOpen(true);
-  };
-  // Times only ever narrow a range, so a reversed clock can only appear when
-  // both ends name the same day.
-  const customInvalid =
-    !customStart ||
-    !customEnd ||
-    customStart > customEnd ||
-    (customStart === customEnd &&
-      Boolean(customStartTime) &&
-      Boolean(customEndTime) &&
-      customStartTime > customEndTime);
-  const customRange: DayRange = {
-    startDay: customStart,
-    endDay: customEnd,
-    ...(customStartTime ? { startTime: customStartTime } : {}),
-    ...(customEndTime ? { endTime: customEndTime } : {}),
-  };
-  const views: ReadonlyArray<{ key: StatsView; label: string }> = [
-    { key: 'hour', label: t('Last 24 hours') },
-    { key: '7d', label: t('Last 7 days') },
-    { key: 'day', label: t('Last 30 days') },
-    { key: 'week', label: t('Last 90 days') },
-    { key: 'month', label: t('Last year') },
-    { key: 'year', label: t('All') },
-    { key: 'custom', label: t('Custom') },
-  ];
+  const firstDay = String(record(stats.range).firstDay || '');
   return (
     <div
       className="stats-surface"
@@ -348,83 +266,18 @@ export function UsageStatsBody({
           {t('Loading…')}
         </p>
       )}
-      <div className="stats-controls">
-        <div className="stats-ranges" role="group" aria-label={t('Period')}>
-          {views.map((option) => {
-            const chip = (
-              <button
-                key={option.key}
-                type="button"
-                className={`stats-range ${option.key === activeView ? 'is-active' : ''}`}
-                aria-pressed={option.key === activeView}
-                disabled={waiting}
-                aria-expanded={option.key === 'custom' ? customOpen : undefined}
-                onClick={() => {
-                  if (option.key === 'custom') {
-                    if (customOpen) setCustomOpen(false);
-                    else openCustom();
-                  } else {
-                    setCustomOpen(false);
-                    if (option.key !== view) reload(option.key);
-                  }
-                }}
-              >
-                {option.label}
-              </button>
-            );
-            if (option.key !== 'custom') return chip;
-            return (
-              <div className="stats-custom" key={option.key} ref={customHost}>
-                {chip}
-                {customOpen && (
-                  <form
-                    className="stats-custom-range"
-                    aria-label={t('Custom')}
-                    onSubmit={(event) => {
-                      event.preventDefault();
-                      applyCustom(customRange);
-                    }}
-                  >
-                    <DateRangePicker value={customRange} maxDay={today} disabled={waiting} onChange={seedCustomRange} />
-                    <button className="stats-range" type="submit" disabled={waiting || customInvalid}>
-                      {t('Apply')}
-                    </button>
-                  </form>
-                )}
-              </div>
-            );
-          })}
-        </div>
-        <div className="stats-period">
-          {paged && (
-            <button
-              type="button"
-              className="stats-period-arrow"
-              aria-label={t('Previous period')}
-              title={t('Previous period')}
-              disabled={waiting || !canPrevious}
-              onClick={() => page(-1)}
-            >
-              <ChevronLeft aria-hidden="true" />
-            </button>
-          )}
-          <span className="stats-period-label">
-            {periodLabel(view, period, String(record(stats.range).firstDay || ''))}
-          </span>
-          {paged && (
-            <button
-              type="button"
-              className="stats-period-arrow"
-              aria-label={t('Next period')}
-              title={t('Next period')}
-              disabled={waiting || !canNext}
-              onClick={() => page(1)}
-            >
-              <ChevronRight aria-hidden="true" />
-            </button>
-          )}
-        </div>
-      </div>
+      <UsagePeriodControls
+        views={usagePeriodOptions()}
+        view={view}
+        period={period}
+        periodText={periodLabel(view, period, firstDay)}
+        firstDay={firstDay}
+        today={today}
+        fallback={initialPeriod}
+        waiting={waiting}
+        paged={view !== 'hour' && view !== 'year'}
+        onLoad={(next, anchor, dates) => reload(next as StatsView, anchor, dates)}
+      />
       <div className="stats-cards">
         <StatCard
           label={t('Subscription list-price value')}

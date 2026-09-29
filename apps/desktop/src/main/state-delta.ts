@@ -452,7 +452,8 @@ export function createSnapshotDeltaEncoder(options: SnapshotDeltaEncoderOptions 
             wire.ip = head > 0 ? { h: prepend, p: prefix, a: append } : { p: prefix, a: append };
           }
         } else {
-          wire.__itemsPatch = head > 0 ? { base, revision, prepend, prefix, append } : { base, revision, prefix, append };
+          wire.__itemsPatch =
+            head > 0 ? { base, revision, prepend, prefix, append } : { base, revision, prefix, append };
         }
 
         const nextFields = snapshotFieldsFrom(record);
@@ -721,7 +722,9 @@ export function createSnapshotDeltaDecoder(): SnapshotDeltaDecoder {
           if (typeof key === 'string') delete nextStateFields[key];
         }
         if (statePatch.changed) Object.assign(nextStateFields, statePatch.changed);
-        for (const [field, listPatch] of Object.entries((statePatch.lists as Record<string, unknown> | undefined) ?? {})) {
+        for (const [field, listPatch] of Object.entries(
+          (statePatch.lists as Record<string, unknown> | undefined) ?? {}
+        )) {
           const list =
             listPatch && typeof listPatch === 'object' && Object.hasOwn(listPatch, 'r')
               ? applyRunsListPatch(stateFields[field], listPatch)

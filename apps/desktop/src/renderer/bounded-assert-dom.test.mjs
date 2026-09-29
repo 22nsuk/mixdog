@@ -40,7 +40,7 @@ test('failing comparisons between rendered JSDOM elements stay bounded', async (
   });
   // A sizeable React tree, so each element links to a large fiber/DOM graph.
   const rows = Array.from({ length: 500 }, (_, index) =>
-    React.createElement('li', { key: index, className: 'row' }, `Row ${index}`),
+    React.createElement('li', { key: index, className: 'row' }, `Row ${index}`)
   );
   await act(async () => root.render(React.createElement('ul', null, rows)));
   const [low, high] = document.querySelectorAll('li.row');

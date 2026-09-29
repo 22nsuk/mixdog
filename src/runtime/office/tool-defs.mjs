@@ -8,7 +8,7 @@ import { MAX_PDF_ANALYSIS_PAGES } from './pdf/pdf-limits.mjs';
  *  (pptx, docx, xlsx, pdf); the description only routes to them and states the
  *  contracts every call shares. */
 export const OFFICE_SKILL_ROUTING =
-  'Load the matching skill before first use: pptx (decks), docx (Word), xlsx (spreadsheets/CSV/TSV), pdf (PDF/OCR/security). Skills define workflows and operation fields; author requires the pptx script contract.';
+  'Load the matching skill before first use: pptx (decks), docx (Word), xlsx (spreadsheets/CSV/TSV), pdf (PDF/OCR/security). Skills define workflows and operation fields; author follows the pptx skill.';
 
 export const TOOL_DEFS = [
   {
@@ -26,10 +26,10 @@ export const TOOL_DEFS = [
           type: 'string',
           enum: OFFICE_ACTIONS,
           description:
-            'detect/describe discover; author: PPTX from a pptxgenjs script; transactions/recover, begin/diff/commit/rollback checkpoint; create/attach/open start; snapshot/get/query inspect; batch edits; issues/qa/render/validate review; save/finalize/close finish; secure encrypts/decrypts PDF.',
+            'detect/describe discover; author: PPTX from HTML or pptxgenjs; transactions/recover, begin/diff/commit/rollback checkpoint; create/attach/open start; snapshot/get/query inspect; batch edits; issues/qa/render/validate review; save/finalize/close finish; secure encrypts/decrypts PDF.',
         },
         path: { type: 'string', description: 'Document path; relative paths resolve from the caller project.' },
-        script: { type: 'string', description: 'author: pptxgenjs script per the pptx skill contract.' },
+        script: { type: 'string', description: 'author: HTML slides or a pptxgenjs script (pptx skill).' },
         render: {
           type: 'boolean',
           description:

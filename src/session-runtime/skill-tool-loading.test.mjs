@@ -18,7 +18,6 @@ import { createSkillsApi } from './skills-api.mjs';
 import { loadSkillToolDependencies } from './skill-tool-loading.mjs';
 import { parseNativeToolSearchPayload } from '../runtime/agent/orchestrator/session/loop/tool-helpers.mjs';
 import { buildRequestBody } from '../runtime/agent/orchestrator/providers/openai-responses-payload.mjs';
-import { nativeToolSearchCallFromArguments } from '../runtime/agent/orchestrator/providers/custom-tool-wire.mjs';
 import { toAnthropicMessages } from '../runtime/agent/orchestrator/providers/lib/anthropic-request-utils.mjs';
 
 const office = {
@@ -107,7 +106,7 @@ test('skill dependencies are callable on the next request without changing the e
         assert.deepEqual(native.openaiTools.find((tool) => tool.name === 'office').parameters, office.inputSchema);
         assert.deepEqual(
           requestTools.filter((tool) => !tool.deferLoading),
-          initialTools
+          initialTools.filter((tool) => !tool.deferLoading)
         );
       } else {
         assert.deepEqual(requestTools.find((tool) => tool.name === 'office').inputSchema, office.inputSchema);
@@ -136,11 +135,7 @@ test('skill dependencies are callable on the next request without changing the e
           if (sentTools.length <= 2)
             return {
               content: '',
-              toolCalls: [
-                provider === 'openai-oauth'
-                  ? nativeToolSearchCallFromArguments(`skill-${sentTools.length}`, { name: 'deck-guide' })
-                  : { id: `skill-${sentTools.length}`, name: 'Skill', arguments: { name: 'deck-guide' } },
-              ],
+              toolCalls: [{ id: `skill-${sentTools.length}`, name: 'Skill', arguments: { name: 'deck-guide' } }],
             };
           return { content: 'done', toolCalls: [], stopReason: 'end_turn' };
         },
@@ -159,19 +154,19 @@ test('skill dependencies are callable on the next request without changing the e
         assert.equal(nextDefinition, undefined);
         assert.deepEqual(sentBodies[1].tools, sentBodies[0].tools);
         const output = sentBodies[1].input.find((item) => item.type === 'tool_search_output');
-        assert.equal(output.call_id, 'skill-1');
+        assert.equal(output.call_id, 'skill-1_load');
         assert.deepEqual(output.tools.find((tool) => tool.name === 'office').parameters, office.inputSchema);
-        assert.equal(
-          sentBodies[1].input.some((item) => item.type === 'function_call_output' && item.call_id === 'skill-1'),
-          false
+        const skillOutput = sentBodies[1].input.find(
+          (item) => item.type === 'function_call_output' && item.call_id === 'skill-1'
         );
+        assert.doesNotMatch(skillOutput.output, /tool_search with names/);
         assert.ok(JSON.stringify(sentBodies[1].input).includes('# Deck guide'));
       } else if (provider === 'anthropic-oauth') {
         assert.deepEqual(nextDefinition.inputSchema, office.inputSchema);
         assert.equal(nextDefinition.deferLoading, true);
         assert.deepEqual(
           sentTools[1].filter((tool) => !tool.deferLoading),
-          sentTools[0]
+          sentTools[0].filter((tool) => !tool.deferLoading)
         );
         assert.ok(JSON.stringify(sentBodies[1]).includes('"tool_reference","tool_name":"office"'));
         assert.ok(JSON.stringify(sentBodies[1]).includes('# Deck guide'));

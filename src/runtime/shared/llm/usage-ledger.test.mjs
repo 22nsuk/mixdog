@@ -66,8 +66,8 @@ test('inclusive input is normalized once, including a relay route', () => {
 
 test('official context and UTC time tiers are priced at request granularity', () => {
   const grok = { provider: 'grok-oauth', model: 'grok-4.20', outputTokens: 1000 };
-  assert.equal(priceUsage({ ...grok, inputTokens: 199999 }).costUsd, 0.252499);
-  assert.equal(priceUsage({ ...grok, inputTokens: 200000 }).costUsd, 0.505);
+  assert.equal(priceUsage({ ...grok, inputTokens: 200000 }).costUsd, 0.2525);
+  assert.equal(priceUsage({ ...grok, inputTokens: 200001 }).costUsd, 0.505003);
   const deepseek = { provider: 'deepseek', model: 'deepseek-v4-flash', inputTokens: 1_000_000 };
   assert.equal(priceUsage({ ...deepseek, ts: Date.parse('2026-09-11T06:00:00Z') }).costUsd, 0.3);
   assert.equal(priceUsage({ ...deepseek, ts: Date.parse('2026-09-11T10:00:00Z') }).costUsd, 0.15);

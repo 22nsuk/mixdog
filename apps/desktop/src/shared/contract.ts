@@ -24,8 +24,6 @@ import type { DesktopSettingKey, DesktopSettings } from './contract-settings';
 import type {
   DesktopBrowserCredentialFillResult,
   DesktopBrowserCredentialSuggestion,
-  DesktopBrowserDataClearResult,
-  DesktopBrowserDataScope,
   DesktopBrowserGuestViewportChange,
   DesktopBrowserHistoryEntry,
   DesktopBrowserImportProgress,
@@ -310,7 +308,13 @@ export interface DesktopApi {
   resyncSessionState?(sessionId: string): void;
   /** Register every visible session for owner-pipe mirroring. */
   setVisibleSessions?(sessionIds: string[]): Promise<boolean>;
-  searchProjectFiles(projectIdOrWorkspaceId: string, query: string, limit?: number): Promise<string[]>;
+  /** `includeIgnored` also searches gitignored folders (chat file links). */
+  searchProjectFiles(
+    projectIdOrWorkspaceId: string,
+    query: string,
+    limit?: number,
+    includeIgnored?: boolean
+  ): Promise<string[]>;
   searchWorkspaceText?(
     projectPath: string,
     options: DesktopWorkspaceTextSearchOptions
@@ -476,6 +480,15 @@ export interface DesktopApi {
   browserPresentTexture?(sessionId: string, textureId: string, canvasId: string): void;
   browserDiscardTexture?(sessionId: string): void;
   browserPageControl?(sessionId: string, input: DesktopBrowserPageControl): Promise<void>;
+  /** Page facts without pixels, while the page is natively presented. */
+  browserPageMetadata?(sessionId: string): Promise<DesktopBrowserPageFrame>;
+  /** Present the session's page natively over `rect` (CSS pixels of this
+   *  window), or park it with null. `enabled` is false when the host does not
+   *  present pages natively; the pane then keeps its pixel display. */
+  browserPresentNative?(
+    sessionId: string,
+    rect: { x: number; y: number; width: number; height: number } | null
+  ): Promise<{ enabled: boolean; shown: boolean }>;
   /** Apply pane-owned device emulation to the exact visible Browser guest. */
   browserConfigureGuestViewport?(
     sessionId: string,
@@ -496,10 +509,6 @@ export interface DesktopApi {
   browserProfileImportStart?(request: DesktopBrowserImportRequest): Promise<DesktopBrowserImportResult>;
   onBrowserProfileImportProgress?(listener: (progress: DesktopBrowserImportProgress) => void): () => void;
   browserHistorySearch?(query: string): Promise<DesktopBrowserHistoryEntry[]>;
-  /** Reclaim what the shared Browser Use partition accumulated on disk. Each
-   *  scope is answered on its own so a partial result is never reported as a
-   *  clean sweep: cache is free to lose, site data and cookies are not. */
-  browserClearData?(scopes: DesktopBrowserDataScope[]): Promise<DesktopBrowserDataClearResult>;
   /** Current session's Browser Use page only. Passwords never cross this API. */
   browserCredentialSuggestions?(sessionId: string): Promise<DesktopBrowserCredentialSuggestion[]>;
   browserCredentialFill?(sessionId: string, credentialId: string): Promise<DesktopBrowserCredentialFillResult>;

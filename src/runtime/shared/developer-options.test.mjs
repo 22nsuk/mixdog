@@ -9,12 +9,15 @@ const dir = mkdtempSync(join(tmpdir(), 'mixdog-developer-options-'));
 process.env.MIXDOG_DATA_DIR = dir;
 process.env.MIXDOG_CONFIG_READ_TTL_MS = '0';
 process.env.MIXDOG_USER_DATA_BACKUP_ROOT = join(dir, 'backups');
-delete process.env.MIXDOG_DEV_PROVIDERS;
 
 const { updateSection, readSection } = await import('./config.mjs');
-const { DEVELOPER_SECTIONS, developerOptionEnabled, developerSettingsView, normalizeDeveloperConfig } = await import(
-  './developer-options.mjs'
-);
+const {
+  DEVELOPER_SECTIONS,
+  developerOptionEnabled,
+  developerOptionForProvider,
+  developerSettingsView,
+  normalizeDeveloperConfig,
+} = await import('./developer-options.mjs');
 const cfgMod = await import('../agent/orchestrator/config.mjs');
 
 const storeDeveloper = (developer) => updateSection('agent', (current) => ({ ...current, developer }));
@@ -22,7 +25,6 @@ const storeDeveloper = (developer) => updateSection('agent', (current) => ({ ...
 test.after(() => rmSync(dir, { recursive: true, force: true }));
 
 test.afterEach(() => {
-  delete process.env.MIXDOG_DEV_PROVIDERS;
   updateSection('agent', (current) => {
     const next = { ...current };
     delete next.developer;
@@ -30,30 +32,58 @@ test.afterEach(() => {
   });
 });
 
-test('registry: the Providers section holds the Dev providers option', () => {
+test('registry: Gemini (Antigravity) and Cursor are separate provider options with the OAuth risk warning', () => {
   assert.deepEqual(
-    DEVELOPER_SECTIONS.map((section) => [section.id, section.options.map((option) => [option.id, option.env])]),
-    [['providers', [['devProviders', 'MIXDOG_DEV_PROVIDERS']]]]
+    DEVELOPER_SECTIONS.map((section) => [
+      section.id,
+      section.options.map((option) => [option.id, option.label, option.provider]),
+    ]),
+    [
+      [
+        'providers',
+        [
+          ['antigravityOAuth', 'Gemini (Antigravity)', 'antigravity-oauth'],
+          ['cursorOAuth', 'Cursor', 'cursor-oauth'],
+        ],
+      ],
+    ]
   );
+  for (const option of DEVELOPER_SECTIONS[0].options) {
+    assert.match(option.warning, /OAuth carries a high risk of penalties such as account restrictions/);
+  }
+  assert.equal(developerOptionForProvider('antigravity-oauth').id, 'antigravityOAuth');
+  assert.equal(developerOptionForProvider('cursor-oauth').id, 'cursorOAuth');
+  assert.equal(developerOptionForProvider('openai-oauth'), null);
   assert.ok(Object.isFrozen(DEVELOPER_SECTIONS));
 });
 
-test('default off: no env and no stored value', () => {
-  assert.equal(developerOptionEnabled('devProviders'), false);
+test('default off: no stored value', () => {
+  assert.equal(developerOptionEnabled('antigravityOAuth'), false);
+  assert.equal(developerOptionEnabled('cursorOAuth'), false);
   assert.equal(developerOptionEnabled('unknown'), false);
+  const warning = 'Using this provider through OAuth carries a high risk of penalties such as account restrictions.';
   assert.deepEqual(developerSettingsView(), {
     sections: [
       {
         id: 'providers',
         label: 'Providers',
+        description: warning,
         options: [
           {
-            id: 'devProviders',
-            label: 'Dev providers',
-            description: 'Show Cursor OAuth and Antigravity OAuth in Providers and the model picker.',
-            env: 'MIXDOG_DEV_PROVIDERS',
+            id: 'antigravityOAuth',
+            label: 'Gemini (Antigravity)',
+            description: 'Show Antigravity (Gemini) OAuth in Providers and the model picker.',
+            warning,
+            provider: 'antigravity-oauth',
             enabled: false,
-            envForced: false,
+          },
+          {
+            id: 'cursorOAuth',
+            label: 'Cursor',
+            description: 'Show Cursor OAuth in Providers and the model picker.',
+            warning,
+            provider: 'cursor-oauth',
+            enabled: false,
           },
         ],
       },
@@ -61,52 +91,42 @@ test('default off: no env and no stored value', () => {
   });
 });
 
-test('stored config value turns the option on', () => {
-  storeDeveloper({ devProviders: true });
-  assert.equal(developerOptionEnabled('devProviders'), true);
-  const [option] = developerSettingsView().sections[0].options;
-  assert.equal(option.enabled, true);
-  assert.equal(option.envForced, false);
-  storeDeveloper({ devProviders: false });
-  assert.equal(developerOptionEnabled('devProviders'), false);
-});
-
-test('a truthy env forces the option on over a stored false; a falsy env defers to config', () => {
-  for (const raw of ['1', 'true', 'YES', ' on ']) {
-    process.env.MIXDOG_DEV_PROVIDERS = raw;
-    storeDeveloper({ devProviders: false });
-    assert.equal(developerOptionEnabled('devProviders'), true, raw);
-    const [option] = developerSettingsView().sections[0].options;
-    assert.equal(option.enabled, true);
-    assert.equal(option.envForced, true);
-  }
-  process.env.MIXDOG_DEV_PROVIDERS = '0';
-  assert.equal(developerOptionEnabled('devProviders'), false);
-  storeDeveloper({ devProviders: true });
-  assert.equal(developerOptionEnabled('devProviders'), true);
-  assert.equal(developerSettingsView().sections[0].options[0].envForced, false);
+test('each stored value turns only its own option on', () => {
+  storeDeveloper({ cursorOAuth: true });
+  assert.equal(developerOptionEnabled('cursorOAuth'), true);
+  assert.equal(developerOptionEnabled('antigravityOAuth'), false);
+  assert.deepEqual(
+    developerSettingsView().sections[0].options.map((option) => [option.id, option.enabled]),
+    [
+      ['antigravityOAuth', false],
+      ['cursorOAuth', true],
+    ]
+  );
+  storeDeveloper({ cursorOAuth: false, antigravityOAuth: true });
+  assert.equal(developerOptionEnabled('cursorOAuth'), false);
+  assert.equal(developerOptionEnabled('antigravityOAuth'), true);
 });
 
 test('stored values normalize to booleans only', () => {
-  assert.deepEqual(normalizeDeveloperConfig({ devProviders: 'yes', other: true, n: 1 }), { other: true });
+  assert.deepEqual(normalizeDeveloperConfig({ cursorOAuth: 'yes', other: true, n: 1 }), { other: true });
   assert.deepEqual(normalizeDeveloperConfig(null), {});
   assert.deepEqual(normalizeDeveloperConfig([true]), {});
 });
 
 test('the developer key survives agent config load and save', () => {
-  storeDeveloper({ devProviders: true });
+  storeDeveloper({ cursorOAuth: true });
   const loaded = cfgMod.loadConfig({ secrets: false });
-  assert.deepEqual(loaded.developer, { devProviders: true });
+  assert.deepEqual(loaded.developer, { cursorOAuth: true });
   cfgMod.saveConfig({ ...loaded, profile: { ...loaded.profile, title: 'Dev' } }, { baseConfig: loaded });
-  assert.deepEqual(readSection('agent').developer, { devProviders: true });
+  assert.deepEqual(readSection('agent').developer, { cursorOAuth: true });
 
   const reloaded = cfgMod.loadConfig({ secrets: false });
-  cfgMod.saveConfig({ ...reloaded, developer: { devProviders: false } }, { baseConfig: reloaded });
-  assert.deepEqual(readSection('agent').developer, { devProviders: false });
-  assert.equal(developerOptionEnabled('devProviders'), false);
+  cfgMod.saveConfig({ ...reloaded, developer: { cursorOAuth: false } }, { baseConfig: reloaded });
+  assert.deepEqual(readSection('agent').developer, { cursorOAuth: false });
+  assert.equal(developerOptionEnabled('cursorOAuth'), false);
 
   // A whole-section save keeps it too.
   const full = cfgMod.loadConfig({ secrets: false });
-  cfgMod.saveConfig({ ...full, developer: { devProviders: true } });
-  assert.deepEqual(readSection('agent').developer, { devProviders: true });
+  cfgMod.saveConfig({ ...full, developer: { cursorOAuth: true } });
+  assert.deepEqual(readSection('agent').developer, { cursorOAuth: true });
 });

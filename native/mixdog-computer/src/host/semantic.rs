@@ -13,8 +13,21 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 const NONINTERACTIVE_ROLES: [&str; 15] = [
-    "Text", "Custom", "Group", "Pane", "Image", "DataGrid", "DataItem", "Header", "HeaderItem", "Table", "ProgressBar",
-    "StatusBar", "ToolBar", "TitleBar", "Separator",
+    "Text",
+    "Custom",
+    "Group",
+    "Pane",
+    "Image",
+    "DataGrid",
+    "DataItem",
+    "Header",
+    "HeaderItem",
+    "Table",
+    "ProgressBar",
+    "StatusBar",
+    "ToolBar",
+    "TitleBar",
+    "Separator",
 ];
 const CANDIDATE_LIMIT: usize = 5000;
 
@@ -47,10 +60,12 @@ fn node_state(node: &Node) -> String {
 
 impl Host {
     fn accessibility(&self) -> Res<&dyn Accessibility> {
-        let a11y = self
-            .desktop
-            .accessibility()
-            .ok_or_else(|| format!("accessibility_unavailable: {} exposes no accessibility tree to this host", self.desktop.name()))?;
+        let a11y = self.desktop.accessibility().ok_or_else(|| {
+            format!(
+                "accessibility_unavailable: {} exposes no accessibility tree to this host",
+                self.desktop.name()
+            )
+        })?;
         a11y.available()?;
         Ok(a11y)
     }
@@ -64,7 +79,11 @@ impl Host {
             session.invalidate_refs();
             (expected, session.generation)
         });
-        let visible_only = if req.has("visible_only") { req.truthy("visible_only") } else { true };
+        let visible_only = if req.has("visible_only") {
+            req.truthy("visible_only")
+        } else {
+            true
+        };
         let include_noninteractive = req.truthy("include_noninteractive");
         let include_structure = req.truthy("include_structure");
         let bounded = req.truthy("bounded");
@@ -76,21 +95,38 @@ impl Host {
         let query = req.text("query").trim().to_lowercase();
         let role_filter = req.text("role").trim().to_lowercase();
         let fingerprint = fingerprint(
-            &json!([info.id(), max, visible_only, include_noninteractive, include_structure, bounded, query, role_filter]).to_string(),
+            &json!([
+                info.id(),
+                max,
+                visible_only,
+                include_noninteractive,
+                include_structure,
+                bounded,
+                query,
+                role_filter
+            ])
+            .to_string(),
         );
         let mut offset = 0usize;
         let mut continuation_total = None;
         if let Some(token) = req.str("continuation") {
             let parts: Vec<&str> = token.split(':').collect();
-            let parsed = (parts.len() == 4)
-                .then(|| (parts[0].parse::<i64>().ok(), parts[1].parse::<usize>().ok(), parts[3].parse::<usize>().ok()));
+            let parsed = (parts.len() == 4).then(|| {
+                (
+                    parts[0].parse::<i64>().ok(),
+                    parts[1].parse::<usize>().ok(),
+                    parts[3].parse::<usize>().ok(),
+                )
+            });
             let valid = matches!(parsed, Some((Some(token_generation), Some(token_offset), Some(token_total)))
                 if token_generation == generation - 1
                     && token_offset <= token_total
                     && expected_continuation.as_deref() == Some(token.as_str())
                     && parts[2] == fingerprint);
             if !valid {
-                return Err("continuation is stale or incompatible; capture the first page again".into());
+                return Err(
+                    "continuation is stale or incompatible; capture the first page again".into(),
+                );
             }
             if let Some((_, Some(token_offset), Some(token_total))) = parsed {
                 offset = token_offset;
@@ -114,20 +150,35 @@ impl Host {
             if !node.width.is_finite() || node.width <= 0.0 || node.height <= 0.0 {
                 continue;
             }
-            let wanted_role = is_interactive(&node.role) || (include_noninteractive && NONINTERACTIVE_ROLES.contains(&node.role.as_str()));
+            let wanted_role = is_interactive(&node.role)
+                || (include_noninteractive && NONINTERACTIVE_ROLES.contains(&node.role.as_str()));
             if !wanted_role {
                 continue;
             }
             if visible_only {
-                let (x, y, width, height) = (info.x as f64, info.y as f64, info.width as f64, info.height as f64);
-                if node.offscreen || node.x + node.width <= x || node.x >= x + width || node.y + node.height <= y || node.y >= y + height {
+                let (x, y, width, height) = (
+                    info.x as f64,
+                    info.y as f64,
+                    info.width as f64,
+                    info.height as f64,
+                );
+                if node.offscreen
+                    || node.x + node.width <= x
+                    || node.x >= x + width
+                    || node.y + node.height <= y
+                    || node.y >= y + height
+                {
                     continue;
                 }
             }
             if !role_filter.is_empty() && node.role.to_lowercase() != role_filter {
                 continue;
             }
-            let search = format!("{} {} {} {}", node.name, node.automation_id, node.value, node.role).to_lowercase();
+            let search = format!(
+                "{} {} {} {}",
+                node.name, node.automation_id, node.value, node.role
+            )
+            .to_lowercase();
             if !query.is_empty() && !search.contains(&query) {
                 continue;
             }
@@ -149,7 +200,11 @@ impl Host {
         if continuation_total.is_some_and(|total| total != found.len()) {
             return Err("continuation is stale because the observed tree changed; capture the first page again".into());
         }
-        let view = if include_noninteractive { "all" } else { "interactive" };
+        let view = if include_noninteractive {
+            "all"
+        } else {
+            "interactive"
+        };
         let mut lines = vec![
             format!("Window: {} [{}]", info.title, info.id()),
             format!(
@@ -158,7 +213,8 @@ impl Host {
             ),
         ];
         let end = found.len().min(offset + max);
-        let continuation = (end < found.len()).then(|| format!("{generation}:{end}:{fingerprint}:{}", found.len()));
+        let continuation = (end < found.len())
+            .then(|| format!("{generation}:{end}:{fingerprint}:{}", found.len()));
         let mut elements = Vec::new();
         for (index, node) in found.iter().enumerate().take(end).skip(offset) {
             let position = index - offset;
@@ -181,12 +237,20 @@ impl Host {
                 details.push(format!("id=\"{}\"", format_value(&node.automation_id, 80)));
             }
             if !node.accelerator.is_empty() {
-                details.push(format!("accelerator=\"{}\"", format_value(&node.accelerator, 40)));
+                details.push(format!(
+                    "accelerator=\"{}\"",
+                    format_value(&node.accelerator, 40)
+                ));
             }
             if !node.value.is_empty() {
                 details.push(format!("value=\"{}\"", format_value(&node.value, 120)));
             }
-            for (label, value) in [("toggle", &node.toggle), ("selected", &node.selected), ("expanded", &node.expanded), ("range", &node.range)] {
+            for (label, value) in [
+                ("toggle", &node.toggle),
+                ("selected", &node.selected),
+                ("expanded", &node.expanded),
+                ("range", &node.range),
+            ] {
                 if !value.is_empty() {
                     details.push(format!("{label}={value}"));
                 }
@@ -225,7 +289,10 @@ impl Host {
                 "actions" => actions,
             };
             if !node.accelerator.is_empty() {
-                element.insert("accelerator".into(), json!(format_value(&node.accelerator, 40)));
+                element.insert(
+                    "accelerator".into(),
+                    json!(format_value(&node.accelerator, 40)),
+                );
             }
             if include_structure {
                 for (key, value) in node.element.structure() {
@@ -234,7 +301,11 @@ impl Host {
             }
             elements.push(Value::Object(element));
             let disabled = if node.enabled { "" } else { " (disabled)" };
-            let detail_text = if details.is_empty() { String::new() } else { format!(" {}", details.join(" ")) };
+            let detail_text = if details.is_empty() {
+                String::new()
+            } else {
+                format!(" {}", details.join(" "))
+            };
             lines.push(format!(
                 "[{reference}] {} \"{}\"{disabled}{detail_text} @{cx},{cy}",
                 node.role,
@@ -335,7 +406,10 @@ impl Host {
     pub(super) fn accessibility_probe(&self, req: &Req) -> Res<Obj> {
         let info = self.resolve_window(req)?;
         let a11y = self.accessibility()?;
-        let interactive = a11y.snapshot(&info, false, 400)?.iter().any(|node| is_interactive(&node.role));
+        let interactive = a11y
+            .snapshot(&info, false, 400)?
+            .iter()
+            .any(|node| is_interactive(&node.role));
         if interactive {
             return Ok(obj! { "interactive" => true, "source" => self.desktop.name() });
         }
@@ -344,20 +418,40 @@ impl Host {
 
     pub(super) fn invoke_menu(&self, req: &Req) -> Res<Obj> {
         let info: WindowInfo = self.resolve_window(req)?;
-        let path: Vec<String> = req.strings("path").into_iter().filter(|segment| !segment.trim().is_empty()).collect();
+        let path: Vec<String> = req
+            .strings("path")
+            .into_iter()
+            .filter(|segment| !segment.trim().is_empty())
+            .collect();
         if path.is_empty() || path.len() > 8 {
             return Err("menu path must have 1..8 segments".into());
         }
         let a11y = self.accessibility()?;
         let authorize = || self.authorize(req, info.handle);
         let outcome = a11y.invoke_menu(&info, &path, &authorize)?;
-        Ok(self.action_result("invoke_menu", outcome.path, effect(outcome.verified), outcome.verified, &outcome.message, None, "background", Some(info.id())))
+        Ok(self.action_result(
+            "invoke_menu",
+            outcome.path,
+            effect(outcome.verified),
+            outcome.verified,
+            &outcome.message,
+            None,
+            "background",
+            Some(info.id()),
+        ))
     }
 
     /// The element states an action can visibly change, joined for comparison.
-    pub(super) fn observable_state(&self, element: &Rc<dyn Element>, action: &str) -> Option<String> {
+    pub(super) fn observable_state(
+        &self,
+        element: &Rc<dyn Element>,
+        action: &str,
+    ) -> Option<String> {
         let mut parts = Vec::new();
-        if matches!(action, "click" | "double_click" | "right_click" | "middle_click" | "triple_click") {
+        if matches!(
+            action,
+            "click" | "double_click" | "right_click" | "middle_click" | "triple_click"
+        ) {
             if let Some(toggle) = element.toggle_state() {
                 parts.push(format!("toggle={toggle}"));
             }
@@ -386,40 +480,94 @@ impl Host {
         let (element, window) = self.ref_record(&reference)?;
         let id = Some(window);
         if !element.enabled() {
-            return Ok(Some(self.background_unavailable("invoke", &format!("element {reference} is disabled; no input was sent"), id, "element_disabled", false)));
+            return Ok(Some(self.background_unavailable(
+                "invoke",
+                &format!("element {reference} is disabled; no input was sent"),
+                id,
+                "element_disabled",
+                false,
+            )));
         }
         if let Some(before) = element.toggle_state() {
             self.authorize_current(0)?;
             element.press()?;
             let after = wait_for_change(&before, || element.toggle_state());
             let verified = after != before;
-            let message = format!("activated {reference} through accessibility toggle from {before} to {after}");
-            return Ok(Some(self.action_result("invoke", "a11y_toggle", effect(verified), verified, &message, None, "background", id)));
+            let message = format!(
+                "activated {reference} through accessibility toggle from {before} to {after}"
+            );
+            return Ok(Some(self.action_result(
+                "invoke",
+                "a11y_toggle",
+                effect(verified),
+                verified,
+                &message,
+                None,
+                "background",
+                id,
+            )));
         }
         if let Some(before) = element.expand_state() {
-            let expected = if before == "Expanded" { "Collapsed" } else { "Expanded" };
+            let expected = if before == "Expanded" {
+                "Collapsed"
+            } else {
+                "Expanded"
+            };
             self.authorize_current(0)?;
             element.set_expanded(expected == "Expanded")?;
             let after = wait_for_change(&before, || element.expand_state());
             let verified = after == expected;
             let message = format!("activated {reference} through accessibility expand/collapse from {before} to {after}");
-            return Ok(Some(self.action_result("invoke", "a11y_expand_collapse", effect(verified), verified, &message, None, "background", id)));
+            return Ok(Some(self.action_result(
+                "invoke",
+                "a11y_expand_collapse",
+                effect(verified),
+                verified,
+                &message,
+                None,
+                "background",
+                id,
+            )));
         }
         if element.can_press() {
             self.authorize_current(0)?;
             element.press()?;
-            return Ok(Some(self.action_result("invoke", "a11y_invoke", "unverifiable", false, &format!("invoked {reference} through accessibility"), None, "background", id)));
+            return Ok(Some(self.action_result(
+                "invoke",
+                "a11y_invoke",
+                "unverifiable",
+                false,
+                &format!("invoked {reference} through accessibility"),
+                None,
+                "background",
+                id,
+            )));
         }
         if element.can_select() {
             self.authorize_current(0)?;
             element.select()?;
-            return Ok(Some(self.action_result("invoke", "a11y_selection", "unverifiable", false, &format!("selected {reference} through accessibility"), None, "background", id)));
+            return Ok(Some(self.action_result(
+                "invoke",
+                "a11y_selection",
+                "unverifiable",
+                false,
+                &format!("selected {reference} through accessibility"),
+                None,
+                "background",
+                id,
+            )));
         }
         if allow_native_click {
             return Ok(None);
         }
         let message = format!("element {reference} exposes no semantic toggle/invoke/select action; no physical fallback was attempted");
-        Ok(Some(self.background_unavailable("invoke", &message, id, "background_unavailable", false)))
+        Ok(Some(self.background_unavailable(
+            "invoke",
+            &message,
+            id,
+            "background_unavailable",
+            false,
+        )))
     }
 
     pub(super) fn do_set_value(&self, req: &Req, text: &str) -> Res<Obj> {
@@ -428,7 +576,13 @@ impl Host {
         let id = Some(window);
         if !element.settable() {
             let message = format!("element {reference} exposes no settable value; no keystroke fallback was attempted");
-            return Ok(self.background_unavailable("set_value", &message, id, "background_unavailable", false));
+            return Ok(self.background_unavailable(
+                "set_value",
+                &message,
+                id,
+                "background_unavailable",
+                false,
+            ));
         }
         self.authorize_current(0)?;
         element.set_value(text)?;
@@ -442,7 +596,16 @@ impl Host {
         }
         let verified = actual == text;
         let message = format!("set {reference} value through accessibility; readback={verified}");
-        Ok(self.action_result("set_value", "a11y_value", effect(verified), verified, &message, None, "background", id))
+        Ok(self.action_result(
+            "set_value",
+            "a11y_value",
+            effect(verified),
+            verified,
+            &message,
+            None,
+            "background",
+            id,
+        ))
     }
 
     pub(super) fn do_toggle(&self, req: &Req) -> Res<Obj> {
@@ -454,7 +617,16 @@ impl Host {
             let after = wait_for_change(&before, || element.toggle_state());
             let verified = after != before;
             let message = format!("toggled {reference} from {before} to {after}");
-            return Ok(self.action_result("toggle", "a11y_toggle", effect(verified), verified, &message, None, "background", Some(window)));
+            return Ok(self.action_result(
+                "toggle",
+                "a11y_toggle",
+                effect(verified),
+                verified,
+                &message,
+                None,
+                "background",
+                Some(window),
+            ));
         }
         let mut result = self.do_invoke(req, false)?.unwrap_or_default();
         result.insert("action".into(), json!("toggle"));

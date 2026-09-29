@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { ComputerUseCoordinator } from '../session/coordinator.ts';
 import { computerUseOverlayPresentation } from '../overlay/model.ts';
-import { createComputerOverlayController } from '../overlay/controls.ts';
 import { createSessionLifecycle } from './session-lifecycle.ts';
 import { createExecutionState } from './execution-state.ts';
 
@@ -67,7 +66,6 @@ test('paused UI survives session cleanup; only safe probes work, and explicit re
   assert.equal(snapshot.activities.length, 0);
   const model = computerUseOverlayPresentation(snapshot, 'ko');
   assert.equal(model.visible, true);
-  assert.equal(model.canResume, true);
   assert.deepEqual(model.sessionIds, ['a']);
   for (const action of ['list_windows', 'list_apps', 'diagnose']) {
     await lifecycle.executeSerialized({ action, session_id: 'a' });
@@ -91,7 +89,6 @@ test('cleanup and new takeover generations cannot be cleared by a stale resume c
   const { coordinator, lifecycle } = fixture();
   const generation = coordinator.snapshot().takeoverGeneration;
   const finish = coordinator.beginCleanup('a');
-  assert.equal(computerUseOverlayPresentation(coordinator.snapshot()).canResume, false);
   await assert.rejects(lifecycle.resumeAfterTakeover(generation), /cleanup_pending/);
   finish(true);
   coordinator.pauseForUser('second_interruption');
@@ -108,41 +105,8 @@ test('failed cleanup remains blocked with visible guidance, including after rese
   coordinator.reset();
   const state = computerUseOverlayPresentation(coordinator.snapshot(), 'ko');
   assert.equal(state.visible, true);
-  assert.equal(state.canResume, false);
   assert.equal(state.attention, true);
   await assert.rejects(lifecycle.resumeAfterTakeover(state.generation), /cleanup_pending/);
-});
-
-test('UI coalesces duplicate requests and retains actionable errors without raw payloads', async () => {
-  let finish;
-  let resumed = 0;
-  let stopped = 0;
-  const gate = new Promise((resolve) => {
-    finish = resolve;
-  });
-  const control = createComputerOverlayController(
-    {
-      resume: async () => {
-        resumed++;
-        await gate;
-        throw new Error('computer_resume_stale: private payload');
-      },
-      stop: async () => {
-        stopped++;
-      },
-    },
-    () => {}
-  );
-  const pending = control.invoke('resume', 2, ['a']);
-  await control.invoke('resume', 2, ['a']);
-  assert.equal(resumed, 1);
-  assert.equal(control.state(2).busy, true);
-  finish();
-  await pending;
-  assert.equal(control.state(2).error, 'stale');
-  assert.equal(control.state(3).error, '');
-  await control.invoke('stop', 3, ['a']);
-  assert.equal(stopped, 1);
 });
 
 test('an interruption during the resume drain invalidates the pending request without releasing newer observations', async () => {
@@ -229,62 +193,4 @@ test('cancelling a resume drain prevents a late command from releasing the pause
   assert.equal(coordinator.snapshot().userControlActive, true);
   assert.equal(released.length, releasedBefore);
   coordinator.reset();
-});
-
-test('Stop cancels a pending resume without waiting for it', async () => {
-  let signal;
-  let finish;
-  let stopped = false;
-  const control = createComputerOverlayController(
-    {
-      resume: async (_, cancellation) => {
-        signal = cancellation;
-        await new Promise((resolve) => {
-          finish = resolve;
-        });
-      },
-      stop: async () => {
-        stopped = true;
-      },
-    },
-    () => {}
-  );
-  const pending = control.invoke('resume', 1, ['a']);
-  await control.invoke('stop', 1, ['a']);
-  assert.equal(signal.aborted, true);
-  assert.equal(stopped, true);
-  finish();
-  await pending;
-  assert.equal(control.state(1).busy, false);
-});
-
-test('pause cancels a pending resume without calling the task-ending stop control', async () => {
-  let signal, finish;
-  let pauses = 0,
-    stops = 0;
-  const control = createComputerOverlayController(
-    {
-      resume: async (_, cancellation) => {
-        signal = cancellation;
-        await new Promise((resolve) => {
-          finish = resolve;
-        });
-      },
-      pause: async () => {
-        pauses++;
-      },
-      stop: async () => {
-        stops++;
-      },
-    },
-    () => {}
-  );
-  const pending = control.invoke('resume', 2, ['a']);
-  await control.invoke('pause', 2, ['a']);
-  assert.equal(signal.aborted, true);
-  assert.equal(pauses, 1);
-  assert.equal(stops, 0);
-  finish();
-  await pending;
-  assert.equal(control.state(2).busy, false);
 });

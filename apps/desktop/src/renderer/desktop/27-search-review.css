@@ -12,6 +12,47 @@
   padding: 6px 12px 0;
   border-bottom: 1px solid var(--mx-border-muted);
 }
+/* The mode tabs share their row with the file tree's own actions (New File,
+   New Folder, Refresh, Collapse All), present only while the tree shows. */
+.workbench-search-mode-row {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.workbench-search-mode-row > .workbench-search-mode {
+  flex: 1 1 0;
+}
+.workbench-explorer-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding-bottom: 2px;
+}
+.workbench-explorer-actions:empty {
+  display: none;
+}
+.workbench-explorer-actions > button {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--mx-radius-sm);
+  color: var(--mx-text-muted);
+  background: transparent;
+  cursor: pointer;
+}
+.workbench-explorer-actions > button:hover:not(:disabled) {
+  color: var(--mx-text);
+  background: var(--mx-hover);
+}
+.workbench-explorer-actions > button:disabled {
+  opacity: var(--mx-op-disabled);
+  cursor: default;
+}
 .dock-scm-tab-content {
   min-width: 0;
   max-width: 100%;
@@ -132,9 +173,6 @@
   font-size: var(--mx-font-micro);
   line-height: var(--mx-line-minor);
 }
-.app-shell > .desktop-body .editor-statusbar {
-  display: none;
-}
 /* Turn-review bar: attached above the input in the bottom stack (user
    decision). A late worker result grows the composer region upward and the
    transcript's bottom anchor absorbs that single layout change. */
@@ -151,6 +189,9 @@
 .turn-review-slot:empty {
   display: none;
 }
+/* A bar that appears while the transcript is on screen opens this slot once
+   (TurnReviewBar); one already there when a session is entered lands at full
+   height. */
 .turn-review-slot:has(.turn-review-bar) {
   margin-bottom: 8px;
 }
@@ -330,6 +371,14 @@
 .turn-review-source .diff-stats i,
 .turn-review-source .diff-stats em {
   min-width: 0;
+  text-align: right;
+}
+/* The source header has no row actions; this spacer holds the action column
+   so its totals line up with the file rows below. */
+.turn-review-files li.turn-review-source::after {
+  content: '';
+  grid-column: 5;
+  min-width: 40px;
 }
 .turn-review-source .diff-stats i {
   grid-column: 3;
@@ -395,6 +444,7 @@
 .turn-review-file .diff-stats i,
 .turn-review-file .diff-stats em {
   min-width: 0;
+  text-align: right;
 }
 .turn-review-file .diff-stats i {
   grid-column: 3;
@@ -469,16 +519,6 @@
    reads danger on hover (session-row delete grammar). */
 .turn-review-revert.danger:hover {
   color: var(--mx-danger);
-}
-/* A refused revert states its reason on the bar itself. Silence read as a
-   broken button. */
-.turn-review-error {
-  margin: 0;
-  padding: 4px 10px 6px;
-  color: var(--mx-danger);
-  font-size: var(--mx-font-meta);
-  line-height: var(--mx-line-meta);
-  overflow-wrap: anywhere;
 }
 .turn-review-files li[data-reverted="true"] code {
   text-decoration: line-through;
@@ -558,32 +598,6 @@
   display: flex;
   align-items: center;
   gap: 1px;
-}
-.session-diff-loading,
-.session-diff-state {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 16px 20px;
-  color: var(--mx-text-muted);
-  font-size: var(--mx-font-ui);
-}
-.session-diff-state {
-  flex-direction: column;
-  color: var(--mx-danger);
-  text-align: center;
-}
-.session-diff-state button {
-  min-height: 24px;
-  padding: 0 8px;
-  border: 0.5px solid var(--mx-border);
-  border-radius: var(--mx-radius-sm);
-  color: var(--mx-text);
-  background: var(--mx-button-bg);
-  cursor: pointer;
 }
 .session-diff-notice {
   margin: 0;
@@ -805,21 +819,6 @@ div.diff-tailwindcss-wrapper[data-theme="dark"] {
   color: var(--mx-text);
   background: var(--mx-pressed);
 }
-.review-action-btn {
-  min-height: 26px;
-  padding: 0 10px;
-  border: 0;
-  border-radius: var(--mx-radius-md);
-  color: var(--mx-text-muted);
-  background: transparent;
-  font-size: var(--mx-font-minor);
-  font-weight: var(--mx-weight-regular);
-  cursor: pointer;
-}
-.review-action-btn:hover:not(:disabled) {
-  color: var(--mx-text);
-  background: var(--mx-hover);
-}
 .review-empty {
   padding: 32px;
   color: var(--mx-text-muted);
@@ -830,11 +829,6 @@ div.diff-tailwindcss-wrapper[data-theme="dark"] {
 .review-pane > .review-empty:only-child {
   margin: auto;
   padding: 0;
-}
-.review-clean {
-  display: grid;
-  gap: 12px;
-  justify-items: center;
 }
 .review-empty-state {
   width: min(100%, 800px);
@@ -938,22 +932,6 @@ div.diff-tailwindcss-wrapper[data-theme="dark"] {
 .review-file[data-open] .review-chevron {
   transform: rotate(180deg);
 }
-/* Revert is a HOVER action (GitHub row grammar): absolutely positioned so
-   the +/− column keeps one right edge on every row. */
-.review-file-header .dock-git-action,
-.review-file-header .dock-git-revert-confirm {
-  position: absolute;
-  right: 34px;
-  margin: 0;
-  opacity: 0;
-  background: var(--mx-workspace-sheet);
-  box-shadow: 0 0 0 4px var(--mx-workspace-sheet);
-}
-.review-file-header:hover .dock-git-action,
-.review-file-header:focus-within .dock-git-action,
-.review-file-header .dock-git-revert-confirm {
-  opacity: 1;
-}
 /* Contain the diff library's internal z-indexes (up to 10 !important) so
    rows can never paint over the sticky header. */
 .review-file-body {
@@ -989,7 +967,7 @@ div.diff-tailwindcss-wrapper[data-theme="dark"] {
 /* Review file context menu: open / reveal / copy / discard. */
 .review-context-menu {
   position: fixed;
-  z-index: 100;
+  z-index: var(--mx-menu-z-index);
   min-width: 192px;
   display: grid;
   padding: 4px;
@@ -1032,9 +1010,6 @@ div.diff-tailwindcss-wrapper[data-theme="dark"] {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-  .session-header-status {
-    flex-shrink: 0;
   }
   .session-project-badge {
     display: none;

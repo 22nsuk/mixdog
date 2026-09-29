@@ -219,6 +219,13 @@ export function resolveStudioModel(spec: MediaKindSpec | null, model: string): s
   return spec.models[0]?.id || '';
 }
 
+/** Display casing for lane vocabulary: auto → Auto, 1k → 1K, 480p → 480p. */
+export function pillLabel(value: string): string {
+  if (/^\d+k$/i.test(value)) return value.toUpperCase();
+  if (/^[a-z]/.test(value)) return value.charAt(0).toUpperCase() + value.slice(1);
+  return value;
+}
+
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return '';
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;

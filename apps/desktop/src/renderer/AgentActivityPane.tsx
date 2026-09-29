@@ -16,6 +16,7 @@ import { sessionSummaryTitle } from '../shared/session-title.mjs';
 import { t } from './i18n';
 import { modelDisplayName, ModelRouteLabel } from './provider-display';
 import { formatWorkElapsed, timeMs } from './TranscriptView';
+import { TextShimmer } from './transcript-primitives';
 import {
   AGENT_POOL_RECONCILE_MS,
   agentActivityGroups,
@@ -452,6 +453,9 @@ function renderAgentActivityGroup({
 }) {
   const title = sessionSummaryTitle(group.session);
   const expanded = expandedSessionIds.has(group.ownerId);
+  // Any agent of the group still working — the Lead or a descendant — makes
+  // the session name shimmer, so a folded group still reads as live.
+  const working = group.agents.some((agent) => desktopAgentActivityState(agent) === 'running');
   const setGroupCollapsed = (collapsed: boolean): void => setSessionExpanded(group.ownerId, !collapsed);
   return (
     <section key={group.ownerId} className="workflows-models" data-agent-owner-session-id={group.ownerId}>
@@ -464,7 +468,9 @@ function renderAgentActivityGroup({
           data-lead-session-id={group.ownerId}
           onClick={() => setGroupCollapsed(expanded)}
         >
-          <h2>{title}</h2>
+          <h2>
+            <TextShimmer text={title} active={working} />
+          </h2>
           <span className="agent-session-chevron" aria-hidden="true">
             {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
           </span>

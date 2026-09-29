@@ -524,7 +524,9 @@ function reviewPptxTextShape(slide, shape, { width, height }, issues) {
   const surface = containingSurface(shape, slide.shapes || []);
   const backgroundColor = solidShapeFill(shape) ?? solidShapeFill(surface) ?? slide.background?.color;
   const contrast = colorContrastRatio(shape.font?.color, backgroundColor);
-  if (Number.isFinite(contrast) && contrast < 1.8) {
+  // A table's words stand on its cells' fills, each read against its own (tableCellContrast). Read against the
+  // slide, a dark-headed table's white header was reported as text indistinguishable from its surface.
+  if (!shape.table && Number.isFinite(contrast) && contrast < 1.8) {
     issues.push(
       issue(
         'low_contrast',
@@ -690,6 +692,49 @@ function reviewPptxTextOcclusion(slide, textShapes, issues) {
   }
 }
 
+// A text box that dips a sliver into a panel, band, or picture it does not sit in: a headline whose last line
+// runs onto the card under it reads as a collision, not a decision. Words wholly inside a surface are its label,
+// wholly outside are its neighbour, and a deep crossing is a deliberate overlay; only a shallow crossing of one
+// edge (more than 2 pt, less than half the text) is reported.
+const TEXT_EDGE_SLACK_PT = 2;
+
+function reviewPptxTextEdgeCrossing(slide, textShapes, issues) {
+  for (const textShape of textShapes) {
+    if (isPptxChromeText(textShape)) continue;
+    const t = { l: Number(textShape.left), t: Number(textShape.top), w: Number(textShape.width), h: Number(textShape.height) };
+    if (!(t.w > 0 && t.h > 0)) continue;
+    for (const surface of slide.shapes || []) {
+      if (surface === textShape || isMotifShape(surface) || String(surface.text || '').trim()) continue;
+      if (!isPptxPicture(surface) && !solidShapeFill(surface)) continue;
+      if (!hasFrame(surface)) continue;
+      const s = { l: Number(surface.left), t: Number(surface.top), w: Number(surface.width), h: Number(surface.height) };
+      const across = Math.min(t.l + t.w, s.l + s.w) - Math.max(t.l, s.l);
+      const down = Math.min(t.t + t.h, s.t + s.h) - Math.max(t.t, s.t);
+      if (across <= 0 || down <= 0) continue;
+      // Depth past each edge the text crosses, measured on the side of the text inside the surface.
+      const crossings = [];
+      if (across > 0.3 * t.w) {
+        if (t.t < s.t && t.t + t.h > s.t && t.t + t.h <= s.t + s.h) crossings.push(['top', t.t + t.h - s.t, t.h]);
+        if (t.t + t.h > s.t + s.h && t.t < s.t + s.h && t.t >= s.t) crossings.push(['bottom', s.t + s.h - t.t, t.h]);
+      }
+      if (down > 0.3 * t.h) {
+        if (t.l < s.l && t.l + t.w > s.l && t.l + t.w <= s.l + s.w) crossings.push(['left', t.l + t.w - s.l, t.w]);
+        if (t.l + t.w > s.l + s.w && t.l < s.l + s.w && t.l >= s.l) crossings.push(['right', s.l + s.w - t.l, t.w]);
+      }
+      const shallow = crossings.find(([, depth, size]) => depth > TEXT_EDGE_SLACK_PT && depth < size / 2);
+      if (!shallow) continue;
+      issues.push(
+        issue(
+          'text_crosses_edge',
+          textShape.path || slideAt(slide),
+          `Text shape ${textShape.index} runs ${Math.round(shallow[1])} pt over the ${shallow[0]} edge of shape ${surface.index}; move the text clear of the surface or set it inside.`
+        )
+      );
+      break;
+    }
+  }
+}
+
 // Axes are read from drawn objects only: rules, connectors, bands, pictures,
 // charts, tables. A text box is sized to its measured copy, so its box edges
 // are a consequence of the wrap, not a position anyone chose.
@@ -778,6 +823,7 @@ export function reviewPptxStructure(document, auditProfile = '') {
     reviewPptxTextPairs(slide, textShapes, issues);
     reviewPptxEvidenceCover(slide, textShapes, issues);
     reviewPptxTextOcclusion(slide, textShapes, issues);
+    reviewPptxTextEdgeCrossing(slide, textShapes, issues);
     reviewPptxAlignment(slide, issues, canvas);
     if (auditProfile === 'model-backed-deck') reviewPptxNumberSources(slide, textShapes, issues);
   }

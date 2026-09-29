@@ -22,6 +22,7 @@ import {
   upsertWorksheetSection,
   worksheetSection,
 } from './portable-sheet-xml.mjs';
+import { dropCalculationChain, renameSheetReferences } from './portable-xlsx-reference-shift.mjs';
 
 export const WORKSHEET_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml';
 
@@ -154,29 +155,34 @@ export async function addWorksheet(zip, name) {
   return { name: label, path: part, sheetId };
 }
 
-export async function renameWorksheet(zip, sheet, name) {
+// Excel renames a sheet in every formula, name, rule and chart series that names it; the workbook entry alone left
+// them naming a sheet that no longer exists.
+export async function renameWorksheet(zip, sheet, name, sheets) {
   const label = assertWorksheetName('rename_sheet', name);
   const workbookPath = 'xl/workbook.xml';
-  const workbook = await zipText(zip, workbookPath);
   const pattern = new RegExp(`<sheet\\b[^>]*\\bname="${tagPattern(xmlEncode(sheet.name))}"[^>]*\\/>`, 'i');
+  if (!pattern.test(await zipText(zip, workbookPath))) throw new Error(`Worksheet not found: ${sheet.name}`);
+  const rewritten = await renameSheetReferences(zip, sheets, sheet, label, 'rename_sheet');
+  const workbook = await zipText(zip, workbookPath);
   const match = pattern.exec(workbook);
-  if (!match) throw new Error(`Worksheet not found: ${sheet.name}`);
   const replaced = match[0].replace(/\bname="[^"]*"/, `name="${xmlEncode(label)}"`);
   zip.file(
     workbookPath,
     `${workbook.slice(0, match.index)}${replaced}${workbook.slice(match.index + match[0].length)}`
   );
-  return { from: sheet.name, to: label };
+  return { from: sheet.name, to: label, referencesRewritten: rewritten };
 }
 
 export async function deleteWorksheet(zip, sheets, sheet) {
   if (sheets.length <= 1) throw new Error('A workbook must keep at least one worksheet');
   const index = sheets.findIndex((entry) => entry.name === sheet.name);
   const workbookPath = 'xl/workbook.xml';
-  let workbook = await zipText(zip, workbookPath);
   const pattern = new RegExp(`<sheet\\b[^>]*\\bname="${tagPattern(xmlEncode(sheet.name))}"[^>]*\\/>`, 'i');
+  if (!pattern.test(await zipText(zip, workbookPath))) throw new Error(`Worksheet not found: ${sheet.name}`);
+  // What named the sheet reads #REF! in its place, as Excel leaves it.
+  await renameSheetReferences(zip, sheets, sheet, null, 'delete_sheet');
+  let workbook = await zipText(zip, workbookPath);
   const match = pattern.exec(workbook);
-  if (!match) throw new Error(`Worksheet not found: ${sheet.name}`);
   workbook = `${workbook.slice(0, match.index)}${workbook.slice(match.index + match[0].length)}`;
   // A workbook-level name carries no localSheetId at all, and an absent
   // attribute reads back as an empty string: taking that as 0 deleted every
@@ -202,6 +208,7 @@ export async function deleteWorksheet(zip, sheets, sheet) {
     '[Content_Types].xml',
     types.replace(new RegExp(`<Override\\b[^>]*\\bPartName="/${tagPattern(sheet.path)}"[^>]*\\/>`), '')
   );
+  await dropCalculationChain(zip);
   return { sheet: sheet.name };
 }
 

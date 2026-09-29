@@ -267,7 +267,7 @@ export function trendMetricText(totals: TrendTotals, metric: Metric): string {
   return metricText(metricValue(totals, metric), metric, totals.unmeasuredTurns > 0);
 }
 
-export function trendPeriodLabel(bucket: TrendBucket): string {
+export function trendPeriodLabel(bucket: Pick<TrendBucket, 'fromMs' | 'toMs' | 'startDay' | 'endDay' | 'label'>): string {
   if (bucket.fromMs !== null && bucket.toMs !== null) {
     return new Intl.DateTimeFormat(uiFormatLocale(), {
       month: 'short',
@@ -284,12 +284,13 @@ export function trendPeriodLabel(bucket: TrendBucket): string {
   }).formatRange(new Date(`${bucket.startDay}T00:00:00`), new Date(`${bucket.endDay}T00:00:00`));
 }
 
-export function periodLabel(view: StatsView, period: Row, firstDay?: string): string {
+export function periodLabel(view: StatsView | 'window', period: Row, firstDay?: string): string {
   // A range cut by the clock reads like the rolling window: only the exact
-  // instants tell the reader where a partial day was cut.
+  // instants tell the reader where a partial day was cut. So does one limit
+  // window of a subscription, from its opening to its reset.
   const clocked = view === 'custom' && Boolean(period.startTime || period.endTime);
-  if (view === 'hour' || clocked) {
-    if (!period.fromMs || !period.toMs) return clocked ? '—' : t('Last 24 hours');
+  if (view === 'hour' || view === 'window' || clocked) {
+    if (!period.fromMs || !period.toMs) return view === 'hour' ? t('Last 24 hours') : '—';
     const options: Intl.DateTimeFormatOptions = {
       month: 'short',
       day: 'numeric',

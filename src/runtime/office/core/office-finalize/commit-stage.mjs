@@ -27,6 +27,9 @@ export function validateForFinalize(session, args) {
     __postSave: isMicrosoftOfficeSession(session) && session.mode === 'background',
     __skipNative: false,
     __skipNativeIssues: false,
+    // The reopened workbook's full reading is dropped from finalize's answer (its fingerprint and issue count state
+    // the persistence), and reading it cost a financial model's finalize 1.5 s.
+    __skipNativeSnapshot: true,
   });
 }
 

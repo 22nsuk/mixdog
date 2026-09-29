@@ -7,6 +7,7 @@ import {
   rebuildTextNodes,
   textNodes,
   topLevelElements,
+  xmlDecode,
   xmlEncode,
 } from './portable-xml.mjs';
 
@@ -117,7 +118,11 @@ export function mergeWordCellProperties(cellXml, properties = {}) {
   let existing = /<w:tcPr(?:\s[^>]*)?>([\s\S]*?)<\/w:tcPr>/.exec(cellXml)?.[1] || '';
   // A filled cell is a field again, and its text needs the padding back: a layout table's flush edge is dropped
   // when the cell takes a fill.
-  if (properties.fillColor) existing = existing.replace(/<w:tcMar>(?:<w:(?:left|right) w:w="0" w:type="dxa"\/>)+<\/w:tcMar>/, '');
+  if (properties.fillColor)
+    existing = existing.replace(/<w:tcMar>(?:<w:(?:left|right) w:w="0" w:type="dxa"\/>)+<\/w:tcMar>/, '');
+  // fillColor: null takes the shading away, as the Word backend's automatic colour removes it: a data row inserted
+  // above a total keeps the total's shading otherwise.
+  if (properties.fillColor === null) existing = existing.replace(/<w:shd\b[^>]*\/>/, '');
   const inner = mergeWordPropertyElements(existing, wordCellProperties(properties), CELL_PROPERTY_ORDER);
   return replaceWordProperties(cellXml, 'tc', 'tcPr', inner);
 }
@@ -150,9 +155,7 @@ function wordTableParagraphProperties(properties = {}, { keepNext = false } = {}
   const size = Number(properties.fontSize) > 0 ? Number(properties.fontSize) : 11;
   return [
     properties.textStyle ? `<w:pStyle w:val="${xmlEncode(docxStyleId(properties.textStyle))}"/>` : '',
-    // keepWithNext: every row keeps with the next, so the table stays on one page with the caption under it
-    // (a caption left alone at the top of the next page no longer says which table it names).
-    properties.keepWithNext || keepNext ? '<w:keepNext/>' : '',
+    keepNext ? '<w:keepNext/>' : '',
     `<w:spacing${Number.isFinite(spacing) ? ` w:after="${Math.max(0, Math.round(spacing * 20))}"` : ''} w:line="${Math.round(size * 1.3 * 20)}" w:lineRule="exact"/>`,
   ].join('');
 }
@@ -245,9 +248,32 @@ export function naturalTableColumnWidths(values, properties = {}, available = 0)
     fontSize: Number(properties.fontSize) > 0 ? Number(properties.fontSize) : 11,
   };
   const headerBold = rows.length > 1 && properties.headerBold !== false && properties.repeatHeader !== false;
-  const measure = (text, rowIndex) =>
-    measureTextWidth(text, { ...font, bold: headerBold && rowIndex === 0 }) * 1.05 + CELL_PADDING_POINTS;
+  const headers = tableHeaderRows(properties, rows.length);
+  const gutters = isLayoutTable(properties) ? [] : gutterColumns(properties);
+  const measure = (text, rowIndex, column) =>
+    measureTextWidth(text, { ...font, bold: headerBold && rowIndex < headers }) * 1.05 +
+    CELL_PADDING_POINTS +
+    (gutters[column] ? GUTTER_POINTS : 0);
   return naturalColumnWidths(rows, measure, available);
+}
+
+// Room before a column of words that follows a column of figures: set right, the figure ran into the note beside it
+// ("96 내부 인력 4명") across the cells' own padding alone. The words' cells take a gutter on their left.
+const GUTTER_POINTS = 8;
+function gutterColumns(properties) {
+  const alignments = (properties?.columnAlignments || []).map((value) => String(value || '').toLowerCase());
+  return alignments.map(
+    (alignment, column) =>
+      column > 0 && alignments[column - 1] === 'right' && (alignment === 'left' || alignment === 'justify')
+  );
+}
+const gutterMargin = (gutter) =>
+  gutter ? `<w:tcMar><w:left w:w="${pointsToTwips(CELL_PADDING_POINTS / 2 + GUTTER_POINTS)}" w:type="dxa"/></w:tcMar>` : '';
+
+// The rows a table's header takes: one, or more for a header of several levels — a group label over the columns it
+// spans ("3분기 처리량" over 7월 · 8월 · 9월) is two. At least one row stays data.
+function tableHeaderRows(properties, rows) {
+  return Math.max(1, Math.min(rows - 1, Math.floor(Number(properties?.headerRows) || 1)));
 }
 
 const flushCellMargins = (first, last) =>
@@ -275,10 +301,15 @@ export function wordTableXml(operation, { available = 0 } = {}) {
   const headerBold =
     rows > 1 && operation.properties?.headerBold !== false && operation.properties?.repeatHeader !== false;
   const headerRunProperties = headerBold ? wordTableRunProperties(operation.properties, { bold: true }) : runProperties;
+  const headers = tableHeaderRows(operation.properties, rows);
+  const gutters = layout ? [] : gutterColumns(operation.properties);
   // A page break never strands a table's edge: the header travels with the first two rows and the last two rows
   // travel together (widow and orphan control, row by row) — a three-row table used to leave its last row alone at
-  // the top of the next page under a repeated header. A longer table still breaks between those rows.
-  const keptRow = (row) => row < rows - 1 && (row <= 1 || row === rows - 2);
+  // the top of the next page under a repeated header. A table of six rows or fewer moves whole, as a split one is
+  // reported; a longer one still breaks between those rows. keepWithNext holds the last row to what follows (its
+  // caption): gluing every row instead carried a 25-row table whole to the next page and left half a page blank.
+  const keptRow = (row) =>
+    row < rows - 1 ? rows <= 6 || row <= headers || row === rows - 2 : Boolean(operation.properties?.keepWithNext);
   const paragraphProperties = (row) => wordTableParagraphProperties(operation.properties, { keepNext: keptRow(row) });
   const grid = Array.from(
     { length: columns },
@@ -290,7 +321,7 @@ export function wordTableXml(operation, { available = 0 } = {}) {
   const repeatHeader = operation.properties?.repeatHeader !== false;
   const body = Array.from({ length: rows }, (_, row) => {
     const rowProperties = [
-      row === 0 && repeatHeader ? '<w:tblHeader/>' : '',
+      row < headers && repeatHeader ? '<w:tblHeader/>' : '',
       heights[row] ? `<w:trHeight w:val="${pointsToTwips(heights[row])}" w:hRule="atLeast"/>` : '',
     ].join('');
     return `<w:tr>${rowProperties ? `<w:trPr>${rowProperties}</w:trPr>` : ''}${Array.from(
@@ -310,13 +341,13 @@ export function wordTableXml(operation, { available = 0 } = {}) {
           .join('');
         // Schema order inside pPr: style and spacing before justification.
         const cellParagraphProperties = `${paragraphProperties(row)}${justifications[column] ? `<w:jc w:val="${justifications[column]}"/>` : ''}`;
-        const cellRunProperties = row === 0 ? headerRunProperties : runProperties;
+        const cellRunProperties = row < headers ? headerRunProperties : runProperties;
         // A row reads from its top: a label beside a two-line note starts on the note's first line, where the
         // bottom edge put it on the last. The header row sits on its rule (its bottom edge), so a header that wraps
         // stands on the same line as the ones beside it. The exact line pitch keeps a Latin-only figure and a Hangul
         // label on one baseline either way; set_table_cell_style verticalAlignment overrides per cell.
-        const margins = layout ? flushCellMargins(column === 0, column === columns - 1) : '';
-        const edge = row === 0 && headerBold ? 'bottom' : 'top';
+        const margins = layout ? flushCellMargins(column === 0, column === columns - 1) : gutterMargin(gutters[column]);
+        const edge = row < headers && headerBold ? 'bottom' : 'top';
         return `<w:tc><w:tcPr>${width}${margins}<w:vAlign w:val="${edge}"/></w:tcPr><w:p>${cellParagraphProperties ? `<w:pPr>${cellParagraphProperties}</w:pPr>` : ''}<w:r>${cellRunProperties ? `<w:rPr>${cellRunProperties}</w:rPr>` : ''}${runs}</w:r></w:p></w:tc>`;
       }
     ).join('')}</w:tr>`;
@@ -554,6 +585,15 @@ export function tableRowMatches(tableXml) {
   });
 }
 
+// A row names its cells as it stands: a merge across columns joins cells and moves the later ones left, so a header
+// merged left to right lost its last label. The error says how many cells the row holds and how to go on, in the words
+// the Office backend uses.
+export function missingDocxCellError(op, cells) {
+  return new Error(
+    `DOCX table row ${op.row} holds ${cells.length} cell(s) as it stands, so it has no cell ${op.col}: a merge across columns joins cells and moves the later ones left; merge a row from its right end first, or name the cell by its new position`
+  );
+}
+
 export function rowCellMatches(rowXml) {
   const inner = containerInner(rowXml, 'w:tr');
   if (!inner) return [];
@@ -587,10 +627,65 @@ export function docxTables(current) {
   });
 }
 
+// A table as a caller can pick it out of the page: its size and the words it starts with. A report's metric strip is
+// a table too, and "table 1" named it where the results table was meant; the errors now say which table is which.
+// The grid's columns, as Word counts a table's columns whatever its merges.
+function tableColumnCount(tableXml, rows = tableRowMatches(tableXml)) {
+  const grid = /<w:tblGrid\b[\s\S]*?<\/w:tblGrid>/.exec(tableXml)?.[0] || '';
+  return (grid.match(/<w:gridCol\b/g) || []).length || (rows.length ? rowCellMatches(rows[0][0]).length : 0);
+}
+
+function tableSummary(tableXml) {
+  const rows = tableRowMatches(tableXml);
+  const columns = tableColumnCount(tableXml, rows);
+  const firstCell = rows.length ? rowCellMatches(rows[0][0])[0]?.[0] || '' : '';
+  const start = [...firstCell.matchAll(/<w:t\b[^>]*>([^<]*)<\/w:t>/g)]
+    .map((match) => xmlDecode(match[1]))
+    .join('')
+    .trim()
+    .slice(0, 24);
+  return `${rows.length}×${columns}${start ? ` starting "${start}"` : ''}`;
+}
+
 export function docxTable(current, number) {
-  const match = docxTables(current)[Number(number) - 1];
-  if (!match) throw new Error(`DOCX table ${number} not found`);
+  const tables = docxTables(current);
+  const match = tables[Number(number) - 1];
+  if (!match) {
+    const held = tables
+      .slice(0, 6)
+      .map((table, index) => `${index + 1}: ${tableSummary(table[0])}`)
+      .join('; ');
+    throw new Error(`DOCX table ${number} not found: the document holds ${tables.length} table(s)${held ? ` (${held})` : ''}`);
+  }
   return match;
+}
+
+// A row the table does not have, said with the table's size and first words, so the caller can tell whether it named
+// the wrong row or the wrong table. insert_table_row takes one past the last row, where the new row is added at the end.
+export function missingDocxRowError(op, tableXml) {
+  const count = tableRowMatches(tableXml).length;
+  const insertion = op.op === 'insert_table_row';
+  return new Error(
+    `DOCX table ${op.table} is ${tableSummary(tableXml)}, so it has no row ${op.row}` +
+      (insertion
+        ? `: insert_table_row row is the position the new row takes, 1 to ${count + 1} (${count + 1} adds it at the end)`
+        : '')
+  );
+}
+
+// A column the table does not have, said the same way; insert_table_column takes one past the last column, where the
+// new column is added at the end. The Office backend refused that position with Word's "no such member".
+export function checkDocxColumn(op, tableXml) {
+  const count = tableColumnCount(tableXml);
+  const insertion = op.op === 'insert_table_column';
+  const column = Number(op.column);
+  if (Number.isInteger(column) && column >= 1 && column <= count + (insertion ? 1 : 0)) return column;
+  throw new Error(
+    `DOCX table ${op.table} is ${tableSummary(tableXml)}, so it has no column ${op.column}` +
+      (insertion
+        ? `: insert_table_column column is the position the new column takes, 1 to ${count + 1} (${count + 1} adds it at the end)`
+        : '')
+  );
 }
 
 export function replaceDocxTable(current, table, nextTable) {
@@ -643,14 +738,17 @@ function tabStopXml(tab) {
   return `<w:tab w:val="${value}" w:pos="${pointsToTwips(tab.position || 0)}"${leader}/>`;
 }
 
-function paragraphSpacingXml({ spacingBefore, spacingAfter, lineSpacing }) {
+// lineSpacing is a minimum unless lineSpacingRule:'exact' holds the line at it: set on Malgun Gothic's own line, the two
+// lines of one 24 pt title stood nearly twice the size apart, and a minimum can only open that gap further.
+function paragraphSpacingXml({ spacingBefore, spacingAfter, lineSpacing, lineSpacingRule }) {
   if (spacingBefore === undefined && spacingAfter === undefined && lineSpacing === undefined) return '';
   const before =
     spacingBefore !== undefined ? ` w:before="${Math.max(0, Math.round(Number(spacingBefore) * 20))}"` : '';
   const after = spacingAfter !== undefined ? ` w:after="${Math.max(0, Math.round(Number(spacingAfter) * 20))}"` : '';
+  const rule = String(lineSpacingRule || '').toLowerCase() === 'exact' ? 'exact' : 'atLeast';
   const line =
     lineSpacing !== undefined
-      ? ` w:line="${Math.max(1, Math.round(Number(lineSpacing) * 20))}" w:lineRule="atLeast"`
+      ? ` w:line="${Math.max(1, Math.round(Number(lineSpacing) * 20))}" w:lineRule="${rule}"`
       : '';
   return `<w:spacing${before}${after}${line}/>`;
 }
@@ -660,7 +758,17 @@ function paragraphIndentXml({ indentLeft, indentRight, indentFirstLine }) {
   const twips = (points) => Math.max(0, Math.round(Number(points) * 20));
   const left = indentLeft !== undefined ? ` w:left="${twips(indentLeft)}"` : '';
   const right = indentRight !== undefined ? ` w:right="${twips(indentRight)}"` : '';
-  const firstLine = indentFirstLine !== undefined ? ` w:firstLine="${twips(indentFirstLine)}"` : '';
+  // A negative first line hangs out to the left of the lines under it — "①" or "1." with the wrapped words set
+  // under the words, not under the mark — as Word takes a negative FirstLineIndent through COM. The file spells it
+  // w:hanging: a w:firstLine never goes below zero, and clamped there the mark sat inside the indent and every
+  // wrapped line started under it.
+  const first = Number(indentFirstLine);
+  const firstLine =
+    indentFirstLine === undefined
+      ? ''
+      : first < 0
+        ? ` w:hanging="${twips(-first)}"`
+        : ` w:firstLine="${twips(first)}"`;
   return `<w:ind${left}${right}${firstLine}/>`;
 }
 

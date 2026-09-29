@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { subscribeModelCatalogInvalidation } from './model-catalog-cache.ts';
 import {
+  invalidateSidebarReferenceForMutation,
   resetSidebarReferenceCache,
   sidebarReferenceKeysForMutation,
   sidebarReferencesLoading,
@@ -21,6 +23,25 @@ test('cold sidebar references stay loading until the complete set is available',
 test('unavailable bridges never leave a permanent loading surface', () => {
   resetSidebarReferenceCache();
   assert.equal(sidebarReferencesLoading(false, false, ['workflows', 'agents']), false);
+});
+
+test('a Developer provider toggle retires provider references and wakes mounted model pickers', async () => {
+  let woke = 0;
+  const unsubscribe = subscribeModelCatalogInvalidation(() => {
+    woke += 1;
+  });
+  try {
+    assert.equal(invalidateSidebarReferenceForMutation('setDeveloperOption'), true);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(woke, 1);
+  } finally {
+    unsubscribe();
+  }
+  assert.deepEqual(sidebarReferenceKeysForMutation('setDeveloperOption'), [
+    'providerSetup',
+    'quickProviderModels',
+    'webSearchModels',
+  ]);
 });
 
 test('Local Provider lifecycle changes invalidate setup and model references', () => {

@@ -88,7 +88,7 @@ export const READONLY_TOOL_NAMES = new Set([
   'web_search',
   'web_fetch',
   'recall',
-  'memory',
+  // memory is not listed: it adds, edits and deletes standing memories.
   'Skill',
 ]);
 

@@ -72,6 +72,7 @@ const SYNTHETIC_USER_SOURCES = new Set([
   'compact-execution-recovery',
   'max-output-recovery',
   'refusal-recovery',
+  'stream-cut-recovery',
 ]);
 const SYNTHETIC_USER_CONTROL_RE =
   /^(?:\[mixdog-runtime\]|\[request interrupted(?: by user(?: for tool use)?| by process restart)?\])(?:\s|$)/i;

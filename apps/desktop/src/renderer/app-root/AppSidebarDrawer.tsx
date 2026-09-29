@@ -1,5 +1,4 @@
 import type React from 'react';
-import type { ComponentProps } from 'react';
 import { ActivityRail } from '../ActivityRail';
 import {
   WorkbenchSideIconBar,
@@ -9,28 +8,17 @@ import {
   type WorkbenchSideViewId,
 } from '../workbench-side-view-layout';
 import { SidebarDiffColumn } from '../sidebar-diff-column';
-import { loadSidebarPanelModule, warmSettingsView } from '../app-shell-components';
+import { warmSettingsView } from '../app-shell-components';
 import type { useAppShellPanels } from '../use-app-shell-panels';
 import type { useAppSideDocks } from '../use-app-side-docks';
 import type { createAppSideViewDescriptors } from '../app-side-view-descriptors';
 import type { useSideViewReordering } from '../app-shell-side-views';
-import type { useAppSidebarSurface } from '../use-app-sidebar-surface';
 import type { useAppSettingsRouter } from './use-app-settings-router';
 
 export interface AppSidebarDrawerProps {
   sidebarOpen: boolean;
   sidebarMotion: ReturnType<typeof useAppShellPanels>['sidebarMotion'];
-  sidebarPanel: ReturnType<typeof useAppSidebarSurface>['sidebarPanel'];
-  closeSidebarPanels: () => void;
-  openSidebar: () => void;
-  toggleSidebar: () => void;
   settingsOpen: boolean;
-  openProjects: () => void;
-  refreshProjects: () => Promise<unknown>;
-  trackSidebarPanelModule: (name: string, promise: Promise<unknown>) => void;
-  openSchedules: () => void;
-  openWebhooks: () => void;
-  closeActiveRailPanel: () => void;
   closeSidebarForNavigation: (motion?: 'animated' | 'instant') => void;
   openSettings: ReturnType<typeof useAppSettingsRouter>['openSettings'];
   setCommandSurface: ReturnType<typeof useAppShellPanels>['setCommandSurface'];
@@ -56,17 +44,7 @@ export interface AppSidebarDrawerProps {
 export function AppSidebarDrawer({
   sidebarOpen,
   sidebarMotion,
-  sidebarPanel,
-  closeSidebarPanels,
-  openSidebar,
-  toggleSidebar,
   settingsOpen,
-  openProjects,
-  refreshProjects,
-  trackSidebarPanelModule,
-  openSchedules,
-  openWebhooks,
-  closeActiveRailPanel,
   closeSidebarForNavigation,
   openSettings,
   setCommandSurface,
@@ -81,40 +59,10 @@ export function AppSidebarDrawer({
   closeSidebarDiff,
   openFileTab,
 }: AppSidebarDrawerProps) {
-  let activeRailSurface: ComponentProps<typeof ActivityRail>['activeSurface'] = null;
-  if (settingsOpen) {
-    activeRailSurface = 'settings';
-  } else if (sidebarOpen && sidebarPanel) {
-    activeRailSurface = sidebarPanel;
-  }
-
   return (
     <div className="sidebar-drawer-frame" data-state={sidebarOpen ? 'open' : 'closed'} data-motion={sidebarMotion}>
       <ActivityRail
-        sidebarOpen={sidebarOpen && !sidebarPanel}
-        onToggleSessions={() => {
-          if (sidebarPanel) {
-            closeSidebarPanels();
-            openSidebar();
-          } else toggleSidebar();
-        }}
-        activeSurface={activeRailSurface}
-        onOpenProjects={() => {
-          openProjects();
-          void refreshProjects().catch(() => undefined);
-        }}
-        onPrefetchProjects={() => {
-          trackSidebarPanelModule('projects', loadSidebarPanelModule.projects());
-        }}
-        onOpenSchedules={openSchedules}
-        onPrefetchSchedules={() => {
-          trackSidebarPanelModule('schedules', loadSidebarPanelModule.schedules());
-        }}
-        onOpenWebhooks={openWebhooks}
-        onPrefetchWebhooks={() => {
-          trackSidebarPanelModule('webhooks', loadSidebarPanelModule.webhooks());
-        }}
-        onCloseActiveSurface={closeActiveRailPanel}
+        settingsOpen={settingsOpen}
         onOpenSettings={() => {
           closeSidebarForNavigation('instant');
           openSettings();

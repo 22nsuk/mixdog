@@ -394,6 +394,7 @@ function PluginsPanel({ api, data, pending, run, confirm, createOpen, closeCreat
           // selectable text (user: 불필요한 표면 정리).
           return (
             <ExtensionDetailDialog
+              className="extensions-plugin-detail-dialog"
               title={label(open)}
               icon={<Blocks size={16} aria-hidden="true" />}
               tagline={

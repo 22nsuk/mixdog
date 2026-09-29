@@ -345,11 +345,7 @@ export class SessionHostPublication {
   /** Apply a paged read's `page` answer: the revealed rows go in front of the
    *  rows this host still holds. Null when the held rows are no longer the
    *  ones the page was answered for — the caller then reads in full. */
-  applyTranscriptPage(
-    sessionId: string,
-    value: Record<string, unknown>,
-    publish = true
-  ): SessionSnapshot | null {
+  applyTranscriptPage(sessionId: string, value: Record<string, unknown>, publish = true): SessionSnapshot | null {
     const id = sessionIdOf(value.sessionId || sessionId);
     const page = value.page as
       | { firstHeldId?: unknown; heldCount?: unknown; items?: unknown; state?: unknown }

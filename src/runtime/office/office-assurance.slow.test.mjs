@@ -283,7 +283,10 @@ test('a long paragraph at heading size is reported on either backend', () => {
   const reviewed = (size, length) =>
     reviewOfficeStructure({
       format: 'docx',
-      document: { paragraphs: [{ path: '/body/p[1]', index: 1, text: '가'.repeat(length), font: { size } }], tables: [] },
+      document: {
+        paragraphs: [{ path: '/body/p[1]', index: 1, text: '가'.repeat(length), font: { size } }],
+        tables: [],
+      },
     }).some((entry) => entry.code === 'oversized_heading_text');
   assert.equal(reviewed(20, 200), true);
   assert.equal(reviewed(11, 200), false, 'body size');
@@ -878,6 +881,51 @@ test('a hidden shape is not measured as part of the slide', () => {
   assert.deepEqual(reviewOfficeStructure({ format: 'pptx', document: deck(true) }), []);
 });
 
+// A table's words stand on its cells' fills, which the cell check reads one by one. Read as one text box against
+// the slide, a dark-headed table's white header was reported as text indistinguishable from its surface.
+test('a table is not read as one text box against the slide for contrast', () => {
+  const deck = (table) => ({
+    format: 'pptx',
+    slideWidth: 960,
+    slideHeight: 540,
+    slides: [
+      {
+        path: '/slide[1]',
+        index: 1,
+        background: { color: 'FFFFFF' },
+        shapes: [
+          {
+            path: '/slide[1]/shape[1]',
+            index: 1,
+            type: 'p:sp',
+            text: '가맹점 안내 자동화가 비용 대비 효과가 가장 크다',
+            font: { size: 28, color: '101418' },
+            left: 60,
+            top: 40,
+            width: 800,
+            height: 60,
+          },
+          {
+            path: '/slide[1]/shape[2]',
+            index: 2,
+            type: table ? 'p:graphicFrame' : 'p:sp',
+            text: '안 비용 오류 감소 판정',
+            font: { size: 13, color: 'FFFFFF' },
+            left: 60,
+            top: 160,
+            width: 800,
+            height: 240,
+            ...(table ? { table: { rows: 4, columns: 4 } } : {}),
+          },
+        ],
+      },
+    ],
+  });
+  const codes = (table) => reviewOfficeStructure({ format: 'pptx', document: deck(table) }).map((entry) => entry.code);
+  assert.ok(codes(false).includes('low_contrast'), 'white words in a box on white are still reported');
+  assert.ok(!codes(true).includes('low_contrast'), codes(true).join(', '));
+});
+
 // The page number is master chrome: a body block a few points above it is not a
 // spacing defect, but a block drawn over it ran into the foot. The portable read
 // left the field out of both checks, so a column that overran the page passed
@@ -1181,7 +1229,11 @@ test('one content model binds the same sourced facts across Word, Excel, and Pow
       created: true,
       design: { profile: 'executive', purpose: 'decide' },
       operations: [
-        { op: 'compose_document', title, sections: [{ heading, paragraphs: ['본문'], callout, ...(calloutLabel ? { calloutLabel } : {}) }] },
+        {
+          op: 'compose_document',
+          title,
+          sections: [{ heading, paragraphs: ['본문'], callout, ...(calloutLabel ? { calloutLabel } : {}) }],
+        },
       ],
     })
       .operations.filter((entry) => entry.op === 'add_table')
@@ -1189,7 +1241,9 @@ test('one content model binds the same sourced facts across Word, Excel, and Pow
   const unlabelled = callouts('4분기 운영 리뷰', '요약', '야간 인력 증원을 승인해 주십시오.');
   assert.ok(unlabelled.includes('야간 인력 증원을 승인해 주십시오.'));
   assert.ok(!unlabelled.includes('다음 점검') && !unlabelled.includes('NEXT CHECKPOINT'), JSON.stringify(unlabelled));
-  assert.ok(callouts('Q4 operations review', 'Summary', 'Approve the night staff increase.', 'Decision').includes('Decision'));
+  assert.ok(
+    callouts('Q4 operations review', 'Summary', 'Approve the night staff increase.', 'Decision').includes('Decision')
+  );
 });
 
 // A content id names a figure inside the package; nothing in the file format
@@ -1592,6 +1646,20 @@ test('slide review reports the words a later picture or filled shape covers', ()
     ]),
   }).filter((entry) => entry.code === 'shape_overlap');
   assert.deepEqual(carded, []);
+
+  // A headline whose last line dips 4 pt onto the panel under it is a collision; the card's own label is not.
+  const crossing = (textTop) =>
+    reviewOfficeStructure({
+      format: 'pptx',
+      document: slide([
+        { text: '이용은 역과 강변 대여소에 모인다', left: 48, top: textTop, width: 600, height: 35, font: { size: 27 } },
+        { text: '', left: 48, top: 90, width: 530, height: 370, fill: { color: 'DCE7DF' } },
+      ]),
+    }).filter((entry) => entry.code === 'text_crosses_edge');
+  assert.equal(crossing(59).length, 1, 'a 4 pt dip over the top edge is reported');
+  assert.match(crossing(59)[0].message, /runs 4 pt over the top edge of shape 2/);
+  assert.deepEqual(crossing(50), [], 'text clear of the panel is its neighbour');
+  assert.deepEqual(crossing(100), [], 'text inside the panel is its label');
 });
 
 // A deck read through COM names its pictures the way COM does — msoPicture,

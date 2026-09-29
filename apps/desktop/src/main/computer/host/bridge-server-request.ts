@@ -3,6 +3,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { bridgeDiscoveryPublicIdentity } from '../../bridge/discovery-ownership';
 import type { ComputerCommand, ComputerCommandResult } from '../shared/types';
+import { computerUseCoordinator } from '../session/coordinator';
 import { isComputerLifecycleControl } from './action-sets';
 import type { BridgeServerHost, BridgeServerState } from './bridge-server-contract';
 import { assertPublicComputerRequest } from './request-policy';
@@ -84,7 +85,14 @@ export function createBridgeRequestHandler(
 
   function runCommand(command: ComputerCommand, signal: AbortSignal): Promise<ComputerCommandResult> {
     if (command.action === 'wait_for_user' && host.waitForUser) return host.waitForUser(command, signal);
-    if (command.action === 'session_abort') return host.abortComputerSession(command);
+    if (command.action === 'session_abort') {
+      // The caller aborts when its turn is cancelled; that turn never sends
+      // execution_end, so its visible execution and any pause it held end here.
+      return host.abortComputerSession(command).then((result) => {
+        computerUseCoordinator.endExecution(String(command.session_id || 'default'));
+        return result;
+      });
+    }
     return host.executeSerialized(command);
   }
 

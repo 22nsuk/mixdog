@@ -32,6 +32,12 @@ export const ANTIGRAVITY_MODELS = Object.freeze([
   fallbackModel('gpt-oss-120b-medium', 'GPT-OSS 120B (Medium)', 'gpt-oss', 131072, 'gpt-oss-120b-medium'),
 ]);
 
+// Antigravity-only ids for a vendor SKU's thinking mode. Anthropic bills
+// thinking as ordinary output tokens of the base SKU.
+export const ANTIGRAVITY_PRICING_ALIASES = Object.freeze({
+  'claude-opus-4-6-thinking': 'claude-opus-4-6',
+});
+
 // Exact aliases accepted by the Grok transport; never infer deployment aliases.
 const RETIRED_MODEL_ALIASES = Object.freeze({
   'grok-code-fast-1': 'grok-build-0.1',

@@ -35,7 +35,12 @@ function tableCellFit(cellXml, { text, size, bold, widths, columnOrdinal, declar
   const usable = (spannedWidth - insets.left - insets.right) / EMU_PER_POINT;
   const available = (declared * rowSpan - insets.top - insets.bottom) / EMU_PER_POINT;
   if (usable <= 0 || available <= 0) return null;
-  return { measured: measureTextBlock([{ text, fontSize: size, bold }], { width: usable }), rowSpan, available, insets };
+  return {
+    measured: measureTextBlock([{ text, fontSize: size, bold }], { width: usable }),
+    rowSpan,
+    available,
+    insets,
+  };
 }
 
 // A table row's text cells, each with its fit against the row's declared height, and the row's drawn height in

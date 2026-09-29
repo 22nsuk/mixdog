@@ -11,6 +11,10 @@ import {
   withTempWorkspace,
 } from './electron-harness.mjs';
 
+// --native runs the native pane presentation checks (MIXDOG_BROWSER_NATIVE_VIEW)
+// against the same fixture shell instead of the pixel-surface isolation suite.
+const native = process.argv.includes('--native');
+
 await withTempWorkspace(
   'mixdog-browser-input-isolation-',
   async (directory) => {
@@ -42,7 +46,10 @@ await withTempWorkspace(
       }),
     ]);
     await bundleElectronEntry({
-      entry: new URL('../src/main/browser/input-isolation.integration.ts', import.meta.url),
+      entry: new URL(
+        native ? '../src/main/browser/native-view.integration.ts' : '../src/main/browser/input-isolation.integration.ts',
+        import.meta.url
+      ),
       outfile: output,
       plugins: [computerSourceEsbuildPlugin()],
       external: ['electron', 'ws'],
@@ -50,6 +57,8 @@ await withTempWorkspace(
     const env = electronProcessEnv({
       MIXDOG_INPUT_ISOLATION_DIRECTORY: directory,
       MIXDOG_INPUT_ISOLATION_LOG: log,
+      // The pixel-surface suite must not inherit a developer's native toggle.
+      MIXDOG_BROWSER_NATIVE_VIEW: native ? '1' : '0',
     });
     const child = spawnElectron(output, { env, args: process.argv.slice(2) });
     const code = await waitForChildExit(child, {
@@ -60,8 +69,9 @@ await withTempWorkspace(
     });
     const result = await readFile(log, 'utf8');
     process.stdout.write(result);
-    if (code !== 0 || !result.includes('input isolation passed')) {
-      throw new Error(`browser input isolation failed (exit ${code})`);
+    const passed = native ? 'native view passed' : 'input isolation passed';
+    if (code !== 0 || !result.includes(passed)) {
+      throw new Error(`browser ${native ? 'native view' : 'input isolation'} failed (exit ${code})`);
     }
   },
   { maxRetries: 10, retryDelay: 100 }

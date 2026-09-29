@@ -3,13 +3,14 @@ import test from 'node:test';
 import { snapshotProviderRequestTools } from './provider-request-snapshot.mjs';
 import { providerNativeToolPrefixCount } from './provider-request-tools.mjs';
 
-test('Anthropic deferred tool snapshot adds only discovered schemas', () => {
+test('Anthropic deferred snapshot keeps one stable built-in anchor and adds only discovered schemas', () => {
   const session = {
     provider: 'anthropic-oauth',
     deferredNativeTools: true,
     deferredToolCatalog: [
       { name: 'shell', inputSchema: { type: 'object', properties: {} } },
       { name: 'recall', inputSchema: { type: 'object', properties: {} } },
+      { name: 'office', inputSchema: { type: 'object', properties: {} } },
     ],
   };
   const tools = [{ name: 'load_tool', inputSchema: { type: 'object', properties: {} } }];
@@ -27,25 +28,24 @@ test('Anthropic deferred tool snapshot adds only discovered schemas', () => {
         role: 'tool',
         nativeToolSearch: {
           provider: 'anthropic-oauth',
-          toolReferences: ['shell'],
+          toolReferences: ['recall'],
         },
       },
     ],
     session,
   });
+  // The first send already carries a deferred definition, so the first real
+  // discovery does not switch the request into tool-search mode.
   assert.deepEqual(
     first.map((tool) => tool.name),
-    ['load_tool']
-  );
-  assert.deepEqual(
-    later.map((tool) => tool.name),
     ['load_tool', 'shell']
   );
-  assert.equal(later[1].deferLoading, true);
-  assert.equal(
-    later.some((tool) => tool.name === 'recall'),
-    false
+  assert.equal(first[1].deferLoading, true);
+  assert.deepEqual(
+    later.map((tool) => tool.name),
+    ['load_tool', 'shell', 'recall']
   );
+  assert.equal(later[2].deferLoading, true);
 });
 
 function fullSnapshot(options) {
@@ -131,20 +131,23 @@ test('a snapshot after appending one message reads only that message', () => {
   const session = {
     provider: 'anthropic-oauth',
     deferredNativeTools: true,
-    deferredToolCatalog: [{ name: 'shell', inputSchema: { type: 'object' } }],
+    deferredToolCatalog: [
+      { name: 'shell', inputSchema: { type: 'object' } },
+      { name: 'recall', inputSchema: { type: 'object' } },
+    ],
   };
   const tools = [{ name: 'load_tool', inputSchema: { type: 'object' } }];
   const messages = [tracked('m0', []), tracked('m1', [])];
   const snapshot = () => snapshotProviderRequestTools({ provider: session.provider, tools, messages, session });
   assert.deepEqual(
     snapshot().map((tool) => tool.name),
-    ['load_tool']
+    ['load_tool', 'shell']
   );
   for (const id of reads.keys()) reads.set(id, 0);
-  messages.push(tracked('m2', ['shell']));
+  messages.push(tracked('m2', ['recall']));
   assert.deepEqual(
     snapshot().map((tool) => tool.name),
-    ['load_tool', 'shell']
+    ['load_tool', 'shell', 'recall']
   );
   assert.deepEqual(Object.fromEntries(reads), { m0: 0, m1: 0, m2: 1 });
 });

@@ -307,7 +307,6 @@ function registerTests() {
       'getOwnTokenPath',
       'getRefreshLockPath',
       'hasGrokOAuthCredentials',
-      'isProxyOnlyModel',
       'loadTokens',
       'normalizeGrokModelId',
       'proxyHeaders',
@@ -432,9 +431,6 @@ function registerTests() {
     );
     assert.equal(t.proxyHeaders({ sendOpts: { iteration: 'invalid' } })['x-grok-turn-idx'], undefined);
     assert.equal(t.resolveGrokOAuthResponsesTransport(), 'http');
-    assert.equal(t.isProxyOnlyModel('grok-build'), true);
-    assert.equal(t.isProxyOnlyModel('GROK-COMPOSER-2.5'), true);
-    assert.equal(t.isProxyOnlyModel('grok-build-0.1'), false);
   });
 
   test('discovery caches only trusted endpoints and cleans timeout on errors', async () => {
@@ -664,8 +660,12 @@ function registerTests() {
     const models = [
       { id: 'grok-4.5-non-reasoning-0309', context_length: 500000 },
       { id: 'grok-4.5-multi-agent-0309', reasoningEfforts: ['LOW', { value: 'xhigh' }, 'low', 'invalid'] },
-      { id: 'grok-build' },
-      { id: 'grok-composer-2.5-fast' },
+      {
+        id: 'grok-4.7-build-fast',
+        name: 'Grok 4.7 Fast',
+        context_window: 500000,
+        reasoning_efforts: [{ value: 'xhigh' }, { value: 'high' }, { value: 'medium' }, { value: 'low' }],
+      },
       { id: 'grok-custom', name: 'Native Name' },
       { id: 'grok-display', display: 'Custom Display' },
       { id: 'grok-4.6', created: 30 },
@@ -678,19 +678,19 @@ function registerTests() {
     assert.deepEqual(plain(listed.map((model) => model.display)), [
       'Grok 4.5 Non Reasoning',
       'Grok 4.5 Multi Agent',
-      'Grok Build',
-      'Composer 2.5 Fast',
+      'Grok 4.7 Fast',
       'Native Name',
       'Custom Display',
       'Grok 4.6',
     ]);
     assert.deepEqual(plain(listed[0].reasoningLevels), []);
     assert.deepEqual(plain(listed[1].reasoningLevels), ['low', 'xhigh']);
-    assert.deepEqual(plain(listed[6].reasoningLevels), ['low', 'medium', 'high']);
+    assert.deepEqual(plain(listed[2].reasoningLevels), ['low', 'medium', 'high', 'xhigh']);
+    assert.deepEqual(plain(listed[5].reasoningLevels), ['low', 'medium', 'high']);
     assert.equal(listed[0].contextWindow, 500000);
-    assert.equal(listed[2].contextWindow, 512000);
-    assert.equal(listed[3].contextWindow, 200000);
-    assert.equal(listed[6].latest, true);
+    assert.equal(listed[2].contextWindow, 500000);
+    assert.equal(listed[2].latest, false);
+    assert.equal(listed[5].latest, true);
     s.cache = models.map((model) => ({ ...model, outputTokens: 500000 }));
     const cached = await provider.listModels();
     assert.deepEqual(plain(cached.map((model) => model.display)), plain(listed.map((model) => model.display)));
@@ -708,19 +708,23 @@ function registerTests() {
     s.replies.push(
       response({
         data: [
-          { id: 'grok-4.3', created: 20 },
+          { id: 'grok-4.3', created: 20, context_length: 1000000 },
           { id: 'grok-4.20', created: 10 },
         ],
       }),
       response({
         data: [
-          { id: 'grok-4.3', created: 1 },
-          { id: 'grok-build', created: 100 },
+          { id: 'grok-4.3', created: 1, name: 'Proxy Name', context_window: 400000 },
+          { id: 'grok-4.7-build-fast', created: 100 },
         ],
       })
     );
     const models = await provider._refreshModelCache();
-    assert.equal(models.find((model) => model.id === 'grok-4.3').created, 20);
+    const merged = models.find((model) => model.id === 'grok-4.3');
+    assert.equal(merged.created, 20);
+    assert.equal(merged.display, 'Proxy Name');
+    assert.equal(merged.contextWindow, 400000);
+    assert.equal(models.find((model) => model.id === 'grok-4.7-build-fast').created, null);
     s.sendReplies.push('sent');
     assert.equal(await provider.send([], null, []), 'sent');
     assert.equal(s.sends[0].args[1], 'grok-4.3');

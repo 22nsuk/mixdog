@@ -85,7 +85,7 @@ export function createSkillsApi({ contextMod, getCwd, getTools = () => [] }) {
     const missingFeature =
       typeof contextMod.skillMissingFeature === 'function' ? contextMod.skillMissingFeature(skillName) : null;
     if (missingFeature) {
-      return `Error: skill "${skillName}" needs the ${missingFeature} built-in feature, which is not installed or is switched off in Settings → Built-in`;
+      return `Error: skill "${skillName}" needs the ${missingFeature} built-in feature, which is not installed or is switched off in Extensions → Plugin → Built-in`;
     }
     if (typeof contextMod.isSkillDisabled === 'function' && contextMod.isSkillDisabled(skillName)) {
       return `Error: skill "${skillName}" is disabled`;

@@ -3,13 +3,7 @@ import { extname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { callMicrosoftOffice, detectMicrosoftOffice, openMicrosoftOfficeSession } from '../com/com-adapter.mjs';
-import {
-  defaultOfficeDataDir,
-  listOfficeJournals,
-  readOfficeJournal,
-  removeOfficeJournal,
-  writeOfficeJournal,
-} from './journal.mjs';
+import { listOfficeJournals, readOfficeJournal, removeOfficeJournal, writeOfficeJournal } from './journal.mjs';
 import {
   OfficeConflictError,
   documentFingerprint,
@@ -348,10 +342,6 @@ export async function rollbackTransaction(session) {
 
 export async function pendingOfficeTransactions(dataDir) {
   return (await listOfficeJournals(dataDir)).map(officeJournalSummary);
-}
-
-export async function initializeOfficeTransactions(dataDir = defaultOfficeDataDir()) {
-  return await pendingOfficeTransactions(dataDir);
 }
 
 export async function recoverOfficeTransaction(args, dataDir) {

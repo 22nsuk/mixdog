@@ -574,6 +574,7 @@ export function WorkbenchSideIconBar({
             key={root}
             type="button"
             className={active ? 'active selected' : ''}
+            data-side-view={root}
             aria-label={t(descriptor.label)}
             aria-current={active ? 'page' : undefined}
             data-tooltip={t(descriptor.tooltip || descriptor.label)}

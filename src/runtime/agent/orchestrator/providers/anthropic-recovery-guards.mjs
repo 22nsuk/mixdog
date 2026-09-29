@@ -14,6 +14,7 @@ import {
   resolveStallRetryBudget,
   STREAM_STALL_RETRY_BUDGET_MS,
 } from './retry-classifier.mjs';
+import { readStreamOutcome } from './lib/stream-outcome.mjs';
 
 /**
  * @param {object} deps
@@ -45,16 +46,22 @@ export function createAnthropicRecoveryGuards({ label, budgetOwner, opts, onText
   // Exposed text AND exposed thinking are both retractable: the owner
   // truncates its live tail / collapses the thinking segment and acks,
   // after which the full request is repeated non-streaming. Only a
-  // dispatched or partially streamed tool call is a hard replay
-  // boundary (re-running would duplicate a side effect).
+  // dispatched (or complete, dispatch-unknown) tool call is a hard replay
+  // boundary: re-running would duplicate a side effect. A started block that
+  // never dispatched (e.g. a server-run native tool) does not block it; a cut
+  // while a tool input was still streaming never reaches here — the agent
+  // loop replays that with a split-call notice.
   const recoverNonStreaming = async (midState, streamingError, controller) => {
     const exposedChars = Number(midState?.emittedTextChars) || 0;
     const exposedReasoning = midState?.emittedThinking === true;
+    const outcome = readStreamOutcome(streamingError, midState);
     if (
       !onTextReset ||
       (exposedChars <= 0 && !exposedReasoning) ||
       midState.emittedToolCall ||
-      midState.partialToolCall
+      outcome.sideEffectDispatched ||
+      outcome.dispatchAmbiguous ||
+      outcome.toolCallsComplete > 0
     ) {
       try {
         streamingError.liveTextEmitted = true;

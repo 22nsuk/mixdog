@@ -246,12 +246,16 @@ test('a batch on an opened deck is judged on the slides it edited, not the pages
     await executeOfficeTool({ action: 'author', path, script: twoPages, mode: 'portable', render: false }, { cwd })
   );
   const edit = { op: 'set_text', slide: 2, shape: 1, text: 'Clean page, revised' };
-  const own = value(await executeOfficeTool({ action: 'batch', session: authored.session, operations: [edit] }, { cwd }));
+  const own = value(
+    await executeOfficeTool({ action: 'batch', session: authored.session, operations: [edit] }, { cwd })
+  );
   assert.equal(own.audit.status, 'fail', 'every page of an authored deck is the author’s own');
   value(await executeOfficeTool({ action: 'close', session: authored.session }, { cwd }));
 
   const opened = value(await executeOfficeTool({ action: 'open', path, mode: 'portable' }, { cwd }));
-  const kept = value(await executeOfficeTool({ action: 'batch', session: opened.session, operations: [edit] }, { cwd }));
+  const kept = value(
+    await executeOfficeTool({ action: 'batch', session: opened.session, operations: [edit] }, { cwd })
+  );
   assert.equal(kept.audit.status, 'pass', JSON.stringify(kept.audit));
   assert.ok(kept.audit.outsideEdit > 0);
   assert.match(kept.nextAction ?? kept.audit.nextAction, /did not touch/);

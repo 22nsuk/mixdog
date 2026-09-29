@@ -1,7 +1,7 @@
 ---
 name: computer-use
 description: Drive the built-in computer tool on the local Windows, macOS, or Linux desktop.
-when_to_use: 'External browser windows, apps lacking MCP/CLI, OS dialogs, screen capture; not Mixdog browser.'
+when_to_use: 'Operate or check desktop apps, OS dialogs, user-viewed browser tabs; not tool-covered work.'
 metadata:
   requires: computer
 dependencies:
@@ -34,20 +34,21 @@ GNOME with the Window Calls extension); prefer accessibility refs there.
   step, load its schema (`load_tool`) and use it. A user naming an app or its
   window (Unity Editor, a database client, a design tool) does not make the
   work GUI-only; only the steps that tool cannot do move to the screen.
-- User-designated external Chrome/Edge/Firefox windows, including their page
-  content, use `computer`. `browser` controls only Mixdog's in-app Chromium;
-  no trial Browser Use call is needed for an external window. Keep the user's
-  selected window and login session rather than opening an in-app substitute.
+- The user's own Chrome/Edge/Firefox window that they are viewing or hand over,
+  including its page content, uses `computer` without a trial Browser Use call;
+  keep that window and its login session. Web work Mixdog performs on its own
+  goes to Browser Use, sign-in included, even when the user names a browser.
 - Mixdog browser pages → Browser Use (`browser`). A refused or unfinished
   page action stays on that route for recovery or user handoff; never retry
   it through `computer` or move it to another browser.
 - On either route, permission denials, CAPTCHA/2FA, identity checks, and user
   stops are not fallback signals: report or hand off, never bypass them.
-- A service with a CLI → `shell`; the screen is reserved for the selected
-  external browser window or GUI-only work no tool can satisfy. URL reading
-  and research still use
+- Use the screen when a UI itself is the subject: checking a desktop app's GUI
+  after a change, a GUI-only bug, UI-only settings, a cross-app flow.
+- Service CLIs and deterministic file, process, or config work → `shell`/`edit`;
+  Word, Excel, PowerPoint, and PDF files → `office` even when the app is named,
+  unless its own UI is the subject. URL reading and research use
   `web_fetch`/`web_search` when no particular window is required.
-- File, process, or config work a shell command does deterministically → `shell`.
 - Never drive the desktop through PowerShell input hosts, `SendKeys`, or
   direct bridge calls from `shell`. If the built-in tool cannot do it, stop
   and report — a shell workaround hides the defect the tool must handle.
@@ -123,10 +124,9 @@ GNOME with the Window Calls extension); prefer accessibility refs there.
   Use `wait_for_user` to keep the task waiting without sending input. The host
   may resume ordinary physical-input interruptions after its configured quiet
   interval; renewed input resets that interval. Explicit pauses/stops and
-  uncertain observation/cleanup never auto-resume. The overlay has one
-  Pause/Resume toggle: Pause retains the task; emergency Stop cancels it.
-  Never operate these or the recovery controls, or change the idle policy, on
-  the user's behalf.
+  uncertain observation/cleanup never auto-resume. The overlay's only control
+  is Stop, which cancels the task. Never operate it or the recovery controls,
+  or change the idle policy, on the user's behalf.
   While paused, only `list`, `diagnose` and `wait_for_user` are available.
   Chat text alone does not clear the host. After `resumed`, capture fresh state;
   after `timeout` or `cancelled`, no input is authorized. Never replay the

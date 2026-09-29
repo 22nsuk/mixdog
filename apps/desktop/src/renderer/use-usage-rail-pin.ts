@@ -12,12 +12,23 @@ type UsagePinEntries = SidebarUsageModule['usagePinEntries'];
 // screen unless the rail is pinned; a pinned rail holds its boot surface until
 // the reader arrives, so the stack never paints a provisional glyph first.
 let sidebarUsageModule: Promise<SidebarUsageModule> | null = null;
+let resolvedSidebarUsageModule: SidebarUsageModule | null = null;
 export function loadSidebarUsageModule(): Promise<SidebarUsageModule> {
-  sidebarUsageModule ||= import('./SidebarUsage').catch((error) => {
-    sidebarUsageModule = null;
-    throw error;
-  });
+  sidebarUsageModule ||= import('./SidebarUsage').then(
+    (module) => {
+      resolvedSidebarUsageModule = module;
+      return module;
+    },
+    (error) => {
+      sidebarUsageModule = null;
+      throw error;
+    }
+  );
   return sidebarUsageModule;
+}
+/** The module once it has arrived, so a warm open renders it synchronously. */
+export function loadedSidebarUsageModule(): SidebarUsageModule | null {
+  return resolvedSidebarUsageModule;
 }
 const NO_PIN_ENTRIES: UsagePinEntries = () => [];
 
@@ -127,8 +138,7 @@ export function useUsageRailPin(
     enabled &&
     (!settingsReady ||
       (usagePinned &&
-        (!usagePinEntries ||
-          (wanted.length === 0 && (snapshot.status === 'idle' || snapshot.status === 'loading')))));
+        (!usagePinEntries || (wanted.length === 0 && (snapshot.status === 'idle' || snapshot.status === 'loading')))));
   if (enabled) beginBootSurface('usage-controls', 'pin');
   useEffect(() => {
     if (enabled && !loading) reportBootSurfaceReady('usage-controls', 'pin');

@@ -34,29 +34,20 @@ export const CALLBACK_HOST = '127.0.0.1';
 export const CALLBACK_PORT = 56121;
 export const CALLBACK_PATH = '/callback';
 export const REDIRECT_URI = `http://${CALLBACK_HOST}:${CALLBACK_PORT}${CALLBACK_PATH}`;
-// Native xAI model catalog. Proxy-only models (grok-build,
-// grok-composer-2.5-fast) are not published here, so discovery merges both
-// catalogs. All OAuth inference uses PROXY_BASE_URL instead.
+// Native xAI model catalog: release dates and public SKUs. Proxy-only
+// variants (e.g. grok-4.7-build-fast) are not published here, so discovery
+// merges both catalogs. All OAuth inference uses PROXY_BASE_URL instead.
 export const INFERENCE_BASE_URL = 'https://api.x.ai/v1';
 export const TOKEN_REFRESH_SKEW_MS = 5 * 60_000;
 
-// --- grok-build CLI proxy (Composer 2.5, grok-build) ---
-// These models live ONLY on the grok-build proxy, not api.x.ai. /models is
-// readable with the bare OAuth bearer; /responses is version-gated (HTTP 426)
-// and requires the Grok CLI's client headers. All OAuth models route here
-// for inference, including those discovered through api.x.ai.
+// --- Grok CLI proxy ---
+// /models is readable with the bare OAuth bearer and publishes the CLI's
+// served models with names, context windows and effort levels; /responses is
+// version-gated (HTTP 426) and requires the Grok CLI's client headers. All
+// OAuth models route here for inference, including api.x.ai-discovered ones.
 export const PROXY_BASE_URL = 'https://cli-chat-proxy.grok.com/v1';
 const GROK_CLIENT_IDENTIFIER = 'grok-shell';
 const GROK_CLI_VERSION_FALLBACK = '0.2.16';
-
-// Proxy-only catalog models: any grok-composer* model, plus the bare `grok-build`
-// coding agent. NOT grok-build-0.1 — that is a real api.x.ai model and must stay
-// in the native catalog, so we match grok-build exactly rather than by prefix.
-const PROXY_EXACT_MODELS = new Set(['grok-build']);
-export function isProxyOnlyModel(model) {
-  const m = String(model || '');
-  return /^grok-composer/i.test(m) || PROXY_EXACT_MODELS.has(m);
-}
 
 // Use a Mixdog-controlled client version for the proxy version gate.
 let _grokCliVersionCache = null;
@@ -106,7 +97,7 @@ export { normalizeGrokModelId } from './provider-model-identities.mjs';
 export const MODEL_CACHE_TTL_MS = 24 * 60 * 60_000;
 // Bump when the on-disk cache shape changes so stale-shape entries are
 // discarded instead of misread.
-export const GROK_MODEL_CACHE_SCHEMA_VERSION = 1;
+export const GROK_MODEL_CACHE_SCHEMA_VERSION = 2;
 const DISCOVERY_TIMEOUT_MS = 15_000;
 export const TOKEN_TIMEOUT_MS = 30_000;
 export const LOGIN_TIMEOUT_MS = 5 * 60_000;

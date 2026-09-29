@@ -9,10 +9,10 @@
  * Orchestrator modules (session/manager.mjs, session/loop.mjs) import from
  * here instead of going through mcp/client.mjs for internal tools.
  *
- * Permission enforcement has been removed (every tool call is trusted). The
- * only remaining dispatch-time gate is the architectural scoping in
- * _preDispatchDeny() in session/loop.mjs (agent-worker control-plane reject +
- * no-tool role guard) — not a permission check. No gating is needed here.
+ * No permission check runs here. Dispatch-time gating lives in
+ * preDispatchDenyForSession (session/loop/pre-dispatch-deny.mjs): the
+ * session's schema allowlist and tool policy, plus the agent-worker
+ * control-plane reject.
  */
 
 import { isToolEnvelope, makeToolEnvelope, normalizeToolEnvelope } from './session/tool-envelope.mjs';

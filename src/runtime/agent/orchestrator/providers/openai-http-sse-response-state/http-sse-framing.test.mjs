@@ -88,3 +88,94 @@ for (const [lineEnding, newline] of [
     });
   }
 }
+
+test('an HTTP/SSE request retry waits the server-advised time', async () => {
+  const frame = (event) => `data: ${JSON.stringify(event)}\n\n`;
+  const bytes = new TextEncoder().encode(
+    [
+      frame({ type: 'response.created', response: { id: 'resp-ok', model: 'gpt-fixture' } }),
+      frame({ type: 'response.output_text.delta', delta: 'ok' }),
+      frame({
+        type: 'response.completed',
+        response: { id: 'resp-ok', model: 'gpt-fixture', output: [], usage: { input_tokens: 1, output_tokens: 1 } },
+      }),
+    ].join('')
+  );
+  const waits = [];
+  let requests = 0;
+  const result = await sendViaHttpSse({
+    auth: { type: 'openai-direct', apiKey: 'fixture-key' },
+    body: { model: 'gpt-fixture' },
+    useModel: 'gpt-fixture',
+    _sleepFn: (ms) => {
+      waits.push(ms);
+    },
+    fetchFn: async () => {
+      requests += 1;
+      if (requests === 1) return new Response('busy', { status: 503, headers: { 'retry-after-ms': '7' } });
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(bytes);
+            controller.close();
+          },
+        }),
+        { headers: { 'Content-Type': 'text/event-stream' } }
+      );
+    },
+  });
+  assert.equal(result.content, 'ok');
+  assert.equal(requests, 2);
+  assert.deepEqual(waits, [7]);
+});
+
+test('an HTTP/SSE body cut mid-stream carries the finished tool call for the loop', async () => {
+  const call = {
+    type: 'function_call',
+    id: 'item-cut',
+    call_id: 'call-cut',
+    name: 'read',
+    arguments: '{"path":"a.txt"}',
+  };
+  const frame = (event) => `data: ${JSON.stringify(event)}\n\n`;
+  const bytes = new TextEncoder().encode(
+    [
+      frame({ type: 'response.created', response: { id: 'resp-cut', model: 'gpt-fixture' } }),
+      frame({ type: 'response.output_item.added', item: call }),
+      frame({ type: 'response.function_call_arguments.done', item_id: call.id, arguments: call.arguments }),
+      frame({ type: 'response.output_item.done', item: call }),
+    ].join('')
+  );
+  const cut = new TypeError('terminated');
+  let pulls = 0;
+  const delivered = [];
+  await assert.rejects(
+    sendViaHttpSse({
+      auth: { type: 'openai-direct', apiKey: 'fixture-key' },
+      body: { model: 'gpt-fixture', tools: [{ name: 'read' }] },
+      useModel: 'gpt-fixture',
+      onToolCall: (toolCall) => delivered.push(toolCall.id),
+      fetchFn: async () =>
+        new Response(
+          new ReadableStream({
+            pull(controller) {
+              pulls += 1;
+              if (pulls === 1) controller.enqueue(bytes);
+              else controller.error(cut);
+            },
+          }),
+          { headers: { 'Content-Type': 'text/event-stream' } }
+        ),
+    }),
+    (error) => {
+      assert.equal(error.message, 'terminated');
+      assert.deepEqual(
+        error.partialToolCalls.map((toolCall) => toolCall.id),
+        ['call-cut']
+      );
+      assert.equal(error.pendingToolUse, false);
+      return true;
+    }
+  );
+  assert.deepEqual(delivered, ['call-cut']);
+});

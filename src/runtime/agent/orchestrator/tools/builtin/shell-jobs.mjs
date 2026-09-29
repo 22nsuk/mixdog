@@ -25,10 +25,10 @@ import { attachJobInsights, shellJobPublicTaskResult } from './lib/shell-job-ins
 import {
   completeShellJobRecord,
   listShellJobRecords,
-  pidAlive,
   publishShellJobRecord,
   retireShellJobRecord,
 } from './lib/shell-job-records.mjs';
+import { isPidAlive } from '../../../../shared/pid-liveness.mjs';
 import {
   renderShellCompletionEnvelope,
   renderShellCompletionNotice,
@@ -470,7 +470,7 @@ export async function reconcileRecoveredShellJobCompletions() {
     // task id a caller could query and no waiter expecting a completion.
     if (record.foreground) continue;
     if (getNativeTask(record.jobId)) continue; // live in this daemon
-    if (pidAlive(Number(record.pid) || 0)) continue; // survived the restart
+    if (isPidAlive(Number(record.pid) || 0)) continue; // survived the restart
     const detail = {
       ...record,
       status: 'failed',

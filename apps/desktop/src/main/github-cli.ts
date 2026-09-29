@@ -110,6 +110,11 @@ export async function gitCliStatus(refresh = false): Promise<DesktopGitCliStatus
 }
 
 export async function installGitCli(): Promise<DesktopGitCliStatus> {
+  // A system Git that is already present answers first: the Install click
+  // follows the Mixdog marker, not Git presence, and winget treats an installed
+  // package as an upgrade request (0x8A15002B when none applies).
+  const existing = await gitCliStatus(true);
+  if (existing.installed) return existing;
   if (process.platform === 'win32') {
     const result = await run(
       'winget',

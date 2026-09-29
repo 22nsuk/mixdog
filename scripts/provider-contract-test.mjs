@@ -30,6 +30,7 @@ import { toGeminiTools } from '../src/runtime/agent/orchestrator/providers/gemin
 import { TOOL_DEFS as COMPUTER_TOOL_DEFS } from '../src/runtime/computer-bridge/tool-defs.mjs';
 import { classifyError } from '../src/runtime/agent/orchestrator/providers/retry-classifier.mjs';
 import { GrokOAuthProvider } from '../src/runtime/agent/orchestrator/providers/grok-oauth.mjs';
+import { GROK_MODEL_CACHE_SCHEMA_VERSION } from '../src/runtime/agent/orchestrator/providers/grok-oauth-tokens.mjs';
 import { sendViaWebSocket } from '../src/runtime/agent/orchestrator/providers/openai-oauth-ws.mjs';
 import {
   OpenCodeGoProvider,
@@ -126,6 +127,7 @@ test('OpenRouter model sanitizer applies hosted filters with a nine-month defaul
       new Date(Date.now() - monthsAgo * 30.4375 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
     const models = [
       { id: 'vendor/current-text', mode: 'chat' },
+      { id: 'vendor/current-text:batch', mode: 'chat' },
       { id: 'vendor/ten-month-text', mode: 'chat' },
       { id: 'vendor/image-model', mode: 'chat' },
       { id: 'vendor/no-tools', mode: 'chat' },
@@ -484,7 +486,7 @@ test('Grok catalog reasoningOptions replace stale hardcoded effort levels', asyn
   writeFileSync(
     cacheFile,
     JSON.stringify({
-      version: 1,
+      version: GROK_MODEL_CACHE_SCHEMA_VERSION,
       fetchedAt: Date.now(),
       models: [
         {
@@ -539,13 +541,11 @@ test('provider setup refresh waits for keychain readiness and bypasses stale set
 
 test('provider setup lists every OAuth row in order and leads the API rows with OpenCode Go, without a separate Cursor API row', async () => {
   const setup = await providerSetup({}, { detectLocal: false, checkSecrets: false });
-  // cursor-oauth / antigravity-oauth are dev-only rows: the module-load
-  // filter admits them only while MIXDOG_DEV_PROVIDERS is set, so a shipped
-  // install (and CI) lists three, a developer machine five.
-  const devProviders = /^(1|true|yes|on)$/i.test(String(process.env.MIXDOG_DEV_PROVIDERS || '').trim());
+  // cursor-oauth / antigravity-oauth are dev-only rows, each listed only while
+  // its Settings → Developer option is on; this scratch data dir turns none on.
   assert.deepEqual(
     setup.oauth.map((provider) => provider.id),
-    ['openai-oauth', 'anthropic-oauth', 'grok-oauth', ...(devProviders ? ['cursor-oauth', 'antigravity-oauth'] : [])]
+    ['openai-oauth', 'anthropic-oauth', 'grok-oauth']
   );
   assert.equal(setup.api[0].id, 'opencode-go');
   assert.equal(setup.api[1].id, 'openrouter');

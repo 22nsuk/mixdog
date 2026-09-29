@@ -5,6 +5,7 @@ import { updateJsonAtomicSync } from '../../../shared/atomic-file.mjs';
 import { resolvePluginData } from '../../../shared/plugin-paths.mjs';
 import { getLlmDispatcher } from '../../../shared/llm/http-agent.mjs';
 import { num, round, cleanString } from './lib/usage-primitives.mjs';
+import { recordQuotaReadings } from './lib/quota-readings.mjs';
 import { currentProviderAccountId } from '../../../shared/provider-auth-binding.mjs';
 import {
   ACCOUNT_PROVIDERS,
@@ -958,6 +959,7 @@ export async function fetchOAuthUsageSnapshot(routeInfo, providerObj, log = () =
         log(`Account usage could not be saved: ${error.message}`);
       }
     }
+    void recordQuotaReadings(provider, accountId, snapshot, log);
     return cacheUsageSnapshot(snapshot, { routeInfo, provider, accountId, providerOnly });
   })().finally(() => {
     inflight.delete(key);

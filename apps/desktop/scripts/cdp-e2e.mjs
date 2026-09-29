@@ -4,11 +4,14 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import { DESKTOP_READ_CAPABILITIES } from '../src/shared/contract.ts';
+import { DESKTOP_TITLEBAR_HEIGHT } from '../src/main/window-options.ts';
 import { SLASH_COMMANDS as desktopSlashCommands } from '../src/renderer/slash-commands.ts';
 import {
   SETTINGS_CATEGORIES,
   SETTINGS_ITEMS,
   categoryForSettingsItem,
+  settingsCategoriesForSurface,
+  settingsCategoryForSurface,
 } from '../src/renderer/settings/settings-items.ts';
 import { SLASH_COMMANDS as tuiSlashCommands } from '../../../src/tui/app/slash-commands.mjs';
 import { CdpClient } from './cdp-client.mjs';
@@ -458,15 +461,15 @@ const bootstrap = harnessInstalled
   const missingMethods = requiredMethods.filter((name) => typeof api[name] !== 'function');
   if (missingMethods.length) throw new Error('Desktop bridge is missing: ' + missingMethods.join(', '));
   const titlebarReady = await waitFor(() => {
-    const titlebar = document.querySelector('header.topbar[aria-label="Workspace tabs"]');
+    const titlebar = document.querySelector('header.topbar');
     const rect = titlebar?.getBoundingClientRect();
-    return rect && Math.round(rect.top) === 0 && Math.round(rect.height) === 40
+    return rect && Math.round(rect.top) === 0 && Math.round(rect.height) === ${DESKTOP_TITLEBAR_HEIGHT}
       ? { titlebar, rect }
       : null;
   }, 'Titlebar geometry', 30000);
   const titlebarRect = titlebarReady.rect;
   await waitFor(() => document.querySelector('#session-sidebar'), 'session sidebar');
-  await waitFor(() => document.querySelector('nav[aria-label="Open workspaces"]'), 'workspace tabs');
+  await waitFor(() => document.querySelector('nav.workspace-tabs'), 'workspace tabs');
   await waitFor(() => document.querySelector('textarea[aria-label="Message Mixdog"]'), 'composer');
   const openCodeShell = {
     // Tabs reorder via pointer capture (aria-grabbed), not HTML draggable.
@@ -475,12 +478,16 @@ const bootstrap = harnessInstalled
     // surface and the + affordance hides, so accept either signal.
     newTask: Boolean(document.querySelector('button[aria-label="New task"]') ||
       document.querySelector('.workspace-tab')),
-    sidebarToggle: Boolean(document.querySelector('button.toolbar-sidebar')),
-    projectSwitcher: Boolean(document.querySelector('button.projects-link')),
+    // The rail's side-view bar is the one sidebar control on every width:
+    // Sessions toggles the panel, Projects switches to the project list.
+    sidebarToggle: Boolean(document.querySelector('.activity-rail [data-side-view="sessions"]')),
+    projectSwitcher: Boolean(document.querySelector('.activity-rail [data-side-view="projects"]')),
     settings: Boolean(document.querySelector('button[aria-label="Open settings"]')),
     sidebarResize: Boolean(document.querySelector('[role="separator"][aria-label="Resize session sidebar"]')),
-    attachmentPicker: Boolean(document.querySelector('button[aria-label="Attach files"]') &&
-      document.querySelector('input[type="file"][multiple]')),
+    // Attachments ride the composer's add menu; its hidden multi-file input
+    // is what the menu's Attach files row opens.
+    attachmentPicker: Boolean(document.querySelector('button[aria-label="Add to message"]') &&
+      document.querySelector('.composer-footer input[type="file"][multiple]')),
   };
   const requiredShellFeatures = [
     'workspaceTab', 'newTask', 'sidebarToggle', 'projectSwitcher', 'settings',
@@ -509,7 +516,8 @@ try {
 
   const settingRoutes = [];
   for (const command of desktopSlashCommands.filter((entry) => entry.settingsRow)) {
-    const category = categoryForSettingsItem(command.settingsRow);
+    // Rows whose category moved to Extensions open under General, like the app.
+    const category = settingsCategoryForSurface(categoryForSettingsItem(command.settingsRow), false);
     const label = SETTINGS_CATEGORIES.find((entry) => entry.value === category)?.label;
     settingRoutes.push(
       await client.evaluate(
@@ -547,7 +555,7 @@ try {
   }
 
   const settingsAudit = await client.evaluate(
-    `window.__mixdogE2e.auditSettings(${JSON.stringify(SETTINGS_CATEGORIES)})`,
+    `window.__mixdogE2e.auditSettings(${JSON.stringify(settingsCategoriesForSurface(false))})`,
     180_000
   );
   const project = await client.evaluate('window.__mixdogE2e.projectRoute()', 60_000);

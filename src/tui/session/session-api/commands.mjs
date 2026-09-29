@@ -4,7 +4,7 @@
  * a turn is running). Each shows a command status while it holds the lock.
  */
 import { compactEventDetail } from '../labels.mjs';
-import { buildDoctorReport } from '../../app/doctor.mjs';
+import { formatDoctorReport, runDoctorChecks } from '../../app/doctor.mjs';
 
 export function createSessionCommandsApi(bag) {
   const {
@@ -141,21 +141,18 @@ export function createSessionCommandsApi(bag) {
         return result;
       });
     },
-    runDoctor: async () => {
-      if (getState().commandBusy) return null;
+    // Returns the structured check rows. Only the TUI asks for the text
+    // report as a transcript notice; the desktop renders the rows in its own
+    // dialog and must not duplicate them into the conversation.
+    runDoctor: async (options = {}) => {
+      if (getState().commandBusy) return { busy: true };
       return withCommandStatus('Running diagnostics', 'doctor', async () => {
-        try {
-          // Yield one event-loop turn so Ink paints the running indicator
-          // before the (mostly synchronous) health checks run — same pattern
-          // as compact.
-          await new Promise((resolve) => setTimeout(resolve, 0));
-          const report = await buildDoctorReport(runtime, getState);
-          pushNotice(report, 'info');
-          return report;
-        } catch (e) {
-          pushNotice(`doctor failed: ${e?.message || e}`, 'error');
-          return null;
-        }
+        // Yield one event-loop turn so Ink paints the running indicator
+        // before the health checks start — same pattern as compact.
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        const result = await runDoctorChecks(runtime, getState);
+        if (options.notice) pushNotice(formatDoctorReport(result), 'info');
+        return result;
       });
     },
     compact: compactCommand,

@@ -4,7 +4,6 @@ import { optionValue } from './cli-args.mjs';
 const argumentsList = process.argv.slice(2);
 const port = Number(optionValue('port', argumentsList) || 9342);
 const repair = argumentsList.includes('--repair');
-const exercisePanel = argumentsList.includes('--exercise-panel');
 
 if (!Number.isInteger(port) || port < 1 || port > 65_535) {
   throw new Error(`Invalid CDP port: ${String(port)}`);
@@ -47,13 +46,15 @@ const readMetrics = () =>
     innerHeight,
     outerWidth,
     outerHeight,
-    media900: matchMedia('(max-width: 900px)').matches,
+    // The two shell bands (use-responsive-shell-bands.ts).
+    narrowShell: matchMedia('(max-width: 760px)').matches,
+    bottomSheetBand: matchMedia('(max-width: 940px)').matches,
     shell: rect(document.querySelector('.app-shell')),
-    controls: rect(document.querySelector('.titlebar-leading')),
+    // The right titlebar cluster (updater badge) ahead of the caption reserve;
+    // the first .titlebar-leading is the left brand mark.
+    controls: rect(document.querySelector('.titlebar-controls')),
     main: rect(main),
     mainDirection: main ? getComputedStyle(main).flexDirection : null,
-    dock: rect(document.querySelector('.desktop-body > .utility-dock[data-side="right"]')),
-    panel: rect(document.querySelector('.bottom-panel')),
   };
 })()`);
 
@@ -100,63 +101,20 @@ try {
     nativeResynchronized = true;
     after = await readMetrics();
   }
-  let panelExercise = null;
-  if (exercisePanel) {
-    const wasOpen = await client.evaluate(`(() => {
-      const button = document.querySelector('.titlebar-leading .toolbar-panel');
-      if (!(button instanceof HTMLButtonElement)) {
-        throw new Error('Panel layout button is unavailable.');
-      }
-      const wasOpen = button.getAttribute('aria-pressed') === 'true';
-      if (!wasOpen) button.click();
-      return wasOpen;
-    })()`);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    const openedMetrics = await readMetrics();
-    panelExercise = {
-      wasOpen,
-      opened: {
-        main: openedMetrics.main,
-        panel: openedMetrics.panel,
-      },
-    };
-    if (!wasOpen) {
-      await client.evaluate(`document.querySelector(
-        '.titlebar-leading .toolbar-panel'
-      )?.click()`);
-    }
-  }
-
+  // The bottom panel is a file pane's own sub-panel now, not a window-wide
+  // column, so there is no global panel geometry left to exercise here.
   const widthMismatch = Math.abs(after.outerWidth - after.innerWidth) > 96;
   const heightMismatch = Math.abs(after.outerHeight - after.innerHeight) > 96;
   const controlsAreRightAligned = Boolean(
     after.controls && after.controls.x > after.innerWidth / 2 && after.controls.right <= after.innerWidth
   );
-  const dockWidthIsBounded = !after.dock || (after.dock.width >= 300 && after.dock.width <= 560);
-  const opened = panelExercise?.opened;
-  const panelUsesMainWidth =
-    !opened ||
-    Boolean(
-      opened.panel &&
-        opened.main &&
-        Math.abs(opened.panel.x - opened.main.x) <= 2 &&
-        Math.abs(opened.panel.right - opened.main.right) <= 2 &&
-        Math.abs(opened.panel.bottom - opened.main.bottom) <= 2
-    );
-  const valid =
-    !widthMismatch &&
-    !heightMismatch &&
-    after.mainDirection === 'column' &&
-    controlsAreRightAligned &&
-    dockWidthIsBounded &&
-    panelUsesMainWidth;
+  const valid = !widthMismatch && !heightMismatch && after.mainDirection === 'column' && controlsAreRightAligned;
   const report = {
     valid,
     nativeResynchronized,
     repaired: repair && (before.innerWidth !== after.innerWidth || before.innerHeight !== after.innerHeight),
     before,
     after,
-    panelExercise,
   };
   console.log(JSON.stringify(report, null, 2));
   if (!valid) throw new Error(`Live layout validation failed: ${JSON.stringify(report)}`);

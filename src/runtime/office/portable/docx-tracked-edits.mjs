@@ -181,7 +181,8 @@ export function trackedParagraphReplace(paragraphXml, find, fullReplacement, id,
     // in, or to the paragraph's last run when it falls at the very end.
     const touches = (interval) =>
       interval.start === interval.end
-        ? interval.start >= runStart && (interval.start < runEnd || (interval.start === runEnd && runEnd === joined.length))
+        ? interval.start >= runStart &&
+          (interval.start < runEnd || (interval.start === runEnd && runEnd === joined.length))
         : interval.start < runEnd && interval.end > runStart;
     const overlapping = run.textOnly ? intervals.filter(touches) : [];
     if (!overlapping.length) {

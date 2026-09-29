@@ -113,6 +113,8 @@ const MUTATION_KEYS: Partial<Record<string, readonly SidebarReferenceKey[]>> = {
   installBuiltinFeature: PROVIDER_KEYS,
   installLocalProviderModel: PROVIDER_KEYS,
   setBuiltinToolEnabled: PROVIDER_KEYS,
+  // Developer → Providers toggles add or remove a whole OAuth provider.
+  setDeveloperOption: PROVIDER_KEYS,
   // Onboarding finishes by writing Main, Web Search, and per-agent routes in one
   // capability call.
   completeOnboarding: ['webSearchRoute', 'agents', ...PROVIDER_KEYS],

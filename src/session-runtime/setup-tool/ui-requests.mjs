@@ -1,5 +1,15 @@
 import { randomUUID } from 'node:crypto';
 
+/** Error code of a request no Desktop window took: nothing ran, so a caller
+ *  with a runtime-only route may still take it. */
+export const SETUP_DESKTOP_UNCLAIMED = 'SETUP_DESKTOP_UNCLAIMED';
+
+function unclaimed(message) {
+  const error = new Error(message);
+  error.code = SETUP_DESKTOP_UNCLAIMED;
+  return error;
+}
+
 /** One addressed request, one desktop claimant, one receipt. Snapshot replay
  * carries only an id; it cannot replay a mutation after expiry or completion. */
 export function createSetupUiRequests({
@@ -15,7 +25,7 @@ export function createSetupUiRequests({
     pending.delete(id);
     clearTimeout(entry.timer);
     entry.signal?.removeEventListener('abort', entry.abort);
-    if (error) entry.reject(new Error(error));
+    if (error) entry.reject(error instanceof Error ? error : new Error(error));
     else entry.resolve(result);
     return true;
   }
@@ -23,7 +33,7 @@ export function createSetupUiRequests({
     if (signal?.aborted) return Promise.reject(new Error('setup: cancelled before Desktop execution'));
     const sessionId = String(getSessionId?.() || '');
     if (!sessionId)
-      return Promise.reject(new Error('setup: open this conversation in Desktop to change desktop-host settings'));
+      return Promise.reject(unclaimed('setup: open this conversation in Desktop to change desktop-host settings'));
     const id = randomUUID();
     return new Promise((resolve, reject) => {
       const entry = {
@@ -36,14 +46,14 @@ export function createSetupUiRequests({
         abort: () => finish(id, 'setup: cancelled. If Desktop already started, inspect its state before retrying.'),
         expiresAt: Date.now() + claimTimeoutMs,
         timer: setTimeout(
-          () => finish(id, 'setup: no Desktop window claimed the request; nothing was changed'),
+          () => finish(id, unclaimed('setup: no Desktop window claimed the request; nothing was changed')),
           claimTimeoutMs
         ),
       };
       pending.set(id, entry);
       signal?.addEventListener('abort', entry.abort, { once: true });
       if (notifySessionUi?.(sessionId, 'Desktop settings request', { kind: 'setup-ui', id }) !== true) {
-        finish(id, 'setup: no attached Desktop surface; nothing was changed');
+        finish(id, unclaimed('setup: no attached Desktop surface; nothing was changed'));
       }
     });
   }

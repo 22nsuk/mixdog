@@ -182,12 +182,15 @@ test('memoized digests keep verdicts identical for appended, edited and reordere
     ['in-place nested edit', (m) => ((m[1].content[0].text = 'rewritten'), m)],
     ['in-place nested append', (m) => (m[2].toolCalls.push({ id: 'c2', name: 'shell' }), m)],
     ['in-place key added', (m) => ((m[3].meta = { source: 'x' }), m)],
-    ['in-place key reorder', (m) => {
-      const { role, ...rest } = m[2];
-      for (const key of Object.keys(m[2])) delete m[2][key];
-      Object.assign(m[2], rest, { role });
-      return m;
-    }],
+    [
+      'in-place key reorder',
+      (m) => {
+        const { role, ...rest } = m[2];
+        for (const key of Object.keys(m[2])) delete m[2][key];
+        Object.assign(m[2], rest, { role });
+        return m;
+      },
+    ],
     ['in-place equal-content rewrite', (m) => ((m[3].content = ['file', 'body'].join(' ')), m)],
     ['replaced object', (m) => [m[0], { ...m[1], content: 'other' }, m[2], m[3]]],
     ['reordered', (m) => [m[0], m[2], m[1], m[3]]],

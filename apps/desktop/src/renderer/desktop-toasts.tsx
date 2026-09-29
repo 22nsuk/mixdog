@@ -6,6 +6,7 @@ import type { Toast } from './desktop-types';
 import { ErrorNotice, safeErrorDetails } from './ErrorNotice';
 import { groupToasts, reduceToasts } from './desktop-toast-state';
 import { reportRendererNotice } from './RendererRecovery';
+import { presentedModalDialog } from './surface-input-focus';
 import { relayPayloadTooLargeMessage } from '../shared/remote-payload-limit';
 
 function toastTitle(tone: string): string {
@@ -109,7 +110,8 @@ export function DesktopToastRegion({
   useEffect(() => {
     for (const text of shownErrors.split('\u0000').filter(Boolean)) reportRendererNotice(text);
   }, [shownErrors]);
-  const hasEntries = entries.length > 0;
+  const entryCount = entries.length;
+  const hasEntries = entryCount > 0;
   useLayoutEffect(() => {
     // Anchor to the single main panel, below its tab strip. Every open tab
     // keeps its own `.workspace` sheet mounted (parked ones included), so the
@@ -119,13 +121,29 @@ export function DesktopToastRegion({
       const sheet = panel?.getBoundingClientRect();
       if (!sheet?.width || !sheet.height) return;
       const strip = panel?.querySelector('.workspace-tabs-shell')?.getBoundingClientRect();
-      const top = Math.max(16, (strip?.height ? strip.bottom : sheet.top) + 16);
-      const next = {
-        right: Math.max(16, window.innerWidth - sheet.right + 16),
-        top,
-        width: Math.min(320, Math.max(0, sheet.width - 32)),
-        maxHeight: Math.max(0, sheet.bottom - top - 16),
-      };
+      const right = Math.max(16, window.innerWidth - sheet.right + 16);
+      const width = Math.min(320, Math.max(0, sheet.width - 32));
+      let top = Math.max(16, (strip?.height ? strip.bottom : sheet.top) + 16);
+      // A presented modal keeps its header (title, close) reachable: a lane
+      // whose toasts would cover that header starts just below it instead.
+      const header = presentedModalDialog()
+        ?.querySelector(':scope > header, .mixdog-settings__header')
+        ?.getBoundingClientRect();
+      const region = document.querySelector('.mx-toast-region');
+      const first = region?.firstElementChild?.getBoundingClientRect();
+      const last = region?.lastElementChild?.getBoundingClientRect();
+      const laneHeight = first && last ? last.bottom - first.top : 0;
+      const laneRight = window.innerWidth - right;
+      if (
+        header?.height &&
+        header.left < laneRight &&
+        header.right > laneRight - width &&
+        header.top < top + laneHeight &&
+        header.bottom > top
+      ) {
+        top = Math.round(header.bottom + 8);
+      }
+      const next = { right, top, width, maxHeight: Math.max(0, sheet.bottom - top - 16) };
       setPlacement((current) =>
         Object.keys(next).every((key) => current[key as keyof typeof next] === next[key as keyof typeof next])
           ? current
@@ -137,11 +155,26 @@ export function DesktopToastRegion({
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
     const panel = document.querySelector('.main-panel');
     if (observer && panel) observer.observe(panel);
+    // Dialogs portal in as body children or flip their modal state in place;
+    // a second pass lands after their entrance motion settles.
+    let settle = 0;
+    const remeasure = () => {
+      measure();
+      window.clearTimeout(settle);
+      settle = window.setTimeout(measure, 220);
+    };
+    const mounts = new MutationObserver(remeasure);
+    mounts.observe(document.body, { childList: true });
+    const modality = new MutationObserver(remeasure);
+    modality.observe(document.body, { subtree: true, attributes: true, attributeFilter: ['aria-modal'] });
     return () => {
       window.removeEventListener('resize', measure);
       observer?.disconnect();
+      mounts.disconnect();
+      modality.disconnect();
+      window.clearTimeout(settle);
     };
-  }, [hasEntries]);
+  }, [hasEntries, entryCount]);
   if (!hasEntries) return null;
   return createPortal(
     <section

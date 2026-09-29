@@ -1,5 +1,5 @@
 import { Info, Pin, Plus } from 'lucide-react';
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { useEffect, useState, useSyncExternalStore, type KeyboardEvent } from 'react';
 
 import { PaneSurfaceGate } from './PaneSurfaceGate';
 import { InitialSurface } from './InitialSurface';
@@ -20,20 +20,12 @@ import { displayUsagePercent, usageToneClass } from './usage-percent';
 import { formatUsageResetRemaining, usageResetPresentation } from './usage-reset-time';
 import { useUsageResetVerification } from './use-usage-reset-verification';
 import { ProviderAccountPicker } from './ProviderAccountPicker';
+import { focusQuotaUsage } from './usage-surface-mode';
+import { prefetchQuotaUsage } from './quota-usage-cache';
+import { SUBSCRIPTIONS, type Subscription } from './subscription-providers';
 
 const SIDEBAR_CODEX_RESET_ATTEMPT_KEY = 'mixdog.desktop.codex-reset-attempt.v1';
 const SIDEBAR_CODEX_RESET_TIMEOUT_MS = 90_000;
-
-const SUBSCRIPTIONS = [
-  { key: 'codex', label: 'Codex', provider: 'openai-oauth' },
-  { key: 'claude', label: 'Claude', provider: 'anthropic-oauth' },
-  { key: 'grok', label: 'Grok', provider: 'grok-oauth' },
-  { key: 'cursor', label: 'Cursor', provider: 'cursor-oauth' },
-  { key: 'antigravity', label: 'Antigravity', provider: 'antigravity-oauth' },
-  { key: 'opencode-go', label: 'OpenCode Go', provider: 'opencode-go' },
-] as const;
-
-type Subscription = (typeof SUBSCRIPTIONS)[number];
 
 function rows(value: unknown): UsageRecord[] {
   const dashboard = record(value);
@@ -283,8 +275,8 @@ export function SidebarUsage({
    *  per-brand icon + % stack (user: 핀모드). */
   pinned?: boolean;
   onTogglePin?(): void;
-  /** Opens the token-usage statistics surface: this panel answers what is
-   *  LEFT, that one answers what was SPENT. */
+  /** Opens the usage surface: this panel answers what is LEFT, that one how
+   *  it was spent — in tokens, or on a subscription's own meter. */
   onOpenStats?(): void;
   onAddProviders?(): void;
 }) {
@@ -316,16 +308,43 @@ export function SidebarUsage({
   // never restarts the five-minute timer and never re-requests.
   useEffect(() => holdUsageDashboardCadence(api), [api]);
 
+  // A provider name or meter opens its own subscription usage: the name with
+  // that provider's first window, a meter with its window selected.
+  const quotaTrigger = (provider: string, window = '') => {
+    if (!onOpenStats) return {};
+    const open = () => {
+      focusQuotaUsage({ provider, window });
+      onOpenStats();
+    };
+    // What the click opens is read while the pointer is still on its way.
+    const readAhead = () => prefetchQuotaUsage(api, { provider, window });
+    return {
+      role: 'button',
+      tabIndex: 0,
+      onMouseEnter: readAhead,
+      onFocus: readAhead,
+      onClick: open,
+      onKeyDown: (event: KeyboardEvent<HTMLElement>) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        open();
+      },
+    };
+  };
+
   // Opening revalidates a stale snapshot only (fresh data inside the TTL paints
-  // as-is, an in-flight request is shared); closing clears reset confirmation.
+  // as-is, an in-flight request is shared) and reads ahead the subscription
+  // usage ℹ️ opens on; closing clears reset confirmation.
+  const statsAvailable = Boolean(onOpenStats);
   useEffect(() => {
     if (sidebarOpen) {
       void refreshUsageDashboard(api);
+      if (statsAvailable) prefetchQuotaUsage(api);
     } else {
       setResetConfirming(null);
       setResetNotice('');
     }
-  }, [api, sidebarOpen]);
+  }, [api, sidebarOpen, statsAvailable]);
 
   // Preserve the provider's individual expiry rows. The consume endpoint does
   // not accept a credit id, so every Use action safely means "consume one
@@ -428,8 +447,8 @@ export function SidebarUsage({
             <button
               type="button"
               className="session-panel-action sidebar-usage-stats"
-              aria-label={t('Show token usage')}
-              data-tooltip={t('Show token usage')}
+              aria-label={t('Show usage')}
+              data-tooltip={t('Show usage')}
               onClick={onOpenStats}
             >
               <Info size={16} aria-hidden="true" />
@@ -470,7 +489,7 @@ export function SidebarUsage({
                     <span className="sidebar-usage-provider-icon">
                       <ProviderIcon provider={subscription.provider} />
                     </span>
-                    <b>{subscription.label}</b>
+                    <b {...quotaTrigger(subscription.provider)}>{subscription.label}</b>
                     {subscription.provider.endsWith('-oauth') && (
                       <ProviderAccountPicker api={api} provider={subscription.provider} />
                     )}
@@ -492,7 +511,11 @@ export function SidebarUsage({
                       const resetSentence =
                         resetPresentation.resetTextOverride === null ? resetText(window.resetAt) : '';
                       return (
-                        <span className={`sidebar-usage-meter${tone}`} key={quotaWindowKey(window, index)}>
+                        <span
+                          className={`sidebar-usage-meter${tone}`}
+                          key={quotaWindowKey(window, index)}
+                          {...quotaTrigger(subscription.provider, String(window.label || ''))}
+                        >
                           <small title={windowLabel(window)}>{windowLabel(window)}</small>
                           <i>
                             <i style={{ width: `${effectivePercent ?? 0}%` }} />

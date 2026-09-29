@@ -14,6 +14,7 @@
  */
 import { join } from 'node:path';
 import type { BrowserWindow } from 'electron';
+import { COLLAPSED_SESSIONS_TOGGLE } from './capture-assertions';
 import { runEntryProbe } from './jitter-probe-entry';
 import { runKeysProbe } from './jitter-probe-keys';
 import { runStreamingProbe } from './jitter-probe-stream';
@@ -82,7 +83,7 @@ export async function runJitterProbe({
     // New Task is the Sessions header "+" itself: open the panel and reach
     // for the entry again.
     if (!(link instanceof HTMLElement)) {
-      const sidebar = document.querySelector('.sessions-link');
+      const sidebar = document.querySelector(${JSON.stringify(COLLAPSED_SESSIONS_TOGGLE)});
       if (sidebar instanceof HTMLElement) {
         sidebar.click();
         await new Promise((resolve) => setTimeout(resolve, 200));

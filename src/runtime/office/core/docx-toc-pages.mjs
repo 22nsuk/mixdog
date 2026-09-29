@@ -11,7 +11,12 @@ export async function numberDocxTableOfContents(docxPath, pdfPath) {
   const xml = await zipText(zip, 'word/document.xml');
   if (!/<w:fldSimple\b[^>]*\bw:instr="[^"]*TOC/.test(xml || '')) return false;
   const layout = await extractPdfTextLayout(pdfPath, { shapes: false });
-  const pageTexts = layout.pages.map((page) => page.items.map((item) => item.text).join('').replace(/\s+/g, ''));
+  const pageTexts = layout.pages.map((page) =>
+    page.items
+      .map((item) => item.text)
+      .join('')
+      .replace(/\s+/g, '')
+  );
   if (!(await writeDocxTocPages(zip, pageTexts))) return false;
   await savePackage(zip, docxPath);
   return true;

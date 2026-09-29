@@ -9,19 +9,8 @@ import { resolvePluginData } from '../../../../shared/plugin-paths.mjs';
 // worker A's read satisfy worker B's edit-gate across sessions via a persisted
 // __global__.json).
 const readFilesByScope = new Map(); // scope → Map(fullPath → { mtimeMs, size, ...meta })
-// Same-process, same-scope aliases established only after a successful
-// read-family ENOENT redirect. These are intentionally not persisted: an
-// apply_patch call may reuse a path correction proven by a read in the live
-// session, but must never inherit a guessed redirect from another process.
-const readRedirectsByScope = new Map(); // scope → Map(requestedPathKey → targetPath)
 const READ_SNAPSHOT_SCOPE_CACHE_LIMIT = 32;
 const READ_SNAPSHOT_FILES_PER_SCOPE_LIMIT = 1024;
-const READ_SNAPSHOT_REDIRECTS_PER_SCOPE_LIMIT = 256;
-
-function snapshotPathKey(fullPath) {
-  const value = String(fullPath || '');
-  return process.platform === 'win32' ? value.toLowerCase() : value;
-}
 
 // ── Disk-persisted snapshot store ────────────────────────────────────────
 // Mirror the in-memory readFilesByScope to per-scope JSON files under
@@ -197,9 +186,7 @@ export function releaseReadSnapshotScope(scope, { deletePersisted = false, persi
       persistScopeSync(scopeKey, { exitDrain: true });
     } catch {}
   }
-  const released =
-    readFilesByScope.delete(scopeKey) || readRedirectsByScope.has(scopeKey) || scopeHydrated.has(scopeKey);
-  readRedirectsByScope.delete(scopeKey);
+  const released = readFilesByScope.delete(scopeKey) || scopeHydrated.has(scopeKey);
   scopeHydrated.delete(scopeKey);
   if (deletePersisted) {
     const path = snapshotScopeFilePath(scopeKey);
@@ -221,20 +208,7 @@ function pruneReadSnapshotScopes(protectedScopeKey) {
   }
 }
 
-function dropRedirectsToPath(scopeKey, fullPath) {
-  const redirects = readRedirectsByScope.get(scopeKey);
-  if (!redirects) return;
-  const droppedKey = snapshotPathKey(fullPath);
-  for (const [requestedKey, targetPath] of redirects) {
-    if (requestedKey === droppedKey || snapshotPathKey(targetPath) === droppedKey) {
-      redirects.delete(requestedKey);
-    }
-  }
-  if (redirects.size === 0) readRedirectsByScope.delete(scopeKey);
-}
-
 export function rememberReadSnapshot(fullPath, snapshot, scope, knownReadFiles = null) {
-  const scopeKey = readScopeKey(scope);
   const readFiles = knownReadFiles || readFilesForScope(scope);
   readFiles.delete(fullPath);
   readFiles.set(fullPath, snapshot);
@@ -242,7 +216,6 @@ export function rememberReadSnapshot(fullPath, snapshot, scope, knownReadFiles =
     const oldest = readFiles.keys().next().value;
     if (oldest === undefined) break;
     readFiles.delete(oldest);
-    if (scopeKey !== null) dropRedirectsToPath(scopeKey, oldest);
   }
   return readFiles;
 }
@@ -250,14 +223,6 @@ export function rememberReadSnapshot(fullPath, snapshot, scope, knownReadFiles =
 export function deleteReadSnapshotPathEverywhere(fullPath) {
   for (const [scopeKey, readFiles] of readFilesByScope.entries()) {
     if (readFiles.delete(fullPath)) scheduleScopePersist(scopeKey);
-  }
-  const deletedKey = snapshotPathKey(fullPath);
-  for (const redirects of readRedirectsByScope.values()) {
-    for (const [requestedKey, targetPath] of redirects.entries()) {
-      if (requestedKey === deletedKey || snapshotPathKey(targetPath) === deletedKey) {
-        redirects.delete(requestedKey);
-      }
-    }
   }
   if (!SNAPSHOT_DIR) return;
   let entries;
@@ -315,46 +280,6 @@ process.on('exit', flushAllScopesSync);
 
 export function readScopeKey(scope) {
   return scope ? String(scope) : null;
-}
-
-export function recordReadPathRedirect(requestedFullPath, targetFullPath, scope) {
-  const scopeKey = readScopeKey(scope);
-  if (scopeKey === null) return false;
-  const requested = String(requestedFullPath || '');
-  const target = String(targetFullPath || '');
-  if (!requested || !target || snapshotPathKey(requested) === snapshotPathKey(target)) return false;
-  // The redirect is trusted only after the target produced a scoped read
-  // snapshot. A search/list-only redirect cannot authorize a later edit.
-  if (!readFilesForScope(scope).has(target)) return false;
-  let redirects = readRedirectsByScope.get(scopeKey);
-  if (!redirects) {
-    redirects = new Map();
-    readRedirectsByScope.set(scopeKey, redirects);
-  }
-  redirects.delete(snapshotPathKey(requested));
-  redirects.set(snapshotPathKey(requested), target);
-  while (redirects.size > READ_SNAPSHOT_REDIRECTS_PER_SCOPE_LIMIT) {
-    const oldest = redirects.keys().next().value;
-    if (oldest === undefined) break;
-    redirects.delete(oldest);
-  }
-  return true;
-}
-
-export function resolveReadPathRedirect(requestedFullPath, scope) {
-  const scopeKey = readScopeKey(scope);
-  if (scopeKey === null) return null;
-  const redirects = readRedirectsByScope.get(scopeKey);
-  if (!redirects) return null;
-  const requestedKey = snapshotPathKey(requestedFullPath);
-  const target = redirects.get(requestedKey);
-  if (!target) return null;
-  // Fail closed if the proving snapshot was cleared after a mutation.
-  if (!readFilesForScope(scope).has(target)) {
-    redirects.delete(requestedKey);
-    return null;
-  }
-  return target;
 }
 
 export function readFilesForScope(scope) {

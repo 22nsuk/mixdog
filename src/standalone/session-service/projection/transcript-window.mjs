@@ -215,7 +215,9 @@ export function windowTranscriptSnapshot(entry, wire) {
   if (cache && cache.wire === wire && cache.start === start && cache.head === view.head && cache.older === older) {
     return cache.value;
   }
-  const windowed = view.head.length ? view.head.concat(items.slice(start)) : start ? items.slice(start) : items;
+  let windowed = items;
+  if (view.head.length) windowed = view.head.concat(items.slice(start));
+  else if (start) windowed = items.slice(start);
   const value = { ...wire, items: windowed, transcriptHasOlder: older };
   view.cache = { wire, start, head: view.head, older, value };
   return value;

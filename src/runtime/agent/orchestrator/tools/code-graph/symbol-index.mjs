@@ -13,6 +13,7 @@ import { _langUsesDollarInIdentifiers, _langAllowsBangQuestionSuffix } from './l
 import { EXTRACTION_SYMBOL_LANGS } from './constants.mjs';
 import { _getSourceTextForNode, _graphRel } from './source-access.mjs';
 import { _symbolParentIndex, _symbolLevel } from './text-columns.mjs';
+import { oneLine } from '../../../../shared/clean.mjs';
 
 // Unicode-aware word-boundary wrapper for an already-regex-escaped
 // symbol. JS `\b` only fires at ASCII [A-Za-z0-9_] transitions, so
@@ -110,20 +111,14 @@ function _symbolKindOf(symbol) {
   return kind || 'symbol';
 }
 
-function _rowField(value) {
-  return String(value ?? '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
 export function _symbolRowLabel(symbol) {
   const start = _symbolLine(symbol);
   const end = Number(symbol?.endLine);
   const range = Number.isFinite(end) && end > start ? `${start}-${end}` : `${start}`;
   const kind = _symbolKindOf(symbol);
-  const name = _rowField(symbol?.name);
+  const name = oneLine(symbol?.name);
   const exported = symbol?.exported === true ? 'export ' : '';
-  const sig = typeof symbol?.sig === 'string' ? _rowField(symbol.sig) : '';
+  const sig = typeof symbol?.sig === 'string' ? oneLine(symbol.sig) : '';
   const redundant = !sig || sig === name || sig === `${kind} ${name}`;
   return `${exported}${kind} ${name} (L${range})${redundant ? '' : `  ${sig}`}`;
 }

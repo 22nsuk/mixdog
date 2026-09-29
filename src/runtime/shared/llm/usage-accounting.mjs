@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { getUsageLedger, makeUsageRecord } from './usage-ledger.mjs';
 import { withUsageContext } from './usage-context.mjs';
+import { ACCOUNT_PROVIDERS } from '../provider-accounts.mjs';
+import { currentProviderAccountId } from '../provider-auth-binding.mjs';
 
 /**
  * Runs at the common provider boundary, not inside optional diagnostic IO.
@@ -46,6 +48,9 @@ export async function accountProviderSend(provider, instance, send, model, opts 
       serviceTier: result.serviceTier || usage.raw?.service_tier,
       fast: opts.fast === true,
       responseId: result.responseId,
+      // The account this send is bound to, so quota history can tell one
+      // connected subscription's records from another's.
+      account: ACCOUNT_PROVIDERS.includes(provider) ? currentProviderAccountId(provider) : '',
       durationMs: Date.now() - startedAt,
     });
     // Committed by the ledger worker (batched with concurrent sends); the

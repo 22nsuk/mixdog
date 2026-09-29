@@ -31,8 +31,10 @@ export interface BrowserPageElement extends HTMLDivElement {
 }
 
 export function createBrowserPageClient(options: {
-  api: Pick<NonNullable<Window['mixdogDesktop']>, 'browserPageFrame' | 'browserPageControl'>;
+  api: Pick<NonNullable<Window['mixdogDesktop']>, 'browserPageFrame' | 'browserPageControl' | 'browserPageMetadata'>;
   sessionId: string;
+  /** The page draws itself natively: read its facts, never its pixels. */
+  metadataOnly?(): boolean;
   update(frame: DesktopBrowserPageFrame): void;
   /** Decode pixels before publishing their coordinate metadata. */
   prepare?(frame: DesktopBrowserPageFrame): Promise<void>;
@@ -121,6 +123,9 @@ export function createBrowserPageClient(options: {
     if (disposed || !options.api.browserPageFrame) return;
     if (pendingRead) return pendingRead;
     const capture = async (): Promise<DesktopBrowserPageFrame> => {
+      if (options.metadataOnly?.() && options.api.browserPageMetadata) {
+        return options.api.browserPageMetadata(options.sessionId);
+      }
       // A discarded frame is safe to recapture; never publish its old pixels.
       const resample = async () => {
         const fresh = await options.api.browserPageFrame!(options.sessionId);

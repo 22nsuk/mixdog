@@ -269,7 +269,7 @@ function ScheduleEditor({
   }
   return (
     <SidebarDialogLayer onClose={onCancel}>
-      <section className="schedules-dialog" role="dialog" aria-modal="true" aria-labelledby="schedules-dialog-title">
+      <section className="schedules-dialog schedules-editor-dialog" role="dialog" aria-modal="true" aria-labelledby="schedules-dialog-title">
         <header>
           <h2 id="schedules-dialog-title">{editing ? t('Edit scheduled task') : t('Create scheduled task')}</h2>
           <div className="schedules-dialog-header-actions">

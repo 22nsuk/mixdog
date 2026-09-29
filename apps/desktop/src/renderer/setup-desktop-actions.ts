@@ -86,6 +86,22 @@ async function builtinAction(
     }
     return saved({ voice: result });
   }
+  // Git and Office install like their Built-in card: the system dependency
+  // first (a present one answers at once), then the runtime activation.
+  if (action === 'install_builtin' && (name === 'git' || name === 'office')) {
+    const dependency = await mutate(() => (name === 'git' ? api.installGitCli!() : api.installLibreOffice!()));
+    if (!dependency?.installed) {
+      throw new Error(`${name === 'git' ? 'Git' : 'LibreOffice'} installation did not complete`);
+    }
+    const result = await mutate(() =>
+      name === 'git' ? invoke('setBuiltinToolEnabled', ['git', true]) : invoke('installBuiltinFeature', ['office'])
+    );
+    const feature = record(result[name]);
+    if (feature.installed !== true || feature.enabled !== true) {
+      throw new Error(`${name} did not reach the installed and enabled state`);
+    }
+    return saved({ [name]: feature, dependency }, 'new sessions');
+  }
   if (name !== 'browser' && name !== 'computer') throw new Error('Unsupported Desktop built-in');
   const installedKey = name === 'browser' ? 'browserInstalled' : 'computerInstalled';
   const enabledKey = name === 'browser' ? 'browserControl' : 'computerControl';

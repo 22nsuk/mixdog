@@ -16,6 +16,7 @@ import {
   setBottomPanelPaneOpen,
 } from './bottom-panel-pane-state';
 import { usePageHideFlush } from './layout-persistence';
+import { BOTTOM_SHEET_QUERY } from './use-responsive-shell-bands';
 
 const BOTTOM_PANEL_KEY = 'mixdog.desktop.bottom-panel.v1';
 const BOTTOM_PANEL_MIN_HEIGHT = 120;
@@ -305,7 +306,7 @@ export function BottomPanel({
       setClosing(false);
       return undefined;
     }
-    const sheetBand = window.matchMedia?.('(max-width: 940px)').matches === true;
+    const sheetBand = window.matchMedia?.(BOTTOM_SHEET_QUERY).matches === true;
     if (!sheetBand || motion === 'instant') {
       setClosing(false);
       return undefined;

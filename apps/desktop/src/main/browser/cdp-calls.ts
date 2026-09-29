@@ -7,6 +7,7 @@ import type { BrowserCdpSend } from './cdp-session-init';
 import type { BrowserGuestStateStore } from './guest-state';
 import { redactBrowserText } from './redaction';
 import { pause } from './settle';
+import { withAgentInput } from './agent-input';
 
 export interface BrowserCdpCallOptions {
   beforeDispatch?: () => void;
@@ -74,28 +75,33 @@ export function createBrowserCdpCalls(host: CdpCallsHost) {
     sessionId?: string,
     beforeDispatch?: () => void
   ): Promise<'completed' | 'dialog'> {
-    const dispatch = sendCdp<void>(
-      guest,
-      cdp,
-      method,
-      params,
-      CDP_REQUEST_TIMEOUT_MS,
-      signal,
-      sessionId,
-      beforeDispatch
-    );
-    const outcome = dispatch.then(
-      () => ({ done: true as const, error: null }),
-      (error: unknown) => ({ done: true as const, error })
-    );
-    for (;;) {
-      const next = await Promise.race([outcome, pause(25, signal).then(() => ({ done: false as const, error: null }))]);
-      if (next.done) {
-        if (next.error) throw next.error;
-        return 'completed';
+    return withAgentInput(guest, async () => {
+      const dispatch = sendCdp<void>(
+        guest,
+        cdp,
+        method,
+        params,
+        CDP_REQUEST_TIMEOUT_MS,
+        signal,
+        sessionId,
+        beforeDispatch
+      );
+      const outcome = dispatch.then(
+        () => ({ done: true as const, error: null }),
+        (error: unknown) => ({ done: true as const, error })
+      );
+      for (;;) {
+        const next = await Promise.race([
+          outcome,
+          pause(25, signal).then(() => ({ done: false as const, error: null })),
+        ]);
+        if (next.done) {
+          if (next.error) throw next.error;
+          return 'completed';
+        }
+        if (state.for(guest).pendingDialog) return 'dialog';
       }
-      if (state.for(guest).pendingDialog) return 'dialog';
-    }
+    });
   }
 
   async function evaluate<T>(

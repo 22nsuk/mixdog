@@ -18,7 +18,7 @@ import { useSharedTick } from '../hooks/useSharedTick.mjs';
 // instant-local L2 can render the Shell segment itself instead of grafting it
 // out of the previous full line.
 import { shellJobsStatus } from '../../ui/statusline-segments.mjs';
-import { formatElapsed, num, terminalColumns } from '../../ui/statusline-format.mjs';
+import { formatElapsed, num, terminalColumns, timeMs } from '../../ui/statusline-format.mjs';
 
 // Loaded at RUNTIME (not bundled) so its vendored statusline-lib relative
 // imports resolve from the real src/ui location, not the dist/ bundle dir.
@@ -187,24 +187,18 @@ function localRunningWorkerCount(agentWorkers = [], agentJobs = []) {
   return seen.size;
 }
 
-function localTimeMs(value) {
-  if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value;
-  const n = Date.parse(String(value || ''));
-  return Number.isFinite(n) ? n : 0;
-}
-
 // Oldest running worker/job start time, for the Agents segment elapsed. Mirrors
 // the async path which derives elapsed from the oldest running worker.
 function localOldestWorkerStartMs(agentWorkers = [], agentJobs = []) {
   let oldest = Infinity;
   for (const worker of Array.isArray(agentWorkers) ? agentWorkers : []) {
     if (isTerminalStatus(worker?.stage || worker?.status)) continue;
-    const t = localTimeMs(worker?.startedAt || worker?.startTime || worker?.createdAt);
+    const t = timeMs(worker?.startedAt || worker?.startTime || worker?.createdAt);
     if (t > 0 && t < oldest) oldest = t;
   }
   for (const job of Array.isArray(agentJobs) ? agentJobs : []) {
     if (!/running/i.test(String(job?.status || job?.stage || ''))) continue;
-    const t = localTimeMs(job?.startedAt);
+    const t = timeMs(job?.startedAt);
     if (t > 0 && t < oldest) oldest = t;
   }
   return Number.isFinite(oldest) ? oldest : 0;
@@ -383,7 +377,7 @@ function StatusLineView({
     ? agentWorkers
         .map(
           (w) =>
-            `${w?.tag || w?.agent || w?.name || ''}|${w?.stage || w?.status || ''}|${localTimeMs(w?.startedAt || w?.startTime || w?.createdAt)}`
+            `${w?.tag || w?.agent || w?.name || ''}|${w?.stage || w?.status || ''}|${timeMs(w?.startedAt || w?.startTime || w?.createdAt)}`
         )
         .join(',')
     : '';
@@ -391,7 +385,7 @@ function StatusLineView({
     ? agentJobs
         .map(
           (j) =>
-            `${j?.tag || j?.agent || j?.name || ''}|${j?.status || j?.stage || ''}|${localTimeMs(j?.startedAt || j?.startTime || j?.createdAt)}`
+            `${j?.tag || j?.agent || j?.name || ''}|${j?.status || j?.stage || ''}|${timeMs(j?.startedAt || j?.startTime || j?.createdAt)}`
         )
         .join(',')
     : '';

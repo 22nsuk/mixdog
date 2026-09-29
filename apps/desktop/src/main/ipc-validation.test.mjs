@@ -6,7 +6,20 @@ import {
   requiredDesktopCapabilityRequest,
   requiredGitBranchName,
   requiredNewTaskDraft,
+  requiredTextFileEncoding,
 } from './ipc-validation.ts';
+
+test('an editor save without an encoding change passes the IPC and remote boundaries', () => {
+  // IPC keeps `undefined`; the remote lane is JSON and sends `null`.
+  assert.equal(requiredTextFileEncoding(undefined), undefined);
+  assert.equal(requiredTextFileEncoding(null), undefined);
+  for (const encoding of ['utf8', 'utf8bom', 'utf16le', 'utf16be']) {
+    assert.equal(requiredTextFileEncoding(encoding), encoding);
+  }
+  for (const encoding of ['', 'latin1', 0, {}]) {
+    assert.throws(() => requiredTextFileEncoding(encoding), TypeError);
+  }
+});
 
 test('the turn review bar reaches its diff with only a boolean refresh option', () => {
   for (const args of [
@@ -112,10 +125,13 @@ test('developer settings travel the read lane and option writes require an id an
     () => requiredDesktopCapabilityRequest({ capability: 'getDeveloperSettings', args: ['x'] }),
     /invalid number of arguments/
   );
-  assert.deepEqual(requiredDesktopCapabilityRequest({ capability: 'setDeveloperOption', args: ['devProviders', true] }), {
-    capability: 'setDeveloperOption',
-    args: ['devProviders', true],
-  });
+  assert.deepEqual(
+    requiredDesktopCapabilityRequest({ capability: 'setDeveloperOption', args: ['devProviders', true] }),
+    {
+      capability: 'setDeveloperOption',
+      args: ['devProviders', true],
+    }
+  );
   assert.throws(
     () => requiredDesktopCapabilityRequest({ capability: 'setDeveloperOption', args: ['devProviders', 'on'] }),
     /requires a boolean value/

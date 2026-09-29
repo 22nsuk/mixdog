@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getPluginData } from '../config.mjs';
-import { ANTIGRAVITY_MODELS, normalizeGrokModelId } from './provider-model-identities.mjs';
+import { ANTIGRAVITY_MODELS, ANTIGRAVITY_PRICING_ALIASES, normalizeGrokModelId } from './provider-model-identities.mjs';
 
 const PROVIDER_CACHE_FILES = Object.freeze({
   'openai-oauth': ['openai-oauth-models.json'],
@@ -68,7 +68,8 @@ export function providerPricingModelSync(provider, model) {
       entry.wire === model ||
       (entry.wire && typeof entry.wire === 'object' && Object.values(entry.wire).includes(model))
   );
-  return row?.pricingModel || row?.id || model;
+  const id = row?.pricingModel || row?.id || model;
+  return ANTIGRAVITY_PRICING_ALIASES[id] || id;
 }
 
 function modelAliases(id) {

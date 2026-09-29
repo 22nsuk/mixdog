@@ -4,10 +4,27 @@ import {
   gradientFillXml,
   mergeAccentSeries,
   nativeGradients,
+  orderChartChildren,
   normalizeChartFonts,
   orderPresentationLists,
   pruneUndeclaredAxisIds,
+  uniqueShapeIds,
 } from './pptx-script-normalize.mjs';
+
+// pptxgenjs numbers a table frame as its ordinal times the slide number plus one: the first table on slide 5 took
+// id 6 beside a text box that was id 6 too, and a batch naming shape 6 could not tell the two apart.
+test('an authored slide gives every drawing object an id of its own', () => {
+  const object = (tag, id) => `<p:${tag}><p:nv><p:cNvPr id="${id}" name="${tag}${id}"/></p:nv></p:${tag}>`;
+  const xml = `<p:spTree>${object('sp', 1)}${object('sp', 2)}${object('graphicFrame', 6)}${object('sp', 5)}${object('sp', 6)}${object('sp', 25)}</p:spTree>`;
+  const { xml: out, changed } = uniqueShapeIds(xml);
+  assert.equal(changed, 1);
+  assert.deepEqual(
+    [...out.matchAll(/id="(\d+)"/g)].map((match) => Number(match[1])),
+    [1, 2, 6, 5, 26, 25],
+    'the table keeps its id; the later text box takes the next free one'
+  );
+  assert.equal(uniqueShapeIds(out).changed, 0, 'idempotent');
+});
 
 test('a 2D chart group keeps only the axis ids its plot area declares', () => {
   const xml =
@@ -76,6 +93,20 @@ test('existing chart script faces survive normalization without duplicate or out
     if (existing.includes('Noto Serif KR')) assert.match(properties, /typeface="Noto Serif KR"/);
     assert.equal(normalizeChartFonts(normalized.xml).changed, 0);
   }
+});
+
+test('chart children are put in schema order: axis tail, series points, chart-level flags', () => {
+  const xml =
+    '<c:barChart><c:barDir val="col"/><c:ser><c:idx val="0"/><c:order val="0"/><c:dLbls><c:showVal val="1"/></c:dLbls><c:dPt><c:idx val="2"/></c:dPt><c:cat/><c:val/></c:ser><c:varyColors val="0"/><c:gapWidth val="60"/><c:axId val="1"/></c:barChart>' +
+    '<c:catAx><c:axId val="1"/><c:tickLblSkip val="1"/><c:crossAx val="2"/><c:noMultiLvlLbl val="0"/></c:catAx>';
+  const ordered = orderChartChildren(xml);
+  assert.equal(ordered.changed, true);
+  assert.match(ordered.xml, /<c:barDir val="col"\/><c:varyColors val="0"\/><c:ser>/);
+  assert.match(ordered.xml, /<c:order val="0"\/><c:dPt><c:idx val="2"\/><\/c:dPt><c:dLbls>/);
+  assert.match(ordered.xml, /<c:crossAx val="2"\/><c:tickLblSkip val="1"\/><c:noMultiLvlLbl/);
+  assert.equal(orderChartChildren(ordered.xml).changed, false);
+  const line = orderChartChildren('<c:lineChart><c:varyColors val="0"/><c:ser><c:idx val="0"/></c:ser><c:marker val="1"/><c:axId val="1"/></c:lineChart>');
+  assert.match(line.xml, /^<c:lineChart><c:grouping val="standard"\/><c:varyColors val="0"\/><c:ser>/);
 });
 
 test('the accent overlay series merges into one series with a per-point fill', () => {

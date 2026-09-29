@@ -6,7 +6,7 @@
 // drains it in one go.
 import { getStoreDir } from '../paths-heartbeat.mjs';
 import { probePath, PROBE_PRESENT } from '../fs-probe.mjs';
-import { pruneSweepRecordCache } from './sweep-record.mjs';
+import { persistSweepRecordCache, pruneSweepRecordCache } from './sweep-record.mjs';
 import { collectSweepRows, createSweepTally, resolveSweepPlan } from './sweep-plan.mjs';
 import { sweepRow } from './sweep-row.mjs';
 import { pruneOpenCandidates, queueDeletedSummaryPrune, reapOrphanSidecars } from './sweep-finish.mjs';
@@ -38,6 +38,7 @@ function* sweepStaleSessionSteps(ttlMs, options = {}) {
   pruneOpenCandidates(ctx);
   yield* reapOrphanSidecars(ctx);
   queueDeletedSummaryPrune(ctx.tally);
+  persistSweepRecordCache();
   const { openCandidates: _candidates, ...result } = ctx.tally;
   return result;
 }

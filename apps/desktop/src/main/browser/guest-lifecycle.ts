@@ -30,6 +30,9 @@ export interface BrowserGuestLifecycleHost {
   onPopup?(opener: WebContents, popup: WebContents): void;
   onGuest?(guest: WebContents): void;
   waitForLoadSettle(guest: WebContents, timeoutMs: number, signal?: AbortSignal): Promise<unknown>;
+  /** Native presentation: pages compose in their own hidden, frameless native
+   *  windows, which the pane shows over its surface (see native-view). */
+  nativeView?: boolean;
 }
 
 /** Guests always compose offscreen; where Chromium can hand that composited
@@ -40,13 +43,25 @@ export function browserSharedTextureRendering(): boolean {
   return process.platform === 'win32' && app.isHardwareAccelerationEnabled();
 }
 
-/** Every page owner runs on the shared partition without a native surface, so
- *  its window options are fixed: hidden, unfocusable, offscreen-composited and
- *  never throttled. */
-function offscreenWindowOptions(): Electron.BrowserWindowConstructorOptions {
+/** Every page owner runs on the shared partition, so its window options are
+ *  fixed: hidden, unfocusable, offscreen-composited (unless natively presented)
+ *  and never throttled. */
+function offscreenWindowOptions(nativeView = false): Electron.BrowserWindowConstructorOptions {
   return {
     show: false,
     focusable: false,
+    // A natively presented page window is shown as nothing but the page, and
+    // as a tool window it never appears in Alt+Tab, even while parked.
+    ...(nativeView
+      ? {
+          frame: false,
+          thickFrame: false,
+          roundedCorners: false,
+          hasShadow: false,
+          skipTaskbar: true,
+          ...(process.platform === 'win32' ? { type: 'toolbar' } : {}),
+        }
+      : {}),
     width: OFFSCREEN_VIEWPORT.width,
     height: OFFSCREEN_VIEWPORT.height,
     webPreferences: {
@@ -56,7 +71,7 @@ function offscreenWindowOptions(): Electron.BrowserWindowConstructorOptions {
       nodeIntegration: false,
       // These page owners are never shown. Offscreen rendering gives Chromium
       // a live compositor without activating a native window.
-      offscreen: browserSharedTextureRendering() ? { useSharedTexture: true } : true,
+      offscreen: nativeView ? false : browserSharedTextureRendering() ? { useSharedTexture: true } : true,
       // Keep rendering/timers running while the window is hidden.
       backgroundThrottling: false,
     },
@@ -118,8 +133,8 @@ function blockUnsafeNavigation(
 
 /** Popup windows stay hidden and non-focusable, but use their native view:
  *  inherited offscreen popup views can remain at zero size. */
-function popupWindowOptions(): Electron.BrowserWindowConstructorOptions {
-  const options = offscreenWindowOptions();
+function popupWindowOptions(nativeView = false): Electron.BrowserWindowConstructorOptions {
+  const options = offscreenWindowOptions(nativeView);
   return { ...options, webPreferences: { ...options.webPreferences, offscreen: false } };
 }
 
@@ -202,6 +217,7 @@ function nextPopupTabName(sessions: BrowserSessionRegistry, counters: Map<string
 
 export function createBrowserGuestLifecycle(host: BrowserGuestLifecycleHost) {
   const { window, state, sessions, cdp, urlPolicy, bridgeWanted, isBackgroundBusy, waitForLoadSettle } = host;
+  const pageWindowOptions = () => offscreenWindowOptions(host.nativeView === true);
   const nextPopupIdsBySession = new Map<string, number>();
   const suspendedSessions = new Map<string, SavedPage[]>();
   const restoringSessions = new Map<string, Promise<void>>();
@@ -223,7 +239,7 @@ export function createBrowserGuestLifecycle(host: BrowserGuestLifecycleHost) {
         return {
           action: 'allow',
           outlivesOpener: true,
-          overrideBrowserWindowOptions: popupWindowOptions(),
+          overrideBrowserWindowOptions: popupWindowOptions(host.nativeView === true),
         };
       } catch (error) {
         pushBounded(state.for(guest).networkFailures, `Blocked popup navigation: ${(error as Error).message}`);
@@ -289,7 +305,7 @@ export function createBrowserGuestLifecycle(host: BrowserGuestLifecycleHost) {
   window.webContents.on('will-attach-webview', (event) => event.preventDefault());
   const primaryPages = createBrowserPageOwner({
     sessions,
-    windowOptions: offscreenWindowOptions,
+    windowOptions: pageWindowOptions,
     initialize: initializeGuest,
   });
 
@@ -343,7 +359,7 @@ export function createBrowserGuestLifecycle(host: BrowserGuestLifecycleHost) {
         const primaryState = saved.find((page) => page.kind === 'primary');
         if (primaryState) apply(primary, primaryState);
         for (const page of backgrounds) {
-          const win = new BrowserWindow(offscreenWindowOptions());
+          const win = new BrowserWindow(pageWindowOptions());
           const entry = trackBackgroundPage(
             sessionId,
             page.name!,
@@ -415,7 +431,7 @@ export function createBrowserGuestLifecycle(host: BrowserGuestLifecycleHost) {
     // frames). Screenshots go through CDP Page.captureScreenshot, which renders
     // server-side in the Blink compositor and does not need an on-screen
     // surface — an invalidate() before capture forces the frame.
-    const win = new BrowserWindow(offscreenWindowOptions());
+    const win = new BrowserWindow(pageWindowOptions());
     return trackBackgroundPage(sessionId, name, win, 'agent');
   }
 

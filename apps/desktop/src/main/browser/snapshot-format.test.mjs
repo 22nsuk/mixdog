@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { createBrowserRefSet } from './ref-recovery.ts';
 import { unreportedDownloads } from './reply.ts';
-import { formatSnapshot } from './snapshot-format.ts';
+import { formatPageReport, formatSnapshot } from './snapshot-format.ts';
 
 const payload = (overrides = {}) => ({
   snapshotId: 'p1-s1',
@@ -54,6 +54,18 @@ test('an empty filter says what it filtered, and console errors are reported onc
   assert.match(withNew, /New console errors: fresh/);
   assert.doesNotMatch(withNew, /Recent console errors|: old/);
   assert.deepEqual(asked, [3]);
+});
+
+test('a reply without a snapshot still carries the page report, and nothing when there is none', () => {
+  assert.equal(formatPageReport(diagnostics()), '');
+  const report = formatPageReport(
+    diagnostics({ console: { recentErrors: () => [], newErrors: () => ['boom'], pendingErrorCount: () => 1 } }),
+    { downloads: [{ id: 'd1', file: 'a.csv', state: 'completed', received: 2048, total: 2048, path: 'C:/tmp/a.csv' }] }
+  );
+  assert.equal(
+    report,
+    'Downloads since last report:\n- [d1] a.csv — completed, 2 KB → C:/tmp/a.csv\n\nNew console errors: boom'
+  );
 });
 
 test('a brief reply says when the observation it compares against saw only part of the page', () => {

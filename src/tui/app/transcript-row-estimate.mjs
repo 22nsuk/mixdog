@@ -13,7 +13,11 @@ import {
 import { isBackgroundErrorOnlyBody } from '../../runtime/shared/err-text.mjs';
 import { isBackgroundTaskResponseArgs } from '../../runtime/shared/tool-card-model.mjs';
 import { SKILL_SURFACE_NAMES } from '../../runtime/shared/tool-card-model/agent-surface.mjs';
-import { parseBackgroundTaskResult } from '../../runtime/shared/tool-card-model/background-task.mjs';
+import {
+  isBackgroundTaskTool,
+  parseBackgroundTaskResult,
+} from '../../runtime/shared/tool-card-model/background-task.mjs';
+import { isShellTool } from '../../runtime/shared/tool-card-model/shell-surface.mjs';
 import { stripLeadingStatusMarkerFromText } from '../../runtime/shared/tool-card-model/terminal-status.mjs';
 import { readRowsForDisplay } from '../../runtime/shared/read-row-numbers.mjs';
 import { aggregateRawResultForDisplay } from '../session/tool-result-status.mjs';
@@ -35,12 +39,6 @@ function estimateWrappedRows(text, columns, reserve = 4) {
     1,
     lines.reduce((sum, line) => sum + wrappedLineRows(line, width), 0)
   );
-}
-
-const BACKGROUND_TASK_TOOL_NAMES = new Set(['web_search', 'shell', 'bash', 'bash_session', 'shell_command', 'task']);
-
-function isBackgroundTaskToolName(normalizedName) {
-  return BACKGROUND_TASK_TOOL_NAMES.has(String(normalizedName || '').toLowerCase());
 }
 
 function parseBackgroundTaskResultForRows(value) {
@@ -96,7 +94,7 @@ function toolDisplayedResultTextForRows(item) {
   const backgroundError = String(bgArgs.error || '');
   const errorOnlyResult = Boolean(rt) && isBackgroundErrorOnlyBody(rt, backgroundError);
   const normalizedName = String(normalizeToolName(item?.name) || '').toLowerCase();
-  if (!toolItemPendingForRows(item) && isBackgroundTaskToolName(normalizedName)) {
+  if (!toolItemPendingForRows(item) && isBackgroundTaskTool(normalizedName)) {
     const meta = parseBackgroundTaskResultForRows(rt);
     if (meta?.hasResponse && String(meta.body || '').trim()) {
       return stripLeadingStatusMarkerFromText(String(meta.body));
@@ -114,7 +112,7 @@ function toolHasDisplayResultForRows(item) {
   const bgArgs = backgroundArgsForRows(item.args);
   if (isBackgroundErrorOnlyBody(trimmed, bgArgs.error || '')) return false;
   const normalizedName = String(normalizeToolName(item.name) || '').toLowerCase();
-  if (isBackgroundTaskToolName(normalizedName)) {
+  if (isBackgroundTaskTool(normalizedName)) {
     const meta = parseBackgroundTaskResultForRows(trimmed);
     if (meta) return Boolean(meta.hasResponse && String(meta.body || '').trim());
   }
@@ -142,7 +140,7 @@ function toolHeaderFailureOnlyForRows(item, normalizedName, hasDisplayResult) {
     });
     return !String(briefRaw || '').trim();
   }
-  if (!isBackgroundTaskToolName(normalizedName) || !bgArgs.task_id) return false;
+  if (!isBackgroundTaskTool(normalizedName) || !bgArgs.task_id) return false;
   if (isBackgroundTaskResponseArgs(normalizedName, bgArgs)) return false;
   const status = String(bgArgs.status || '').toLowerCase();
   return /^(failed|error|timeout|cancelled|canceled|killed)$/i.test(status);
@@ -181,17 +179,9 @@ function agentCardKeepsCollapsedDetailForRows(item, normalizedName) {
   return isError || failureText;
 }
 
-function isShellSurfaceForRows(normalizedName, label = '') {
-  const n = String(normalizedName || '').toLowerCase();
-  const l = String(label || '').toLowerCase();
-  return (
-    n === 'shell' || n === 'bash' || n === 'bash_session' || n === 'shell_command' || n === 'job_wait' || l === 'run'
-  );
-}
-
 function isShellSurfaceForToolItem(item, normalizedName) {
   const label = formatToolSurface(item?.name, item?.args)?.label || '';
-  return isShellSurfaceForRows(normalizedName, label);
+  return isShellTool(normalizedName, label);
 }
 
 // EXPANDED tool bodies are post-processed by formatExpandedResult; the row
@@ -266,7 +256,7 @@ export function estimateTranscriptItemRows(item, columns, toolOutputExpanded, at
       }
       if (isSkillSurface && !hasResult) return TOOL_MARGIN_TOP + 1;
       if (item.aggregate) return TOOL_MARGIN_TOP + 1 + 1;
-      const isBackgroundResult = hasResult && isBackgroundTaskToolName(normalizedName);
+      const isBackgroundResult = hasResult && isBackgroundTaskTool(normalizedName);
       const backgroundMeta = isBackgroundResult ? parseBackgroundTaskResultForRows(rt) : null;
       const isBackgroundResponse =
         isBackgroundResult &&
@@ -279,11 +269,9 @@ export function estimateTranscriptItemRows(item, columns, toolOutputExpanded, at
         }
         return isSkillSurface ? TOOL_MARGIN_TOP + 1 : TOOL_MARGIN_TOP + 1 + 1;
       }
-      const resultText = backgroundMeta?.hasResponse
-        ? backgroundMeta.body
-        : normalizedName === 'read'
-          ? readRowsForDisplay(rt)
-          : rt;
+      let resultText = rt;
+      if (backgroundMeta?.hasResponse) resultText = backgroundMeta.body;
+      else if (normalizedName === 'read') resultText = readRowsForDisplay(rt);
       const resultRows = estimateToolRenderedResultRows(resultText, {
         pathArg: toolArgPathForRows(item),
         isShell: isShellSurfaceForToolItem(item, normalizedName),

@@ -39,8 +39,53 @@ const litellm = {
     cache_read_input_token_cost: 0.3e-6,
     max_input_tokens: 200000,
   },
+  'openai/gpt-6-sol': {
+    litellm_provider: 'openai',
+    input_cost_per_token: 2e-6,
+    output_cost_per_token: 10e-6,
+    supports_web_search: true,
+    supports_vision: true,
+  },
 };
+const gpt6 = (base, above) => ({
+  cost: { ...base, tiers: [{ ...above, tier: { type: 'context', size: 272000 } }] },
+  limit: { context: 1050000, output: 128000 },
+  tool_call: true,
+  reasoning: true,
+});
 const modelsdev = {
+  xai: {
+    models: {
+      'grok-build-0.1': { cost: { input: 1, output: 2, cache_read: 0.2 } },
+      'grok-4.7': {
+        cost: {
+          input: 2,
+          output: 6,
+          cache_read: 0.5,
+          tiers: [{ input: 4, output: 12, cache_read: 1, tier: { type: 'context', size: 200000 } }],
+        },
+      },
+    },
+  },
+  moonshotai: { models: { 'kimi-k3': { cost: { input: 3, output: 15, cache_read: 0.3 } } } },
+  anthropic: {
+    models: {
+      'claude-opus-5-5': { cost: { input: 4, output: 20, cache_read: 0.2, cache_write: 5 } },
+      'claude-opus-4-6': { cost: { input: 5, output: 25, cache_read: 0.5, cache_write: 6.25 } },
+    },
+  },
+  openai: {
+    models: {
+      'gpt-6-sol': gpt6(
+        { input: 2, output: 10, cache_read: 0.2, cache_write: 2.5 },
+        { input: 4, output: 15, cache_read: 0.4, cache_write: 5 }
+      ),
+      'gpt-6-luna': gpt6(
+        { input: 0.1, output: 0.5, cache_read: 0.01, cache_write: 0.125 },
+        { input: 0.2, output: 0.75, cache_read: 0.02, cache_write: 0.25 }
+      ),
+    },
+  },
   'opencode-go': {
     models: {
       'minimax-m3': {
@@ -192,10 +237,31 @@ test('GPT-6 Sol and Luna price on both OpenAI routes, doubling input above 272K'
   const sol = catalog.getModelMetadataSync('gpt-6-sol', 'openai-oauth');
   assert.equal(sol.supportsWebSearch, true);
   assert.equal(sol.supportsVision, true);
-  // Public API limits come from the override; OAuth never inherits them.
+  // Public API limits come from the catalog; OAuth never inherits them.
   assert.equal(catalog.getModelMetadataSync('gpt-6-sol', 'openai').contextWindow, 1050000);
   assert.equal(catalog.getModelMetadataSync('gpt-6-luna', 'openai').outputTokens, 128000);
   assert.equal(sol.contextWindow, null);
+});
+
+test('published variant multiples and vendor-served relay ids price from their base SKU', () => {
+  const fast = priceUsage({
+    provider: 'grok-oauth',
+    model: 'grok-4.7-build-fast',
+    inputTokens: 100_000,
+    outputTokens: 10_000,
+  });
+  assert.equal(fast.costUsd, 0.52); // 2 x ($0.2 input + $0.06 output)
+  assert.equal(fast.rates.pricingModel, 'grok-4.7-build-fast');
+  assert.equal(priceUsage({ provider: 'grok-oauth', model: 'grok-4.7-build-fast', inputTokens: 300_000 }).costUsd, 2.4);
+  assert.equal(priceUsage({ provider: 'xai', model: 'grok-4.7-build-fast', inputTokens: 1000 }).costUsd, null);
+  assert.equal(priceUsage({ provider: 'cursor-oauth', model: 'kimi-k3', inputTokens: 1_000_000 }).costUsd, 3);
+  const thinking = priceUsage({
+    provider: 'antigravity-oauth',
+    model: 'claude-opus-4-6-thinking',
+    inputTokens: 1_000_000,
+  });
+  assert.equal(thinking.costUsd, 5);
+  assert.equal(thinking.rates.pricingModel, 'claude-opus-4-6');
 });
 
 test('unknown prices retain both request and pricing identity instead of losing them', () => {

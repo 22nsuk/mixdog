@@ -183,9 +183,25 @@ export function useStudioAssetGallery(api: StudioApi, kind: MediaKind) {
     };
   }, []);
 
+  /** After a bulk delete the loaded pages no longer line up with the store's
+   *  offsets, so the kind restarts from its first page. */
+  const reloadAssetKind = useCallback(
+    (assetKind: MediaKind, removedIds: readonly string[]): Promise<MediaAsset[]> => {
+      const gone = new Set(removedIds);
+      setAssets((current) => current.filter((asset) => !gone.has(asset.id)));
+      pagingRef.current = { ...pagingRef.current, [assetKind]: initialMediaAssetPaging()[assetKind] };
+      for (const key of pageRequests.current.keys()) {
+        if (key.startsWith(`${assetKind}:`)) pageRequests.current.delete(key);
+      }
+      return refreshAssetKind(assetKind);
+    },
+    [refreshAssetKind]
+  );
+
   return {
     assets,
     loadMoreAssets,
+    reloadAssetKind,
     removeAsset,
     refreshAssetKind,
     visibleAssets,

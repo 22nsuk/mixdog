@@ -114,9 +114,9 @@ export function createLoopState({ provider, messages, model, tools, cwd, sendOpt
     // One-shot repair of an assistant turn whose stored reasoning replay the
     // API refuses to take back (see thinking-replay-recovery.mjs).
     thinkingReplayRepairUsed: false,
-    imageStripActive: false,
-    pendingImageStripPersistMessages: null,
-    sendMessages: null,
+    // Pending image-strip retry: identities of the images every attempt leaves
+    // out until a send succeeds, and whether to heal them from history then.
+    imageStrip: null,
     // Queued prompt/task notifications are attached after a tool batch,
     // before the continuation send. Normal batches drain up to 'next'; a
     // Sleep-like tool grants a 'later' flush.

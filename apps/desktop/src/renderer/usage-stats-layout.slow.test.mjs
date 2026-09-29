@@ -96,11 +96,12 @@ test('token usage stays centered and scrollable with titlebar insets, empty resu
   for (const file of bundle.outputFiles.filter((file) => file.path.endsWith('.css'))) {
     await page.addStyleTag({ content: file.text });
   }
+  // A 35px Window Controls Overlay caption, as the layer insets it: below the
+  // caption and above the bottom edge by the window's margin.
   await page.addStyleTag({
     content: `
       html:not([data-mixdog-mobile-tabs]) .mixdog-settings-layer {
-        --settings-layer-safe-top: 43px;
-        --settings-layer-safe-bottom: 16px;
+        --settings-layer-safe-top: calc(35px + var(--settings-layer-margin));
       }
     `,
   });
@@ -109,6 +110,8 @@ test('token usage stays centered and scrollable with titlebar insets, empty resu
   for (const viewport of [
     { width: 1160, height: 831 },
     { width: 1440, height: 1100 },
+    // Short but wide: a compact height once dropped the bottom margin.
+    { width: 1382, height: 593 },
     { width: 640, height: 400 },
     { width: 980, height: 1800, mobile: true, scale: 2.5 },
   ]) {
@@ -155,13 +158,29 @@ test('token usage stays centered and scrollable with titlebar insets, empty resu
         Math.abs(layout.left - (viewport.width - layout.right)) <= 1,
         `horizontal center: ${label}, left=${layout.left}, right inset=${viewport.width - layout.right}`
       );
+      // Centered in what the caption leaves, inside margins that grow with
+      // the window and never close, however short it is; with content it
+      // fills them.
+      const caption = viewport.mobile ? 0 : 35;
+      const margin = viewport.mobile ? 12 * viewport.scale : Math.min(72, Math.max(16, viewport.height * 0.06));
       assert.ok(
-        Math.abs(layout.top - (viewport.height - layout.bottom)) <= 1,
-        `vertical center: ${label}, top=${layout.top}, bottom inset=${viewport.height - layout.bottom}`
+        Math.abs(layout.top - caption - (viewport.height - layout.bottom)) <= 1,
+        `vertical center below the caption: ${label}, top=${layout.top}, bottom inset=${viewport.height - layout.bottom}`
       );
-      const safeTop = viewport.mobile ? 12 * viewport.scale : 43;
-      assert.ok(layout.top >= safeTop - 1, `titlebar clearance: ${label}`);
-      assert.ok(layout.bottom <= viewport.height - safeTop + 1, `bottom clearance: ${label}`);
+      const place = `top=${layout.top}, bottom=${layout.bottom}, margin=${margin}`;
+      assert.ok(layout.top >= caption + margin - 1, `titlebar clearance: ${label}, ${place}`);
+      assert.ok(layout.bottom <= viewport.height - margin + 1, `bottom clearance: ${label}, ${place}`);
+      if (state !== 'empty') {
+        // With content the card fills its margins; a desktop window stops it
+        // at 760px (user: 팝업 상하 최대 크기) and its body scrolls, while the
+        // phone sheet keeps filling the screen.
+        const room = viewport.height - caption - 2 * margin;
+        const height = viewport.mobile ? room : Math.min(760, room);
+        assert.ok(
+          Math.abs(layout.bottom - layout.top - height) <= 1,
+          `fills its margins up to the desktop 760px cap: ${label}, ${place}`
+        );
+      }
       assert.ok(layout.layerOverflow <= 1, `overlay does not scroll: ${label}`);
       assert.ok(Math.abs(layout.scrollEnd) <= 1, `body reaches its last content: ${label}`);
       if (viewport.height === 400 && state !== 'empty') {

@@ -198,6 +198,22 @@ export async function _streamResponse({
       watchdogs.clearAll();
       handlers?.detach();
       if (outcome.terminalError) {
+        // A stream that closed or errored before its terminal frame carries
+        // what it completed, like the watchdog paths, so the loop can continue
+        // from finished tool calls. Not flushed: held text was never shown.
+        // A cancellation reason is the caller's shared object and stays as-is.
+        if (
+          midState.sawCompleted !== true &&
+          midState.userAbort !== true &&
+          !midState.watchdogAbort &&
+          outcome.terminalError.partialContent === undefined
+        ) {
+          try {
+            Object.assign(outcome.terminalError, response.partialState());
+          } catch {
+            /* best-effort enrichment */
+          }
+        }
         stampTerminalOutcome(outcome.terminalError, midState, response);
         reject(outcome.terminalError);
         return;

@@ -1,9 +1,7 @@
+import { cleanString } from '../../../shared/clean.mjs';
+
 const MAX_TURN_STATE_SCOPES = 4096;
 const _turnStateByScope = new Map();
-
-function _clean(value) {
-  return typeof value === 'string' ? value.trim() : '';
-}
 
 function _ensureCapacity(scopeKey) {
   if (_turnStateByScope.has(scopeKey) || _turnStateByScope.size < MAX_TURN_STATE_SCOPES) return;
@@ -15,8 +13,8 @@ function _ensureCapacity(scopeKey) {
 // connection that happened to carry it. Activating a new turn clears the prior
 // value even when the caller reuses the same WebSocket or HTTP session.
 export function activateCodexTurnState(scopeKey, turnId, owner = null) {
-  const scope = _clean(scopeKey);
-  const turn = _clean(turnId);
+  const scope = cleanString(scopeKey);
+  const turn = cleanString(turnId);
   if (!scope || !turn) return null;
   const current = _turnStateByScope.get(scope);
   if (current?.turnId === turn) {
@@ -33,9 +31,9 @@ export function activateCodexTurnState(scopeKey, turnId, owner = null) {
 
 // The first server value wins for the whole logical turn.
 export function captureCodexTurnState(scopeKey, turnId, value, owner = null) {
-  const scope = _clean(scopeKey);
-  const turn = _clean(turnId);
-  const token = _clean(value);
+  const scope = cleanString(scopeKey);
+  const turn = cleanString(turnId);
+  const token = cleanString(value);
   if (!scope || !turn || !token) return null;
   activateCodexTurnState(scope, turn, owner);
   const current = _turnStateByScope.get(scope);
@@ -50,14 +48,14 @@ export function captureCodexTurnState(scopeKey, turnId, value, owner = null) {
 // A replacement connection may adopt the turn token only after the physical
 // connection that owned it has actually closed.
 export function retireCodexTurnStateOwner(scopeKey, owner) {
-  const scope = _clean(scopeKey);
+  const scope = cleanString(scopeKey);
   if (!scope || !owner) return;
   const current = _turnStateByScope.get(scope);
   if (current?.owner === owner) current.owner = null;
 }
 
 export function clearCodexTurnStateScope(scopeKey) {
-  const scope = _clean(scopeKey);
+  const scope = cleanString(scopeKey);
   if (scope) _turnStateByScope.delete(scope);
 }
 

@@ -121,13 +121,20 @@
   color: var(--mx-text-faint);
   font-size: var(--mx-font-meta);
 }
+.transcript-artifact-file[aria-disabled='true'] {
+  cursor: default;
+  color: var(--mx-text-faint);
+}
+.transcript-artifact-file[aria-disabled='true']:hover {
+  background: var(--mx-bg-layer-1);
+}
 .transcript-artifact-preview {
   max-width: 95vw;
   max-height: 95vh;
   padding: 40px 12px 12px;
   border: 1px solid var(--mx-border-muted);
   border-radius: var(--mx-radius-lg, 10px);
-  background: var(--mx-surface);
+  background: var(--mx-popup-bg);
 }
 .transcript-artifact-preview::backdrop {
   background: rgb(0 0 0 / 75%);
@@ -298,7 +305,9 @@
 }
 .tool-activity-item-result {
   min-width: 0;
-  max-width: min(36ch, 40%);
+  /* A length, not a share: the header hugs its text (width: fit-content), so
+     a percentage resolved against the label's own row and clipped it early. */
+  max-width: 36ch;
   overflow: hidden;
   color: var(--mx-text-faint);
   font-family: var(--mx-font-sans);
@@ -620,11 +629,6 @@
 .tool-activity-item.warning > .tool-activity-item-header .tool-activity-item-title b {
   color: var(--mx-warning);
 }
-.tool-card:has(.tool-content) {
-  border: 0;
-  background: transparent;
-  box-shadow: none;
-}
 .tool-header {
   min-height: 20px;
   gap: 6px;
@@ -775,12 +779,6 @@
 .tool-activity-item[data-open="true"] > .tool-activity-item-header .tool-chevron svg {
   transform: rotate(90deg);
 }
-.tool-content {
-  gap: 8px;
-  border: 0;
-  padding: 8px 0 0;
-  background: transparent;
-}
 /* Manual expansion adds exactly one summary row
    (355 lines / Failed · cause / Running · 12s). */
 .tool-detail-line {
@@ -830,14 +828,6 @@
 }
 .tool-detail-line em[data-delta="-"] {
   color: var(--mx-danger);
-}
-.detail-block > span {
-  color: var(--mx-text-faint);
-  font-size: var(--mx-font-meta);
-  font-weight: var(--mx-weight-regular);
-  line-height: 12px;
-  letter-spacing: 0;
-  text-transform: none;
 }
 /* Structured Input grid: muted key column,
    mono value column — replaces the raw args JSON dump. */
@@ -891,15 +881,6 @@
   min-width: 0;
   color: var(--mx-text-muted);
 }
-.tool-output-scroll {
-  width: 100%;
-  max-height: 240px;
-  overflow: auto;
-  scrollbar-width: none;
-}
-.tool-output-scroll::-webkit-scrollbar {
-  display: none;
-}
 .tool-output pre {
   margin: 0;
   padding: 0;
@@ -926,19 +907,6 @@
 }
 .shell-output pre {
   padding: 12px;
-}
-.tool-output-copy {
-  position: absolute;
-  z-index: 2;
-  top: 4px;
-  right: 4px;
-  opacity: 0;
-  pointer-events: none;
-}
-.tool-output:hover .tool-output-copy,
-.tool-output:focus-within .tool-output-copy {
-  opacity: 1;
-  pointer-events: auto;
 }
 .tool-result-summary {
   min-width: 0;
@@ -996,7 +964,6 @@
   text-align: center;
 }
 .live-activity {
-  --live-status-color: var(--mx-accent);
   height: auto;
   /* ONE band height (24px) shared by the slot below and the status row inside
      it. The three used to disagree (20 / 24 / 24+4 padding), so the band

@@ -159,7 +159,7 @@ function operationDescription(format, backend, catalog, requested) {
   );
   return {
     name: operation,
-    ...(VIRTUAL_OPERATIONS.has(operation) ? { virtual: true } : {}),
+    ...(VIRTUAL_OPERATIONS.has(operation) || VIRTUAL_OPERATIONS.has(`${format}:${operation}`) ? { virtual: true } : {}),
     supported: !backend || available.includes(operation),
     supportedBackends: supportedBackends(format, operation),
     input: {
@@ -218,7 +218,8 @@ const columnNumber = (letters) =>
 
 function hoistFreezePaneCell(format, name, operation) {
   if (format !== 'xlsx' || name !== 'freeze_panes') return;
-  const cell = typeof operation.cell === 'string' ? /^\$?([A-Za-z]{1,3})\$?(\d{1,7})$/.exec(operation.cell.trim()) : null;
+  const cell =
+    typeof operation.cell === 'string' ? /^\$?([A-Za-z]{1,3})\$?(\d{1,7})$/.exec(operation.cell.trim()) : null;
   if (cell && operation.row === undefined && operation.column === undefined) {
     operation.column = columnNumber(cell[1]);
     operation.row = Number(cell[2]);

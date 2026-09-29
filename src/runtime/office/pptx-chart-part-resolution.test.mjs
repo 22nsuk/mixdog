@@ -109,7 +109,10 @@ test('a data refresh keeps the chart’s own relationships and renames a series 
         '<Relationship Id="rId1" Type="http://schemas.microsoft.com/office/2011/relationships/chartStyle" Target="style1.xml"/></Relationships>'
       )
   );
-  zip.file('ppt/charts/style1.xml', '<cs:chartStyle xmlns:cs="http://schemas.microsoft.com/office/drawing/2012/chartStyle" id="201"/>');
+  zip.file(
+    'ppt/charts/style1.xml',
+    '<cs:chartStyle xmlns:cs="http://schemas.microsoft.com/office/drawing/2012/chartStyle" id="201"/>'
+  );
   const chart = (await zip.file(chartPart).async('string'))
     .replace(/(<c:externalData\b[^>]*\br:id=")[^"]*(")/, '$1rId3$2')
     .replace(/<c:tx>\s*<c:strRef>[\s\S]*?<\/c:strRef>\s*<\/c:tx>/, '<c:tx><c:v>Value</c:v></c:tx>');
@@ -124,13 +127,23 @@ test('a data refresh keeps the chart’s own relationships and renames a series 
         action: 'batch',
         session: opened.session,
         operations: [
-          { op: 'set_chart_data', slide: 1, shape: 1, categories: ['Self-serve', 'Guided'], series: [{ name: '유지율', values: [41, 55] }] },
+          {
+            op: 'set_chart_data',
+            slide: 1,
+            shape: 1,
+            categories: ['Self-serve', 'Guided'],
+            series: [{ name: '유지율', values: [41, 55] }],
+          },
         ],
       },
       { cwd }
     )
   );
-  assert.equal(refreshed.audit.top.some((issue) => issue.code === 'chart_data_unlinked'), false, JSON.stringify(refreshed.audit));
+  assert.equal(
+    refreshed.audit.top.some((issue) => issue.code === 'chart_data_unlinked'),
+    false,
+    JSON.stringify(refreshed.audit)
+  );
   value(await executeOfficeTool({ action: 'close', session: opened.session }, { cwd }));
   const saved = await parts(opened.output || deck);
   const savedRels = await saved.text(relsPath);
@@ -234,4 +247,110 @@ test('new numbers keep the chart the deck was approved with', async (t) => {
   assert.doesNotMatch(plain, /<c:dLbls>/);
   assert.match(plain, /<a:srgbClr val="B04A2F"\/>/);
   value(await executeOfficeTool({ action: 'close', session: created.session }, { cwd }));
+});
+
+// A bar chart authored bottom-up (PowerPoint's and pptxgenjs's default, and what a template usually carries) keeps its
+// order on a refresh and says so; categoryOrder turns the bars to read from the top in the order given, or back.
+test('a bar chart authored bottom-up keeps its order, says so, and turns over on categoryOrder', async (t) => {
+  const cwd = await workspace(t);
+  const deck = join(cwd, 'bars.pptx');
+  // pptxgenjs draws columns unless barDir says bars; its category axis runs bottom-up, PowerPoint's default.
+  const bars = DECK.replace('{ x: 1, y: 1, w: 11, h: 5 }', "{ x: 1, y: 1, w: 11, h: 5, barDir: 'bar' }");
+  const authored = value(
+    await executeOfficeTool({ action: 'author', path: deck, script: bars, mode: 'portable', render: false }, { cwd })
+  );
+  value(await executeOfficeTool({ action: 'close', session: authored.session }, { cwd }));
+  const opened = value(await executeOfficeTool({ action: 'open', path: deck, mode: 'portable' }, { cwd }));
+  // pptxgenjs numbers its chart parts across the process, so the part is the one the refresh names.
+  let chartPart = '';
+  const refresh = async (extra = {}) => {
+    const result = value(
+      await executeOfficeTool(
+        {
+          action: 'batch',
+          session: opened.session,
+          operations: [
+            {
+              op: 'set_chart_data',
+              slide: 1,
+              shape: 1,
+              categories: ['6월', '7월', '8월', '9월'],
+              series: [{ name: '오류 (건)', values: [8200, 5900, 3100, 2700] }],
+              ...extra,
+            },
+          ],
+        },
+        { cwd }
+      )
+    ).results[0];
+    chartPart = result.chart;
+    return result;
+  };
+  // An opened deck is edited in its working copy, which the open names as its output.
+  assert.match(opened.output, /bars\.mixdog-edit\.pptx$/);
+  const axes = async () => {
+    const chart = await (await parts(opened.output)).text(chartPart);
+    return [
+      /<c:catAx>[\s\S]*?<c:orientation val="([^"]+)"\/>/.exec(chart)?.[1],
+      /<c:valAx>[\s\S]*?<c:crosses val="([^"]+)"\/>/.exec(chart)?.[1],
+    ];
+  };
+  const kept = await refresh();
+  assert.equal(kept.readingOrder, 'bottomUp', JSON.stringify(kept));
+  assert.match(kept.note, /categoryOrder:'topDown'/);
+  assert.deepEqual(await axes(), ['minMax', 'autoZero'], 'the authored order stays');
+  const turned = await refresh({ categoryOrder: 'topDown' });
+  assert.equal(turned.readingOrder, undefined);
+  assert.deepEqual(await axes(), ['maxMin', 'max'], 'the first category on top, the value axis under the bars');
+  assert.equal((await refresh()).readingOrder, undefined, 'a later refresh keeps the order it was given');
+  await refresh({ categoryOrder: 'bottomUp' });
+  assert.deepEqual(await axes(), ['minMax', 'autoZero']);
+  await assert.rejects(
+    executeOfficeTool(
+      {
+        action: 'batch',
+        session: opened.session,
+        operations: [
+          {
+            op: 'set_chart_data',
+            slide: 1,
+            shape: 1,
+            series: [{ name: '오류 (건)', values: [1, 2, 3, 4] }],
+            categoryOrder: 'sideways',
+          },
+        ],
+      },
+      { cwd }
+    ).then(value),
+    /categoryOrder must be 'topDown' or 'bottomUp'/
+  );
+  value(await executeOfficeTool({ action: 'close', session: opened.session }, { cwd }));
+
+  // A column chart has no top or bottom to its categories: the field is refused rather than ignored.
+  const columns = join(cwd, 'columns.pptx');
+  const columnDeck = value(
+    await executeOfficeTool({ action: 'author', path: columns, script: DECK, mode: 'portable', render: false }, { cwd })
+  );
+  value(await executeOfficeTool({ action: 'close', session: columnDeck.session }, { cwd }));
+  const reopened = value(await executeOfficeTool({ action: 'open', path: columns, mode: 'portable' }, { cwd }));
+  await assert.rejects(
+    executeOfficeTool(
+      {
+        action: 'batch',
+        session: reopened.session,
+        operations: [
+          {
+            op: 'set_chart_data',
+            slide: 1,
+            shape: 1,
+            series: [{ name: 'Retention', values: [1, 2] }],
+            categoryOrder: 'topDown',
+          },
+        ],
+      },
+      { cwd }
+    ).then(value),
+    /orders a horizontal bar chart's categories/
+  );
+  value(await executeOfficeTool({ action: 'close', session: reopened.session }, { cwd }));
 });

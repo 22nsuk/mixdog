@@ -7,9 +7,12 @@ import {
   pictureXml,
   resolveGeometry,
   restyleShapeText,
+  restyledParagraphs,
   shapeXml,
+  solidFillXml,
   supportedShapeTypes,
   tableXml,
+  textAnchor,
   textBodyXml,
   toEmu,
 } from './portable-slide-shapes.mjs';
@@ -246,7 +249,13 @@ export async function handleSetText(context, op) {
   if (!nodes.length) throw new Error(`PPTX shape ${op.shape} has no editable text`);
   nodes[0].text = String(op.text ?? '');
   for (let index = 1; index < nodes.length; index += 1) nodes[index].text = '';
-  const nextShape = rebuildTextNodes(single, 'a:t', nodes);
+  // One run, as PowerPoint's TextRange.Text leaves it: the old text's line breaks and the runs it emptied go too,
+  // rather than standing on as a blank line under the new words (the frame read a line taller than PowerPoint's).
+  const nextShape = rebuildTextNodes(single, 'a:t', nodes).replace(/<p:txBody\b[^>]*>[\s\S]*?<\/p:txBody>/, (body) =>
+    body
+      .replace(/<a:br\b[^>]*?(?:\/>|>[\s\S]*?<\/a:br>)/g, '')
+      .replace(/<a:r>(?:(?!<\/a:r>)[\s\S])*?<a:t\b[^>]*?(?:\/>|><\/a:t>)<\/a:r>/g, '')
+  );
   writeShape(context, slide, shape, nextShape);
   return { op: op.op, changed: true };
 }
@@ -434,7 +443,9 @@ export async function handleFitText(context, op) {
   const scale = fitted.scale || Math.min(1, minimumFontSize / largest);
   const sizes = fitted.scale
     ? fitted.sizes
-    : paragraphs.map((paragraph) => Math.max(minimumFontSize, Math.round((Number(paragraph.fontSize) || 18) * scale * 2) / 2));
+    : paragraphs.map((paragraph) =>
+        Math.max(minimumFontSize, Math.round((Number(paragraph.fontSize) || 18) * scale * 2) / 2)
+      );
   const changed = framed.clamped || scale < 1;
   if (changed) {
     const updated = framed.xml.replace(
@@ -452,7 +463,9 @@ export async function handleFitText(context, op) {
     // The size the copy now reads at: shrinking is the last repair, so the
     // author sees what it cost and can rewrite the line instead.
     fontSize: Math.max(...sizes.map((size) => Number(size) || 0), 0) || undefined,
-    ...(fitted.scale ? {} : { fits: false, note: `The text does not fit above ${minimumFontSize} pt; shorten it or enlarge the box.` }),
+    ...(fitted.scale
+      ? {}
+      : { fits: false, note: `The text does not fit above ${minimumFontSize} pt; shorten it or enlarge the box.` }),
   };
 }
 
@@ -502,6 +515,63 @@ async function replacedPicture(zip, path, shape, op) {
   return { updated, detail };
 }
 
+// A cell's fill in its a:tcPr: after the borders and the 3-D cell, before headers and extensions, as the schema orders.
+// Only the cell's own fill is replaced: each border line carries a fill of its own (a hidden border is a line with
+// noFill), and clearing those drew a black frame round the cell.
+const CELL_FILLS = ['a:noFill', 'a:solidFill', 'a:gradFill', 'a:blipFill', 'a:pattFill', 'a:grpFill'];
+function filledCellProperties(tcPr, fill, anchor) {
+  const open = /^<a:tcPr\b([^>]*?)(\/?)>/.exec(tcPr);
+  let attributes = open[1];
+  if (anchor) attributes = /\banchor="/.test(attributes) ? attributes.replace(/\banchor="[^"]*"/, `anchor="${anchor}"`) : `${attributes} anchor="${anchor}"`;
+  let children = open[2] ? '' : tcPr.slice(open[0].length, tcPr.lastIndexOf('</a:tcPr>'));
+  if (fill) {
+    for (const element of topLevelElements(children, CELL_FILLS).reverse()) {
+      children = `${children.slice(0, element.start)}${children.slice(element.end)}`;
+    }
+    const later = topLevelElements(children, ['a:headers', 'a:extLst'])[0];
+    const at = later ? later.start : children.length;
+    children = `${children.slice(0, at)}${fill}${children.slice(at)}`;
+  }
+  return children ? `<a:tcPr${attributes}>${children}</a:tcPr>` : `<a:tcPr${attributes}/>`;
+}
+
+// set_table_cell_style: one cell of a slide table restyled as the Office backend sets it through Cell(row, col) — its
+// fill and vertical anchor on the cell, its paragraphs' alignment, its runs' face, size, weight and colour. A row
+// set_table_data adds repeats the last row's formatting, and a verdict it holds could only be retoned this way.
+export async function handleSetTableCellStyle(context, op) {
+  const { path, current, tree } = await slideShapeTree(context, op);
+  const shape = slideShape(tree, op);
+  if (!/<a:tbl>/.test(shape.xml)) throw new Error(`PPTX shape ${op.shape} on slide ${op.slide} is not a table`);
+  const rows = [...shape.xml.matchAll(/<a:tr\b[^>]*>[\s\S]*?<\/a:tr>/g)];
+  const cells = rows[Number(op.row) - 1] ? [...rows[Number(op.row) - 1][0].matchAll(/<a:tc\b[^>]*?(?:\/>|>[\s\S]*?<\/a:tc>)/g)] : [];
+  const cell = cells[Number(op.col) - 1];
+  if (!cell) {
+    const columns = rows[0] ? [...rows[0][0].matchAll(/<a:tc\b/g)].length : 0;
+    throw new Error(`PPTX table shape ${op.shape} is ${rows.length}x${columns}; row ${op.row}, col ${op.col} is outside it`);
+  }
+  const properties = op.properties || {};
+  let styled = cell[0].replace(
+    /<a:txBody>([\s\S]*?)<\/a:txBody>/,
+    (_whole, inner) =>
+      `<a:txBody>${restyledParagraphs(inner, { ...properties, alignment: properties.horizontalAlignment ?? properties.alignment })}</a:txBody>`
+  );
+  // fillColor: null leaves the cell unfilled, as the Office backend's Fill.Visible = 0 does.
+  const fill = properties.fillColor === null ? '<a:noFill/>' : properties.fillColor ? solidFillXml(properties.fillColor) : '';
+  const anchor = textAnchor(properties.verticalAlignment);
+  // The cell's own text frame may name an anchor too (this writer's add_table sets one); it follows the cell's.
+  if (anchor) styled = styled.replace(/(<a:bodyPr\b[^>]*?\banchor=")[^"]*"/, `$1${anchor}"`);
+  if (fill || anchor) {
+    if (!/<a:tcPr\b/.test(styled)) styled = styled.replace('</a:tc>', '<a:tcPr/></a:tc>');
+    styled = styled.replace(/<a:tcPr\b[^>]*?(?:\/>|>[\s\S]*?<\/a:tcPr>)/, (tcPr) => filledCellProperties(tcPr, fill, anchor));
+  }
+  const row = rows[Number(op.row) - 1];
+  const nextRow = row[0].replace(cell[0], () => styled);
+  const updated = shape.xml.replace(row[0], () => nextRow);
+  const nextInner = `${tree.inner.slice(0, shape.start)}${updated}${tree.inner.slice(shape.end)}`;
+  context.zip.file(path, `${current.slice(0, tree.start)}${nextInner}${current.slice(tree.end)}`);
+  return { op: op.op, changed: updated !== shape.xml, slide: Number(op.slide), shape: Number(op.shape), row: Number(op.row), col: Number(op.col) };
+}
+
 export async function handleSetTableDataOrReplaceImage(context, op) {
   const { zip } = context;
   const { path, current, tree } = await slideShapeTree(context, op);
@@ -512,11 +582,10 @@ export async function handleSetTableDataOrReplaceImage(context, op) {
     const values = Array.isArray(op.values) ? op.values.filter((row) => Array.isArray(row)) : [];
     if (!values.length) throw new Error('set_table_data requires values as an array of rows');
     const filled = setTableValues(shape.xml, values);
-    // The frame grows with the rows and columns the data added, so the table's box is the table.
+    // The frame grows down with the rows the data added, so the table's box is the table; its width stays.
     updated = filled.xml.replace(
-      /(<p:xfrm>[\s\S]*?<a:ext\b[^>]*\bcx=")(\d+)("[^>]*\bcy=")(\d+)"/,
-      (_match, head, cx, middle, cy) =>
-        `${head}${Number(cx) + filled.addedWidth}${middle}${Number(cy) + filled.addedHeight}"`
+      /(<p:xfrm>[\s\S]*?<a:ext\b[^>]*\bcy=")(\d+)"/,
+      (_match, head, cy) => `${head}${Number(cy) + filled.addedHeight}"`
     );
     detail = {
       rows: filled.rows,

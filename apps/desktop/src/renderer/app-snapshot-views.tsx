@@ -34,7 +34,9 @@ export { requestSessionRead } from './session-read-request';
 import { asRecord } from './text-format';
 import { t } from './i18n';
 import {
+  conversationCoverBasis,
   conversationCoverIdentity,
+  conversationDraftPromotion,
   conversationSwitchPaintGate,
   nextConversationCoverId,
   conversationPresentedSessionId,
@@ -152,6 +154,9 @@ export const DraftConversation = memo(function DraftConversation({
   );
 });
 
+/** Upper bound on a loaded session's entry cover (rows + review decision). */
+const ENTRY_REVEAL_MAX_MS = 2_000;
+
 // Every split-pane chat keeps ONE Conversation instance mounted for its whole
 // lifetime. Focus changes input routing only; every established session reads
 // its own lane and a draft reads only its local draft props.
@@ -190,17 +195,38 @@ export const PaneConversation = memo(function PaneConversation({
   });
   const coverIdRef = useRef(sessionId || 'draft');
   const originSessionRef = useRef(sessionId || '');
+  // Armed by this draft's own submit; only that submit promotes the draft.
+  const draftSubmittedRef = useRef(false);
+  const draftSubmit = props.submit;
+  const submit = useCallback<typeof draftSubmit>(
+    async (content, options) => {
+      if (!sessionId) draftSubmittedRef.current = true;
+      try {
+        return await draftSubmit(content, options);
+      } catch (error) {
+        if (!sessionId) draftSubmittedRef.current = false;
+        throw error;
+      }
+    },
+    [draftSubmit, sessionId]
+  );
+  const draftPromotion = conversationDraftPromotion(draftSubmittedRef.current, originSessionRef.current, sessionId);
+  const coverBasis = conversationCoverBasis(coverIdRef.current, sessionId, draftPromotion);
   const markdownPending = conversationMarkdownPending({
     transcriptPending,
-    coverId: coverIdRef.current,
+    coverId: coverBasis,
     hasMeasurements: Boolean(readTranscriptVirtualSnapshot(sessionId)?.measurements?.length),
   });
   const laneReady = hidden || !sessionId || (!markdownPending && lane !== null);
-  const { coverKey, promotingFromDraft } = conversationCoverIdentity(coverIdRef.current, sessionId, laneReady);
+  const { coverKey, promotingFromDraft } = conversationCoverIdentity(coverBasis, sessionId, laneReady);
+  useLayoutEffect(() => {
+    if (!sessionId) draftSubmittedRef.current = false;
+  }, [sessionId]);
   useLayoutEffect(() => {
     originSessionRef.current = nextConversationOriginSessionId(originSessionRef.current, sessionId);
-    coverIdRef.current = nextConversationCoverId(coverIdRef.current, sessionId, laneReady, originSessionRef.current);
-  }, [laneReady, sessionId]);
+    if (sessionId && originSessionRef.current !== sessionId) draftSubmittedRef.current = false;
+    coverIdRef.current = nextConversationCoverId(coverIdRef.current, sessionId, laneReady, draftPromotion);
+  }, [draftPromotion, laneReady, sessionId]);
   // A first-prompt promotion already painted this conversation as New Task.
   // Changing the cover key (or waiting on a one-frame-late lane) replayed
   // "Loading conversation…" over the live composer.
@@ -246,9 +272,28 @@ export const PaneConversation = memo(function PaneConversation({
     const frame = window.requestAnimationFrame(() => setHeldPaintId(incomingPaintId));
     return () => window.cancelAnimationFrame(frame);
   }, [contentReady, heldPaintId, incomingPaintId, paintGate.adoptNow]);
+  // A session's FIRST entry in this pane loads behind the spinner cover until
+  // its rows are laid out and its dock chrome has decided, then shows at once
+  // (user: 로딩 중엔 스피너 돌고 다 정리된 뒤 보여야 한다). Uncovered, the
+  // pane showed the composer over an empty transcript, then the rows, then a
+  // review bar that came and went. A revisit settles in a frame and swaps in
+  // place.
+  const [enteredSessions, setEnteredSessions] = useState<ReadonlySet<string>>(() => new Set());
+  const onEntryRevealed = useCallback((sessionKey: string) => {
+    setEnteredSessions((current) => (current.has(sessionKey) ? current : new Set(current).add(sessionKey)));
+  }, []);
+  const entryPending = !hidden && Boolean(sessionId) && !promotingFromDraft && !enteredSessions.has(sessionId);
+  // The transcript's own reveal is bounded; this bounds a report that never
+  // names this pane's session, so the cover can never outlive a loaded lane.
+  const entryWaitsOnLayout = entryPending && paintGate.reveal;
+  useEffect(() => {
+    if (!entryWaitsOnLayout) return undefined;
+    const timer = window.setTimeout(() => onEntryRevealed(sessionId), ENTRY_REVEAL_MAX_MS);
+    return () => window.clearTimeout(timer);
+  }, [entryWaitsOnLayout, onEntryRevealed, sessionId]);
   // Sidebar session registration remounts the virtualizer. Keep the sheet
   // cover up until the incoming lane exists and one frame has committed it.
-  const surfaceReady = paintGate.reveal;
+  const surfaceReady = paintGate.reveal && !entryPending;
   const showingIncoming = presentedSessionId === sessionId;
   const timelinePending =
     showingIncoming && !promotingFromDraft && (markdownPending || Boolean(sessionId && !hidden && lane === null));
@@ -304,9 +349,11 @@ export const PaneConversation = memo(function PaneConversation({
         transcriptPending={timelinePending}
         reviewActive={focused && !hidden}
         warmPaintHandoff={warmDraftHandoff}
+        onEntryRevealed={onEntryRevealed}
         renderAssistantRow={(row) => <PaneAssistantRow {...row} sessionId={sessionId} hidden={hidden} />}
         runtimeProgressSlot={<PaneRuntimeProgress sessionId={sessionId} hidden={hidden} />}
         {...props}
+        submit={submit}
         goalIsland={<PaneGoalIsland sessionId={presentedSessionId} hidden={hidden} />}
         contextIndicator={contextIndicator}
       />
@@ -356,15 +403,41 @@ function usePaneIslandSnapshot(sessionId: string, hidden: boolean): Snapshot {
   return hidden || !sessionId ? EMPTY_SNAPSHOT : (lane ?? EMPTY_SNAPSHOT);
 }
 
-// Most sessions have no Goal, so the capsule module loads on the first lane
-// frame that carries one. Once loaded the island stays mounted exactly as
-// before, keeping its own presence diagnostics and submission mask.
+// Most sessions have no Goal, so the capsule module stays out of the first
+// screen: the idle boot lane warms it, or the first lane frame that carries a
+// Goal fetches it. Once loaded, every pane mounts the (empty) island right
+// away, so its lazy boundary has resolved before a Goal session is entered. A
+// boundary that first suspends with a Goal on screen holds the capsule back
+// for React's reveal throttle (~300ms): the transcript painted without it and
+// lifted 40px when it landed (user: 컴포저 위에 골이 있을 때 튄다). Mounted,
+// the island stays mounted, keeping its presence diagnostics and submission
+// mask.
 let sessionGoalModuleLoaded = false;
+let sessionGoalModulePromise: Promise<typeof import('./SessionGoalIsland')> | null = null;
+const sessionGoalModuleListeners = new Set<() => void>();
+export function preloadSessionGoalIsland(): Promise<typeof import('./SessionGoalIsland')> {
+  sessionGoalModulePromise ||= import('./SessionGoalIsland').then(
+    (module) => {
+      sessionGoalModuleLoaded = true;
+      for (const listener of sessionGoalModuleListeners) listener();
+      return module;
+    },
+    (error) => {
+      sessionGoalModulePromise = null;
+      throw error;
+    }
+  );
+  return sessionGoalModulePromise;
+}
+function subscribeSessionGoalModule(listener: () => void): () => void {
+  sessionGoalModuleListeners.add(listener);
+  return () => {
+    sessionGoalModuleListeners.delete(listener);
+  };
+}
+const readSessionGoalModuleLoaded = () => sessionGoalModuleLoaded;
 const SessionGoalIsland = React.lazy(() =>
-  import('./SessionGoalIsland').then((module) => {
-    sessionGoalModuleLoaded = true;
-    return { default: module.SessionGoalIsland };
-  })
+  preloadSessionGoalIsland().then((module) => ({ default: module.SessionGoalIsland }))
 );
 
 /** Holds a boot reveal until a restored Goal capsule has painted, so it never
@@ -380,7 +453,12 @@ function GoalIslandBootReady({ bootKey }: { bootKey: string }) {
 export function PaneGoalIsland({ sessionId, hidden }: { sessionId: string; hidden: boolean }) {
   const snapshot = usePaneIslandSnapshot(sessionId, hidden);
   const goalPresent = Boolean(snapshot.goal);
-  if (!goalPresent && !sessionGoalModuleLoaded) return null;
+  const moduleLoaded = useSyncExternalStore(
+    subscribeSessionGoalModule,
+    readSessionGoalModuleLoaded,
+    readSessionGoalModuleLoaded
+  );
+  if (!goalPresent && !moduleLoaded) return null;
   if (goalPresent) beginBootSurface('goal-island', sessionId);
   return (
     <React.Suspense fallback={null}>

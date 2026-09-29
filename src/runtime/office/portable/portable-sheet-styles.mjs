@@ -264,6 +264,16 @@ function parseStyleSheet(xml) {
   return sections;
 }
 
+/** The id the workbook's styles give a format code (as applyCellStyle registered it), 0 for General or one not held. */
+export function numberFormatId(stylesXml, code) {
+  const normalized = String(code || '').trim();
+  if (!normalized || normalized.toLowerCase() === 'general') return 0;
+  const found = parseStyleSheet(stylesXml).numFmts.find(
+    (entry) => xmlDecode(attribute(entry, 'formatCode')) === normalized
+  );
+  return found ? Number(attribute(found, 'numFmtId')) || 0 : 0;
+}
+
 /** True when the cell style at index already sets a number format of its own (anything but General). */
 export function styleHasNumberFormat(stylesXml, index) {
   const sections = parseStyleSheet(stylesXml);

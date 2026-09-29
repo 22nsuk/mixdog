@@ -36,13 +36,18 @@ export function writeDocxFrontMatter(w, operation) {
       keepWithNext: true,
     });
   }
+  // A title that wraps reads as one block at an exact 1.25 × its size: on the face's own line (Malgun Gothic's is
+  // nearly twice the size) its two lines stood apart like two paragraphs.
+  const titleSize = Number(operation.titleSize) || Math.min(24, format.title);
   append(operation.title, 'Title', {
     name: type.display,
-    size: Number(operation.titleSize) || Math.min(24, format.title),
+    size: titleSize,
     bold: true,
     color: colors.ink,
     spacingBefore: 0,
     spacingAfter: spacing(12, 5, 8),
+    lineSpacing: Math.round(titleSize * 1.25 * 2) / 2,
+    lineSpacingRule: 'exact',
     keepWithNext: true,
   });
   append(operation.subtitle, 'Normal', {
@@ -64,7 +69,9 @@ export function writeDocxFrontMatter(w, operation) {
     });
   }
   if (operation.summary) {
-    if (operation.summaryLabel && (w.decisionBrief || w.evidenceBrief)) {
+    // A label the author gave is drawn whatever the composition reads the document as: labels are opt-in, and dropped
+    // without a word it left a report's "결론" as a plain bold paragraph.
+    if (operation.summaryLabel) {
       addDocxDecisionCallout(w.output, w.state, strings(operation.summary).join(' '), w.design, {
         label: String(operation.summaryLabel),
         emphasis: w.decisionBrief ? 'inverse' : 'accent',

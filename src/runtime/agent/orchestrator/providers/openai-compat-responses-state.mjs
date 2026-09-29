@@ -86,23 +86,18 @@ function toolInFlight(state) {
   return state.pendingCalls?.size > 0 || state.toolTracker?.items?.size > 0 || state.toolInFlight === true;
 }
 
-function pendingToolUseFor(state, leakedCalls) {
-  return (
-    state.emittedToolCall === true ||
-    leakedCalls.length > 0 ||
-    (state.pendingCalls && state.pendingCalls.size > 0) ||
-    (Array.isArray(state.toolCalls) && state.toolCalls.length > 0) ||
-    (state.toolTracker && state.toolTracker.items.size > 0) ||
-    state.toolInFlight === true
-  );
-}
-
-// Partial-final recovery: attach streamed partial state so a wedged FINAL
-// no-tool summary can be accepted as partial-final success.
+// What a stream that ended without its terminal frame completed, in the same
+// shape as the native Responses transports: the text, every finished call
+// (placeholders whose id/name never arrived excluded, recovered leaked calls
+// included) and whether a tool input was still streaming. A tool-bearing turn
+// therefore never passes as a text-only partial (its calls ride along), and
+// the loop can continue from finished calls or replay an in-flight one.
 export function attachPartialState(err, state, leakedCalls) {
   try {
+    const calls = [...state.toolCalls.filter((call) => !call._pendingItemId), ...leakedCalls];
     err.partialContent = state.content || '';
-    err.pendingToolUse = pendingToolUseFor(state, leakedCalls);
+    err.partialToolCalls = calls.length ? calls : undefined;
+    err.pendingToolUse = toolInFlight(state);
     err.partialModel = state.model || undefined;
   } catch {
     /* best-effort */

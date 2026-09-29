@@ -173,7 +173,13 @@ export function createSessionViewCalls(ctx) {
     await applyTranscriptRequest(entry, params, currentSessionId(entry) || String(params.sessionId || ''));
     const step = advanceForCaller(entry);
     addSubscriber(entry, viewer);
-    return sessionResult(entry, step, baseRevision, { subscribed: true }, { prepend: params.transcriptPrepend === true });
+    return sessionResult(
+      entry,
+      step,
+      baseRevision,
+      { subscribed: true },
+      { prepend: params.transcriptPrepend === true }
+    );
   };
 
   async function subscribeSession(params = {}, viewer = null) {

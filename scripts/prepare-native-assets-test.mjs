@@ -64,7 +64,12 @@ test('Windows on ARM prepares the native assets it runs under x64 emulation', as
         },
       ])
     );
-    const prepared = await prepareRequiredNativeAssets({ packageRoot: root, platform: 'win32', arch: 'arm64', installers });
+    const prepared = await prepareRequiredNativeAssets({
+      packageRoot: root,
+      platform: 'win32',
+      arch: 'arm64',
+      installers,
+    });
     assert.deepEqual(Object.keys(prepared), ['graph', 'patch', 'spawn']);
   } finally {
     await rm(root, { recursive: true, force: true });

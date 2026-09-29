@@ -81,19 +81,12 @@ export function priceUsage(args) {
       },
     };
   const promptTokens = input + cached + written;
-  if (
-    args.historicalAggregate &&
-    (meta.pricingTiers?.some((tier) => promptTokens > tier.aboveInputTokens) ||
-      (meta.longContextThreshold && promptTokens >= meta.longContextThreshold))
-  ) {
+  if (args.historicalAggregate && meta.pricingTiers?.some((tier) => promptTokens > tier.aboveInputTokens)) {
     // A daily sum cannot establish which individual requests crossed a
     // context boundary. Do not price the whole day as one huge prompt.
     return { input, costUsd: null, rates: { ...provenance, unpricedReason: 'request-boundaries-unavailable' } };
   }
   let multiplier = 1;
-  if (meta.longContextThreshold && promptTokens >= meta.longContextThreshold) {
-    multiplier *= meta.longContextMultiplier || 1;
-  }
   // DeepSeek's published peak/off-peak schedule is UTC, not the UI timezone.
   // Without an exact timestamp (legacy sessions), retain the list/peak rate.
   if (meta.offPeakMultiplier && Number.isFinite(args.ts) && !args.historical) {

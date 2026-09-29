@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 import type { DesktopLspCapabilities, DesktopLspRequestMethod, DesktopLspServerState } from '../shared/contract';
 import { parseCodeGraphSymbols, type EditorCodeGraphMode } from './editor-code-graph';
-import { clearActiveEditorDocument, setEditorOutline, type EditorOutlineItem } from './editor-language-store';
+import {
+  acceptEditorLspState,
+  clearActiveEditorDocument,
+  setEditorOutline,
+  type EditorOutlineItem,
+} from './editor-language-store';
 import {
   applyLspWorkspaceEdit,
   codeGraphOutlineItems,
@@ -68,6 +73,7 @@ export function useEditorLspSession({
 
   const acceptLspState = useCallback(
     (state: DesktopLspServerState, languageId: string) => {
+      acceptEditorLspState(projectPath, relPath, languageId, state);
       lspReady.current = state.available;
       lspCapabilities.current = state.capabilities ?? null;
       callHierarchyContextKey.current?.set(Boolean(state.available && state.capabilities?.callHierarchy));
@@ -82,7 +88,7 @@ export function useEditorLspSession({
         setFeatureRevision((revision) => revision + 1);
       }
     },
-    [callHierarchyContextKey]
+    [callHierarchyContextKey, projectPath, relPath]
   );
 
   const syncLsp = useCallback(

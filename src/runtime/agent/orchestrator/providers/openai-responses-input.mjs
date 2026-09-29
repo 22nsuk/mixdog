@@ -17,7 +17,7 @@ import {
  * media, since that item carries no text field), everything else with
  * function_call_output.
  */
-function pushToolResult(m, { out, pendingToolMedia, customToolCallNameById, nativeSearchCalls, opts }) {
+function pushToolResult(m, { out, pendingToolMedia, pendingToolLoads, customToolCallNameById, nativeSearchCalls, opts }) {
   const { output, mediaContent } = splitToolContentForOpenAIResponses(m.content);
   if (customToolCallNameById.has(m.toolCallId || '')) {
     out.push({
@@ -40,21 +40,39 @@ function pushToolResult(m, { out, pendingToolMedia, customToolCallNameById, nati
     };
     out.push(nativeSearchOutput);
     // Native search outputs have no text field. Keep skill status,
-    // missing dependencies and failed/denied loader results visible,
-    // without manufacturing a search call for an ordinary function.
+    // missing dependencies and failed/denied loader results visible.
     if (searchCall.arguments?.name || !nativeSearchOutput.tools.length) {
       pendingToolMedia.push({ type: 'input_text', text: output });
     }
     if (mediaContent) pendingToolMedia.push(...mediaContent);
     return;
   }
+  // A function result (e.g. Skill) cannot carry schemas. Tools it already
+  // loaded ride a runtime load_tool pair emitted after the batch's outputs;
+  // only a result from another native family falls back to a load hint.
+  const loadedNames = (m.nativeToolSearch?.openaiTools || []).map((tool) => tool.name);
+  const loadOutput = loadedNames.length
+    ? nativeToolSearchOutputInput(m, opts.nativeToolSearchProvider || 'openai-oauth')
+    : null;
   out.push({
     type: 'function_call_output',
     call_id: m.toolCallId || '',
-    output: m.nativeToolSearch?.openaiTools?.length
-      ? `${output}\nThis ordinary function result cannot register native tools. Use tool_search with names:${JSON.stringify(m.nativeToolSearch.openaiTools.map((tool) => tool.name))} to load their definitions.`
-      : output,
+    output:
+      loadedNames.length && !loadOutput
+        ? `${output}\nThis ordinary function result cannot register native tools. Use tool_search with names:${JSON.stringify(loadedNames)} to load their definitions.`
+        : output,
   });
+  if (loadOutput) {
+    const loadCallId = `${m.toolCallId || ''}_load`;
+    pendingToolLoads.push(
+      nativeToolSearchCallInput({
+        id: loadCallId,
+        arguments: { names: loadedNames },
+        nativeType: 'tool_search_call',
+      }),
+      { ...loadOutput, call_id: loadCallId }
+    );
+  }
   if (mediaContent) pendingToolMedia.push(...mediaContent);
 }
 
@@ -91,6 +109,7 @@ function pushAssistantToolCalls(toolCalls, { out, customToolCallNameById, native
 export function convertMessagesToResponsesInput(messages, opts = {}) {
   const out = [];
   const pendingToolMedia = [];
+  const pendingToolLoads = [];
   const customToolCallNameById = new Map();
   const nativeSearchCalls = new Map();
   const replayEncryptedReasoning = opts.replayEncryptedReasoning === true;
@@ -127,7 +146,10 @@ export function convertMessagesToResponsesInput(messages, opts = {}) {
       });
     }
   };
+  // Batch boundary: runtime load pairs follow every output of the batch so
+  // no call/output pair is split, then any tool media rides as user content.
   const flushToolMedia = () => {
+    out.push(...pendingToolLoads.splice(0));
     if (!pendingToolMedia.length) return;
     out.push(wireMessage('user', pendingToolMedia.splice(0)));
   };
@@ -139,7 +161,7 @@ export function convertMessagesToResponsesInput(messages, opts = {}) {
       out.push({ type: 'configuration_update', reasoning: { effort: changedEffort } });
     }
     if (m.role === 'tool') {
-      pushToolResult(m, { out, pendingToolMedia, customToolCallNameById, nativeSearchCalls, opts });
+      pushToolResult(m, { out, pendingToolMedia, pendingToolLoads, customToolCallNameById, nativeSearchCalls, opts });
       continue;
     }
     flushToolMedia();

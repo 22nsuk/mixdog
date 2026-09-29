@@ -22,7 +22,7 @@ const taskFields = {
     type: 'string',
     enum: GOAL_TASK_STATUSES,
     description:
-      "completed only when fully done; dropped only after user scope change; awaiting_approval only for the user's own action, out-of-scope work, or irreversible steps.",
+      "completed only when fully done; dropped only after user scope change; awaiting_approval only for the user's own action or out-of-scope work (e.g. unrequested commit).",
   },
 };
 

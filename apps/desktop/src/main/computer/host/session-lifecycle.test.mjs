@@ -3,6 +3,7 @@ import test from 'node:test';
 import { createSessionLifecycle } from './session-lifecycle.ts';
 import { createExecutionState } from './execution-state.ts';
 import { ComputerUseCoordinator } from '../session/coordinator.ts';
+import { computerUseOverlayPresentation } from '../overlay/model.ts';
 
 test('idle native workers retire through confirmed cleanup without cancelling active or queued work', async () => {
   const coordinator = new ComputerUseCoordinator();
@@ -189,6 +190,40 @@ test('Stop clears a paused session even after its worker and activity have alrea
   assert.deepEqual(stopped, ['retired-fixture']);
   assert.equal(coordinator.snapshot().userControlActive, false);
   assert.deepEqual(coordinator.snapshot().pausedSessionIds ?? [], []);
+});
+
+test('Stop on a finished turn that never sent its end signal leaves nothing on screen', async () => {
+  const coordinator = new ComputerUseCoordinator();
+  const host = createSessionLifecycle({
+    coordinator,
+    execution: createExecutionState(),
+    powerShellBySession: new Map(),
+    workerLastUsedAt: new Map(),
+    retirePowerShell() {},
+    callPowerShell: async () => ({ ok: true }),
+    cancelElevatedSession: async () => true,
+    elevatedSessionIds: () => [],
+    sessionIdFor: (command) => command.session_id,
+    releaseSessionState() {},
+    invalidateWorkerGeneration() {},
+    releaseCaptureSession() {},
+    cleanupInput: async () => true,
+    runCommand: async () => ({ text: '' }),
+    recaptureRequiredReply: async () => null,
+  });
+  try {
+    coordinator.beginCommand({ sessionId: 'ended-turn', action: 'click', mode: 'background' });
+    coordinator.finishCommand('ended-turn');
+    // The pill's Stop: take the desktop over, then stop while the daemon reports no running turn.
+    host.takeOverComputer('user_stop');
+    await host.stopAllComputerSessions(true, Promise.resolve());
+    const presentation = computerUseOverlayPresentation(coordinator.snapshot(), 'ko');
+    assert.equal(presentation.visible, false);
+    assert.deepEqual(presentation.sessionIds, []);
+    coordinator.assertAutomationAllowed();
+  } finally {
+    coordinator.reset();
+  }
 });
 
 test('Stop clears a latched cleanup failure only after every worker exited and held input was released', async () => {

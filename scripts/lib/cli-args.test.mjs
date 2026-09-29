@@ -52,13 +52,13 @@ test('numArg keeps a deliberate 0 and falls back only on missing or non-numeric 
 
 test('positionalArgs never lets a boolean flag or a joined value swallow a positional', () => {
   const booleans = new Set(['--render']);
-  assert.deepEqual(
-    positionalArgs(['--render', 'deck.js', 'deck.pptx', '--mode', 'auto'], booleans),
-    ['deck.js', 'deck.pptx']
-  );
+  assert.deepEqual(positionalArgs(['--render', 'deck.js', 'deck.pptx', '--mode', 'auto'], booleans), [
+    'deck.js',
+    'deck.pptx',
+  ]);
   assert.deepEqual(positionalArgs(['--mode=auto', 'deck.js', 'deck.pptx'], booleans), ['deck.js', 'deck.pptx']);
-  assert.deepEqual(
-    positionalArgs(['deck.js', '--out', 'result.json', 'deck.pptx', '--render'], booleans),
-    ['deck.js', 'deck.pptx']
-  );
+  assert.deepEqual(positionalArgs(['deck.js', '--out', 'result.json', 'deck.pptx', '--render'], booleans), [
+    'deck.js',
+    'deck.pptx',
+  ]);
 });

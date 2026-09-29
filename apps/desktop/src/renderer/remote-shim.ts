@@ -1663,8 +1663,8 @@ const E2EE_SECRET_STORAGE_KEY = REMOTE_PAIRING_STORAGE_KEYS.e2eeSecret;
         return true;
       });
     },
-    searchProjectFiles: (projectIdOrWorkspaceId, query, limit) =>
-      call('searchProjectFiles', [projectIdOrWorkspaceId, query, limit]),
+    searchProjectFiles: (projectIdOrWorkspaceId, query, limit, includeIgnored) =>
+      call('searchProjectFiles', [projectIdOrWorkspaceId, query, limit, includeIgnored === true]),
     getSnapshot: () => call('getSnapshot'),
     subscribeState: (listener) => {
       stateListeners.add(listener);

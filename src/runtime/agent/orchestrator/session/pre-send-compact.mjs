@@ -7,6 +7,7 @@ import {
   compactionTelemetryPressureTokens,
   currentContextEstimateTokens,
   compactTargetBudget,
+  shouldCompactForRequestMedia,
   shouldCompactForSession,
   rememberCompactTelemetry,
   recordContextUsageSnapshot,
@@ -81,12 +82,13 @@ function preSendCompactDecision(state, compactPolicy) {
   });
   const shouldCompact =
     state.skipProactiveCompact !== true &&
-    shouldCompactForSession(messageTokensEst, compactPolicy, {
-      forceReactive: reactivePending,
-      messages,
-      sessionRef,
-      pressureTokens,
-    });
+    (shouldCompactForRequestMedia(messages) ||
+      shouldCompactForSession(messageTokensEst, compactPolicy, {
+        forceReactive: reactivePending,
+        messages,
+        sessionRef,
+        pressureTokens,
+      }));
   return {
     messageTokensEst,
     pressureTokens,

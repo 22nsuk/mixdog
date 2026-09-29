@@ -26,7 +26,6 @@ import {
   INFERENCE_BASE_URL,
   TOKEN_REFRESH_SKEW_MS,
   PROXY_BASE_URL,
-  isProxyOnlyModel,
   proxyHeaders,
   resolveGrokOAuthResponsesTransport,
   normalizeGrokModelId,
@@ -53,10 +52,6 @@ const _modelCache = makeModelCache({
   ttlMs: MODEL_CACHE_TTL_MS,
   version: GROK_MODEL_CACHE_SCHEMA_VERSION,
 });
-const PROXY_MODEL_METADATA = {
-  'grok-build': { display: 'Grok Build', contextWindow: 512000 },
-  'grok-composer-2.5-fast': { display: 'Composer 2.5 Fast', contextWindow: 200000 },
-};
 
 function _grokModelSupportsEffort(id) {
   const text = String(id || '').toLowerCase();
@@ -64,7 +59,6 @@ function _grokModelSupportsEffort(id) {
   if (NON_CHAT_MODEL_RE.test(text)) return false;
   if (text.includes('non-reasoning')) return false;
   if (text === 'grok-build' || text.startsWith('grok-build-')) return false;
-  if (text.startsWith('grok-composer')) return false;
   return text.includes('reasoning') || /^grok-\d/.test(text);
 }
 
@@ -80,13 +74,10 @@ function _grokEffortValue(entry) {
     .toLowerCase();
 }
 
+// Canonical low→high order regardless of how the source lists them.
 function _uniqueKnownGrokEfforts(values) {
-  const out = [];
-  for (const entry of values || []) {
-    const effort = _grokEffortValue(entry);
-    if (GROK_KNOWN_EFFORTS.has(effort) && !out.includes(effort)) out.push(effort);
-  }
-  return out;
+  const present = new Set((values || []).map(_grokEffortValue));
+  return [...GROK_KNOWN_EFFORTS].filter((effort) => present.has(effort));
 }
 
 function _grokApiEffortValues(model) {
@@ -119,12 +110,11 @@ function _grokReasoningLevels(id, model) {
   return [...GROK_EFFORT_FALLBACK];
 }
 
+// The proxy's context_window (the serving endpoint) wins over api.x.ai's
+// public context_length on merged rows.
 function _grokApiContextWindow(model) {
-  const id = String(model?.id || model?.model || model || '').trim();
   const native = Number(model?.context_window ?? model?.context_length ?? model?.contextWindow ?? 0);
-  if (Number.isFinite(native) && native > 0) return native;
-  const fallback = Number(PROXY_MODEL_METADATA[id]?.contextWindow || 0);
-  return Number.isFinite(fallback) && fallback > 0 ? fallback : 0;
+  return Number.isFinite(native) && native > 0 ? native : 0;
 }
 
 function _displayGrokModel(model) {
@@ -132,7 +122,7 @@ function _displayGrokModel(model) {
   if (!raw) return raw;
   const displayName = String(model?.display || '').trim();
   if (displayName && displayName !== raw) return displayName;
-  const apiName = String(model?.name || PROXY_MODEL_METADATA[raw]?.display || '').trim();
+  const apiName = String(model?.name || '').trim();
   if (apiName && apiName !== raw) return apiName;
   let text = raw
     .replace(/^grok-/i, 'Grok ')
@@ -163,8 +153,6 @@ function _normalizeGrokModel(m) {
     ...(reasoningOptions ? { reasoningOptions } : {}),
     tier: 'version',
     latest: false,
-    // API/proxy model catalogs provide context_length/context_window. Only
-    // proxy-only models use the tiny static fallback above.
     contextWindow,
     created: typeof m?.created === 'number' ? m.created : null,
   };
@@ -220,24 +208,26 @@ function _sanitizeGrokModels(models) {
 // Image/video generation ids — excluded from "latest chat model" resolution.
 const NON_CHAT_MODEL_RE = /imagine|image|video/i;
 
-// List-facing sanitizer: drop grok image/video generation ids (proxy-only
-// chat models are kept), then apply the shared cross-provider sanitizer.
+// List-facing sanitizer: drop grok image/video generation ids, then apply
+// the shared cross-provider sanitizer.
 function _sanitizeGrokList(models) {
   const base = _sanitizeGrokModels(models);
   if (!Array.isArray(base)) return base;
-  const chatOnly = base.filter((m) => {
-    if (!m?.id) return false;
-    if (NON_CHAT_MODEL_RE.test(m.id) && !isProxyOnlyModel(m.id)) return false;
-    return true;
-  });
+  const chatOnly = base.filter((m) => m?.id && !NON_CHAT_MODEL_RE.test(m.id));
   return sanitizeModelList(chatOnly, { provider: 'grok-oauth' });
+}
+
+// Release dates come only from api.x.ai, so proxy-only variants (no
+// `created`) never become the default model.
+function _isDatedGrokChatModel(m) {
+  return Boolean(m?.id) && !NON_CHAT_MODEL_RE.test(m.id) && Number(m.created) > 0;
 }
 
 function _markLatestGrok(models) {
   let best = null;
   for (const m of models) {
-    if (!m?.id || NON_CHAT_MODEL_RE.test(m.id) || isProxyOnlyModel(m.id)) continue;
-    if (!best || (Number(m.created) || 0) > (Number(best.created) || 0)) best = m;
+    if (!_isDatedGrokChatModel(m)) continue;
+    if (!best || Number(m.created) > Number(best.created)) best = m;
   }
   if (best) best.latest = true;
 }
@@ -251,7 +241,7 @@ function resolveLatestGrokModel() {
   if (!Array.isArray(cached)) return null;
   let best = null;
   for (const m of cached) {
-    if (!m?.id || NON_CHAT_MODEL_RE.test(m.id) || isProxyOnlyModel(m.id) || !(Number(m.created) > 0)) continue;
+    if (!_isDatedGrokChatModel(m)) continue;
     if (!best || Number(m.created) > Number(best.created)) best = m;
   }
   return best?.id || null;
@@ -464,9 +454,10 @@ export class GrokOAuthProvider {
     }
   }
 
-  // The grok-build proxy catalog (grok-build, grok-composer-2.5-fast). /models
-  // is readable with the bare bearer + the Grok CLI client headers. Best-effort:
-  // a proxy hiccup must NOT break the api.x.ai catalog, so failures return [].
+  // The Grok CLI proxy catalog: served models with names, context windows and
+  // effort levels, including proxy-only variants. /models is readable with the
+  // bare bearer + the Grok CLI client headers. Best-effort: a proxy hiccup
+  // must NOT break the api.x.ai catalog, so failures return [].
   async _fetchProxyModelItems() {
     let tokens;
     try {
@@ -493,15 +484,20 @@ export class GrokOAuthProvider {
     }
   }
 
-  // Merge api.x.ai ∪ grok-build proxy catalogs, deduped by id (api wins on
-  // overlap). The proxy contributes grok-build and grok-composer-2.5-fast,
-  // which api.x.ai does not publish. api.x.ai failures still propagate (the
-  // primary catalog); proxy failures are swallowed best-effort above.
+  // Merge api.x.ai ∪ proxy catalogs per id, field by field: the proxy
+  // supplies names, effort levels and the serving context window; api.x.ai
+  // supplies release dates (the only source of `created`) and wins on shared
+  // fields. api.x.ai failures still propagate (the primary catalog); proxy
+  // failures are swallowed best-effort above.
   async _fetchAllModelItems() {
     const [apiItems, proxyItems] = await Promise.all([this._fetchModelItems(), this._fetchProxyModelItems()]);
     const byId = new Map();
-    for (const m of proxyItems) if (m?.id) byId.set(m.id, m);
-    for (const m of apiItems) if (m?.id) byId.set(m.id, m);
+    for (const m of proxyItems) {
+      if (!m?.id) continue;
+      const { created: _proxyCreated, ...row } = m;
+      byId.set(m.id, row);
+    }
+    for (const m of apiItems) if (m?.id) byId.set(m.id, { ...byId.get(m.id), ...m });
     return [...byId.values()];
   }
 

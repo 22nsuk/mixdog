@@ -2,10 +2,11 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
 import { app, BrowserWindow, dialog, ipcMain, shell, type NativeImage } from 'electron';
-import { SETTINGS_CATEGORIES } from '../renderer/settings/settings-items';
+import { settingsCategoriesForSurface } from '../renderer/settings/settings-items';
 import { DESKTOP_IPC, type SessionSnapshot } from '../shared/contract';
+import { DESKTOP_SIDEBAR_DEFAULT_WIDTH } from '../shared/window-layout';
 import { registerDesktopIpc } from './ipc';
-import { DESKTOP_WINDOW_OPTIONS } from './window-options';
+import { DESKTOP_TITLEBAR_HEIGHT, DESKTOP_WINDOW_OPTIONS } from './window-options';
 
 // The capture flow owns window lifetime. Without this listener Electron's
 // default quit-on-last-window-close fires the moment a failing step reaches
@@ -30,6 +31,8 @@ app.commandLine.appendSwitch('use-fake-device-for-media-stream');
 app.commandLine.appendSwitch('use-fake-ui-for-media-stream');
 
 import {
+  ACTIVE_RAIL_ICON,
+  COLLAPSED_SESSIONS_TOGGLE,
   captureTitle,
   destroyCaptureWindow,
   imageReader,
@@ -49,6 +52,19 @@ import {
   type LiveCaptureAssertions,
 } from './capture-assertions';
 import { CaptureService, jitterProbeEnabled } from './capture-host';
+
+/** Shipped sidebar geometry, from its sources: the 48px activity rail
+ *  (06-activity-rail.css), the titlebar plus the desktop body's 1px top
+ *  hairline (05-shell.css), and the default side panel whose 1px right border
+ *  (08-mobile-tabs.css) is the seam before the workspace. */
+const ACTIVITY_RAIL_WIDTH = 48;
+const CAPTURE_SIDEBAR_GEOMETRY = {
+  left: ACTIVITY_RAIL_WIDTH,
+  top: DESKTOP_TITLEBAR_HEIGHT + 1,
+  width: DESKTOP_SIDEBAR_DEFAULT_WIDTH - 1,
+  gap: 1,
+  mainLeft: ACTIVITY_RAIL_WIDTH + DESKTOP_SIDEBAR_DEFAULT_WIDTH,
+};
 
 /** The capture renderer window and the IPC surface it answers. Renderer console
  *  errors land both in the returned buffer, which the final validation reads,
@@ -177,7 +193,7 @@ async function readCaptureStartupGeometry(window: BrowserWindow): Promise<{
         tab: rect('.workspace-tab'),
         tabsShell: rect('.workspace-tabs'),
         sidebar: rect('.session-sidebar'),
-        toggle: rect('.toolbar-dock'),
+        rail: rect('.activity-rail'),
         composer: rect('.composer'),
       };
     })()`;
@@ -214,10 +230,7 @@ async function readCaptureStartupGeometry(window: BrowserWindow): Promise<{
  *  so open the session sidebar before any geometry pass. */
 async function expandCaptureSessionSidebar(window: BrowserWindow): Promise<void> {
   await window.webContents.executeJavaScript(`(() => {
-      if (document.querySelector('.app-shell.sidebar-collapsed')) {
-        const toggle = document.querySelector('.sessions-link');
-        if (toggle instanceof HTMLElement) toggle.click();
-      }
+      document.querySelector(${JSON.stringify(COLLAPSED_SESSIONS_TOGGLE)})?.click();
       return true;
     })()`);
   await waitForRenderer(window, "!document.querySelector('.app-shell.sidebar-collapsed')", 'expanded session sidebar');
@@ -237,10 +250,7 @@ async function runCaptureMobilePass(window: BrowserWindow): Promise<{
   window.setSize(720, 650);
   await new Promise((resolve) => setTimeout(resolve, 250));
   await window.webContents.executeJavaScript(`(() => {
-      const toggle = document.querySelector('.sessions-link');
-      if (toggle instanceof HTMLButtonElement && toggle.getAttribute('aria-expanded') !== 'true') {
-        toggle.click();
-      }
+      document.querySelector(${JSON.stringify(COLLAPSED_SESSIONS_TOGGLE)})?.click();
       return true;
     })()`);
   await new Promise((resolve) => setTimeout(resolve, 250));
@@ -265,9 +275,13 @@ async function runCaptureMobilePass(window: BrowserWindow): Promise<{
     !mobileOpen.backdropComputedVisible ||
     !mobileOpen.sidebarIntersectsViewport ||
     !mobileOpen.backdropIntersectsViewport ||
+    !mobileOpen.railDocked ||
+    !mobileOpen.railExposed ||
+    !mobileOpen.sidebarBesideRail ||
     !mobileClosed.sidebarHidden ||
     !mobileClosed.mainVisible ||
-    !mobileClosed.mainMatchesViewport ||
+    !mobileClosed.railDocked ||
+    !mobileClosed.mainFillsBesideRail ||
     !mobileClosed.composerVisible ||
     !mobileClosed.composerContained ||
     !mobileClosed.modelTriggerVisible ||
@@ -351,7 +365,7 @@ async function runCaptureLightThemePass(window: BrowserWindow): Promise<{
   await waitForRenderer(
     window,
     `(() => {
-        const icon = document.querySelector('.toolbar-dock');
+        const icon = document.querySelector(${JSON.stringify(ACTIVE_RAIL_ICON)});
         if (!(icon instanceof HTMLElement)) return false;
         const probe = document.createElement('span');
         probe.style.color = 'var(--mx-text)';
@@ -360,7 +374,7 @@ async function runCaptureLightThemePass(window: BrowserWindow): Promise<{
         probe.remove();
         return settled;
       })()`,
-    'Light titlebar icon transition'
+    'Light rail icon transition'
   );
   const lightTheme = await readLightThemeAssertions(window);
   await window.webContents.executeJavaScript(`(() => {
@@ -372,10 +386,7 @@ async function runCaptureLightThemePass(window: BrowserWindow): Promise<{
   // The earlier mobile pass may have auto-collapsed the sidebar (<=760px
   // navigation close). Reopen it so the light frame shows the full rail.
   await window.webContents.executeJavaScript(`(() => {
-      if (document.querySelector('.app-shell.sidebar-collapsed')) {
-        const toggle = document.querySelector('.sessions-link');
-        if (toggle instanceof HTMLElement) toggle.click();
-      }
+      document.querySelector(${JSON.stringify(COLLAPSED_SESSIONS_TOGGLE)})?.click();
       return true;
     })()`);
   await new Promise((resolve) => setTimeout(resolve, 150));
@@ -478,7 +489,7 @@ function assertCaptureSettingsPlacement(
     ) ||
     lightTheme.theme !== 'light' ||
     lightTheme.colorScheme !== 'light' ||
-    !lightTheme.titlebarIconMatchesToken ||
+    !lightTheme.railIconMatchesToken ||
     !lightTheme.activeTabMatchesToken ||
     !modalStack.toastParentIsBody ||
     !modalStack.toastVisible ||
@@ -506,7 +517,7 @@ async function runCaptureDesktopPass(window: BrowserWindow): Promise<{
   window.setMinimumSize(DESKTOP_WINDOW_OPTIONS.minWidth, DESKTOP_WINDOW_OPTIONS.minHeight);
   window.setSize(targetSize.width, targetSize.height);
   await window.webContents.executeJavaScript(
-    'document.querySelector(\'.sessions-link[aria-expanded="false"]\')?.click()'
+    `document.querySelector(${JSON.stringify(COLLAPSED_SESSIONS_TOGGLE)})?.click()`
   );
   await new Promise((resolve) => setTimeout(resolve, 500));
   const finalBounds = window.getBounds();
@@ -520,12 +531,12 @@ async function runCaptureDesktopPass(window: BrowserWindow): Promise<{
     !liveDesktop.visible.textarea ||
     !liveDesktop.visible.send ||
     !liveDesktop.controlsNonOverlapping ||
-    liveDesktop.sidebarGap !== 0 ||
-    liveDesktop.rects.sidebar.left !== 0 ||
-    liveDesktop.rects.sidebar.top !== 41 ||
-    liveDesktop.rects.sidebar.width !== 260 ||
+    liveDesktop.sidebarGap !== CAPTURE_SIDEBAR_GEOMETRY.gap ||
+    liveDesktop.rects.sidebar.left !== CAPTURE_SIDEBAR_GEOMETRY.left ||
+    liveDesktop.rects.sidebar.top !== CAPTURE_SIDEBAR_GEOMETRY.top ||
+    liveDesktop.rects.sidebar.width !== CAPTURE_SIDEBAR_GEOMETRY.width ||
     liveDesktop.viewport.height - liveDesktop.rects.sidebar.bottom !== 0 ||
-    liveDesktop.rects.main.left !== 260
+    liveDesktop.rects.main.left !== CAPTURE_SIDEBAR_GEOMETRY.mainLeft
   ) {
     throw new Error(`Desktop live assertions failed: ${JSON.stringify(liveDesktop)}`);
   }
@@ -533,63 +544,65 @@ async function runCaptureDesktopPass(window: BrowserWindow): Promise<{
 }
 
 /** Dictation smoke (post-PNG so the evidence stays clean): drives the FULL
- *  renderer chain — install prompt → fake setup → fake mic → MediaRecorder
- *  → base64 → IPC → stubbed transcription → draft append. */
+ *  composer chain on an installed voice runtime (the install consent lives in
+ *  Extensions) — fake mic → MediaRecorder → base64 → IPC → stubbed
+ *  transcription → draft append. */
 async function runCaptureDictationSmoke(window: BrowserWindow): Promise<{
-  installPromptShown: boolean;
   transcriptApplied: boolean;
   micIdle: boolean;
   notice: string;
 }> {
   return (await withCaptureTimeout(
     window.webContents.executeJavaScript(`(async () => {
-      const mic = document.querySelector('.composer-mic');
-      if (!(mic instanceof HTMLElement)) throw new Error('Missing capture element: .composer-mic');
-      mic.click();
-      const promptStarted = Date.now();
-      let installButton = null;
-      while (Date.now() - promptStarted < 3000) {
-        installButton = document.querySelector('#voice-install-title + button, .settings-confirm-dialog button.primary');
-        if (installButton instanceof HTMLElement) break;
+      const found = Date.now();
+      let mic = null;
+      while (Date.now() - found < 3000) {
+        mic = document.querySelector('.composer-mic');
+        if (mic instanceof HTMLElement) break;
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
-      const installPromptShown = document.querySelector('#voice-install-title') instanceof HTMLElement;
-      if (!(installButton instanceof HTMLElement)) throw new Error('Voice install confirmation did not open.');
-      installButton.click();
+      if (!(mic instanceof HTMLElement)) throw new Error('Missing capture element: .composer-mic');
+      mic.click();
+      const recording = Date.now();
+      while (Date.now() - recording < 3000 && !mic.className.includes('is-recording')) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      if (!mic.className.includes('is-recording')) throw new Error('Dictation did not start recording.');
       await new Promise((resolve) => setTimeout(resolve, 900));
       mic.click();
       const textarea = document.querySelector('textarea[aria-label="Message Mixdog"]');
-      const started = Date.now();
-      while (Date.now() - started < 6000) {
+      const stopped = Date.now();
+      while (Date.now() - stopped < 6000) {
         if ((textarea.value || '').includes('dictation smoke transcript')) break;
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
       return {
-        installPromptShown,
         transcriptApplied: (textarea.value || '').includes('dictation smoke transcript'),
         micIdle: !mic.className.includes('is-recording') && !mic.className.includes('is-transcribing'),
         notice: (document.querySelector('.composer-notice')?.textContent || '').trim(),
       };
     })()`),
     'Dictation smoke',
-    10_000
+    14_000
   )) as {
-    installPromptShown: boolean;
     transcriptApplied: boolean;
     micIdle: boolean;
     notice: string;
   };
 }
 
-/** Tool-presentation E2E: inject a synthetic rich transcript over the live
- *  state channel so the REAL transcript renderer (tool cards, shell output,
- *  failure states, diff review bar) is exercised and captured — no
- *  provider/engine required. The artifacts ship next to the main PNG for
- *  visual review; counts are asserted by capture-ui. NOTE: the diff body
- *  must not contain an `import ... from "..."` line — electron-vite's CJS
- *  shim pass lexes the bundled chunk for import statements and splices the
- *  chunk mid-string, corrupting the build. */
-async function runCaptureToolShowcase(window: BrowserWindow, baseSnapshot: ReturnType<CaptureService['getSnapshot']>) {
+/** Tool-presentation E2E: publish a synthetic rich transcript through the
+ *  host so the REAL transcript renderer (tool activity groups, running
+ *  status, diff review bar) is exercised and captured — no provider/engine
+ *  required. Panes paint their session's lane and a frame on the bare state
+ *  channel never reaches a transcript, so the draft is submitted through the
+ *  real composer first and the showcase lands on the session the host opened.
+ *  The artifacts ship next to the main PNG for visual review; counts are
+ *  asserted by capture-ui. NOTE: the diff body must not contain an
+ *  `import ... from "..."` line — electron-vite's CJS shim pass lexes the
+ *  bundled chunk for import statements and splices the chunk mid-string,
+ *  corrupting the build. */
+async function runCaptureToolShowcase(window: BrowserWindow, host: CaptureService) {
   const showcasePatch = [
     '--- a/src/app.ts',
     '+++ b/src/app.ts',
@@ -603,16 +616,36 @@ async function runCaptureToolShowcase(window: BrowserWindow, baseSnapshot: Retur
   await withCaptureTimeout(
     window.webContents.executeJavaScript(`(async () => {
       const link = document.querySelector('button[aria-label="New task"]');
-      if (!(link instanceof HTMLElement)) throw new Error('Missing capture element: .task-link');
+      if (!(link instanceof HTMLElement)) throw new Error('Missing capture element: New task');
       link.click();
       await new Promise((resolve) => setTimeout(resolve, 250));
+      const textarea = document.querySelector('textarea[aria-label="Message Mixdog"]');
+      if (!(textarea instanceof HTMLTextAreaElement)) throw new Error('Missing capture element: composer textarea');
+      const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+      setValue.call(textarea, 'Run the test suite and fix the retry regression.');
+      textarea.dispatchEvent(new Event('input', { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const send = document.querySelector('button.send-button');
+      if (!(send instanceof HTMLElement)) throw new Error('Missing capture element: button.send-button');
+      send.click();
       return true;
     })()`),
-    'New-task activation',
+    'Showcase task submission',
     8_000
   );
-  window.webContents.send(DESKTOP_IPC.state, {
-    ...baseSnapshot,
+  const submittedBy = Date.now() + 5_000;
+  while (!String(host.getSnapshot()?.sessionId || '')) {
+    if (Date.now() > submittedBy) throw new Error('Showcase task submission did not open a session.');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  await waitForRenderer(
+    window,
+    "(document.querySelector('.pane-cell.is-focused .workspace-tab.active')?.textContent || '').includes('Run the test')",
+    'showcase session tab'
+  );
+  const showcaseBase = (host.getSnapshot() || {}) as Record<string, unknown>;
+  host.publishProbeSnapshot({
+    ...showcaseBase,
     toasts: [],
     busy: true,
     items: [
@@ -656,47 +689,38 @@ async function runCaptureToolShowcase(window: BrowserWindow, baseSnapshot: Retur
           '> vitest run\n\u2713 retry configuration (3 tests)\n\u2713 boot sequence (5 tests)\nrunning suite: integration \u2026',
       },
     ],
-  });
+  } as unknown as SessionSnapshot);
   const toolShowcase = (await withCaptureTimeout(
     window.webContents.executeJavaScript(`(async () => {
+      // Desktop transcripts fold the tool calls on each side of prose into one
+      // activity group (transcript-tool-ui.tsx): collapsed by default, titled
+      // by a category summary, a Running status while a call is pending, and
+      // no body until opened.
       const started = Date.now();
       while (Date.now() - started < 5000) {
-        const cardsReady = document.querySelectorAll('.tool-card').length >= 4;
-        const diffNode = document.querySelector('.diff-file');
-        const diffReady = Boolean(diffNode) && !(diffNode.textContent || '').includes('Loading diff');
-        if (cardsReady && diffReady) break;
+        if (document.querySelectorAll('.tool-activity').length >= 2 && document.querySelector('.turn-review-bar')) break;
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
       return {
-        toolCards: document.querySelectorAll('.tool-card').length,
-        collapsedCards: document.querySelectorAll('.tool-card[data-open="false"]').length,
-        detailRows: document.querySelectorAll('.tool-detail-line').length,
-        failedCards: document.querySelectorAll('.tool-card.failed').length,
-        settledCards: document.querySelectorAll('.tool-card.settled').length,
+        activityGroups: document.querySelectorAll('.tool-activity').length,
+        collapsedGroups: document.querySelectorAll('.tool-activity[data-open="false"]').length,
+        groupBodies: document.querySelectorAll('.tool-activity-content').length,
+        groupTitles: Array.from(document.querySelectorAll('.tool-activity-title'))
+          .map((node) => (node.textContent || '').trim()),
+        runningStatuses: Array.from(document.querySelectorAll('.tool-activity-header [role="status"]'))
+          .map((node) => (node.textContent || '').trim()),
         reviewBar: Boolean(document.querySelector('.turn-review-bar')),
-        runningCommandVisible: Array.from(document.querySelectorAll('.tool-card:not(.settled) .tool-title small'))
-          .some((node) => (node.textContent || '').includes('npm test')),
-        runningStatusVisible: Array.from(document.querySelectorAll('.tool-card:not(.settled) [role="status"]'))
-          .some((node) => (node.textContent || '').trim() === 'Running'),
-        editInputBlocks: document.querySelectorAll('.tool-card[data-category="Patch"] .detail-block').length,
-        legacyBodyBlocks: document.querySelectorAll(
-          '.tool-card .shell-output, .tool-card .diff-file, .tool-card .tool-content',
-        ).length,
       };
     })()`),
     'Tool showcase render',
     8_000
   )) as {
-    toolCards: number;
-    collapsedCards: number;
-    detailRows: number;
-    failedCards: number;
-    settledCards: number;
+    activityGroups: number;
+    collapsedGroups: number;
+    groupBodies: number;
+    groupTitles: string[];
+    runningStatuses: string[];
     reviewBar: boolean;
-    runningCommandVisible: boolean;
-    runningStatusVisible: boolean;
-    editInputBlocks: number;
-    legacyBodyBlocks: number;
   };
   // Flush a real presented frame before reading the compositor: DOM commit
   // alone is not a paint, and an occluded window may still hold the frame
@@ -734,12 +758,12 @@ async function runCaptureToolShowcase(window: BrowserWindow, baseSnapshot: Retur
   const toolShowcaseDimensions = toolsImage.getSize();
   // Restore the empty-session state so the trailing renderer validation
   // (inline errors, welcome view) still checks the shipped default screen.
-  window.webContents.send(DESKTOP_IPC.state, { ...baseSnapshot, toasts: [], items: [] });
+  host.publishProbeSnapshot({ ...showcaseBase, toasts: [], busy: false, items: [] } as unknown as SessionSnapshot);
   await withCaptureTimeout(
     window.webContents.executeJavaScript(`(async () => {
       const started = Date.now();
       while (Date.now() - started < 5000) {
-        if (document.querySelectorAll('.tool-card').length === 0) return true;
+        if (document.querySelectorAll('.tool-activity').length === 0) return true;
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
       throw new Error('Tool showcase did not restore the empty session.');
@@ -774,7 +798,9 @@ async function captureWindow(): Promise<void> {
     const modalStack = await readModalStackAssertions(window);
     const { lightTheme, lightShellTopEdge, lightPng } = await runCaptureLightThemePass(window);
     const { compactSettings, narrowSettings } = await readCaptureSettingsAtNarrowWidths(window);
-    const expectedNarrowSettingsCategoryLabels = SETTINGS_CATEGORIES.map((category) => category.label);
+    // The desktop rail lists the LOCAL categories (Skills, MCP and Plugins
+    // moved to Extensions).
+    const expectedNarrowSettingsCategoryLabels = settingsCategoriesForSurface(false).map((category) => category.label);
     const liveSettings = {
       large: largeSettings,
       compact: compactSettings,
@@ -801,11 +827,7 @@ async function captureWindow(): Promise<void> {
       );
     }
     const dictationSmoke = await runCaptureDictationSmoke(window);
-    const baseSnapshot = host.getSnapshot();
-    const { toolShowcase, toolsPng, toolsTopPng, toolShowcaseDimensions } = await runCaptureToolShowcase(
-      window,
-      baseSnapshot
-    );
+    const { toolShowcase, toolsPng, toolsTopPng, toolShowcaseDimensions } = await runCaptureToolShowcase(window, host);
     const outputSize = image.getSize();
     const nativeWindow = {
       resizable: window.isResizable(),
@@ -890,7 +912,7 @@ async function captureWindow(): Promise<void> {
       pixelSamples: {
         titlebar: { x: 400, y: 20, color: pixel(400, 20) },
         base: { x: 600, y: 100, color: pixel(600, 100) },
-        sidebar: { x: 20, y: 60, color: pixel(20, 60) },
+        sidebar: { x: 150, y: 600, color: pixel(150, 600) },
       },
       dictationSmoke,
       toolShowcase: { ...toolShowcase, dimensions: toolShowcaseDimensions },

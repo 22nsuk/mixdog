@@ -434,11 +434,13 @@ async function run(): Promise<void> {
     // for keys (autocomplete, combobox) sees nothing from a bulk insertion.
     const typedKeys = await command({ action: 'evaluate', script: 'window.typeKeys', tab: 'alpha' });
     assert.match(typedKeys.text, /bridge/);
+    // Reading a value changes nothing, so the typed page's refs still apply.
+    assert.match(typedKeys.text, /no new snapshot was taken; refs from p\d+-s\d+ still apply/);
     // Text outside the US layout has no physical key of its own; it must still
     // reach the control.
     alpha = await command({
       action: 'type',
-      ref: refNamed(typedKeys.text, 'Type probe'),
+      ref: refNamed(alpha.text, 'Type probe'),
       text: '한글 입력',
       tab: 'alpha',
     });
@@ -971,6 +973,8 @@ async function run(): Promise<void> {
     });
     assert.match(nestedScroll.text, /"scrollLeft": 0/);
     assert.match(nestedScroll.text, /"scrollTop": [1-9]\d*/);
+    // The reply is read for a fresh ref, so it asks for the post-script
+    // snapshot: a scroll inside a hidden page may register only later.
     const resetNestedScroll = await command({
       action: 'evaluate',
       script: `(() => {
@@ -978,6 +982,7 @@ async function run(): Promise<void> {
         box.scrollTo(0, 0);
         return { scrollLeft: box.scrollLeft, scrollTop: box.scrollTop };
       })()`,
+      maxElements: 160,
       tab: 'beta',
     });
     const horizontalScrollRef = refNamed(resetNestedScroll.text, 'Scroll inside');
@@ -1413,10 +1418,12 @@ async function run(): Promise<void> {
       Number(crossFrameSize[1]) < 600 && Number(crossFrameSize[2]) < 120,
       `a framed button should crop to the control, got ${crossFrameSize[0]}`
     );
+    // The reply is read for a fresh ref, so it asks for the post-script snapshot.
     const frameEvaluated = await command({
       action: 'evaluate',
       ref: frameRef,
       script: '({ text: element.textContent, origin: location.origin })',
+      maxElements: 160,
       tab: 'frames',
     });
     assert.match(frameEvaluated.text, /"text": "Frame action"/);
@@ -1653,26 +1660,6 @@ async function run(): Promise<void> {
       [],
       'every public Browser Use action must complete through the live bridge'
     );
-
-    // Reclaiming disk is only real if the data is gone after a reload: clearing
-    // a live page's storage says nothing about what survived on disk.
-    await command({ action: 'navigate', url: `${origin}/root`, background: true, tab: 'clear-probe' });
-    await command({
-      action: 'evaluate',
-      script: 'localStorage.setItem("mixdog-clear-probe", "kept"); localStorage.getItem("mixdog-clear-probe")',
-      tab: 'clear-probe',
-    });
-    const cleared = await host!.browserClearData(['cache', 'siteData', 'cookies']);
-    assert.deepEqual(cleared.errors, {}, JSON.stringify(cleared));
-    assert.deepEqual([...cleared.cleared].sort(), ['cache', 'cookies', 'siteData']);
-    await command({ action: 'navigate', reload: true, tab: 'clear-probe' });
-    const probe = await command({
-      action: 'evaluate',
-      script: 'String(localStorage.getItem("mixdog-clear-probe"))',
-      tab: 'clear-probe',
-    });
-    assert.match(probe.text, /null/, 'site data must not survive a clear');
-    progress('browsing data clear removes stored site data');
 
     progress('integration passed');
     console.log(

@@ -59,6 +59,8 @@ export function readChartPresentation(xml) {
       min: scale(/<c:min val="([^"]+)"\/>/),
       max: scale(/<c:max val="([^"]+)"\/>/),
       gridlines: /<c:majorGridlines/.test(valueAxis),
+      // The order the categories read in: a bar chart authored bottom-up (PowerPoint's default) stays so.
+      categoryOrientation: /<c:orientation val="(minMax|maxMin)"\/>/.exec(categoryAxis)?.[1] || '',
     },
     // The emphasized point (an accent bar, one highlighted slice) is per point,
     // not per series: rewriting the series alone flattens the chart's message.
@@ -184,7 +186,8 @@ export async function writePresentationChart(zip, { chartPart, embeddingPart, ch
   const relationship = `<Relationship Id="${id}" Type="${OFFICE_RELATIONSHIP_BASE}/package" Target="${target}"/>`;
   let relationships = `${XML_HEADER}<Relationships xmlns="${PACKAGE_RELATIONSHIP_NS}">${relationship}</Relationships>`;
   if (previous) relationships = existing.replace(previous, relationship);
-  else if (existing.includes('</Relationships>')) relationships = existing.replace('</Relationships>', `${relationship}</Relationships>`);
+  else if (existing.includes('</Relationships>'))
+    relationships = existing.replace('</Relationships>', `${relationship}</Relationships>`);
   zip.file(relationshipsPath, relationships);
   zip.file(chartPart, citeChartWorkbook(chart, id));
   await ensureContentTypeOverride(zip, `/${chartPart}`, CHART_CONTENT_TYPE);

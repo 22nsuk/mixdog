@@ -136,3 +136,38 @@ test('a hidden file can format, save and back up its retained model without a mo
   assert.equal(backups.at(-1)[2], 'unsaved after save');
   assert.equal(backups.at(-1)[3], 'edited');
 });
+
+test('a tab whose file vanished explains it instead of printing ENOENT', async () => {
+  let session;
+  window.mixdogDesktop = {
+    readProjectFile: async (_project, relPath) => {
+      throw new Error(`ENOENT: no such file or directory, stat 'C:\\Project\\demo\\${relPath}'`);
+    },
+  };
+  function Harness() {
+    const editorRef = useRef(null);
+    const syncLspRef = useRef(async () => true);
+    session = useEditorFileSession({
+      editorRef,
+      syncLspRef,
+      projectPath: 'C:/Project/demo',
+      relPath: 'gone.md',
+      active: false,
+      editorSettings: { formatOnSave: false },
+      notifyReady() {},
+      onDirty() {},
+    });
+    return null;
+  }
+  const root = createRoot(document.querySelector('main'));
+  try {
+    await act(async () => root.render(React.createElement(Harness)));
+    // A first read retries a missing file briefly (a just-created entry).
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 400)));
+    assert.equal(session.load, null);
+    assert.equal(session.error, 'File was deleted or renamed on disk.');
+  } finally {
+    await act(async () => root.unmount());
+    delete window.mixdogDesktop;
+  }
+});

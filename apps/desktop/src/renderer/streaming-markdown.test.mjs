@@ -201,17 +201,9 @@ const REPRESENTATIVE = {
     '|---|',
     '- | y |',
   ].join('\n'),
-  math: [
-    'Inline $x^2$ math.',
-    '',
-    '$$',
-    '\\int_0^1 x\\,dx',
-    '$$',
-    'After math.',
-    '',
-    '$$ a+b $$',
-    '\\[ x \\]',
-  ].join('\n'),
+  math: ['Inline $x^2$ math.', '', '$$', '\\int_0^1 x\\,dx', '$$', 'After math.', '', '$$ a+b $$', '\\[ x \\]'].join(
+    '\n'
+  ),
   'nested quotes': [
     '> Quote level one',
     '> > Level two',
@@ -257,7 +249,7 @@ const REPRESENTATIVE = {
     'still comment -->',
     '[ref]: https://example.com "Title"',
     '[ref2]: <https://x.y>',
-    '  \'multi-line title\'',
+    "  'multi-line title'",
     'See [ref].',
     '',
     '[only]: /definition',
@@ -286,12 +278,65 @@ test('block starts match remark-parse on representative markdown', () => {
 
 test('block starts match remark-parse on generated markdown', () => {
   const fragments = [
-    '', '', 'text', '  indented text', '- item', '* item', '+ item', '-', '- ', '1. one', '2. two', '1) paren',
-    '01. zero', '  - nested', '    - deep', '> quote', '> > nested', '>', '> - q item', '>     qcode', '# head',
-    '#nohead', '```', '```js', '``` `x`', '~~~', '    code', '\tcode', '\t- tab', '***', '---', '===', '- - -',
-    '<div>', '</div>', '<!-- c', '-->', '<x>', '<a href="x">', '<a href=/x>', '<script>', '</script>', '<?php',
-    '[a]: /u', '[b]: <u> "t"', '[c]:', '  /dest', '"title"', '[link](x) y', '| a | b |', '|---|---|', '$$',
-    'x^2', '1.', '*', '> ```', '- ```', '  code in item', '      code in item',
+    '',
+    '',
+    'text',
+    '  indented text',
+    '- item',
+    '* item',
+    '+ item',
+    '-',
+    '- ',
+    '1. one',
+    '2. two',
+    '1) paren',
+    '01. zero',
+    '  - nested',
+    '    - deep',
+    '> quote',
+    '> > nested',
+    '>',
+    '> - q item',
+    '>     qcode',
+    '# head',
+    '#nohead',
+    '```',
+    '```js',
+    '``` `x`',
+    '~~~',
+    '    code',
+    '\tcode',
+    '\t- tab',
+    '***',
+    '---',
+    '===',
+    '- - -',
+    '<div>',
+    '</div>',
+    '<!-- c',
+    '-->',
+    '<x>',
+    '<a href="x">',
+    '<a href=/x>',
+    '<script>',
+    '</script>',
+    '<?php',
+    '[a]: /u',
+    '[b]: <u> "t"',
+    '[c]:',
+    '  /dest',
+    '"title"',
+    '[link](x) y',
+    '| a | b |',
+    '|---|---|',
+    '$$',
+    'x^2',
+    '1.',
+    '*',
+    '> ```',
+    '- ```',
+    '  code in item',
+    '      code in item',
   ];
   let seed = 20260925;
   const random = (limit) => {
@@ -334,7 +379,11 @@ test('a rewritten live tail keeps the frozen blocks it still starts with', () =>
   const cache = createStreamingMarkdownCache();
   const before = resolveStreamingMarkdownChunks('# Plan\n\nFirst paragraph.\n\nA tail that keeps growing', true, cache);
   assert.deepEqual(before.stableChunks, ['# Plan\n\n', 'First paragraph.\n\n']);
-  const rewritten = resolveStreamingMarkdownChunks('# Plan\n\nFirst paragraph.\n\nA tail\n\n```js\nrun();', true, cache);
+  const rewritten = resolveStreamingMarkdownChunks(
+    '# Plan\n\nFirst paragraph.\n\nA tail\n\n```js\nrun();',
+    true,
+    cache
+  );
   assert.deepEqual(rewritten.stableChunks, ['# Plan\n\n', 'First paragraph.\n\n', 'A tail\n\n']);
   assert.deepEqual(rewritten.stableChunkKeys.slice(0, 2), before.stableChunkKeys);
   assert.equal(rewritten.unstableText, '```js\nrun();');
@@ -347,7 +396,12 @@ test('the live tail freezes every completed top-level block', () => {
   const cache = createStreamingMarkdownCache();
   const text = '# Plan\n\n- one\n- two\n\n```js\nrun();\n```\n\n| a |\n|---|\n\nTail';
   const parts = resolveStreamingMarkdownChunks(text, true, cache);
-  assert.deepEqual(parts.stableChunks, ['# Plan\n\n', '- one\n- two\n\n', '```js\nrun();\n```\n\n', '| a |\n|---|\n\n']);
+  assert.deepEqual(parts.stableChunks, [
+    '# Plan\n\n',
+    '- one\n- two\n\n',
+    '```js\nrun();\n```\n\n',
+    '| a |\n|---|\n\n',
+  ]);
   assert.equal(parts.unstableText, 'Tail');
   assert.equal(parts.parseUnstable, true);
 });

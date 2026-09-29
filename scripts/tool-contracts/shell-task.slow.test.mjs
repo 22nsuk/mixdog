@@ -6,6 +6,8 @@ import { resolve } from 'node:path';
 import { root } from './_env.mjs';
 import { assertOk, waitFor } from './_helpers.mjs';
 import { executeBuiltinTool } from '../../src/runtime/agent/orchestrator/tools/builtin.mjs';
+import { planShellInvocation } from '../../src/runtime/agent/orchestrator/tools/builtin/bash-tool/invocation-plan.mjs';
+import { resolveShellFor } from '../../src/runtime/agent/orchestrator/tools/builtin/shell-runtime.mjs';
 import { validateBuiltinArgs } from '../../src/runtime/agent/orchestrator/tools/builtin/arg-guard.mjs';
 import { normalizeToolEnvelope } from '../../src/runtime/agent/orchestrator/session/tool-envelope.mjs';
 import { stripShellExitHeader } from '../../src/tui/session/tool-result-text.mjs';
@@ -183,10 +185,11 @@ test('shell result envelopes: success, non-zero exit, timeout, and preflight', a
     },
     root
   );
+  const shellFailCommand = 'node -e "console.error(\'tool-contracts-bash-fail\'); process.exit(7)"';
   const shellFailOutPromise = executeBuiltinTool(
     'shell',
     {
-      command: 'node -e "console.error(\'tool-contracts-bash-fail\'); process.exit(7)"',
+      command: shellFailCommand,
       timeout_ms: 30_000,
     },
     root
@@ -199,8 +202,13 @@ test('shell result envelopes: success, non-zero exit, timeout, and preflight', a
   const normalizedShellFailOut = normalizeToolEnvelope(shellFailOut);
   const shellFailText = String(normalizedShellFailOut.result);
   // PowerShell's -Command ends a failed native command with status 1, not the command's own code (the warm standby
-  // keeps that contract: shell-warm-standby.slow.test.mjs); bash passes the 7 through.
-  const failedExit = process.platform === 'win32' ? 1 : 7;
+  // keeps that contract: shell-warm-standby.slow.test.mjs); bash passes the 7 through, and so does a Windows command
+  // with no shell syntax that the shell plan spawns as its own .exe.
+  const insidePowerShell =
+    process.platform === 'win32' &&
+    !(await planShellInvocation({ command: shellFailCommand, resolvedSpec: resolveShellFor('default'), cwd: root }))
+      .directArgv;
+  const failedExit = insidePowerShell ? 1 : 7;
   if (
     normalizedShellFailOut.explicitSuccess !== true ||
     /^Error[\s:[]/.test(shellFailText) ||

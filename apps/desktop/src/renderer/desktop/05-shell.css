@@ -15,9 +15,10 @@
   border-top: 1px solid var(--mx-border-structure);
   background: var(--mx-window-band);
 }
-/* The narrow desktop shell promotes this otherwise layout-transparent group
-   into one physical drawer, so the Activity Rail and session panel can never
-   expose separate first-frame geometry. */
+/* Layout-transparent on PC at every width: the Activity Rail stays docked and
+   only the side panel floats at ≤760px (shell-overrides.css). The phone shell
+   promotes this group into one physical drawer (07-mobile-chrome.css), so its
+   rail and session panel can never expose separate first-frame geometry. */
 .sidebar-drawer-frame {
   display: contents;
 }

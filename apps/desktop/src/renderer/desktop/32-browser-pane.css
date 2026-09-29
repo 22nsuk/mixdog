@@ -38,7 +38,7 @@
   min-width: 112px;
   height: 30px;
   padding-right: 3px;
-  border-radius: 7px 7px 0 0;
+  border-radius: var(--mx-radius-md) var(--mx-radius-md) 0 0;
   color: var(--mx-text-muted);
 }
 
@@ -91,7 +91,7 @@
   width: 22px;
   height: 22px;
   flex: none;
-  border-radius: 4px;
+  border-radius: var(--mx-radius-sm);
 }
 .browser-tab-close:hover {
   background: var(--mx-hover);
@@ -213,7 +213,7 @@
   height: 28px;
   padding: 0 10px;
   border: 1px solid var(--mx-border-muted);
-  border-radius: 14px;
+  border-radius: var(--mx-radius-pill);
   background: var(--mx-surface-plate);
   color: var(--mx-text);
   font-size: var(--mx-font-ui);
@@ -407,7 +407,7 @@ html[data-mx-input="pointer"] .browser-pane-address:focus {
   color: var(--mx-text-muted);
   box-shadow: var(--mx-floating);
   opacity: 0.55;
-  transition: opacity 120ms ease;
+  transition: opacity var(--mx-motion-chrome);
 }
 .browser-zoom-pill:hover,
 .browser-zoom-pill:focus-within,
@@ -431,7 +431,7 @@ html[data-mx-input="pointer"] .browser-pane-address:focus {
   background: var(--mx-hover);
 }
 .browser-zoom-step:disabled {
-  opacity: 0.4;
+  opacity: var(--mx-op-disabled);
   cursor: default;
 }
 /* Same range grammar as .studio-density / .route-context-slider: 4px track,
@@ -448,7 +448,7 @@ html[data-mixdog-mobile-tabs] .browser-zoom-pill {
   height: calc(36px * var(--mx-device-scale, 2.5));
   bottom: calc(12px * var(--mx-device-scale, 2.5));
   padding: 0 calc(6px * var(--mx-device-scale, 2.5)) 0 calc(2px * var(--mx-device-scale, 2.5));
-  opacity: 0.8;
+  opacity: var(--mx-op-soft);
 }
 html[data-mixdog-mobile-tabs] .browser-zoom-step {
   width: calc(32px * var(--mx-device-scale, 2.5));
@@ -501,8 +501,8 @@ html[data-mixdog-mobile-tabs] .browser-zoom-range {
   flex: 1;
   padding: 0 10px;
   border: 1px solid var(--mx-border-muted);
-  border-radius: 7px;
-  background: var(--mx-surface-raised);
+  border-radius: var(--mx-radius-md);
+  background: var(--mx-bg-base);
   color: var(--mx-text);
   outline: none;
 }
@@ -520,8 +520,8 @@ html[data-mixdog-mobile-tabs] .browser-zoom-range {
   justify-content: center;
   padding: 0 10px;
   border: 1px solid var(--mx-border-muted);
-  border-radius: 7px;
-  background: var(--mx-surface-raised);
+  border-radius: var(--mx-radius-md);
+  background: var(--mx-bg-base);
   color: var(--mx-text);
 }
 
@@ -558,7 +558,7 @@ html[data-mixdog-mobile-tabs] .browser-zoom-range {
   gap: 8px;
   padding: 7px 8px 7px 10px;
   border: 1px solid color-mix(in srgb, var(--mx-danger) 45%, var(--mx-border-muted));
-  border-radius: 9px;
+  border-radius: var(--mx-radius-lg);
   background: color-mix(in srgb, var(--mx-surface-plate) 92%, transparent);
   color: var(--mx-danger);
   box-shadow: var(--mx-floating);
@@ -641,8 +641,8 @@ html[data-mixdog-mobile-tabs] .browser-zoom-range {
   margin-top: 4px;
   padding: 0 12px;
   border: 1px solid var(--mx-border-muted);
-  border-radius: 7px;
-  background: var(--mx-surface-raised);
+  border-radius: var(--mx-radius-md);
+  background: var(--mx-bg-base);
   color: var(--mx-text);
   cursor: pointer;
 }
@@ -701,8 +701,8 @@ html[data-mixdog-mobile-tabs] .browser-zoom-range {
 }
 
 .browser-import-dialog h2 {
-  font-size: 19px;
-  line-height: 1.25;
+  font-size: var(--mx-font-panel-title);
+  line-height: var(--mx-line-emphasis);
 }
 
 .browser-import-dialog p,
@@ -731,8 +731,8 @@ html[data-mixdog-mobile-tabs] .browser-zoom-range {
   flex: none;
   padding: 0 30px 0 10px;
   border: 1px solid var(--mx-border-muted);
-  border-radius: 8px;
-  background: var(--mx-surface-raised);
+  border-radius: var(--mx-radius-md);
+  background: var(--mx-bg-layer-1);
   color: var(--mx-text);
 }
 
@@ -750,7 +750,7 @@ html[data-mixdog-mobile-tabs] .browser-zoom-range {
   align-items: center;
   gap: 10px;
   padding: 7px 10px;
-  background: var(--mx-surface-raised);
+  background: var(--mx-bg-layer-1);
 }
 
 .browser-import-item + .browser-import-item {
@@ -823,11 +823,12 @@ html[data-mixdog-mobile-tabs] .browser-zoom-range {
   border-radius: 10px;
 }
 
-.browser-import-admin-check {
+/* Outranks the muted `.browser-import-admin span` caption rule above. */
+.browser-import-admin .browser-import-admin-check {
   display: flex;
   align-items: center;
   gap: 8px;
-  color: var(--mx-text) !important;
+  color: var(--mx-text);
 }
 
 .browser-import-dialog footer {
@@ -852,20 +853,22 @@ html[data-mixdog-mobile-tabs] .browser-zoom-range {
   gap: 6px;
   padding: 0 14px;
   border: 1px solid var(--mx-border-muted);
-  border-radius: 8px;
+  border-radius: var(--mx-radius-md);
   cursor: pointer;
   flex: 1;
 }
 
 .browser-import-secondary {
-  background: var(--mx-surface-raised);
+  background: var(--mx-bg-layer-1);
   color: var(--mx-text);
 }
 
+/* The accent SURFACE carries the white label in both themes; the accent ink
+   is a light blue on dark and read 2.1:1 under white. */
 .browser-import-primary {
-  border-color: var(--mx-accent);
-  background: var(--mx-accent);
-  color: var(--mx-accent-contrast, white);
+  border-color: var(--mx-accent-bg);
+  background: var(--mx-accent-bg);
+  color: var(--mx-grey-50);
 }
 
 .browser-import-secondary:disabled,

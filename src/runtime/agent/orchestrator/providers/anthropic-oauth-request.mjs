@@ -17,6 +17,7 @@ import {
   ANTHROPIC_RETRY_JITTER_RATIO,
   anthropicMaxAttempts,
   anthropicRequestTimeoutMs,
+  emitProviderRetryStage,
   withRetry,
 } from './retry-classifier.mjs';
 import { postMessages } from './anthropic-oauth-request/gzip-post.mjs';
@@ -108,12 +109,14 @@ export function createAnthropicOAuthRequest({
         // the API-key/PAYG retry budget (which may carry hours-long
         // Retry-After values).
         retry429: false,
+        retry529: opts.retry529,
         perAttemptTimeoutMs: requestTimeoutMs,
         perAttemptLabel: 'Anthropic OAuth initial response',
         provider: 'anthropic',
         model: useModel,
         fallbackModel: opts._fallbackTriggered ? undefined : opts.fallbackModel,
-        onRetry: ({ attempt, lastErr, delayMs, delayReason }) => {
+        onRetry: ({ attempt, maxAttempts, lastErr, delayMs, delayReason }) => {
+          emitProviderRetryStage(onStageChange, { attempt: attempt + 1, maxAttempts, lastErr, delayMs });
           const status = Number(lastErr?.httpStatus || lastErr?.status || lastErr?.response?.status || 0) || null;
           if (status === 429) notifyCurrentAnthropicRateLimit(lastErr);
           // Fast capacity exhausted: drop `speed` so the replay runs at

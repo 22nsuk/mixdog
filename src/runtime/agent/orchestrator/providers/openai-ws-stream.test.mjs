@@ -182,6 +182,34 @@ test('a socket close before the terminal frame rejects with the close code and t
   });
 });
 
+test('a socket close after a finished function call carries that call for the loop', async () => {
+  const done = { type: 'function_call', id: 'fc_done', call_id: 'call_done', name: 'read' };
+  const { pending, socket, seen } = run([
+    created,
+    { type: 'response.output_item.added', item: done },
+    { type: 'response.function_call_arguments.done', item_id: 'fc_done', arguments: '{"path":"a.txt"}' },
+    { type: 'response.output_item.done', item: { ...done, arguments: '{"path":"a.txt"}' } },
+    {
+      type: 'response.output_item.added',
+      item: { type: 'function_call', id: 'fc_open', call_id: 'call_open', name: 'edit' },
+    },
+    { type: 'response.function_call_arguments.delta', item_id: 'fc_open', delta: '{"pa' },
+  ]);
+  socket.emit('close', 1006, Buffer.from('gone'));
+  await assert.rejects(pending, (err) => {
+    assert.deepEqual(
+      err.partialToolCalls.map((call) => call.id),
+      ['call_done']
+    );
+    assert.equal(err.pendingToolUse, true);
+    return true;
+  });
+  assert.deepEqual(
+    seen.tools.map((call) => call.id),
+    ['call_done']
+  );
+});
+
 test('the pre-stream watchdog closes a silent socket with a retryable first-byte timeout', async () => {
   const { pending, socket, state } = run([], { _timeouts: { preResponseCreatedMs: 20 } });
   await assert.rejects(pending, (err) => {

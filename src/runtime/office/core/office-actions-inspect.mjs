@@ -9,11 +9,14 @@ import { validateOoxmlSchema } from '../portable/ooxml-validator.mjs';
 import { evaluateXlsxAssertions } from '../portable/xlsx-assertions.mjs';
 import { mergeXlsxFormulaAudit } from '../portable/xlsx-formula-audit.mjs';
 import { pictureDescriptionIssues } from '../portable/portable-validation.mjs';
+import { workbookSheets } from '../portable/portable-cells.mjs';
+import { loadPackage } from '../portable/portable-opc.mjs';
+import { cellInkIssues, columnFitIssues, protectedInputIssues } from '../portable/portable-sheet-audits.mjs';
 import { issuesTabular, validateTabular } from './tabular.mjs';
 import { evaluateOfficeSubmissionGate, normalizeOfficeReviewIssues } from '../quality/quality-pipeline.mjs';
 import { reviewOfficeStructure } from '../quality/assurance.mjs';
 import { OOXML_FORMATS, TABULAR_FORMATS } from './office-core.mjs';
-import { snapshot } from './office-sessions.mjs';
+import { readComSavedCopy, snapshot } from './office-sessions.mjs';
 
 // One document read per document version for every review that needs the whole
 // document: issues and qa both ask for it, and reading it twice per call costs
@@ -73,6 +76,7 @@ async function nativeValidation(session, args) {
       mode: session.mode,
       path: session.target,
       inspectIssues: args.__skipNativeIssues !== true,
+      includeSnapshot: args.__skipNativeSnapshot !== true,
     },
     {
       signal: session.activeSignal || null,
@@ -171,44 +175,74 @@ export async function validate(session, args = {}) {
 // package; the host's own overflow verdict, measured by PowerPoint itself, stays authoritative.
 const HOST_OWNED_PPTX_CODES = new Set(['text_overflow']);
 
-async function mergeComPptxMeasuredRead(session, result, args) {
-  const copy = join(tmpdir(), `mixdog-pptx-measure-${randomUUID()}.pptx`);
-  try {
-    const saved = await callMicrosoftOffice(
-      {
-        action: 'save_copy',
-        session: session.id,
-        format: session.format,
-        mode: session.mode,
-        path: session.target,
-        output: copy,
-      },
-      { signal: session.activeSignal || null, timeoutMs: 120_000 }
-    );
-    if (!saved.ok)
-      return { ...result, measuredRead: { status: 'unavailable', reason: saved.error || 'save-copy failed' } };
-    const measured = await issuesPortableOoxml(copy, 'pptx', args);
-    const seen = new Set((result.issues || []).map((issue) => `${issue.code}|${issue.path}`));
-    const added = (measured.issues || []).filter(
-      (issue) => !HOST_OWNED_PPTX_CODES.has(String(issue.code || '')) && !seen.has(`${issue.code}|${issue.path}`)
-    );
-    if (!added.length) return { ...result, measuredRead: { status: 'merged', added: 0 } };
-    const issues = normalizeOfficeReviewIssues([...(result.issues || []), ...added]);
-    return {
-      ...result,
-      issues,
-      issueCount: issues.length,
-      ok: !issues.some((entry) => entry.severity === 'error'),
-      measuredRead: { status: 'merged', added: added.length },
-    };
-  } catch (error) {
-    return { ...result, measuredRead: { status: 'unavailable', reason: error?.message || String(error) } };
-  } finally {
-    await rm(copy, { force: true }).catch(() => {});
-  }
+// A saved copy's portable audits, started before the application's own issues pass. The host takes requests in
+// order, so the copy is written first and its audits run in this process while the application answers: a deck's
+// measured read (0.4-1 s) had followed PowerPoint's 1.7 s pass instead of overlapping it.
+function auditSavedCopy(session, audit) {
+  return readComSavedCopy(session, audit).then(
+    (value) => ({ value }),
+    (error) => ({ error })
+  );
+}
+
+function mergeComPptxMeasuredRead(result, { value: measured, error }) {
+  if (error) return { ...result, measuredRead: { status: 'unavailable', reason: error?.message || String(error) } };
+  const seen = new Set((result.issues || []).map((issue) => `${issue.code}|${issue.path}`));
+  const added = (measured.issues || []).filter(
+    (issue) => !HOST_OWNED_PPTX_CODES.has(String(issue.code || '')) && !seen.has(`${issue.code}|${issue.path}`)
+  );
+  if (!added.length) return { ...result, measuredRead: { status: 'merged', added: 0 } };
+  const issues = normalizeOfficeReviewIssues([...(result.issues || []), ...added]);
+  return {
+    ...result,
+    issues,
+    issueCount: issues.length,
+    ok: !issues.some((entry) => entry.severity === 'error'),
+    measuredRead: { status: 'merged', added: added.length },
+  };
+}
+
+// Excel's host reads a sample of the cells it shows (### in the first 32) and nothing of a protected sheet's
+// validated cells, so a cut label, a figure run into the label beside it, ink nobody can see, a number cut below the
+// sample, and a form nobody can type into passed on Excel while the portable audit reported them. The saved copy is
+// read by the portable audits themselves; a number the host already saw cut in a column stays the host's finding.
+const cellColumn = (path) => /^\/sheet\[(.*)\]\/cell\[\$?([A-Z]+)\$?\d+\]$/.exec(String(path || ''))?.slice(1).join('\0');
+
+function xlsxSheetAudits(session, args) {
+  return auditSavedCopy(session, async (copy) => {
+    const zip = await loadPackage(copy);
+    const sheets = (await workbookSheets(zip)).filter((sheet) => !args.sheet || sheet.name === args.sheet);
+    return [
+      ...(await columnFitIssues(zip, sheets)),
+      ...(await protectedInputIssues(zip, sheets)),
+      ...(await cellInkIssues(zip, sheets)),
+    ];
+  });
+}
+
+function mergeXlsxSheetAudits(result, { value: found, error }) {
+  if (error) return { ...result, sheetAudit: { status: 'unavailable', reason: error?.message || String(error) } };
+  const known = new Set((result.issues || []).map((entry) => `${entry.code}\0${entry.path}`));
+  const overflowing = new Set(
+    (result.issues || []).filter((entry) => entry.code === 'cell_overflow').map((entry) => cellColumn(entry.path))
+  );
+  const added = found.filter(
+    (entry) =>
+      !known.has(`${entry.code}\0${entry.path}`) &&
+      !(entry.code === 'column_too_narrow' && overflowing.has(cellColumn(entry.path)))
+  );
+  if (!added.length) return { ...result, sheetAudit: { status: 'merged', added: 0 } };
+  return {
+    ...result,
+    issues: normalizeOfficeReviewIssues([...(result.issues || []), ...added]),
+    sheetAudit: { status: 'merged', added: added.length },
+  };
 }
 
 async function microsoftOfficeIssues(session, args) {
+  let copyAudit = null;
+  if (session.format === 'pptx') copyAudit = auditSavedCopy(session, (copy) => issuesPortableOoxml(copy, 'pptx', args));
+  else if (session.format === 'xlsx') copyAudit = xlsxSheetAudits(session, args);
   const response = await callMicrosoftOffice(
     {
       action: 'issues',
@@ -234,8 +268,9 @@ async function microsoftOfficeIssues(session, args) {
   if (session.format === 'xlsx') {
     const read = await snapshot(session, { includeStyles: true }, { full: true });
     result = mergeXlsxFormulaAudit(result, read?.document, { auditProfile: args.auditProfile, sheet: args.sheet });
+    result = mergeXlsxSheetAudits(result, await copyAudit);
   }
-  if (session.format === 'pptx') result = await mergeComPptxMeasuredRead(session, result, args);
+  if (session.format === 'pptx') result = mergeComPptxMeasuredRead(result, await copyAudit);
   // Word's host audits no picture's description; its reading lists every picture with the one Word holds, so the
   // portable rule applies to it and an unlabelled figure no longer passes on Word alone.
   if (session.format === 'docx') {
@@ -264,7 +299,9 @@ export async function issues(session, args = {}) {
   // contrast measure (against the resolved surface) and the format review's (against the slide) both reported
   // "Hard to read" once the portable snapshot carried text colours. The package reader's, the more exact, stays.
   const found = new Set((result.issues || []).map((entry) => `${entry.code}\0${entry.path}`));
-  const structural = (await structureIssues(session, args)).filter((entry) => !found.has(`${entry.code}\0${entry.path}`));
+  const structural = (await structureIssues(session, args)).filter(
+    (entry) => !found.has(`${entry.code}\0${entry.path}`)
+  );
   // Normalized whether or not the structure review added anything: skipped when it found nothing, a portable deck's
   // overflow and overlap kept the warning the Office backend's copy of the same finding had been raised from.
   const merged = normalizeOfficeReviewIssues([...(result.issues || []), ...structural]);

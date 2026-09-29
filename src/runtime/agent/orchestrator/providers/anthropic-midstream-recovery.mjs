@@ -16,6 +16,8 @@
  */
 import {
   classifyError,
+  emitProviderRetryStage,
+  isToolInputCut,
   markProviderRecoveryExhausted,
   midstreamBackoffFor,
   retryAfterMsFromError,
@@ -53,6 +55,8 @@ export function createAnthropicMidState(attemptIndex) {
  * @param {number} deps.maxRetries  bounded mid-stream retries for transient stream loss
  * @param {AbortSignal|null} deps.totalSignal
  * @param {{ recoverNonStreaming: Function, issueNonStreamingFallback: Function, requireTransportRecoveryBudget: Function }} deps.recovery
+ * @param {Function|null} [deps.onStageChange]  receives the display-only 'reconnecting' stage per retry
+ * @param {boolean} [deps.retry529]  false for a background call: an overload mid-stream is not retried
  */
 /**
  * Empty-stream guard. Invariant: a valid Anthropic SSE response ALWAYS opens
@@ -92,6 +96,8 @@ export function createAnthropicMidstreamRecovery({
   maxRetries,
   totalSignal,
   recovery,
+  onStageChange = null,
+  retry529 = true,
 }) {
   const log = (line) => {
     try {
@@ -114,7 +120,14 @@ export function createAnthropicMidstreamRecovery({
       /* best-effort teardown */
     }
     log(message);
-    await _midstreamSleepWithAbort(delayMs ?? midstreamBackoffFor(attemptIndex + 1), totalSignal);
+    const waitMs = delayMs ?? midstreamBackoffFor(attemptIndex + 1);
+    emitProviderRetryStage(onStageChange, {
+      attempt: attemptIndex + 1,
+      maxAttempts: maxRetries,
+      lastErr: err,
+      delayMs: waitMs,
+    });
+    await _midstreamSleepWithAbort(waitMs, totalSignal);
     return retry;
   };
 
@@ -135,6 +148,16 @@ export function createAnthropicMidstreamRecovery({
       outcome = stampAnthropicStreamOutcome(err, midState, { provider: outcomeProvider });
     } catch {
       /* stamping is best-effort */
+    }
+    // A cut while a tool call's arguments were streaming is never re-sent
+    // as the same request (it tends to be cut at the same place again): the
+    // agent loop retracts any exposed text and replays it with a split-call
+    // notice.
+    if (!midState.userAbort && isToolInputCut(err)) {
+      try {
+        controller?.abort?.(err);
+      } catch {}
+      throw err;
     }
     // Acknowledged reset semantics let the owner tombstone this
     // attempt before the full request is restarted non-streaming.
@@ -159,6 +182,14 @@ export function createAnthropicMidstreamRecovery({
     // non-OK initial response. Do not accidentally grant an additional SSE
     // retry budget to an initial HTTP 429 that never produced a stream.
     if (initialResponseErrorTerminal && err?.initialResponseError) throw err;
+    // A background call never retries an overload, mid-stream included (see
+    // withRetry): nobody waits on it and every retry adds load.
+    if (retry529 === false && Number(err?.httpStatus || err?.status || 0) === 529) {
+      try {
+        controller?.abort?.(err);
+      } catch {}
+      throw err;
+    }
     const canRetry = attemptIndex < maxRetries;
     const attemptLabel = `${attemptIndex + 1}/${maxRetries}`;
     // Empty/dropped stream (no message_start): safe to retry once —
@@ -184,9 +215,9 @@ export function createAnthropicMidstreamRecovery({
       });
     }
     // Truncated stream (message_start without message_stop): the
-    // partial result is discarded and re-requesting is safe (a
-    // pendingToolUse means the tool_use input JSON never completed).
-    // _classifyMidstreamError does not cover this; route it through
+    // partial result is discarded and re-requesting is safe (a truncation
+    // with a tool input still streaming already left above for the loop's
+    // split-call replay). _classifyMidstreamError does not cover this; route it through
     // the shared classifier so it inherits the cross-provider
     // transient policy instead of escaping and killing the worker.
     // Guard: parseSSEStream eagerly fires onToolCall and sets
@@ -250,7 +281,14 @@ export function createAnthropicMidstreamRecovery({
         log(`abort on stream error failed: ${abortErr?.message ?? String(abortErr)}`);
       }
       log(`mid-stream recovered: retry ${attemptLabel} (cause: ${classifier})`);
-      await _midstreamSleepWithAbort(retryDelayMs ?? midstreamBackoffFor(attemptIndex + 1), totalSignal);
+      const waitMs = retryDelayMs ?? midstreamBackoffFor(attemptIndex + 1);
+      emitProviderRetryStage(onStageChange, {
+        attempt: attemptIndex + 1,
+        maxAttempts: maxRetries,
+        lastErr: err,
+        delayMs: waitMs,
+      });
+      await _midstreamSleepWithAbort(waitMs, totalSignal);
       return retry;
     }
     if (classifier && !canRetry) {

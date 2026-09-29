@@ -41,18 +41,22 @@ const ERROR_TOLERANT = new Set([
   'NA',
 ]);
 
+// A sheet a reference names: quoted when Excel quotes it (a doubled quote is one quote of the name), bare otherwise —
+// and a bare name is any letters, so 데이터!A1 names a sheet as Data!A1 does.
+const SHEET_PREFIX = String.raw`(?:'(?:[^']|'')+'|[\p{L}_][\p{L}\p{N}_.]*)!`;
+// A cell or cell range first, then the whole-column (A:A) and whole-row (1:1)
+// forms — the cell form is tried first so A1:A2 never reads as a column pair.
+const REFERENCE_BODY = String.raw`\$?[A-Za-z]{1,3}\$?\d{1,7}(?::\$?[A-Za-z]{1,3}\$?\d{1,7})?|\$?[A-Za-z]{1,3}:\$?[A-Za-z]{1,3}|\$?\d{1,7}:\$?\d{1,7}`;
+
 const SCANNERS = [
   ['space', /\s+/y],
   ['string', /"(?:[^"]|"")*"/y],
-  ['error', /#(?:REF!|DIV\/0!|VALUE!|NAME\?|N\/A|NUM!|NULL!)/y],
+  // Excel writes a reference whose cells were deleted as #REF!, after the sheet name when it named another sheet
+  // (Data!#REF!), and one whose sheet was deleted as #REF! before the cells it named (#REF!B2:B4).
+  ['error', new RegExp(String.raw`(?:${SHEET_PREFIX})?#(?:REF!(?:${REFERENCE_BODY})?|DIV\/0!|VALUE!|NAME\?|N\/A|NUM!|NULL!)`, 'yu')],
   // A name followed by "(" is a call, which keeps LOG10( from reading as a cell.
   ['call', /[A-Za-z_][A-Za-z0-9_.]*(?=\s*\()/y],
-  // A cell or cell range first, then the whole-column (A:A) and whole-row (1:1)
-  // forms — the cell form is tried first so A1:A2 never reads as a column pair.
-  [
-    'reference',
-    /(?:(?:'[^']+'|[A-Za-z_][A-Za-z0-9_.]*)!)?(?:\$?[A-Za-z]{1,3}\$?\d{1,7}(?::\$?[A-Za-z]{1,3}\$?\d{1,7})?|\$?[A-Za-z]{1,3}:\$?[A-Za-z]{1,3}|\$?\d{1,7}:\$?\d{1,7})/y,
-  ],
+  ['reference', new RegExp(`(?:${SHEET_PREFIX})?(?:${REFERENCE_BODY})`, 'yu')],
   ['number', /\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|\.\d+/y],
   ['name', /[A-Za-z_][A-Za-z0-9_.]*/y],
   ['operator', /<>|<=|>=|[-+*/^&=<>%]/y],
@@ -70,9 +74,9 @@ function tokenize(formula) {
       pattern.lastIndex = index;
       const match = pattern.exec(formula);
       if (!match) continue;
+      if (type !== 'space') tokens.push({ type, text: match[0], start: index });
       index = pattern.lastIndex;
       taken = true;
-      if (type !== 'space') tokens.push({ type, text: match[0] });
       break;
     }
     if (!taken) throw new UnsupportedFormula(`unreadable character "${formula[index]}"`);
@@ -157,7 +161,9 @@ function parsePrimary(cursor) {
   if (!token) throw new UnsupportedFormula('the formula ends early');
   if (token.type === 'number') return { kind: 'literal', value: Number(token.text) };
   if (token.type === 'string') return { kind: 'literal', value: token.text.slice(1, -1).replaceAll('""', '"') };
-  if (token.type === 'error') return { kind: 'literal', value: token.text };
+  if (token.type === 'error') {
+    return { kind: 'literal', value: token.text.slice(token.text.lastIndexOf('#')).replace(/^#REF!.+$/, '#REF!') };
+  }
   if (token.type === 'reference') return { kind: 'reference', text: token.text };
   if (token.type === 'name') {
     const upper = token.text.toUpperCase();
@@ -262,9 +268,26 @@ function shiftReference(text, rowDelta, columnDelta) {
 export function translateSharedFormula(formula, rowDelta, columnDelta) {
   const text = String(formula).replace(/^=/, '');
   if (!rowDelta && !columnDelta) return text;
-  return tokenize(text)
-    .map((token) => (token.type === 'reference' ? shiftReference(token.text, rowDelta, columnDelta) : token.text))
-    .join('');
+  // Spliced in place: a space between two ranges is Excel's intersection operator, not layout.
+  let translated = '';
+  let at = 0;
+  for (const token of formulaReferences(text)) {
+    translated += text.slice(at, token.start) + shiftReference(token.text, rowDelta, columnDelta);
+    at = token.start + token.text.length;
+  }
+  return translated + text.slice(at);
+}
+
+/**
+ * Every cell, range, whole-row and whole-column reference in a formula, with the sheet it names when it names one —
+ * a deleted one that still names its sheet (Data!#REF!) included — as `{ text, start }` for a caller that rewrites
+ * references in place. String literals are not read into.
+ * @throws {UnsupportedFormula} when the formula holds something the tokenizer cannot read.
+ */
+export function formulaReferences(formula) {
+  return tokenize(String(formula)).filter(
+    (token) => token.type === 'reference' || (token.type === 'error' && !token.text.startsWith('#'))
+  );
 }
 
 function splitReference(text) {

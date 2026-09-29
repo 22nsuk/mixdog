@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { classifyError } from './retry-classifier.mjs';
+import { anthropicMaxAttempts, classifyError } from './retry-classifier.mjs';
 import { EFFORT_CONFIGURATION_BETA, prepareTurnEffortConfiguration } from './effort-configuration.mjs';
 import { createProviderReplay } from './lib/provider-replay.mjs';
 
@@ -133,6 +133,108 @@ test('exposed thinking alone is retractable too', async () => {
     assert.equal(result.content, 'recovered answer');
     assert.deepEqual(resets, [{ chars: 0, reasoning: true, reason: 'anthropic-streaming-fallback' }]);
     assert.equal(bodies[1].stream, false);
+  });
+});
+
+test('a cut while a tool input streams surfaces for a split-call replay instead of re-sending the request', async () => {
+  await withProvider(async (provider) => {
+    const bodies = [];
+    const resets = [];
+    await assert.rejects(
+      provider.send([{ role: 'user', content: 'hello' }], 'claude-fable-5-1', [], {
+        _doRequestFn: requestFor(bodies),
+        _parseSSEFn: async (...args) => {
+          const midState = args[5];
+          midState.sawMessageStart = true;
+          midState.emittedText = true;
+          midState.emittedTextChars = 12;
+          midState.partialToolCall = true;
+          // The parser marks the tool input that was still streaming at the cut.
+          const cut = undiciTerminated();
+          cut.pendingToolUse = true;
+          throw cut;
+        },
+        onTextReset: async (detail) => {
+          resets.push(detail);
+          return true;
+        },
+      }),
+      (err) => err.message === 'terminated' && err.pendingToolUse === true
+    );
+    // Neither a same-request streaming retry nor a non-streaming re-issue:
+    // the agent loop owns the retraction and the split-call replay.
+    assert.equal(bodies.length, 1);
+    assert.deepEqual(resets, []);
+  });
+});
+
+test('a mid-stream reconnect is shown as reconnecting before its retry', async () => {
+  await withProvider(async (provider) => {
+    const stages = [];
+    let parses = 0;
+    const result = await provider.send([{ role: 'user', content: 'hello' }], 'claude-fable-5-1', [], {
+      _doRequestFn: requestFor([]),
+      _parseSSEFn: async (...args) => {
+        parses += 1;
+        if (parses === 1) {
+          args[5].sawMessageStart = true;
+          throw undiciTerminated();
+        }
+        return { model: 'claude-fable-5-1', content: 'ok', usage: { inputTokens: 1 } };
+      },
+      onStageChange: (stage, detail) => stages.push({ stage, message: detail?.message ?? null }),
+    });
+    assert.equal(result.content, 'ok');
+    assert.equal(parses, 2);
+    const reconnect = stages.find((entry) => entry.stage === 'reconnecting');
+    assert.match(reconnect.message, /retry 1\/3/);
+  });
+});
+
+test('a background call does not retry an overload mid-stream', async () => {
+  await withProvider(async (provider) => {
+    let parses = 0;
+    await assert.rejects(
+      provider.send([{ role: 'user', content: 'hello' }], 'claude-fable-5-1', [], {
+        retry529: false,
+        _doRequestFn: requestFor([]),
+        _parseSSEFn: async (...args) => {
+          parses += 1;
+          args[5].sawMessageStart = true;
+          throw Object.assign(new Error('Anthropic OAuth SSE error overloaded_error: Overloaded'), {
+            httpStatus: 529,
+            status: 529,
+            providerWireError: true,
+          });
+        },
+      }),
+      (err) => err.httpStatus === 529
+    );
+    assert.equal(parses, 1);
+  });
+});
+
+test('an initial request retry is shown as reconnecting', async () => {
+  await withProvider(async (provider) => {
+    const stages = [];
+    let requests = 0;
+    const respond = requestFor([]);
+    const result = await provider.send([{ role: 'user', content: 'hello' }], 'claude-fable-5-1', [], {
+      _doRequestFn: async (...args) => {
+        requests += 1;
+        if (requests === 1) {
+          const cause = Object.assign(new Error('connect timed out'), { code: 'ETIMEDOUT' });
+          throw new TypeError('fetch failed', { cause });
+        }
+        return respond(...args);
+      },
+      _parseSSEFn: async () => ({ model: 'claude-fable-5-1', content: 'ok', usage: { inputTokens: 1 } }),
+      onStageChange: (stage, detail) => stages.push({ stage, message: detail?.message ?? null }),
+    });
+    assert.equal(result.content, 'ok');
+    assert.equal(requests, 2);
+    const reconnect = stages.find((entry) => entry.stage === 'reconnecting');
+    assert.match(reconnect.message, new RegExp(`retry 2/${anthropicMaxAttempts()}`));
   });
 });
 

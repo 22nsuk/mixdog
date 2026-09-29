@@ -8,10 +8,7 @@ export interface ComputerUseOverlayPresentation {
   title: string;
   accent: string;
   paused: boolean;
-  canResume: boolean;
   generation: number;
-  busy: boolean;
-  idleResumeSeconds: number;
   attention: boolean;
 }
 
@@ -58,14 +55,12 @@ function visibleTarget(target: string): string {
 export function computerUseOverlayPresentation(
   snapshot: ComputerUseSnapshot,
   locale = 'en',
-  control: { busy?: boolean; error?: ComputerOverlayControlError | string } = {}
+  control: { error?: ComputerOverlayControlError | string } = {}
 ): ComputerUseOverlayPresentation {
   const ko = locale.toLowerCase().startsWith('ko');
   const activity = primaryActivity(snapshot.activities);
-  // A command runs for a few hundred milliseconds, but the session keeps the
-  // user's window between commands. Showing the banner only while a command is
-  // in flight leaves nothing on screen at the moment the user reaches for Pause
-  // or Stop, so a held target keeps the controls reachable for its whole hold.
+  // Stop ends every session still in a turn that used the computer, including
+  // one thinking between commands.
   const sessionIds = [
     ...new Set([
       ...(snapshot.pausedSessionIds ?? []),
@@ -75,7 +70,6 @@ export function computerUseOverlayPresentation(
     ]),
   ].filter(Boolean);
   const paused = snapshot.userControlActive;
-  const pending = snapshot.cleanupState === 'pending';
   const failed = snapshot.cleanupState === 'failed' || control.error === 'cleanup';
   const confirmation =
     failed ||
@@ -84,25 +78,28 @@ export function computerUseOverlayPresentation(
     ['input_observation_unavailable', 'input_recovery_unconfirmed', 'input_cleanup_unconfirmed'].includes(
       snapshot.takeoverReason || ''
     );
+  // A command runs for a few hundred milliseconds, so a held target (the grace
+  // period after the last command) keeps the controls reachable between
+  // commands. Thinking without a hold is not using the computer: a turn that
+  // moved on to other work must not leave the pill up until it ends.
+  const working = snapshot.activities.some((entry) => entry.phase !== 'thinking');
+  const holding = (snapshot.targetLeases ?? []).length > 0;
   let title = ko ? '컴퓨터 사용 중' : 'Computer in use';
   if (confirmation) title = ko ? '확인 필요' : 'Check';
-  else if (paused && snapshot.takeoverReason === 'user_stop') title = ko ? '중지 중' : 'Stopping';
+  else if (paused && snapshot.takeoverReason === 'user_stop') title = ko ? '중단 중' : 'Stopping';
   else if (paused) title = ko ? '일시정지' : 'Paused';
   return {
     // A pending cleanup with no session, pause, or failure behind it is a
     // no-op release (idle worker reap, deferred session release) and stays
     // hidden; a failed cleanup always surfaces.
-    visible: sessionIds.length > 0 || paused || failed,
+    visible: working || holding || Boolean(snapshot.attentionRequired) || paused || failed,
     sessionIds,
     title,
     // Per-session colours only carry meaning while several agents work at once;
     // a lone session keeps the standard accent instead of a hash-picked one.
     accent: activity && snapshot.activities.length > 1 ? sessionColor(activity.sessionId) : SESSION_COLORS[0],
     paused,
-    canResume: paused && !pending && !failed && control.error !== 'stop',
     generation: snapshot.takeoverGeneration ?? 0,
-    busy: control.busy === true,
-    idleResumeSeconds: snapshot.idleResumeSeconds ?? 5,
     attention: confirmation,
   };
 }

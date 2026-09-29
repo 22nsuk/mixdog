@@ -1,4 +1,5 @@
 // Pure result-rendering and finish-classification helpers.
+import { oneLine } from '../../runtime/shared/clean.mjs';
 import { compactIso, elapsedFromStamps, stripFinalAnswerWrapper } from './helpers.mjs';
 
 // A worker that gets truncated mid-synthesis or produces an empty terminal
@@ -36,12 +37,6 @@ export function abnormalEmptyFinishError(result, agent) {
   }
 }
 
-function singleLine(value) {
-  return String(value ?? '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
 // The /agents roster: worker rows then task rows.
 function renderRoster(value) {
   const workers = Array.isArray(value.workers) ? value.workers : [];
@@ -51,14 +46,14 @@ function renderRoster(value) {
   for (const worker of workers) {
     const status = worker.status || 'idle';
     const stage = worker.worker_stage || worker.stage;
-    const progress = singleLine(worker.last_progress);
+    const progress = oneLine(worker.last_progress);
     const summary = progress.length > 60 ? `${progress.slice(0, 59)}…` : progress;
     lines.push(
       `- ${worker.tag}  ${status}${stage && stage !== status ? `/${stage}` : ''}${summary ? `  ${summary}` : ''}`
     );
   }
   for (const job of jobs) {
-    const error = job.status === 'failed' ? singleLine(job.error) : '';
+    const error = job.status === 'failed' ? oneLine(job.error) : '';
     lines.push(`- ${job.task_id}  ${job.type}  ${job.status}  ${job.tag || '-'}${error ? ` error=${error}` : ''}`);
   }
   if (workers.length === 0 && jobs.length === 0) lines.push('(no agents or tasks)');

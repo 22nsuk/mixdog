@@ -275,7 +275,7 @@ test('fresh layout keeps session injection and stable summary before the volatil
     true
   );
   assert.equal(result.diagnostics.retainedAssistantToolMessages, 1);
-  assert.equal(result.diagnostics.retainedProviderReplayMessages, 1);
+  assert.equal(result.diagnostics.retainedProviderReplayMessages, 0);
 });
 
 test('mid-turn Compact resumes completed progress instead of replaying the latest request as unanswered', () => {
@@ -441,8 +441,8 @@ test('263k-class tool-heavy transcript retains bounded recent execution and arch
   );
   assert.equal(result.messages.at(-1)?.content, 'LATEST_AFTER_127_TOOLS');
   assert.ok(result.messages.some((message) => message.toolCallId === 'tool-heavy-126'));
-  assert.equal(result.diagnostics.toolHistoryBudget, 25_000);
-  assert.ok(result.diagnostics.toolHistoryTokens <= 25_000);
+  assert.equal(result.diagnostics.toolHistoryBudget, 20_000);
+  assert.ok(result.diagnostics.toolHistoryTokens <= 20_000);
   assert.ok(result.diagnostics.omittedToolGroups > 0);
 });
 

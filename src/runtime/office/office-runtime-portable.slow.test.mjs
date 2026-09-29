@@ -10,6 +10,7 @@ import { parseXlsxAutofitRange } from './portable/xlsx-contract.mjs';
 import { auditDocxRedlining } from './portable/docx-revisions.mjs';
 import { issuesPortableOoxml, validatePortableOoxml } from './portable/portable-validation.mjs';
 import { ensureNumbering } from './portable/portable-docx-parts.mjs';
+import { writeDocxTocPages } from './portable/portable-docx-operations.mjs';
 import { officeOpenFailure } from './core/office-sessions.mjs';
 import { parts, value, workspace, writeZip } from './office-test-support.mjs';
 
@@ -239,9 +240,8 @@ test('PowerPoint-refused deck structures fail package validation', async (t) => 
   const zip = await JSZip.loadAsync(template);
   const edit = async (part, change) => zip.file(part, change(await zip.file(part).async('string')));
   const slideOneRels = await zip.file('ppt/slides/_rels/slide1.xml.rels').async('string');
-  const notesTarget = /Type="[^"]*\/notesSlide"[^>]*Target="([^"]+)"|Target="([^"]+)"[^>]*Type="[^"]*\/notesSlide"/.exec(
-    slideOneRels
-  );
+  const notesTarget =
+    /Type="[^"]*\/notesSlide"[^>]*Target="([^"]+)"|Target="([^"]+)"[^>]*Type="[^"]*\/notesSlide"/.exec(slideOneRels);
   const sharedNotes = notesTarget[1] || notesTarget[2];
   await edit('ppt/slides/_rels/slide1.xml.rels', (xml) =>
     xml.replace(
@@ -250,8 +250,9 @@ test('PowerPoint-refused deck structures fail package validation', async (t) => 
     )
   );
   await edit('ppt/slides/_rels/slide2.xml.rels', (xml) =>
-    xml.replace(/(Type="[^"]*\/notesSlide"[^>]*Target=")[^"]+"|(Target=")[^"]+("[^>]*Type="[^"]*\/notesSlide")/, (...m) =>
-      m[1] ? `${m[1]}${sharedNotes}"` : `${m[2]}${sharedNotes}${m[3]}`
+    xml.replace(
+      /(Type="[^"]*\/notesSlide"[^>]*Target=")[^"]+"|(Target=")[^"]+("[^>]*Type="[^"]*\/notesSlide")/,
+      (...m) => (m[1] ? `${m[1]}${sharedNotes}"` : `${m[2]}${sharedNotes}${m[3]}`)
     )
   );
   await edit('ppt/slideMasters/slideMaster1.xml', (xml) =>
@@ -267,10 +268,12 @@ test('PowerPoint-refused deck structures fail package validation', async (t) => 
   await writeFile(broken, await zip.generateAsync({ type: 'nodebuffer' }));
   const failed = await validatePortableOoxml(broken, 'pptx');
   assert.equal(failed.ok, false);
-  assert.deepEqual(
-    failed.presentationFaults.map((fault) => fault.code).sort(),
-    ['layout_reference_missing', 'master_theme_shared', 'notes_slide_shared', 'slide_layout_duplicated']
-  );
+  assert.deepEqual(failed.presentationFaults.map((fault) => fault.code).sort(), [
+    'layout_reference_missing',
+    'master_theme_shared',
+    'notes_slide_shared',
+    'slide_layout_duplicated',
+  ]);
   assert.match(
     failed.presentationFaults.find((fault) => fault.code === 'master_theme_shared').message,
     /move <p:notesMasterIdLst> to directly after <p:sldIdLst>/
@@ -493,7 +496,11 @@ test('qa autoFix rebalances a table the audit reports as wider than the page', a
       { cwd }
     )
   );
-  assert.deepEqual(repaired.fixes, [{ op: 'fit_table', table: 1, allowNoChange: true }], JSON.stringify(repaired.fixes));
+  assert.deepEqual(
+    repaired.fixes,
+    [{ op: 'fit_table', table: 1, allowNoChange: true }],
+    JSON.stringify(repaired.fixes)
+  );
   assert.equal(
     (repaired.issuesAfter || []).some((issue) => issue.code === 'table_wider_than_page'),
     false,
@@ -700,6 +707,41 @@ test("baseline validation treats the Office application's own resave of theme, l
   ]);
 });
 
+// set_chart_data rewrites the chart's data workbook, which its chart still names: the portable rewrite read that as a
+// changed embedded object and refused the finalize of a deck whose chart data was edited, where the Office backend
+// passed. Any other embedding stays protected, and so does a chart workbook the rewrite renumbered (above).
+test('baseline validation takes a rewritten chart data workbook as the chart edit it is, not damage', async (t) => {
+  const cwd = await workspace(t);
+  const original = join(cwd, 'deck.pptx');
+  const saved = join(cwd, 'deck.mixdog-edit.pptx');
+  const common = {
+    '[Content_Types].xml':
+      '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/></Types>',
+    '_rels/.rels':
+      '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>',
+    'ppt/presentation.xml':
+      '<?xml version="1.0"?><p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"/>',
+    'ppt/charts/_rels/chart1.xml.rels':
+      '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/package" Target="../embeddings/Microsoft_Excel_Worksheet1.xlsx"/></Relationships>',
+  };
+  await writeZip(original, {
+    ...common,
+    'ppt/embeddings/Microsoft_Excel_Worksheet1.xlsx': 'data 12 18 24 31',
+    'ppt/embeddings/oleObject1.bin': 'object',
+  });
+  await writeZip(saved, {
+    ...common,
+    'ppt/embeddings/Microsoft_Excel_Worksheet1.xlsx': 'data 12 18 24 33',
+    'ppt/embeddings/oleObject1.bin': 'object changed',
+  });
+  const rewritten = await validatePortableOoxml(saved, 'pptx', { original });
+  assert.deepEqual(
+    rewritten.baseline.changedProtectedParts.map((part) => part.part),
+    ['ppt/embeddings/oleObject1.bin']
+  );
+  assert.deepEqual(rewritten.baseline.lostProtectedParts, []);
+});
+
 // Word draws a TOC field's cached entries until something asks it to rebuild
 // the field, so the document shipped with a table of contents that was three
 // lines of plain text: no leaders, no page numbers.
@@ -782,6 +824,48 @@ test('add_page_numbers joins the footer the author wrote instead of replacing it
   assert.match(again, /운영 안내서 · 내부용/);
   assert.match(again, /<w:jc w:val="right"\/>/);
   await executeOfficeTool({ action: 'close', session: created.session }, { cwd });
+});
+
+// Word's footer declares w14 and mc at its root for the paraId its paragraphs carry. Page numbers written into it
+// under a new root naming only w and r left those prefixes unbound: a document Word refused to open.
+test('page numbers added to a footer Word wrote keep the root that declares its prefixes', async (t) => {
+  const cwd = await workspace(t);
+  const path = join(cwd, 'word-footer.docx');
+  const created = value(
+    await executeOfficeTool(
+      {
+        action: 'create',
+        format: 'docx',
+        path,
+        mode: 'portable',
+        operations: [
+          { op: 'append_text', text: '본문' },
+          { op: 'set_header_footer', kind: 'footer', text: '물류운영팀' },
+        ],
+      },
+      { cwd }
+    )
+  );
+  value(await executeOfficeTool({ action: 'close', session: created.session }, { cwd }));
+  const zip = await JSZip.loadAsync(await readFile(path));
+  const wordRoot =
+    '<w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ' +
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" ' +
+    'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" ' +
+    'xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" mc:Ignorable="w14">';
+  const footer = (await zip.file('word/footer1.xml').async('string'))
+    .replace(/<w:ftr\b[^>]*>/, wordRoot)
+    .replace(/<w:p\b(?=[\s>])/, '<w:p w14:paraId="40B4814C" w14:textId="773CB722"');
+  zip.file('word/footer1.xml', footer);
+  await writeFile(path, await zip.generateAsync({ type: 'nodebuffer' }));
+  const opened = value(await executeOfficeTool({ action: 'open', path, mode: 'portable' }, { cwd }));
+  value(await executeOfficeTool({ action: 'batch', session: opened.session, operations: [{ op: 'add_page_numbers' }] }, { cwd }));
+  value(await executeOfficeTool({ action: 'save', session: opened.session }, { cwd }));
+  value(await executeOfficeTool({ action: 'close', session: opened.session }, { cwd }));
+  const written = await (await JSZip.loadAsync(await readFile(opened.output || path))).file('word/footer1.xml').async('string');
+  assert.ok(written.includes(wordRoot), 'the footer keeps the root Word wrote');
+  assert.match(written, /w14:paraId="40B4814C"/);
+  assert.match(written, /w:instr=" PAGE "/);
 });
 
 // A value that reached the page as an object is a machine tell no author
@@ -1280,6 +1364,227 @@ test('portable DOCX applies the table type to every cell, Latin and East Asian',
   assert.doesNotMatch(await plainZip.file('word/document.xml').async('string'), /<w:tblHeader\/>/);
 });
 
+// A Word report's chart is the picture the PDF chart block draws: a figure had come in as a hand-made picture with no
+// names or values on it. It lands as a sharp picture whose description names every figure.
+test('a Word chart lands as a picture of labelled bars that names its figures', async (t) => {
+  const cwd = await workspace(t);
+  const path = join(cwd, 'charted.docx');
+  const created = value(
+    await executeOfficeTool(
+      {
+        action: 'create',
+        path,
+        format: 'docx',
+        mode: 'portable',
+        operations: [
+          { op: 'append_text', text: '권역별 야간 처리량', style: 'Heading 1' },
+          {
+            op: 'add_chart',
+            title: '권역별 야간 처리량',
+            categories: ['수도권', '부산', '호남'],
+            values: [82400, 71600, 30200],
+            unit: '건',
+            highlight: '부산',
+            properties: { alignment: 'center' },
+          },
+          { op: 'append_text', text: '그림 1. 권역별 처리량 (자료: 운영관리시스템)' },
+        ],
+      },
+      { cwd }
+    )
+  );
+  assert.ok(created.batch.results.some((entry) => entry.op === 'add_image'));
+  const zip = await JSZip.loadAsync(await readFile(path));
+  const document = await zip.file('word/document.xml').async('string');
+  assert.equal((document.match(/<w:drawing>/g) || []).length, 1);
+  assert.match(document, /descr="권역별 야간 처리량: 수도권 82,400건, 부산 71,600건, 호남 30,200건"/);
+  const media = Object.keys(zip.files).find((name) => /^word\/media\/.+\.png$/.test(name));
+  const png = await zip.file(media).async('nodebuffer');
+  assert.ok(png.readUInt32BE(16) >= 1200, `the picture is drawn at three pixels a point: ${png.readUInt32BE(16)}`);
+});
+
+// A brand's report sets its own accent on headings and callouts, and add_chart refused an accent: the highlighted bar
+// stood in the writer's teal beside them. accent colours that bar; without it the teal stays.
+test("a Word chart's highlighted bar takes the accent it is given", async (t) => {
+  const cwd = await workspace(t);
+  const inks = async (name, extra) => {
+    const path = join(cwd, `${name}.docx`);
+    value(
+      await executeOfficeTool(
+        {
+          action: 'create',
+          path,
+          format: 'docx',
+          mode: 'portable',
+          operations: [{ op: 'add_chart', categories: ['1월', '2월'], values: [3, 5], highlight: 1, ...extra }],
+        },
+        { cwd }
+      )
+    );
+    const zip = await JSZip.loadAsync(await readFile(path));
+    const media = Object.keys(zip.files).find((entry) => /^word\/media\/.+\.png$/.test(entry));
+    const { data, info } = await sharp(await zip.file(media).async('nodebuffer'))
+      .removeAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    const pixels = (hex) => {
+      const [red, green, blue] = [0, 2, 4].map((offset) => Number.parseInt(hex.slice(offset, offset + 2), 16));
+      let count = 0;
+      for (let index = 0; index < data.length; index += info.channels) {
+        if (data[index] === red && data[index + 1] === green && data[index + 2] === blue) count += 1;
+      }
+      return count;
+    };
+    return { brand: pixels('1F5E4B'), teal: pixels('1F6F8B') };
+  };
+  const branded = await inks('branded', { accent: '1F5E4B' });
+  assert.ok(branded.brand > 1000 && branded.teal === 0, `the bar is drawn in the given accent: ${JSON.stringify(branded)}`);
+  const plain = await inks('plain', {});
+  assert.ok(plain.teal > 1000 && plain.brand === 0, `without an accent the teal stays: ${JSON.stringify(plain)}`);
+});
+
+// A display title's leading is held exactly when asked: a minimum can only widen a line, and on Malgun Gothic's own
+// line the two lines of one wrapped title stood nearly twice the size apart. Without the rule it stays a minimum.
+test('a paragraph holds an exact line when asked and a minimum otherwise', async (t) => {
+  const cwd = await workspace(t);
+  const path = join(cwd, 'leading.docx');
+  value(
+    await executeOfficeTool(
+      {
+        action: 'create',
+        path,
+        format: 'docx',
+        mode: 'portable',
+        operations: [
+          {
+            op: 'append_text',
+            text: '가맹점 설정 오류를 먼저 알려 주는 안내 자동화',
+            style: 'Title',
+            properties: { size: 24, lineSpacing: 30, lineSpacingRule: 'exact' },
+          },
+          { op: 'append_text', text: '본문 한 줄', properties: { size: 10.5, lineSpacing: 18 } },
+        ],
+      },
+      { cwd }
+    )
+  );
+  const document = await (await JSZip.loadAsync(await readFile(path))).file('word/document.xml').async('string');
+  assert.match(document, /<w:spacing\b[^>]*\bw:line="600" w:lineRule="exact"/);
+  assert.match(document, /<w:spacing\b[^>]*\bw:line="360" w:lineRule="atLeast"/);
+});
+
+// A title given a size and no leading takes the anatomy's own (1.25 × the size, exact): written without it, a
+// two-line report title stood nearly twice its size apart on both backends. A leading the author gave stays.
+test('a sized title without a leading takes 1.25 times its size, exact', async (t) => {
+  const cwd = await workspace(t);
+  const path = join(cwd, 'title.docx');
+  value(
+    await executeOfficeTool(
+      {
+        action: 'create',
+        path,
+        format: 'docx',
+        mode: 'portable',
+        operations: [
+          { op: 'append_text', text: '야간 처리량 34% 증가, 부산 허브 증설이 필요합니다', style: 'Title', properties: { size: 24 } },
+          { op: 'append_text', text: '부제', style: 'Title', properties: { size: 20, lineSpacing: 32 } },
+          { op: 'append_text', text: '본문 한 줄', properties: { size: 10.5 } },
+        ],
+      },
+      { cwd }
+    )
+  );
+  const document = await (await JSZip.loadAsync(await readFile(path))).file('word/document.xml').async('string');
+  const paragraphs = [...document.matchAll(/<w:p\b[\s\S]*?<\/w:p>/g)].map((match) => match[0]);
+  assert.match(paragraphs[0], /<w:spacing\b[^>]*\bw:line="600" w:lineRule="exact"/, 'the 24 pt title holds 30 pt');
+  assert.match(paragraphs[1], /<w:spacing\b[^>]*\bw:line="640" w:lineRule="atLeast"/, 'a given leading stays');
+  assert.doesNotMatch(paragraphs[2], /w:lineRule="exact"/, 'a body paragraph is not a title');
+});
+
+// A column of words that follows a column of figures takes room on its left: set right, "96" ran into "내부 인력 4명"
+// across the cells' own padding alone. A fit across the page and a later cell style keep it: the fit every preset
+// table takes had dropped it.
+test('a column of words after a column of figures takes a gutter', async (t) => {
+  const cwd = await workspace(t);
+  const path = join(cwd, 'budget.docx');
+  value(
+    await executeOfficeTool(
+      {
+        action: 'create',
+        path,
+        format: 'docx',
+        mode: 'portable',
+        operations: [
+          {
+            op: 'add_table',
+            values: [
+              ['항목', '금액 (백만 원)', '비고'],
+              ['개발 인력', '96', '내부 인력 4명'],
+              ['합계', '160', '예비비 포함'],
+            ],
+            properties: { columnAlignments: ['left', 'right', 'left'] },
+          },
+          { op: 'fit_table', table: 1 },
+          { op: 'set_table_cell_style', table: 1, row: 3, col: 3, properties: { bold: true } },
+        ],
+      },
+      { cwd }
+    )
+  );
+  const document = await (await JSZip.loadAsync(await readFile(path))).file('word/document.xml').async('string');
+  const rows = [...document.matchAll(/<w:tr\b[\s\S]*?<\/w:tr>/g)].map((match) => match[0]);
+  assert.equal(rows.length, 3);
+  for (const row of rows) {
+    const [label, figure, note] = [...row.matchAll(/<w:tc>[\s\S]*?<\/w:tc>/g)].map((match) => match[0]);
+    assert.doesNotMatch(label, /<w:tcMar>/);
+    assert.doesNotMatch(figure, /<w:tcMar>/, 'the figures keep their padding');
+    assert.match(note, /<w:tcMar><w:left w:w="268" w:type="dxa"\/><\/w:tcMar>/, 'the words take the gutter');
+  }
+});
+
+// A two-level header — a group label over the columns it spans — is two header rows: left at one, the months under
+// "3분기 처리량" were set as data, plain and on their top edge, and only the group row repeated on a new page.
+test('a table header of two rows sets both as the header', async (t) => {
+  const cwd = await workspace(t);
+  const path = join(cwd, 'two-level.docx');
+  value(
+    await executeOfficeTool(
+      {
+        action: 'create',
+        path,
+        format: 'docx',
+        mode: 'portable',
+        operations: [
+          {
+            op: 'add_table',
+            values: [
+              ['권역', '3분기 처리량', '', '', '지연률'],
+              ['', '7월', '8월', '9월', ''],
+              ['수도권', '26,100', '27,300', '29,000', '0.8%'],
+            ],
+            properties: { headerRows: 2 },
+          },
+          { op: 'merge_table_cells', table: 1, row: 1, col: 5, rowSpan: 2 },
+          { op: 'merge_table_cells', table: 1, row: 1, col: 2, colSpan: 3 },
+          { op: 'merge_table_cells', table: 1, row: 1, col: 1, rowSpan: 2 },
+        ],
+      },
+      { cwd }
+    )
+  );
+  const document = await (await JSZip.loadAsync(await readFile(path))).file('word/document.xml').async('string');
+  const rows = [...document.matchAll(/<w:tr\b[\s\S]*?<\/w:tr>/g)].map((match) => match[0]);
+  assert.deepEqual(
+    rows.map((row) => /<w:tblHeader\/>/.test(row)),
+    [true, true, false]
+  );
+  const month = /<w:tc>(?:(?!<\/w:tc>)[\s\S])*?<w:t>7월<\/w:t>/.exec(rows[1])?.[0] || '';
+  assert.match(month, /<w:vAlign w:val="bottom"\/>/, month);
+  assert.match(month, /<w:b\/>/, month);
+  const region = /<w:tc>(?:(?!<\/w:tc>)[\s\S])*?<w:t>수도권<\/w:t>/.exec(rows[2])?.[0] || '';
+  assert.doesNotMatch(region, /<w:b\/>/, region);
+});
+
 test('portable DOCX authors professional tables and paragraph layout', async (t) => {
   const cwd = await workspace(t);
   const source = join(cwd, 'professional.docx');
@@ -1345,6 +1650,73 @@ test('portable DOCX authors professional tables and paragraph layout', async (t)
   assert.match(xml, /<w:gridSpan w:val="2"\/>/);
   assert.match(xml, /<w:gridCol w:w="2400"\/><w:gridCol w:w="1200"\/>/, 'point widths convert to twips');
   assert.match(xml, /<w:tab w:val="right" w:pos="7200" w:leader="dot"\/>/, '360pt lands on the 5in tab stop');
+});
+
+// A merged cell keeps what it carried (the header row's bottom alignment, as Word keeps it) and its width becomes the
+// widths it joins; a block merge takes the absorbed cells out of every row it spans; a row merged left to right
+// answers with how many cells it holds now and how to go on.
+test('portable DOCX merges keep cell properties, span every row, and explain a shifted cell', async (t) => {
+  const cwd = await workspace(t);
+  const created = value(
+    await executeOfficeTool(
+      {
+        action: 'create',
+        path: join(cwd, 'merged.docx'),
+        format: 'docx',
+        mode: 'portable',
+        operations: [
+          {
+            op: 'add_table',
+            values: [
+              ['Region', 'Q3 volume', '', '', 'Delay'],
+              ['', 'Jul', 'Aug', 'Sep', ''],
+              ['North', '1', '2', '3', '0.8%'],
+              ['South', '4', '5', '6', '2.1%'],
+            ],
+          },
+          { op: 'merge_table_cells', table: 1, row: 1, col: 5, rowSpan: 2 },
+          { op: 'merge_table_cells', table: 1, row: 1, col: 2, colSpan: 3 },
+          { op: 'merge_table_cells', table: 1, row: 1, col: 1, rowSpan: 2 },
+          { op: 'merge_table_cells', table: 1, row: 3, col: 2, rowSpan: 2, colSpan: 2 },
+        ],
+      },
+      { cwd }
+    )
+  );
+  const xml = await (await JSZip.loadAsync(await readFile(created.output))).file('word/document.xml').async('string');
+  const rows = [...xml.matchAll(/<w:tr\b[\s\S]*?<\/w:tr>/g)].map((match) => match[0]);
+  const cellsOf = (row) => [...row.matchAll(/<w:tc>[\s\S]*?<\/w:tc>/g)].map((match) => match[0]);
+  const span = (cell) => Number(/<w:gridSpan w:val="(\d+)"\/>/.exec(cell)?.[1] || 1);
+  const width = (cell) => Number(/<w:tcW w:w="(\d+)"/.exec(cell)?.[1]);
+  assert.deepEqual(
+    rows.map((row) => cellsOf(row).reduce((sum, cell) => sum + span(cell), 0)),
+    [5, 5, 5, 5],
+    'every row still spans the five grid columns'
+  );
+  const [region, volume, delay] = cellsOf(rows[0]);
+  for (const label of [region, volume, delay]) assert.match(label, /<w:vAlign w:val="bottom"\/>/);
+  assert.match(region, /<w:tcW [^>]*\/><w:vMerge w:val="restart"\/><w:vAlign w:val="bottom"\/>/);
+  const months = cellsOf(rows[1]).slice(1, 4);
+  assert.equal(width(volume), months.reduce((sum, cell) => sum + width(cell), 0));
+  assert.deepEqual(
+    cellsOf(rows[3]).map((cell) => [span(cell), /<w:vMerge\/>/.test(cell)]),
+    [
+      [1, false],
+      [2, true],
+      [1, false],
+      [1, false],
+    ]
+  );
+  const shifted = await executeOfficeTool(
+    {
+      action: 'batch',
+      session: created.session,
+      operations: [{ op: 'merge_table_cells', table: 1, row: 1, col: 5, rowSpan: 2 }],
+    },
+    { cwd }
+  );
+  assert.equal(shifted.isError, true);
+  assert.match(shifted.content[0].text, /row 1 holds 3 cell\(s\)[\s\S]*merge a row from its right end first/);
 });
 
 test('DOCX redlining audit rejects untracked text edits', async (t) => {
@@ -2638,16 +3010,19 @@ test('portable DOCX comments carry the cross-linked identity parts and delete cl
   assert.equal(anchored.document.comments[0].anchoredText, 'anchor me');
   assert.equal(anchored.document.paragraphs[0].text, 'Please anchor me here');
   const anchoredXml = await (await JSZip.loadAsync(await readFile(output))).file('word/document.xml').async('string');
+  // The reply spans its parent's words, as Word writes a reply: its start beside the parent's start, its end and
+  // reference after the parent's; marked as an empty range, Word read it as a comment of its own on no text.
   assert.ok(
     anchoredXml.includes(
-      '<w:t xml:space="preserve">Please </w:t></w:r><w:commentRangeStart w:id="1"/><w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">anch</w:t></w:r><w:r><w:t xml:space="preserve">or me</w:t></w:r>'
-    )
+      '<w:t xml:space="preserve">Please </w:t></w:r><w:commentRangeStart w:id="1"/><w:commentRangeStart w:id="2"/><w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">anch</w:t></w:r><w:r><w:t xml:space="preserve">or me</w:t></w:r>'
+    ),
+    anchoredXml
   );
-  // The reply's markers sit inside the parent range; the parent closes before the rest of the run.
   assert.ok(
     anchoredXml.includes(
-      '<w:commentRangeEnd w:id="1"/><w:r><w:commentReference w:id="1"/></w:r><w:r><w:t xml:space="preserve"> here</w:t></w:r>'
-    )
+      '<w:commentRangeEnd w:id="1"/><w:r><w:commentReference w:id="1"/></w:r><w:commentRangeEnd w:id="2"/><w:r><w:commentReference w:id="2"/></w:r><w:r><w:t xml:space="preserve"> here</w:t></w:r>'
+    ),
+    anchoredXml
   );
   const zip = await JSZip.loadAsync(await readFile(output));
   const ids = await zip.file('word/commentsIds.xml').async('string');
@@ -2748,10 +3123,11 @@ test('a reply to a comment anchored in a header is marked in that header', async
   const zip = await JSZip.loadAsync(await readFile(output));
   const header = await zip.file('word/header1.xml').async('string');
   assert.ok(
-    header.includes(
-      `<w:commentRangeStart w:id="${reply}"/><w:commentRangeEnd w:id="${reply}"/>` +
-        `<w:r><w:commentReference w:id="${reply}"/></w:r><w:commentRangeEnd w:id="1"/>`
-    ),
+    header.includes(`<w:commentRangeStart w:id="1"/><w:commentRangeStart w:id="${reply}"/>`) &&
+      header.includes(
+        `<w:commentRangeEnd w:id="1"/><w:r><w:commentReference w:id="1"/></w:r>` +
+          `<w:commentRangeEnd w:id="${reply}"/><w:r><w:commentReference w:id="${reply}"/></w:r>`
+      ),
     header
   );
   assert.doesNotMatch(await zip.file('word/document.xml').async('string'), new RegExp(`w:id="${reply}"`));
@@ -2950,6 +3326,47 @@ test('a chart on an unfitted sheet takes one page wide, and the review has nothi
   assert.equal(declaredSnapshot.document.sheets[0].pageSetup.fitToPagesTall, 3);
 });
 
+// "One page wide" leaves the length free. Written without a height, Excel and LibreOffice read the missing count as 1
+// and printed a 92-row log shrunk onto one page, while the reader reported the height as free.
+test('a fit by width alone leaves the length free, and a fit written without a height reads one page tall', async (t) => {
+  const cwd = await workspace(t);
+  const book = join(cwd, 'log.xlsx');
+  const created = value(
+    await executeOfficeTool(
+      {
+        action: 'create',
+        path: book,
+        format: 'xlsx',
+        mode: 'portable',
+        operations: [
+          {
+            op: 'set_range',
+            range: 'A1:B3',
+            values: [
+              ['일자', '처리량'],
+              ['2026-07-01', 1400],
+              ['2026-07-02', 1437],
+            ],
+          },
+          { op: 'set_page_setup', sheet: 'Sheet1', fitToPagesWide: 1 },
+        ],
+      },
+      { cwd }
+    )
+  );
+  value(await executeOfficeTool({ action: 'close', session: created.session }, { cwd }));
+  const zip = await JSZip.loadAsync(await readFile(book));
+  const sheetXml = await zip.file('xl/worksheets/sheet1.xml').async('string');
+  assert.match(sheetXml, /<pageSetup [^>]*fitToWidth="1" fitToHeight="0"/);
+  const snapshot = value(await executeOfficeTool({ action: 'snapshot', path: book, mode: 'portable' }, { cwd }));
+  assert.equal(snapshot.document.sheets[0].pageSetup.fitToPagesWide, 1);
+  assert.equal(snapshot.document.sheets[0].pageSetup.fitToPagesTall ?? 0, 0);
+  zip.file('xl/worksheets/sheet1.xml', sheetXml.replace(' fitToHeight="0"', ''));
+  await writeFile(book, await zip.generateAsync({ type: 'nodebuffer' }));
+  const reread = value(await executeOfficeTool({ action: 'snapshot', path: book, mode: 'portable' }, { cwd }));
+  assert.equal(reread.document.sheets[0].pageSetup.fitToPagesTall, 1);
+});
+
 // A recalculation saves the workbook through LibreOffice, which writes the fit
 // flag as fitToPage="true" beside a scale="100". The fit the chart applied is
 // still the fit: the reader took only "1" as true, and finalize reported the
@@ -2965,7 +3382,15 @@ test('a fit flag written as true after a LibreOffice save is still the one-page-
         format: 'xlsx',
         mode: 'portable',
         operations: [
-          { op: 'set_range', range: 'A1:B3', values: [['월', '처리량'], ['9월', 4390], ['10월', 4720]] },
+          {
+            op: 'set_range',
+            range: 'A1:B3',
+            values: [
+              ['월', '처리량'],
+              ['9월', 4390],
+              ['10월', 4720],
+            ],
+          },
           { op: 'add_chart', sheet: 'Sheet1', chartType: 'column', range: 'A1:B3', cell: 'G2' },
         ],
       },
@@ -2984,9 +3409,16 @@ test('a fit flag written as true after a LibreOffice save is still the one-page-
   await writeFile(book, await zip.generateAsync({ type: 'nodebuffer' }));
   const opened = value(await executeOfficeTool({ action: 'open', path: book, mode: 'portable' }, { cwd }));
   const snapshot = value(await executeOfficeTool({ action: 'snapshot', session: opened.session }, { cwd }));
-  assert.equal(snapshot.document.sheets[0].pageSetup.fitToPagesWide, 1, JSON.stringify(snapshot.document.sheets[0].pageSetup));
+  assert.equal(
+    snapshot.document.sheets[0].pageSetup.fitToPagesWide,
+    1,
+    JSON.stringify(snapshot.document.sheets[0].pageSetup)
+  );
   const reviewed = value(await executeOfficeTool({ action: 'issues', session: opened.session }, { cwd }));
-  assert.deepEqual((reviewed.issues || []).filter((entry) => entry.code === 'drawing_outside_print_area'), []);
+  assert.deepEqual(
+    (reviewed.issues || []).filter((entry) => entry.code === 'drawing_outside_print_area'),
+    []
+  );
 });
 
 // A stat strip is a 22 pt value row over a 9 pt label row. Restyling the label
@@ -3290,6 +3722,63 @@ test('strict OOXML validation rejects missing relationship targets', async (t) =
   const validation = value(await executeOfficeTool({ action: 'validate', session: opened.session }, { cwd }));
   assert.equal(validation.ok, false);
   assert.equal(validation.missingRelationships[0].resolved, 'word/media/missing.png');
+});
+
+// Word saves its own bullet list (office-com-host Get-WordBulletTemplate) as a decimal level with the literal mark
+// "•", since an outline template cannot take the bullet style. Opened on the portable path, those bullets read as
+// numbers, and a numbered item appended after a heading reused the bullet definition and printed "•".
+test('portable DOCX reads Word-saved literal-mark lists as bullets and numbers new items apart from them', async (t) => {
+  const cwd = await workspace(t);
+  const source = join(cwd, 'word-lists.docx');
+  const ns = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+  const paragraph = (text) => `<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`;
+  const item = (text, numId) =>
+    `<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="${numId}"/></w:numPr></w:pPr><w:r><w:t>${text}</w:t></w:r></w:p>`;
+  const level = (text) => `<w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="${text}"/></w:lvl>`;
+  await writeZip(source, {
+    '[Content_Types].xml': '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>',
+    'word/document.xml': `<?xml version="1.0"?><w:document xmlns:w="${ns}"><w:body>${paragraph('Findings')}${item('Peak load', 1)}${item('Manual sorting', 1)}${paragraph('Options')}${item('New sorter', 2)}</w:body></w:document>`,
+    'word/numbering.xml':
+      `<?xml version="1.0"?><w:numbering xmlns:w="${ns}">` +
+      `<w:abstractNum w:abstractNumId="0"><w:name w:val="MixdogBullet"/>${level('\u2022')}</w:abstractNum>` +
+      `<w:abstractNum w:abstractNumId="1"><w:name w:val="MixdogNumber"/>${level('%1.')}</w:abstractNum>` +
+      '<w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num><w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num></w:numbering>',
+  });
+  const opened = value(
+    await executeOfficeTool(
+      { action: 'open', path: source, output: join(cwd, 'word-lists-copy.docx'), mode: 'portable' },
+      { cwd }
+    )
+  );
+  const kinds = async () =>
+    value(await executeOfficeTool({ action: 'snapshot', session: opened.session }, { cwd }))
+      .document.paragraphs.filter((entry) => entry.list)
+      .map((entry) => [entry.text, entry.list.kind]);
+  assert.deepEqual(await kinds(), [
+    ['Peak load', 'bullet'],
+    ['Manual sorting', 'bullet'],
+    ['New sorter', 'number'],
+  ]);
+  value(
+    await executeOfficeTool(
+      {
+        action: 'batch',
+        session: opened.session,
+        operations: [
+          { op: 'append_text', text: 'Request' },
+          { op: 'append_text', text: 'Approve', properties: { listKind: 'number' } },
+          { op: 'append_text', text: 'Schedule', properties: { listKind: 'number' } },
+          { op: 'append_text', text: 'Open risk', properties: { listKind: 'bullet' } },
+        ],
+      },
+      { cwd }
+    )
+  );
+  assert.deepEqual((await kinds()).slice(3), [
+    ['Approve', 'number'],
+    ['Schedule', 'number'],
+    ['Open risk', 'bullet'],
+  ]);
 });
 
 test('portable DOCX snapshots structured comments and revisions', async (t) => {
@@ -3873,8 +4362,13 @@ test('a localized Word document is read by its style names, so its headings coun
   const path = join(cwd, 'localized.docx');
   const WORD = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
   const style = (id, name) => `<w:style w:type="paragraph" w:styleId="${id}"><w:name w:val="${name}"/></w:style>`;
-  const paragraph = (id, text) => `<w:p>${id ? `<w:pPr><w:pStyle w:val="${id}"/></w:pPr>` : ''}<w:r><w:t>${text}</w:t></w:r></w:p>`;
-  const body = [paragraph('a3', '야간 배송 보고'), paragraph('1', '요약'), ...Array.from({ length: 9 }, (_, i) => paragraph('', `본문 문단 ${i + 1}입니다.`))].join('');
+  const paragraph = (id, text) =>
+    `<w:p>${id ? `<w:pPr><w:pStyle w:val="${id}"/></w:pPr>` : ''}<w:r><w:t>${text}</w:t></w:r></w:p>`;
+  const body = [
+    paragraph('a3', '야간 배송 보고'),
+    paragraph('1', '요약'),
+    ...Array.from({ length: 9 }, (_, i) => paragraph('', `본문 문단 ${i + 1}입니다.`)),
+  ].join('');
   await writeZip(path, {
     '[Content_Types].xml':
       '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>',
@@ -3893,7 +4387,8 @@ test('a run is measured against its own shading and highlight', async (t) => {
   const cwd = await workspace(t);
   const path = join(cwd, 'shaded.docx');
   const WORD = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
-  const paragraph = (properties, text) => `<w:p><w:r><w:rPr>${properties}<w:sz w:val="22"/></w:rPr><w:t>${text}</w:t></w:r></w:p>`;
+  const paragraph = (properties, text) =>
+    `<w:p><w:r><w:rPr>${properties}<w:sz w:val="22"/></w:rPr><w:t>${text}</w:t></w:r></w:p>`;
   await writeZip(path, {
     '[Content_Types].xml':
       '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
@@ -4276,7 +4771,15 @@ test('a Word table given no widths takes them from its text and keeps its edges 
             ],
             properties: { fontName: 'Calibri', fontNameEastAsia: '맑은 고딕', fontSize: 9.5 },
           },
-          { op: 'add_table', values: [['월', '실패율'], ['7월', '0.31%'], ['8월', '0.22%'], ['9월', '0.17%']] },
+          {
+            op: 'add_table',
+            values: [
+              ['월', '실패율'],
+              ['7월', '0.31%'],
+              ['8월', '0.22%'],
+              ['9월', '0.17%'],
+            ],
+          },
         ],
       },
       { cwd }
@@ -4291,10 +4794,42 @@ test('a Word table given no widths takes them from its text and keeps its edges 
   // The page is A4 less 128 pt of margin: both tables span it, the short one in equal columns.
   const text = Math.round((595.28 - 128) * 20);
   assert.ok(Math.abs(widths(described).reduce((sum, width) => sum + width, 0) - text) <= 3);
-  assert.deepEqual(widths(short), [text / 2, text / 2].map((width) => Math.round(width)));
+  assert.deepEqual(
+    widths(short),
+    [text / 2, text / 2].map((width) => Math.round(width))
+  );
   // The header travels with the first two rows and the last two rows together; the last row stays free.
   const kept = short.match(/<w:tr>[^]*?<\/w:tr>/g).map((row) => /<w:keepNext\/>/.test(row));
   assert.deepEqual(kept, [true, true, true, false]);
+});
+
+// A 25-row table kept with its caption moved whole to the next page and left half a page blank: keepWithNext glued
+// every row. A long table breaks between its kept edges and holds only its last row to the caption; a table of six
+// rows or fewer still moves whole.
+test('a long Word table kept with its caption breaks between its edges, a short one moves whole', async (t) => {
+  const cwd = await workspace(t);
+  const path = join(cwd, 'keeps.docx');
+  const rows = (count) => [['주차', '처리량 (건)']].concat(Array.from({ length: count - 1 }, (_, index) => [`${index + 1}주차`, '13,800']));
+  value(
+    await executeOfficeTool(
+      {
+        action: 'create',
+        path,
+        mode: 'portable',
+        operations: [
+          { op: 'add_table', values: rows(10), properties: { keepWithNext: true } },
+          { op: 'append_text', text: '표 1. 주차별 실적' },
+          { op: 'add_table', values: rows(6) },
+        ],
+      },
+      { cwd }
+    )
+  );
+  const document = await (await parts(path)).text('word/document.xml');
+  const [long, short] = document.match(/<w:tbl>[^]*?<\/w:tbl>/g);
+  const kept = (table) => table.match(/<w:tr>[^]*?<\/w:tr>/g).map((row) => /<w:keepNext\/>/.test(row));
+  assert.deepEqual(kept(long), [true, true, false, false, false, false, false, false, true, true]);
+  assert.deepEqual(kept(short), [true, true, true, true, true, false]);
 });
 
 test('an indented label column clears the figures beside it, and the audit names the pair until it is', async (t) => {
@@ -4385,9 +4920,17 @@ test('a numbered list after a heading or a table starts again at 1, and continue
           item('새 목록', 'number'),
           item('덧붙임', 'bullet', 1),
           item('이어짐', 'number'),
-          { op: 'add_table', values: [['항목', '금액'], ['분류기', '2.6억 원']] },
+          {
+            op: 'add_table',
+            values: [
+              ['항목', '금액'],
+              ['분류기', '2.6억 원'],
+            ],
+          },
           item('표 뒤', 'number'),
           item('일반 문단', 'none'),
+          { op: 'append_text', text: '참고: 처음 켤 때에는 3분 정도 걸립니다.', properties: { shading: 'EEF2F7' } },
+          { op: 'append_text', text: '이어지는 단계', properties: { listKind: 'number', listContinue: true } },
         ],
       },
       { cwd }
@@ -4403,6 +4946,8 @@ test('a numbered list after a heading or a table starts again at 1, and continue
   assert.equal(numIdOf('이어짐'), numIdOf('새 목록'));
   assert.notEqual(numIdOf('표 뒤'), numIdOf('새 목록'));
   assert.equal(numIdOf('일반 문단'), undefined);
+  // listContinue carries the list on past the paragraphs between: the step after a note reads 2, not 1 again.
+  assert.equal(numIdOf('이어지는 단계'), numIdOf('표 뒤'));
   for (const text of ['새 목록', '표 뒤']) {
     assert.match(
       numbering,
@@ -4410,8 +4955,181 @@ test('a numbered list after a heading or a table starts again at 1, and continue
     );
   }
   // The table's figures set right, under a right-set header; its labels stay left.
-  const cells = [...document.matchAll(/<w:tc>[\s\S]*?<\/w:tc>/g)].map((cell) => /<w:jc w:val="(\w+)"/.exec(cell[0])?.[1]);
+  const cells = [...document.matchAll(/<w:tc>[\s\S]*?<\/w:tc>/g)].map(
+    (cell) => /<w:jc w:val="(\w+)"/.exec(cell[0])?.[1]
+  );
   assert.deepEqual(cells, ['left', 'right', 'left', 'right']);
+});
+
+// The levels a list shows, per paragraph: the paragraph's numId and level read through numbering.xml to the format
+// and the text the level draws.
+async function listLevelsByText(path) {
+  const zip = await parts(path);
+  const document = await zip.text('word/document.xml');
+  const numbering = (await zip.text('word/numbering.xml')) || '';
+  const abstractOf = new Map(
+    [...numbering.matchAll(/<w:num\b[^>]*\bw:numId="(\d+)"[^>]*>\s*<w:abstractNumId w:val="(\d+)"/g)].map((match) => [
+      match[1],
+      match[2],
+    ])
+  );
+  const levelOf = (abstractId, level) => {
+    const abstract = new RegExp(`<w:abstractNum\\b[^>]*\\bw:abstractNumId="${abstractId}"[^>]*>[\\s\\S]*?</w:abstractNum>`).exec(
+      numbering
+    )?.[0];
+    const lvl = new RegExp(`<w:lvl\\b[^>]*\\bw:ilvl="${level}"[^>]*>[\\s\\S]*?</w:lvl>`).exec(abstract || '')?.[0] || '';
+    return [/<w:numFmt w:val="([^"]+)"/.exec(lvl)?.[1], /<w:lvlText w:val="([^"]*)"/.exec(lvl)?.[1]];
+  };
+  return [...document.matchAll(/<w:p[ >][\s\S]*?<\/w:p>/g)]
+    .map((match) => {
+      const text = [...match[0].matchAll(/<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/g)].map((run) => run[1]).join('');
+      const numId = /<w:numId w:val="(\d+)"/.exec(match[0])?.[1];
+      const level = /<w:ilvl w:val="(\d+)"/.exec(match[0])?.[1] || '0';
+      return [text, numId ? [numId, ...levelOf(abstractOf.get(numId), level)] : null];
+    })
+    .filter(([text]) => text);
+}
+
+test('a numbered list that opens on Korean text counts 1. 가. 1), any other 1. a. i., and listNumbering names it', async (t) => {
+  const cwd = await workspace(t);
+  const path = join(cwd, 'numbering.docx');
+  const item = (text, listLevel = 0, extra = {}) => ({
+    op: 'append_text',
+    text,
+    properties: { listKind: 'number', listLevel, ...extra },
+  });
+  value(
+    await executeOfficeTool(
+      {
+        action: 'create',
+        path,
+        mode: 'portable',
+        save: true,
+        operations: [
+          item('계획을 세운다'),
+          item('일정을 정한다', 1),
+          item('담당을 정한다', 2),
+          item('QA'),
+          { op: 'append_text', text: 'Rollout', style: 'Heading 1' },
+          item('Plan the rollout'),
+          item('Pick the dates', 1),
+          { op: 'append_text', text: '예외', style: 'Heading 1' },
+          item('한국어 목록이지만 글로벌', 0, { listNumbering: 'global' }),
+          item('둘째 단계', 1),
+          { op: 'append_text', text: '이어 붙일 한국어 문단' },
+          { op: 'append_text', text: '사이 문단' },
+          { op: 'append_text', text: '목록이 될 한국어 문단' },
+          { op: 'append_text', text: '목록에서 뺄 문단', properties: { listKind: 'bullet' } },
+          { op: 'set_list', paragraph: 11, kind: 'number', level: 1 },
+          { op: 'set_list', paragraph: 13, kind: 'number', level: 1 },
+          { op: 'set_list', paragraph: 14, kind: 'none' },
+        ],
+      },
+      { cwd }
+    )
+  );
+  const levels = new Map(await listLevelsByText(path));
+  const [korean] = levels.get('계획을 세운다');
+  assert.deepEqual(levels.get('계획을 세운다').slice(1), ['decimal', '%1.']);
+  assert.deepEqual(levels.get('일정을 정한다'), [korean, 'ganada', '%2.']);
+  assert.deepEqual(levels.get('담당을 정한다'), [korean, 'decimal', '%3)']);
+  // An item that continues the list keeps its numbering, whatever its own words.
+  assert.deepEqual(levels.get('QA'), [korean, 'decimal', '%1.']);
+  assert.deepEqual(levels.get('Pick the dates').slice(1), ['lowerLetter', '%2.']);
+  const [global] = levels.get('한국어 목록이지만 글로벌');
+  assert.deepEqual(levels.get('둘째 단계'), [global, 'lowerLetter', '%2.']);
+  // set_list continues the list just before the paragraph, as Word's backend does, and otherwise opens one.
+  assert.deepEqual(levels.get('이어 붙일 한국어 문단'), [global, 'lowerLetter', '%2.']);
+  assert.deepEqual(levels.get('목록이 될 한국어 문단').slice(1), ['ganada', '%2.']);
+  assert.notEqual(levels.get('목록이 될 한국어 문단')[0], korean, 'a list set on a paragraph after prose opens anew');
+  assert.equal(levels.get('목록에서 뺄 문단'), null, 'kind none takes the paragraph out of its list');
+  await assert.rejects(
+    executeOfficeTool(
+      {
+        action: 'create',
+        path: join(cwd, 'refused.docx'),
+        mode: 'portable',
+        operations: [item('항목', 0, { listNumbering: 'roman' })],
+      },
+      { cwd }
+    ).then((result) => {
+      if (result.isError) throw new Error(result.content[0].text);
+    }),
+    /listNumbering must be 'korean' or 'global'/
+  );
+});
+
+test('a list item placed with indentLeft hangs its text after the mark, and set_paragraph_format lists or unlists a paragraph', async (t) => {
+  const cwd = await workspace(t);
+  const path = join(cwd, 'placed-lists.docx');
+  value(
+    await executeOfficeTool(
+      {
+        action: 'create',
+        path,
+        mode: 'portable',
+        save: true,
+        operations: [
+          { op: 'append_text', text: '상자 안의 항목', properties: { shading: 'FEF3C7', indentLeft: 12, listKind: 'bullet' } },
+          { op: 'append_text', text: '직접 건 항목', properties: { indentLeft: 40, indentFirstLine: -10, listKind: 'number' } },
+          { op: 'append_text', text: '①\t걸린 조항', properties: { indentLeft: 18, indentFirstLine: -18 } },
+          { op: 'append_text', text: '목록이 될 문단' },
+          { op: 'append_text', text: '목록에서 뺄 문단', properties: { listKind: 'bullet' } },
+          { op: 'set_paragraph_format', paragraph: 4, properties: { listKind: 'bullet', indentLeft: 0 } },
+          { op: 'set_paragraph_format', paragraph: 5, properties: { listKind: 'none' } },
+        ],
+      },
+      { cwd }
+    )
+  );
+  const document = await (await parts(path)).text('word/document.xml');
+  const paragraph = (text) => new RegExp(`<w:p>(?:(?!</w:p>)[\\s\\S])*?${text}(?:(?!</w:p>)[\\s\\S])*?</w:p>`).exec(document)?.[0] || '';
+  // The mark stands at the inset the callout gives its paragraphs, the text one list step (18 pt) after it.
+  assert.match(paragraph('상자 안의 항목'), /<w:ind w:left="600" w:hanging="360"\/>/);
+  assert.match(paragraph('직접 건 항목'), /<w:ind w:left="800" w:hanging="200"\/>/);
+  assert.match(paragraph('걸린 조항'), /<w:ind w:left="360" w:hanging="360"\/>/);
+  assert.match(paragraph('목록이 될 문단'), /<w:numPr>[\s\S]*?<w:ind w:left="360" w:hanging="360"\/>/);
+  assert.doesNotMatch(paragraph('목록에서 뺄 문단'), /<w:numPr>/);
+});
+
+test('a contents field takes its heading levels in either order and numbers its entries past a list that crosses a page', async (t) => {
+  const cwd = await workspace(t);
+  const path = join(cwd, 'contents.docx');
+  const created = value(
+    await executeOfficeTool(
+      {
+        action: 'create',
+        path,
+        mode: 'portable',
+        save: true,
+        operations: [
+          { op: 'append_text', text: '목차', properties: { bold: true } },
+          { op: 'insert_toc', upperHeadingLevel: 1, lowerHeadingLevel: 2 },
+          { op: 'append_text', text: '제1장 총칙', style: 'Heading 1' },
+          { op: 'append_text', text: '제1조(목적)', style: 'Heading 2' },
+          { op: 'append_text', text: '세부 기준', style: 'Heading 3' },
+          { op: 'append_text', text: '제2장 조직', style: 'Heading 1' },
+        ],
+      },
+      { cwd }
+    )
+  );
+  assert.equal(created.batch.results.find((result) => result.op === 'insert_toc').levels, '1-2');
+  const zip = await JSZip.loadAsync(await readFile(path));
+  // A rendered copy: the list's first two entries end page 1, its last opens page 2 above the first chapter; the
+  // level 3 heading the list leaves out sits on page 3 with the second chapter.
+  const pages = ['목차제1장총칙1제1조(목적)1', '제2장조직1제1장총칙제1조(목적)', '세부기준제2장조직'];
+  assert.equal(await writeDocxTocPages(zip, pages), true);
+  const document = await zip.file('word/document.xml').async('string');
+  const cache = /<w:fldSimple\b[\s\S]*?<\/w:fldSimple>/.exec(document)[0];
+  const entries = cache
+    .split('<w:r><w:br/></w:r>')
+    .map((line) => [...line.matchAll(/<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/g)].map((match) => match[1].trim()));
+  assert.deepEqual(entries, [
+    ['제1장 총칙', '2'],
+    ['제1조(목적)', '2'],
+    ['제2장 조직', '3'],
+  ]);
 });
 
 test('a slide table that names no widths gives its long label column the room, and named widths share the frame', async (t) => {
@@ -4480,7 +5198,10 @@ test('a slide chart reads at PowerPoint scale: an 18.6 pt title over 12 pt axes,
   const sizes = [...chart.matchAll(/<a:defRPr\b[^>]*\bsz="(\d+)"/g)].map((match) => Number(match[1]));
   assert.equal(sizes[0], 1862, 'the title');
   assert.ok(sizes.slice(1).length >= 4, `labels, both axes, and the legend carry a size (${sizes})`);
-  assert.ok(sizes.slice(1).every((size) => size === 1197), `the rest reads at 12 pt (${sizes})`);
+  assert.ok(
+    sizes.slice(1).every((size) => size === 1197),
+    `the rest reads at 12 pt (${sizes})`
+  );
 });
 
 test('a slide table stands as tall as its rows draw, so a source line it runs into is an overlap', async (t) => {
@@ -4520,7 +5241,10 @@ test('a picture keeps with its caption, and properties place it', async (t) => {
   const png = join(cwd, 'dot.png');
   await writeFile(
     png,
-    Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64')
+    Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+      'base64'
+    )
   );
   const path = join(cwd, 'figure.docx');
   value(
@@ -4534,7 +5258,13 @@ test('a picture keeps with its caption, and properties place it', async (t) => {
           { op: 'append_text', text: '본문' },
           { op: 'add_image', path: png, width: 120, altText: '점' },
           { op: 'append_text', text: '그림 1. 점' },
-          { op: 'add_image', path: png, width: 120, altText: '점', properties: { alignment: 'center', keepWithNext: false } },
+          {
+            op: 'add_image',
+            path: png,
+            width: 120,
+            altText: '점',
+            properties: { alignment: 'center', keepWithNext: false },
+          },
         ],
       },
       { cwd }
@@ -4561,10 +5291,25 @@ test('justified text, a dash leader, a solid rule, and a middle cell are written
         operations: [
           { op: 'append_text', text: '양쪽 정렬 문단', properties: { alignment: 'justify' } },
           { op: 'append_text', text: '가운데', properties: { alignment: 'center' } },
-          { op: 'append_text', text: '1. 배경\t3', properties: { tabStops: [{ position: 400, alignment: 'right', leader: 'dash' }] } },
-          { op: 'append_text', text: '2. 계획\t5', properties: { tabStops: [{ position: 400, alignment: 'right', leader: 'line' }] } },
+          {
+            op: 'append_text',
+            text: '1. 배경\t3',
+            properties: { tabStops: [{ position: 400, alignment: 'right', leader: 'dash' }] },
+          },
+          {
+            op: 'append_text',
+            text: '2. 계획\t5',
+            properties: { tabStops: [{ position: 400, alignment: 'right', leader: 'line' }] },
+          },
           { op: 'append_text', text: '인용', properties: { border: { side: 'left', style: 'solid', size: 16 } } },
-          { op: 'add_table', values: [['항목', '값'], ['가', '1']], properties: { borders: { bottom: { style: 'solid' } } } },
+          {
+            op: 'add_table',
+            values: [
+              ['항목', '값'],
+              ['가', '1'],
+            ],
+            properties: { borders: { bottom: { style: 'solid' } } },
+          },
           { op: 'set_table_cell_style', table: 1, row: 2, col: 1, properties: { verticalAlignment: 'middle' } },
         ],
       },
@@ -4609,8 +5354,20 @@ test('a loss column reaches below zero, a doughnut keeps its hole, and a sub-poi
               { text: '근거', bullet: true, level: 1 },
             ],
           },
-          { op: 'add_chart', slide: 1, chartType: 'column', categories: ['1분기', '2분기'], series: [{ name: '손익', values: [12, -8] }] },
-          { op: 'add_chart', slide: 1, chartType: 'doughnut', categories: ['A', 'B'], series: [{ name: '비중', values: [60, 40] }] },
+          {
+            op: 'add_chart',
+            slide: 1,
+            chartType: 'column',
+            categories: ['1분기', '2분기'],
+            series: [{ name: '손익', values: [12, -8] }],
+          },
+          {
+            op: 'add_chart',
+            slide: 1,
+            chartType: 'doughnut',
+            categories: ['A', 'B'],
+            series: [{ name: '비중', values: [60, 40] }],
+          },
         ],
       },
       { cwd }
@@ -4639,8 +5396,19 @@ test('a slide shape places its text by the alignment and verticalAlignment it na
         save: true,
         operations: [
           { op: 'add_slide', layout: 'blank' },
-          { op: 'add_shape', slide: 1, shapeType: 'rect', text: '오른쪽 아래', properties: { alignment: 'right', verticalAlignment: 'bottom' } },
-          { op: 'add_textbox', slide: 1, text: '가운데', properties: { alignment: 'centre', verticalAlignment: 'middle' } },
+          {
+            op: 'add_shape',
+            slide: 1,
+            shapeType: 'rect',
+            text: '오른쪽 아래',
+            properties: { alignment: 'right', verticalAlignment: 'bottom' },
+          },
+          {
+            op: 'add_textbox',
+            slide: 1,
+            text: '가운데',
+            properties: { alignment: 'centre', verticalAlignment: 'middle' },
+          },
         ],
       },
       { cwd }
@@ -4659,7 +5427,9 @@ test('a picture given one side keeps its proportions on a slide, a sheet, and a 
   const png = join(cwd, 'wide.png');
   await writeFile(
     png,
-    await sharp({ create: { width: 200, height: 100, channels: 3, background: '#2563EB' } }).png().toBuffer()
+    await sharp({ create: { width: 200, height: 100, channels: 3, background: '#2563EB' } })
+      .png()
+      .toBuffer()
   );
   const created = async (format, operations) =>
     value(
@@ -4772,6 +5542,78 @@ test('set_shape takes a transparency, an outline width, or paragraph spacing on 
   assert.equal(spacings?.length, (shape.match(/<a:p>/g) || []).length, 'every paragraph is spaced before');
 });
 
+// set_text wrote the new words into the first run and emptied the rest, but kept the old text's soft line break: the
+// box read one blank line taller than PowerPoint's, whose TextRange.Text leaves a single run.
+test('set_text leaves one run, without the old text\u2019s line breaks', async (t) => {
+  const cwd = await workspace(t);
+  const path = join(cwd, 'set-text.pptx');
+  const created = value(
+    await executeOfficeTool(
+      {
+        action: 'create',
+        path,
+        mode: 'portable',
+        save: true,
+        operations: [
+          { op: 'add_slide', layout: 'blank' },
+          { op: 'add_textbox', slide: 1, text: '증설 석 달 만에 처리량은 1.6배가', left: 60, top: 60, width: 500, height: 80 },
+        ],
+      },
+      { cwd }
+    )
+  );
+  value(await executeOfficeTool({ action: 'close', session: created.session }, { cwd }));
+  const zip = await JSZip.loadAsync(await readFile(path));
+  const slide = await zip.file('ppt/slides/slide1.xml').async('string');
+  zip.file(
+    'ppt/slides/slide1.xml',
+    slide.replace(/(<a:t>증설[^<]*<\/a:t><\/a:r>)/, '$1<a:br><a:rPr lang="ko-KR"/></a:br><a:r><a:rPr lang="ko-KR"/><a:t>됐다.</a:t></a:r>')
+  );
+  await writeFile(path, await zip.generateAsync({ type: 'nodebuffer' }));
+  const opened = value(await executeOfficeTool({ action: 'open', path, mode: 'portable' }, { cwd }));
+  value(await executeOfficeTool({ action: 'batch', session: opened.session, operations: [{ op: 'set_text', slide: 1, shape: 1, text: '처리량은 1.7배가 됐다.' }] }, { cwd }));
+  value(await executeOfficeTool({ action: 'save', session: opened.session }, { cwd }));
+  value(await executeOfficeTool({ action: 'close', session: opened.session }, { cwd }));
+  const written = await (await JSZip.loadAsync(await readFile(opened.output || path))).file('ppt/slides/slide1.xml').async('string');
+  const body = /<p:txBody>[\s\S]*?<\/p:txBody>/.exec(written)[0];
+  assert.doesNotMatch(body, /<a:br\b/);
+  assert.deepEqual([...body.matchAll(/<a:t>([^<]*)<\/a:t>/g)].map((match) => match[1]), ['처리량은 1.7배가 됐다.']);
+});
+
+// null takes the fill or the outline away on both backends (Fill.Visible / Line.Visible = 0 on Office, which had
+// skipped null and kept the outline); a new fill replaces the shape's own fill only, never its outline's colour.
+test('set_shape takes a fill or an outline away with null, and a new fill leaves the outline colour alone', async (t) => {
+  const cwd = await workspace(t);
+  const path = join(cwd, 'clear.pptx');
+  const created = value(
+    await executeOfficeTool(
+      {
+        action: 'create',
+        path,
+        mode: 'portable',
+        save: true,
+        operations: [
+          { op: 'add_slide', layout: 'blank' },
+          { op: 'add_shape', slide: 1, shapeType: 'rect', fillColor: 'E5E7EB', lineColor: '1F3A5F', text: '가' },
+          { op: 'add_shape', slide: 1, shapeType: 'rect', lineColor: '1F3A5F', text: '나', left: 300 },
+        ],
+      },
+      { cwd }
+    )
+  );
+  const shapes = async () => [...(await (await parts(path)).text('ppt/slides/slide1.xml')).matchAll(/<p:sp>[\s\S]*?<\/p:sp>/g)].map((match) => /<p:spPr\b[\s\S]*?<\/p:spPr>/.exec(match[0])[0]);
+  // The second box has no fill of its own; filling it keeps its outline's colour.
+  value(await executeOfficeTool({ action: 'batch', session: created.session, operations: [{ op: 'set_shape', slide: 1, shape: 2, properties: { fillColor: 'FFF2CC' } }] }, { cwd }));
+  value(await executeOfficeTool({ action: 'save', session: created.session }, { cwd }));
+  const filled = (await shapes())[1];
+  assert.match(filled, /<a:solidFill><a:srgbClr val="FFF2CC"\/?>(?:<\/a:srgbClr>)?<\/a:solidFill><a:ln\b[^>]*><a:solidFill><a:srgbClr val="1F3A5F"/);
+  value(await executeOfficeTool({ action: 'batch', session: created.session, operations: [{ op: 'set_shape', slide: 1, shape: 1, properties: { fillColor: null, lineColor: null } }] }, { cwd }));
+  value(await executeOfficeTool({ action: 'save', session: created.session }, { cwd }));
+  const cleared = (await shapes())[0];
+  assert.match(cleared, /<a:noFill\/><a:ln><a:noFill\/><\/a:ln>/);
+  assert.doesNotMatch(cleared, /E5E7EB|1F3A5F/);
+});
+
 test('set_shape draws the shadow the Office backend draws', async (t) => {
   const cwd = await workspace(t);
   const path = join(cwd, 'shadow.pptx');
@@ -4806,7 +5648,10 @@ test('set_shape draws the shadow the Office backend draws', async (t) => {
   assert.match(box, /<a:ln><a:noFill\/><\/a:ln><a:effectLst><a:outerShdw blurRad="63500"/);
   assert.match(xml, /<p:cNvPr id="\d+" name="[^"]*" descr="그림자 상자"\/>/, 'a new shape keeps its description');
   // PowerPoint's own shadow for Shadow.Visible, and the one described: 8 pt blur, 4 pt straight down, 40% opaque.
-  assert.match(plain, /<a:outerShdw blurRad="63500" dist="3735\d" dir="2700000" rotWithShape="0"><a:srgbClr val="000000">/);
+  assert.match(
+    plain,
+    /<a:outerShdw blurRad="63500" dist="3735\d" dir="2700000" rotWithShape="0"><a:srgbClr val="000000">/
+  );
   assert.match(card, /<a:ln\b[\s\S]*<\/a:ln><a:effectLst><a:outerShdw blurRad="101600" dist="50800" dir="5400000"/);
   assert.match(card, /<a:srgbClr val="1F3A5F"><a:alpha val="40000"\/><\/a:srgbClr><\/a:outerShdw><\/a:effectLst>/);
 });
@@ -4822,7 +5667,17 @@ test('a pie names its slices in a legend and prints each value in the ink its sl
         mode: 'portable',
         save: true,
         operations: [
-          { op: 'set_range', sheet: 'Sheet1', range: 'A1:B4', values: [['분기', '매출'], ['1분기', 120], ['2분기', 140], ['3분기', 165]] },
+          {
+            op: 'set_range',
+            sheet: 'Sheet1',
+            range: 'A1:B4',
+            values: [
+              ['분기', '매출'],
+              ['1분기', 120],
+              ['2분기', 140],
+              ['3분기', 165],
+            ],
+          },
           { op: 'add_chart', sheet: 'Sheet1', range: 'A1:B4', chartType: 'pie', showValues: true },
         ],
       },
@@ -4832,12 +5687,14 @@ test('a pie names its slices in a legend and prints each value in the ink its sl
   const chart = await (await parts(path)).text('xl/charts/chart1.xml');
   assert.match(chart, /<c:varyColors val="1"\/>/);
   assert.match(chart, /<c:legend>/, 'one series of slices still keeps its legend');
-  const inks = [...chart.matchAll(/<c:dLbl><c:idx val="\d+"\/>[\s\S]*?<a:srgbClr val="([0-9A-F]{6})"/g)].map((match) => match[1]);
+  const inks = [...chart.matchAll(/<c:dLbl><c:idx val="\d+"\/>[\s\S]*?<a:srgbClr val="([0-9A-F]{6})"/g)].map(
+    (match) => match[1]
+  );
   assert.equal(inks.length, 3, 'one label colour per slice');
   assert.ok(inks.includes('FFFFFF') && inks.includes('1F2429'), `white on the dark slices, dark on the pale (${inks})`);
 });
 
-test('set_table_data grows a slide table to rows and columns past its edge, and its frame with it', async (t) => {
+test('set_table_data grows a slide table down to rows past its edge and shares its width with columns past it', async (t) => {
   const cwd = await workspace(t);
   const path = join(cwd, 'grow.pptx');
   const created = value(
@@ -4849,7 +5706,16 @@ test('set_table_data grows a slide table to rows and columns past its edge, and 
         save: true,
         operations: [
           { op: 'add_slide', layout: 'blank' },
-          { op: 'add_table', slide: 1, values: [['허브', '처리량'], ['서울', '184,200']], width: 300, height: 60 },
+          {
+            op: 'add_table',
+            slide: 1,
+            values: [
+              ['허브', '처리량'],
+              ['서울', '184,200'],
+            ],
+            width: 300,
+            height: 60,
+          },
           {
             op: 'set_table_data',
             slide: 1,
@@ -4873,7 +5739,15 @@ test('set_table_data grows a slide table to rows and columns past its edge, and 
   assert.equal((slide.match(/<a:tr\b/g) || []).length, 3);
   assert.match(slide, /인천[\s\S]*160,100[\s\S]*3\.0%/);
   const extent = /<p:xfrm>[\s\S]*?<a:ext cx="(\d+)" cy="(\d+)"/.exec(slide);
-  assert.ok(Number(extent[1]) > 300 * 12700 && Number(extent[2]) > 60 * 12700, 'the frame grew with the table');
+  assert.ok(Number(extent[2]) > 60 * 12700, 'the frame grew down with the rows');
+  // The width is the page's: the third column shares the frame with the first two instead of pushing its edge out.
+  const columns = [...slide.matchAll(/<a:gridCol\b[^>]*\bw="(\d+)"/g)].map((match) => Number(match[1]));
+  assert.equal(Number(extent[1]), 300 * 12700, 'the frame keeps its width');
+  assert.equal(
+    columns.reduce((total, width) => total + width, 0),
+    300 * 12700,
+    `the columns fill the frame: ${columns}`
+  );
 });
 
 test('a Word table naming a style the document lacks takes the default rules and says so', async (t) => {
@@ -4887,8 +5761,22 @@ test('a Word table naming a style the document lacks takes the default rules and
         mode: 'portable',
         save: true,
         operations: [
-          { op: 'add_table', values: [['항목', '값'], ['가', '1']], properties: { style: 'Light List Accent 1' } },
-          { op: 'add_table', values: [['항목', '값'], ['나', '2']], properties: { style: 'Table Grid' } },
+          {
+            op: 'add_table',
+            values: [
+              ['항목', '값'],
+              ['가', '1'],
+            ],
+            properties: { style: 'Light List Accent 1' },
+          },
+          {
+            op: 'add_table',
+            values: [
+              ['항목', '값'],
+              ['나', '2'],
+            ],
+            properties: { style: 'Table Grid' },
+          },
         ],
       },
       { cwd }
@@ -4916,9 +5804,25 @@ test('an Excel table style spelled out is stored by the name Excel keeps', async
         mode: 'portable',
         save: true,
         operations: [
-          { op: 'set_range', sheet: 'Sheet1', range: 'A1:B2', values: [['항목', '값'], ['가', 1]] },
+          {
+            op: 'set_range',
+            sheet: 'Sheet1',
+            range: 'A1:B2',
+            values: [
+              ['항목', '값'],
+              ['가', 1],
+            ],
+          },
           { op: 'add_table', sheet: 'Sheet1', range: 'A1:B2', name: 'Spelled', style: 'Table Style Medium 2' },
-          { op: 'set_range', sheet: 'Sheet1', range: 'D1:E2', values: [['항목', '값'], ['나', 2]] },
+          {
+            op: 'set_range',
+            sheet: 'Sheet1',
+            range: 'D1:E2',
+            values: [
+              ['항목', '값'],
+              ['나', 2],
+            ],
+          },
           { op: 'add_table', sheet: 'Sheet1', range: 'D1:E2', name: 'Plain', style: 'TableStyleNone' },
         ],
       },
@@ -4941,7 +5845,16 @@ test('a sheet longer than a page repeats its header row in print', async (t) => 
         path,
         mode: 'portable',
         operations: [
-          { op: 'set_range', sheet: 'Sheet1', range: 'A1:B3', values: [['허브', '처리량'], ['서울', 1], ['인천', 2]] },
+          {
+            op: 'set_range',
+            sheet: 'Sheet1',
+            range: 'A1:B3',
+            values: [
+              ['허브', '처리량'],
+              ['서울', 1],
+              ['인천', 2],
+            ],
+          },
           { op: 'set_page_setup', sheet: 'Sheet1', printArea: 'A1:B3', printTitleRows: '1' },
         ],
       },

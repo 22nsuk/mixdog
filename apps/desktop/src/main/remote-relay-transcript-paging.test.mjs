@@ -124,7 +124,11 @@ test('a paging phone opens tail windows and receives older pages and submits as 
       await waitFor(peer, (message) => message.e === 'T');
       assert.deepEqual(decode(peer, frames(peer)[0]), ['r0', 'r1', 'r2']);
     }
-    publishSessionState({ sessionId: 'session', snapshot: { sessionId: 'session', items: paged }, frameSource: 'replay' });
+    publishSessionState({
+      sessionId: 'session',
+      snapshot: { sessionId: 'session', items: paged },
+      frameSource: 'replay',
+    });
     for (const peer of [newPhone, oldPhone]) await waitFor(peer, () => frames(peer).length === 2);
     const page = frames(newPhone)[1].w.ip;
     assert.deepEqual(

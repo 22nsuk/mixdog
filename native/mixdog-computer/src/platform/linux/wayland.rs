@@ -8,7 +8,7 @@ use super::compositor::Compositor;
 use super::{apps, uinput};
 use crate::a11y::{Accessibility, MenuOutcome, Node};
 use crate::keys::{glyph_key, Key, Mod, Named};
-use crate::platform::{AppEntry, Background, Button, Desktop, Launched, WinState, WindowInfo, Wid};
+use crate::platform::{AppEntry, Background, Button, Desktop, Launched, Wid, WinState, WindowInfo};
 use serde_json::Value;
 use std::cell::{Cell, RefCell};
 
@@ -25,14 +25,23 @@ pub struct WaylandDesktop {
 fn desktop_bounds(compositor: Compositor) -> Option<(i32, i32, i32, i32)> {
     compositor.desktop_bounds().or_else(|| {
         let text = std::env::var("MIXDOG_COMPUTER_DESKTOP_BOUNDS").ok()?;
-        let parts: Vec<i32> = text.split(',').filter_map(|part| part.trim().parse().ok()).collect();
-        (parts.len() == 4 && parts[2] > 0 && parts[3] > 0).then(|| (parts[0], parts[1], parts[2], parts[3]))
+        let parts: Vec<i32> = text
+            .split(',')
+            .filter_map(|part| part.trim().parse().ok())
+            .collect();
+        (parts.len() == 4 && parts[2] > 0 && parts[3] > 0)
+            .then(|| (parts[0], parts[1], parts[2], parts[3]))
     })
 }
 
 impl WaylandDesktop {
     pub fn new() -> WaylandDesktop {
-        WaylandDesktop { compositor: Compositor::detect(), atspi: RefCell::new(None), device: RefCell::new(None), pointer: Cell::new((0, 0)) }
+        WaylandDesktop {
+            compositor: Compositor::detect(),
+            atspi: RefCell::new(None),
+            device: RefCell::new(None),
+            pointer: Cell::new((0, 0)),
+        }
     }
 
     fn atspi(&self) -> Result<Atspi, String> {
@@ -44,7 +53,10 @@ impl WaylandDesktop {
         Ok(atspi)
     }
 
-    fn with_device<T>(&self, action: impl FnOnce(&uinput::Device) -> Result<T, String>) -> Result<T, String> {
+    fn with_device<T>(
+        &self,
+        action: impl FnOnce(&uinput::Device) -> Result<T, String>,
+    ) -> Result<T, String> {
         if self.device.borrow().is_none() {
             let bounds = desktop_bounds(self.compositor)
                 .ok_or("input_unavailable: the desktop size is unknown; the desktop app passes it at launch")?;
@@ -76,11 +88,16 @@ impl Desktop for WaylandDesktop {
     }
 
     fn info(&self, handle: Wid) -> Option<WindowInfo> {
-        self.list().into_iter().find(|window| window.handle == handle)
+        self.list()
+            .into_iter()
+            .find(|window| window.handle == handle)
     }
 
     fn foreground(&self) -> Wid {
-        self.list().into_iter().find(|window| window.focused).map_or(0, |window| window.handle)
+        self.list()
+            .into_iter()
+            .find(|window| window.focused)
+            .map_or(0, |window| window.handle)
     }
 
     fn focus(&self, handle: Wid) -> bool {
@@ -100,21 +117,43 @@ impl Desktop for WaylandDesktop {
         self.list()
             .into_iter()
             .filter(|window| !window.minimized)
-            .find(|window| x >= window.x && y >= window.y && x < window.x + window.width && y < window.y + window.height)
+            .find(|window| {
+                x >= window.x
+                    && y >= window.y
+                    && x < window.x + window.width
+                    && y < window.y + window.height
+            })
             .map_or(0, |window| window.handle)
     }
 
     fn related_windows(&self, handle: Wid) -> Vec<Wid> {
         let windows = self.list();
-        let Some(pid) = windows.iter().find(|window| window.handle == handle).map(|window| window.pid) else { return Vec::new() };
-        windows.into_iter().filter(|window| window.handle != handle && window.pid == pid).map(|window| window.handle).collect()
+        let Some(pid) = windows
+            .iter()
+            .find(|window| window.handle == handle)
+            .map(|window| window.pid)
+        else {
+            return Vec::new();
+        };
+        windows
+            .into_iter()
+            .filter(|window| window.handle != handle && window.pid == pid)
+            .map(|window| window.handle)
+            .collect()
     }
 
     fn is_owned_by(&self, candidate: Wid, owner: Wid) -> bool {
         candidate != owner && candidate != 0 && self.related_windows(owner).contains(&candidate)
     }
 
-    fn move_window(&self, handle: Wid, x: i32, y: i32, width: i32, height: i32) -> Result<(), String> {
+    fn move_window(
+        &self,
+        handle: Wid,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+    ) -> Result<(), String> {
         self.compositor.move_window(handle, x, y, width, height)
     }
 
@@ -127,13 +166,19 @@ impl Desktop for WaylandDesktop {
     }
 
     fn is_responding(&self, handle: Wid) -> bool {
-        let Some(pid) = self.info(handle).map(|window| window.pid) else { return false };
-        let state = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok().and_then(|stat| stat[stat.rfind(')')? + 2..].chars().next());
+        let Some(pid) = self.info(handle).map(|window| window.pid) else {
+            return false;
+        };
+        let state = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .and_then(|stat| stat[stat.rfind(')')? + 2..].chars().next());
         !matches!(state, Some('T') | Some('Z') | Some('t'))
     }
 
     fn cursor(&self) -> (i32, i32) {
-        self.compositor.cursor().unwrap_or_else(|| self.pointer.get())
+        self.compositor
+            .cursor()
+            .unwrap_or_else(|| self.pointer.get())
     }
 
     fn move_pointer(&self, x: i32, y: i32) -> Result<(), String> {
@@ -142,7 +187,14 @@ impl Desktop for WaylandDesktop {
         Ok(())
     }
 
-    fn button(&self, button: Button, down: bool, x: i32, y: i32, _clicks: u32) -> Result<(), String> {
+    fn button(
+        &self,
+        button: Button,
+        down: bool,
+        x: i32,
+        y: i32,
+        _clicks: u32,
+    ) -> Result<(), String> {
         self.move_pointer(x, y)?;
         let code = match button {
             Button::Left => uinput::BTN_LEFT,
@@ -235,17 +287,32 @@ impl Accessibility for WaylandDesktop {
         self.atspi().map(|_| ())
     }
 
-    fn snapshot(&self, window: &WindowInfo, include_noninteractive: bool, limit: usize) -> Result<Vec<Node>, String> {
-        self.atspi()?.snapshot(window, include_noninteractive, limit)
+    fn snapshot(
+        &self,
+        window: &WindowInfo,
+        include_noninteractive: bool,
+        limit: usize,
+    ) -> Result<Vec<Node>, String> {
+        self.atspi()?
+            .snapshot(window, include_noninteractive, limit)
     }
 
     fn focused_masked(&self) -> bool {
         let Ok(atspi) = self.atspi() else { return true };
-        let Some(window) = self.info(self.foreground()) else { return true };
-        atspi.frame_for(&window).map_or(true, |frame| atspi.focused_masked(&frame))
+        let Some(window) = self.info(self.foreground()) else {
+            return true;
+        };
+        atspi
+            .frame_for(&window)
+            .map_or(true, |frame| atspi.focused_masked(&frame))
     }
 
-    fn invoke_menu(&self, window: &WindowInfo, path: &[String], authorize: &dyn Fn() -> Result<(), String>) -> Result<MenuOutcome, String> {
+    fn invoke_menu(
+        &self,
+        window: &WindowInfo,
+        path: &[String],
+        authorize: &dyn Fn() -> Result<(), String>,
+    ) -> Result<MenuOutcome, String> {
         self.atspi()?.invoke_menu(window, path, authorize)
     }
 }

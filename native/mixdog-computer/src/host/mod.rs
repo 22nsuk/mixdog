@@ -10,7 +10,7 @@ use crate::config::Config;
 use crate::keys::Mod;
 use crate::obj;
 use crate::observer::{now_ms, Observer, Scope};
-use crate::platform::{self, parse_window_id, window_id, Button, Desktop, WindowInfo, Wid};
+use crate::platform::{self, parse_window_id, window_id, Button, Desktop, Wid, WindowInfo};
 use crate::protocol::{write_line, Obj, Req, POINTER_MARKER, RESPONSE_MARKER};
 use crate::session::Session;
 use serde_json::{json, Value};
@@ -119,7 +119,9 @@ impl Host {
             }
             _ => (0, None),
         };
-        let wants_feedback = req.as_ref().is_some_and(|req| req.bool_true("pointer_feedback"));
+        let wants_feedback = req
+            .as_ref()
+            .is_some_and(|req| req.bool_true("pointer_feedback"));
         {
             let mut feedback = self.feedback.borrow_mut();
             feedback.id = id;
@@ -165,7 +167,10 @@ impl Host {
 
     fn handle(&self, req: &Req) -> Res<Obj> {
         let session_key = req.str("session_id").unwrap_or_else(|| "default".into());
-        self.sessions.borrow_mut().entry(session_key.clone()).or_default();
+        self.sessions
+            .borrow_mut()
+            .entry(session_key.clone())
+            .or_default();
         *self.current.borrow_mut() = session_key;
         *self.request.borrow_mut() = req.clone();
         self.authorize(req, 0)?;
@@ -177,8 +182,13 @@ impl Host {
         let input_scope = req.delivery_foreground() && !read;
         if input_scope {
             let mut scope = self.scope.borrow_mut();
-            match (req.str("observed_input_monitor_id"), req.int("observed_input_user_sequence")) {
-                (Some(generation), Some(sequence)) => scope.begin_expected(&self.observer, &generation, sequence)?,
+            match (
+                req.str("observed_input_monitor_id"),
+                req.int("observed_input_user_sequence"),
+            ) {
+                (Some(generation), Some(sequence)) => {
+                    scope.begin_expected(&self.observer, &generation, sequence)?
+                }
                 _ => scope.begin(&self.observer)?,
             }
         }
@@ -200,10 +210,14 @@ impl Host {
                 if req.delivery_foreground() {
                     self.click_family(req, "click")
                 } else {
-                    self.background_semantic(req, "release", |host| host.do_invoke(req, false).map(Option::unwrap_or_default))
+                    self.background_semantic(req, "release", |host| {
+                        host.do_invoke(req, false).map(Option::unwrap_or_default)
+                    })
                 }
             }
-            "set_value" => self.background_semantic(req, "type", |host| host.do_set_value(req, &req.text("text"))),
+            "set_value" => self.background_semantic(req, "type", |host| {
+                host.do_set_value(req, &req.text("text"))
+            }),
             "toggle" => self.background_semantic(req, "release", |host| host.do_toggle(req)),
             "click" => self.click_family(req, "click"),
             "double_click" => self.click_family(req, "double"),
@@ -242,7 +256,9 @@ impl Host {
             "launch" => self.launch(req),
             "list_installed_apps" => self.list_installed_apps(req),
             "release_session" => self.release_session(),
-            "release_cursor_theme" => Ok(obj! { "text" => "cursor theme released", "system_theme_restored" => false }),
+            "release_cursor_theme" => {
+                Ok(obj! { "text" => "cursor theme released", "system_theme_restored" => false })
+            }
             other => Err(format!("unknown action: {other}")),
         }
     }
@@ -270,18 +286,26 @@ impl Host {
                 .map(|elapsed| elapsed.as_millis() as i64)
                 .unwrap_or(i64::MAX);
             if now >= expires {
-                return Err("computer_policy_expired: authorization expired before native dispatch".into());
+                return Err(
+                    "computer_policy_expired: authorization expired before native dispatch".into(),
+                );
             }
         }
         if let Some(pid) = req.int("authorization_pid") {
             let expected = parse_window_id(&req.text("authorization_window_id"));
             let requested = parse_window_id(&req.text("window_id"));
             if expected == 0 || requested != expected || (actual != 0 && actual != expected) {
-                return Err("computer_policy_denied: native target is outside the authorization".into());
+                return Err(
+                    "computer_policy_denied: native target is outside the authorization".into(),
+                );
             }
             match self.desktop.info(expected) {
                 Some(info) if info.pid == pid => {}
-                _ => return Err("computer_policy_denied: native target process identity changed".into()),
+                _ => {
+                    return Err(
+                        "computer_policy_denied: native target process identity changed".into(),
+                    )
+                }
             }
         }
         Ok(())
@@ -295,7 +319,10 @@ impl Host {
     // --- windows -------------------------------------------------------------
 
     fn resolve_window(&self, req: &Req) -> Res<WindowInfo> {
-        self.resolve_window_parts(req.str("window").as_deref(), req.str("window_id").as_deref())
+        self.resolve_window_parts(
+            req.str("window").as_deref(),
+            req.str("window_id").as_deref(),
+        )
     }
 
     fn resolve_window_parts(&self, title: Option<&str>, id: Option<&str>) -> Res<WindowInfo> {
@@ -323,7 +350,10 @@ impl Host {
         }
         if exact.len() > 1 {
             let ids: Vec<String> = exact.iter().map(|info| info.id()).collect();
-            return Err(format!("window title is ambiguous: {title} (ids: {}); use window_id", ids.join(" | ")));
+            return Err(format!(
+                "window title is ambiguous: {title} (ids: {}); use window_id",
+                ids.join(" | ")
+            ));
         }
         let partial: Vec<&WindowInfo> = windows
             .iter()
@@ -333,7 +363,10 @@ impl Host {
             return Ok(partial[0].clone());
         }
         if partial.len() > 1 {
-            let candidates: Vec<String> = partial.iter().map(|info| format!("{} {}", info.id(), info.title)).collect();
+            let candidates: Vec<String> = partial
+                .iter()
+                .map(|info| format!("{} {}", info.id(), info.title))
+                .collect();
             return Err(format!(
                 "window title is ambiguous: {title} (matches: {}); use window_id",
                 candidates.join(" | ")
@@ -404,8 +437,24 @@ impl Host {
         }
     }
 
-    fn background_unavailable(&self, action: &str, message: &str, window: Option<String>, code: &str, may_have_executed: bool) -> Obj {
-        let mut result = self.action_result(action, "none", "suspected_noop", false, message, Some(code), "background", window);
+    fn background_unavailable(
+        &self,
+        action: &str,
+        message: &str,
+        window: Option<String>,
+        code: &str,
+        may_have_executed: bool,
+    ) -> Obj {
+        let mut result = self.action_result(
+            action,
+            "none",
+            "suspected_noop",
+            false,
+            message,
+            Some(code),
+            "background",
+            window,
+        );
         if may_have_executed {
             result.insert("delivery_accepted".into(), Value::Null);
             result.insert("effect".into(), json!("unverifiable"));
@@ -415,7 +464,13 @@ impl Host {
     }
 
     /// A failed background delivery, classified by the code its error names.
-    fn background_failure(&self, action: &str, error: &str, window: Option<String>, prior_input: bool) -> Res<Obj> {
+    fn background_failure(
+        &self,
+        action: &str,
+        error: &str,
+        window: Option<String>,
+        prior_input: bool,
+    ) -> Res<Obj> {
         if error.contains("input_cleanup_unconfirmed:") {
             return Err("input_cleanup_unconfirmed: background input release was not acknowledged; do not replay input".into());
         }
@@ -437,7 +492,13 @@ impl Host {
                 break;
             }
         }
-        Ok(self.background_unavailable(action, &detail, window, code, prior_input || code != "background_unsupported"))
+        Ok(self.background_unavailable(
+            action,
+            &detail,
+            window,
+            code,
+            prior_input || code != "background_unsupported",
+        ))
     }
 
     // --- pointer feedback ----------------------------------------------------
@@ -486,7 +547,9 @@ impl Host {
         if let Some(dispatch) = self.dispatch.get() {
             self.authorize_current(dispatch.target)?;
             if dispatch.ready && self.desktop.foreground() != dispatch.target {
-                return Err("foreground_changed: target lost foreground before input dispatch".into());
+                return Err(
+                    "foreground_changed: target lost foreground before input dispatch".into(),
+                );
             }
         }
         self.scope.borrow().assert_continue(&self.observer)
@@ -526,13 +589,24 @@ impl Host {
         let message = format!(
             "the user is actively using the mouse or keyboard; {action} waited {seconds}s and sent no input. Capture fresh state and retry once the user pauses"
         );
-        self.action_result(action, "foreground", "suspected_noop", false, &message, Some("user_input_active"), "foreground", window)
+        self.action_result(
+            action,
+            "foreground",
+            "suspected_noop",
+            false,
+            &message,
+            Some("user_input_active"),
+            "foreground",
+            window,
+        )
     }
 
     fn fg_move(&self, x: i32, y: i32) -> Res<()> {
         self.assert_continue()?;
         self.mark_own();
-        self.desktop.move_pointer(x, y).map_err(|error| format!("input_delivery_failed: pointer movement was rejected: {error}"))
+        self.desktop.move_pointer(x, y).map_err(|error| {
+            format!("input_delivery_failed: pointer movement was rejected: {error}")
+        })
     }
 
     fn assert_cursor_at(&self, x: i32, y: i32) -> Res<()> {
@@ -546,8 +620,13 @@ impl Host {
 
     fn assert_drag_target(&self, target: Wid, x: i32, y: i32) -> Res<()> {
         let hit = self.desktop.window_at_point(x, y);
-        if !self.is_window(target) || self.desktop.foreground() != target || (hit != target && !self.is_contained(hit, target)) {
-            return Err("target_mismatch|drag target changed; observe fresh state before retrying".into());
+        if !self.is_window(target)
+            || self.desktop.foreground() != target
+            || (hit != target && !self.is_contained(hit, target))
+        {
+            return Err(
+                "target_mismatch|drag target changed; observe fresh state before retrying".into(),
+            );
         }
         Ok(())
     }
@@ -558,7 +637,9 @@ impl Host {
         self.assert_continue()?;
         let (sx, sy) = self.desktop.cursor();
         let distance = (((x - sx) as f64).powi(2) + ((y - sy) as f64).powi(2)).sqrt();
-        let steps = ((distance * 0.25).clamp(240.0, 650.0) / 16.0).ceil().max(1.0) as i32;
+        let steps = ((distance * 0.25).clamp(240.0, 650.0) / 16.0)
+            .ceil()
+            .max(1.0) as i32;
         for step in 1..=steps {
             self.assert_continue()?;
             self.assert_drag_target(target, x, y)?;
@@ -629,7 +710,11 @@ impl Host {
         let mut release_failed = false;
         for modifier in pressed.iter().rev() {
             self.mark_own();
-            if self.desktop.key(crate::keys::Key::Mod(*modifier), false).is_err() {
+            if self
+                .desktop
+                .key(crate::keys::Key::Mod(*modifier), false)
+                .is_err()
+            {
                 release_failed = true;
             }
         }
@@ -642,9 +727,24 @@ impl Host {
     /// The whole foreground protocol around one input body: wait for the user
     /// to pause, bring the exact target forward, dispatch under observation,
     /// and report what can and cannot be known about the result.
-    fn foreground_input(&self, target: Wid, action: &str, pointer_may_activate: bool, body: &mut dyn FnMut() -> Res<()>) -> Res<Obj> {
+    fn foreground_input(
+        &self,
+        target: Wid,
+        action: &str,
+        pointer_may_activate: bool,
+        body: &mut dyn FnMut() -> Res<()>,
+    ) -> Res<Obj> {
         if !self.is_window(target) {
-            return Ok(self.action_result(action, "foreground", "suspected_noop", false, &format!("{action} target window is invalid"), Some("target_required"), "foreground", None));
+            return Ok(self.action_result(
+                action,
+                "foreground",
+                "suspected_noop",
+                false,
+                &format!("{action} target window is invalid"),
+                Some("target_required"),
+                "foreground",
+                None,
+            ));
         }
         let id = Some(window_id(target));
         let Some(user_wait_ms) = self.wait_user_input_idle() else {
@@ -652,19 +752,46 @@ impl Host {
         };
         self.authorize_current(target)?;
         if user_wait_ms > 0 {
-            return Ok(self.action_result(action, "foreground", "suspected_noop", false, "user input occurred after observation; capture fresh state before acting", Some("user_input_active"), "foreground", id));
+            return Ok(self.action_result(
+                action,
+                "foreground",
+                "suspected_noop",
+                false,
+                "user input occurred after observation; capture fresh state before acting",
+                Some("user_input_active"),
+                "foreground",
+                id,
+            ));
         }
         let previous = self.desktop.foreground();
         self.remember_focus_origin(previous, target);
         self.scope.borrow_mut().begin(&self.observer)?;
-        let prior_dispatch = self.dispatch.replace(Some(Dispatch { target, ready: false }));
-        let outcome = self.foreground_body(target, action, pointer_may_activate, previous, user_wait_ms, body);
+        let prior_dispatch = self.dispatch.replace(Some(Dispatch {
+            target,
+            ready: false,
+        }));
+        let outcome = self.foreground_body(
+            target,
+            action,
+            pointer_may_activate,
+            previous,
+            user_wait_ms,
+            body,
+        );
         self.dispatch.set(prior_dispatch);
         self.scope.borrow_mut().end();
         outcome
     }
 
-    fn foreground_body(&self, target: Wid, action: &str, pointer_may_activate: bool, previous: Wid, user_wait_ms: u64, body: &mut dyn FnMut() -> Res<()>) -> Res<Obj> {
+    fn foreground_body(
+        &self,
+        target: Wid,
+        action: &str,
+        pointer_may_activate: bool,
+        previous: Wid,
+        user_wait_ms: u64,
+        body: &mut dyn FnMut() -> Res<()>,
+    ) -> Res<Obj> {
         let id = Some(window_id(target));
         let input_continues = self.current_request().bool_true("input_continues");
         let mut phase_clock = now_ms();
@@ -677,22 +804,46 @@ impl Host {
         self.assert_continue()?;
         let focused = self.desktop.focus(target);
         if !focused && !pointer_may_activate {
-            return Ok(self.action_result(action, "foreground", "suspected_noop", false, "the target window could not be activated; no input was sent", Some("foreground_unavailable"), "foreground", id));
+            return Ok(self.action_result(
+                action,
+                "foreground",
+                "suspected_noop",
+                false,
+                "the target window could not be activated; no input was sent",
+                Some("foreground_unavailable"),
+                "foreground",
+                id,
+            ));
         }
         if focused && previous != target {
             sleep_ms(120);
         }
         if focused && self.desktop.foreground() != target {
-            return Ok(self.action_result(action, "foreground", "suspected_noop", false, "foreground changed before input dispatch; no input was sent", Some("foreground_changed"), "foreground", id));
+            return Ok(self.action_result(
+                action,
+                "foreground",
+                "suspected_noop",
+                false,
+                "foreground changed before input dispatch; no input was sent",
+                Some("foreground_changed"),
+                "foreground",
+                id,
+            ));
         }
-        self.dispatch.set(Some(Dispatch { target, ready: true }));
+        self.dispatch.set(Some(Dispatch {
+            target,
+            ready: true,
+        }));
         mark("activation_ms", &mut phases);
         self.assert_continue()?;
         self.authorize_current(target)?;
         mark("cursor_theme_ms", &mut phases);
         let mut cursor_feedback = obj! { "system_theme_applied" => false, "system_theme_restored" => false, "pointer_moved" => false };
         if matches!(action, "key" | "type" | "key_down" | "key_up") {
-            let masked = self.desktop.accessibility().map_or(true, |a11y| a11y.focused_masked());
+            let masked = self
+                .desktop
+                .accessibility()
+                .map_or(true, |a11y| a11y.focused_masked());
             cursor_feedback.insert("focus_masked".into(), json!(masked));
         }
         let before = self.desktop.cursor();
@@ -714,9 +865,16 @@ impl Host {
                 session.last_focus = target;
             }
         });
-        let path = if focused { "foreground_sendinput" } else { "foreground_pointer_activation" };
+        let path = if focused {
+            "foreground_sendinput"
+        } else {
+            "foreground_pointer_activation"
+        };
         let mut result = self.action_result(action, path, "unverifiable", false, &format!("{action} input dispatched; inspect the fresh capture before treating it as complete"), None, "foreground", id);
-        result.insert("injection_tick".into(), json!(self.observer.read().own_tick));
+        result.insert(
+            "injection_tick".into(),
+            json!(self.observer.read().own_tick),
+        );
         result.insert("cursor_feedback".into(), Value::Object(cursor_feedback));
         result.insert("foreground_phase_ms".into(), Value::Object(phases));
         if user_wait_ms > 0 {
@@ -736,7 +894,12 @@ pub fn parse_modifiers(value: &str) -> Res<Vec<Mod>> {
             "shift" => Mod::Shift,
             "alt" | "option" => Mod::Alt,
             "win" | "super" | "cmd" | "command" | "meta" => Mod::Super,
-            other => return Err(format!("unknown modifier: {other} (use ctrl, shift, alt, {})", super_name())),
+            other => {
+                return Err(format!(
+                    "unknown modifier: {other} (use ctrl, shift, alt, {})",
+                    super_name()
+                ))
+            }
         };
         if !modifiers.contains(&modifier) {
             modifiers.push(modifier);

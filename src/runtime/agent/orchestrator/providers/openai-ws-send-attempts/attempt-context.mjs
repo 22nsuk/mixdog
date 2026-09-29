@@ -3,6 +3,7 @@
  * WS send, plus the surface/backoff primitives both failure resolvers use.
  */
 import { performance } from 'node:perf_hooks';
+import { retryAfterMsFromError } from '../retry-classifier.mjs';
 import { _sleepWithAbort, MIDSTREAM_WS_TRANSIENT_RETRY_LIMIT, midstreamBackoffFor, tag } from './policy.mjs';
 
 export function createAttemptContext(deps) {
@@ -29,10 +30,12 @@ export function createAttemptContext(deps) {
     sendSpan.emit('error', target);
     return stampAll(err);
   };
-  const backoff = async (retryNumber) => {
+  // Server advice (Retry-After, or a typed rate limit's "try again in")
+  // replaces the local curve, like the reference client's retry deadline.
+  const backoff = async (retryNumber, err = null) => {
     const sleepStart = performance.now();
     try {
-      await _sleepWithAbort(midstreamBackoffFor(retryNumber), externalSignal, sleepFn);
+      await _sleepWithAbort(retryAfterMsFromError(err) ?? midstreamBackoffFor(retryNumber), externalSignal, sleepFn);
     } catch (sleepErr) {
       sendSpan.retryBackoffMs += performance.now() - sleepStart;
       sendSpan.emit('error');

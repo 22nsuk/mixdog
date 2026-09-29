@@ -162,9 +162,15 @@ function pivotGrid({ fields, records, rowField, columnField, valueFields }) {
   }
   rows.push([rowField >= 0 ? fields[rowField].name : '', ...valueFields.map(heading)]);
   for (const label of rowLabels) {
-    rows.push([shown(rowField, label), ...valueFields.map((valueIndex) => sum(valueIndex, (record) => inRow(record, label)))]);
+    rows.push([
+      shown(rowField, label),
+      ...valueFields.map((valueIndex) => sum(valueIndex, (record) => inRow(record, label))),
+    ]);
   }
-  rows.push([rowField >= 0 ? GRAND_TOTAL : captions.total, ...valueFields.map((valueIndex) => sum(valueIndex, () => true))]);
+  rows.push([
+    rowField >= 0 ? GRAND_TOTAL : captions.total,
+    ...valueFields.map((valueIndex) => sum(valueIndex, () => true)),
+  ]);
   return rows;
 }
 
@@ -249,6 +255,8 @@ function pivotTableXml({ name, cacheId, fields, rowField, columnField, valueFiel
     // The row header names its field, as the cells written here do; a refresh otherwise prints "Row Labels"
     // (행 레이블) over the regions.
     (rowField >= 0 ? ` rowHeaderCaption="${xmlEncode(fields[rowField].name)}"` : '') +
+    // The column header too: a refresh otherwise prints "Column Labels" (열 레이블) over the months.
+    (columnField >= 0 ? ` colHeaderCaption="${xmlEncode(fields[columnField].name)}"` : '') +
     ' applyNumberFormats="0" applyBorderFormats="0" applyFontFormats="0" applyPatternFormats="0"' +
     ' applyAlignmentFormats="0" applyWidthHeightFormats="1" updatedVersion="8" minRefreshableVersion="3"' +
     ' useAutoFormatting="1" itemPrintTitles="1" createdVersion="8" indent="0" outline="1" outlineData="1"' +
@@ -362,5 +370,12 @@ export async function writePivotTable(
 
   // The first row of a pivot with a column field holds two cells (the value heading and the field's name); the widest
   // row is the grid's width.
-  return { definitionPart, recordsPart, tablePart, cacheId, rows: grid.length, columns: Math.max(0, ...grid.map((row) => row.length)) };
+  return {
+    definitionPart,
+    recordsPart,
+    tablePart,
+    cacheId,
+    rows: grid.length,
+    columns: Math.max(0, ...grid.map((row) => row.length)),
+  };
 }

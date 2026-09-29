@@ -21,7 +21,12 @@ import { shouldRecreateEmptySessionForRouteChange } from '../src/session-runtime
 import { createSessionTurnApi } from '../src/session-runtime/session-turn-api.mjs';
 import { createTagRegistry } from '../src/standalone/agent-tool/tag-registry.mjs';
 import { WORKER_INDEX_FILE } from '../src/standalone/agent-tool/tool-def.mjs';
-import { presentErrorText, providerRetryStatusText, isCancelLikeError } from '../src/runtime/shared/err-text.mjs';
+import {
+  presentErrorText,
+  retryReasonText,
+  retryStatusLine,
+  isCancelLikeError,
+} from '../src/runtime/shared/err-text.mjs';
 import { finalizeTurnInterruptionSnapshot } from '../src/runtime/agent/orchestrator/session/manager/turn-interruption.mjs';
 import { toolErrorDisplay as frameToolError } from '../src/tui/session/tool-result-text.mjs';
 import { createContextState } from '../src/tui/session/context-state.mjs';
@@ -65,7 +70,8 @@ test('provider failures expose concise capacity, session-state, and retry reason
     'Anthropic quota/rate limit hit; retry after 2d 11h 37m.'
   );
   assert.equal(
-    providerRetryStatusText(new Error('first byte timed out after 60000ms'), {
+    retryStatusLine({
+      reason: retryReasonText(new Error('first byte timed out after 60000ms')),
       attempt: 3,
       maxAttempts: 5,
       delayMs: 2_000,

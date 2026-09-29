@@ -18,23 +18,26 @@ const schema = {
   defer_loading: true,
   parameters: { type: 'object', properties: { action: { type: 'string' } }, required: ['action'] },
 };
-const call = nativeToolSearchCallFromArguments('skill-call', { name: 'deck-guide' });
+const call = nativeToolSearchCallFromArguments('load-call', { names: ['office'] });
 const responseItem = { type: 'tool_search_call', call_id: call.id, execution: 'client', arguments: call.arguments };
 const result = {
   role: 'tool',
   toolCallId: call.id,
-  content: 'Required tools loaded: office',
+  content: 'Loaded deferred tools: office',
   nativeToolSearch: { provider: 'openai-oauth', openaiTools: [schema], toolReferences: ['office'] },
 };
 
-test('Responses presents one actual loader for skills and tools without changing non-native providers', () => {
+test('Responses keeps Skill a separate function tool beside the native loader', () => {
   const tools = [SKILL_TOOL, TOOL_SEARCH_TOOL];
   const body = buildRequestBody([], 'gpt-6-astra', tools, { sessionId: 'skill-test' });
-  assert.equal(body.tools.length, 1);
-  assert.equal(body.tools[0].type, 'tool_search');
-  assert.equal(body.tools[0].execution, 'client');
-  assert.deepEqual(body.tools[0].parameters.properties.name, SKILL_TOOL.inputSchema.properties.name);
-  assert.deepEqual(body.tools[0].parameters.properties.names, TOOL_SEARCH_TOOL.inputSchema.properties.names);
+  assert.deepEqual(
+    body.tools.map((tool) => [tool.type, tool.name]),
+    [
+      ['function', 'Skill'],
+      ['tool_search', undefined],
+    ]
+  );
+  assert.equal(Object.hasOwn(body.tools[1].parameters.properties, 'name'), false);
   assert.deepEqual(toResponsesTools(tools, { provider: 'openai' }), body.tools);
   assert.deepEqual(
     toResponsesTools(tools, { provider: 'xai' }).map((tool) => [tool.type, tool.name]),
@@ -43,12 +46,10 @@ test('Responses presents one actual loader for skills and tools without changing
       ['function', 'load_tool'],
     ]
   );
-  assert.equal(buildRequestBody([], 'gpt-6-astra', [SKILL_TOOL], {}).tools[0].type, 'tool_search');
-  const loaderOnly = buildRequestBody([], 'gpt-6-astra', [TOOL_SEARCH_TOOL], {}).tools[0];
-  assert.equal(Object.hasOwn(loaderOnly.parameters.properties, 'name'), false);
+  assert.equal(buildRequestBody([], 'gpt-6-astra', [SKILL_TOOL], {}).tools[0].type, 'function');
 });
 
-test('a native skill call preserves its actual identity and remains a delta continuation after loading', () => {
+test('a native load_tool call preserves its actual identity and remains a delta continuation after loading', () => {
   const parsed = parseResponsesToolCalls({ output: [responseItem] });
   assert.deepEqual(parsed, [call]);
   const initial = [{ role: 'user', content: 'Create a deck.' }];
@@ -97,8 +98,8 @@ test('a native skill call preserves its actual identity and remains a delta cont
   }
 });
 
-test('missing and denied native skills return paired empty search results with visible errors', () => {
-  for (const error of ['Error: skill not found', 'Error: tool "Skill" denied by policy']) {
+test('missing and denied native loads return paired empty search results with visible errors', () => {
+  for (const error of ['Error: tool not found', 'Error: tool "load_tool" denied by policy']) {
     const input = convertMessagesToResponsesInput([
       { role: 'assistant', content: '', toolCalls: [call] },
       { role: 'tool', toolCallId: call.id, content: error },
@@ -112,21 +113,90 @@ test('missing and denied native skills return paired empty search results with v
   }
 });
 
-test('ordinary legacy Skill calls never fabricate a native search output', () => {
+const skillCall = { id: 'skill-call', name: 'Skill', arguments: { name: 'deck-guide' } };
+const skillResult = { ...result, toolCallId: skillCall.id, content: 'Loaded skill: deck-guide' };
+
+test('a Skill result loads its dependency schemas through a load pair after the whole batch', () => {
+  const readCall = { id: 'read-call', name: 'read', arguments: { path: 'a.md' } };
   const input = convertMessagesToResponsesInput([
-    { role: 'assistant', content: '', toolCalls: [{ id: call.id, name: 'Skill', arguments: call.arguments }] },
-    result,
+    { role: 'user', content: 'Create a deck.' },
+    { role: 'assistant', content: '', toolCalls: [skillCall, readCall] },
+    skillResult,
+    { role: 'tool', toolCallId: readCall.id, content: 'text' },
+  ]);
+  assert.deepEqual(
+    input.slice(1).map((item) => [item.type, item.call_id]),
+    [
+      ['function_call', 'skill-call'],
+      ['function_call', 'read-call'],
+      ['function_call_output', 'skill-call'],
+      ['function_call_output', 'read-call'],
+      ['tool_search_call', 'skill-call_load'],
+      ['tool_search_output', 'skill-call_load'],
+    ]
+  );
+  assert.equal(input[3].output, 'Loaded skill: deck-guide');
+  assert.deepEqual(input[5].arguments, { names: ['office'] });
+  assert.deepEqual(input[6].tools, [{ ...schema, strict: false }]);
+});
+
+test('a Skill result from another native family keeps the load hint without a pair', () => {
+  const input = convertMessagesToResponsesInput([
+    { role: 'assistant', content: '', toolCalls: [skillCall] },
+    { ...skillResult, nativeToolSearch: { ...skillResult.nativeToolSearch, provider: 'anthropic-oauth' } },
   ]);
   assert.equal(
     input.some((item) => item.type === 'tool_search_call' || item.type === 'tool_search_output'),
     false
   );
-  const output = input.find((item) => item.type === 'function_call_output');
-  assert.equal(output.call_id, call.id);
-  assert.match(output.output, /tool_search with names:\["office"\]/);
+  assert.match(input.find((item) => item.type === 'function_call_output').output, /tool_search with names:\["office"\]/);
 });
 
-test('all Responses streaming transports dispatch the same native Skill call exactly once', async () => {
+test('a Skill load pair keeps the next request a delta continuation', () => {
+  const skillItem = { type: 'function_call', call_id: skillCall.id, name: 'Skill', arguments: '{"name":"deck-guide"}' };
+  const initial = [{ role: 'user', content: 'Create a deck.' }];
+  const assistant = {
+    role: 'assistant',
+    content: '',
+    toolCalls: [skillCall],
+    providerReplay: createProviderReplay('openai-responses', [skillItem]),
+  };
+  const tools = [SKILL_TOOL, TOOL_SEARCH_TOOL];
+  const opts = { sessionId: 'skill-test' };
+  const before = buildRequestBody(initial, 'gpt-6-astra', tools, opts);
+  const after = buildRequestBody([...initial, assistant, skillResult], 'gpt-6-astra', tools, opts);
+  assert.deepEqual(after.tools, before.tools);
+  assert.equal(after.prompt_cache_key, before.prompt_cache_key);
+  assert.deepEqual(after.input.slice(0, before.input.length), before.input);
+  const previous = process.env.MIXDOG_OAI_TRANSPORT;
+  process.env.MIXDOG_OAI_TRANSPORT = 'ws-delta';
+  try {
+    const delta = _computeDelta({
+      traceProvider: 'openai-oauth',
+      body: after,
+      entry: {
+        lastResponseId: 'previous-response',
+        lastRequestInput: before.input,
+        lastRequestSansInput: _stableStringify(_sansInput(before, { normalizeWarmupGenerate: true })),
+        lastResponseItems: [skillItem],
+      },
+    });
+    assert.equal(delta.mode, 'delta');
+    assert.deepEqual(
+      delta.frame.input.map((item) => [item.type, item.call_id]),
+      [
+        ['function_call_output', 'skill-call'],
+        ['tool_search_call', 'skill-call_load'],
+        ['tool_search_output', 'skill-call_load'],
+      ]
+    );
+  } finally {
+    if (previous === undefined) delete process.env.MIXDOG_OAI_TRANSPORT;
+    else process.env.MIXDOG_OAI_TRANSPORT = previous;
+  }
+});
+
+test('all Responses streaming transports dispatch the same native load_tool call exactly once', async () => {
   const events = [
     { type: 'response.created', response: { id: 'skill-response', model: 'gpt-6-astra' } },
     { type: 'response.output_item.added', item: responseItem },

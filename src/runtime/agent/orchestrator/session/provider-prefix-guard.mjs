@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { hasPlainPrototype } from '../../../shared/object.mjs';
 
 const COMPACTION_INTENTS = new Set([
   'automatic_compaction',
@@ -29,11 +30,6 @@ const ARRAY_TOKEN = {};
 // Plain objects/arrays whose JSON form is fully determined by own enumerable
 // keys and primitives; anything else (Buffer, Date, class instances, toJSON
 // hooks, functions) keeps being hashed on every request.
-function isPlainObject(value) {
-  const proto = Object.getPrototypeOf(value);
-  return proto === Object.prototype || proto === null;
-}
-
 function recordShape(value, tokens) {
   if (value === null || typeof value !== 'object') {
     if (typeof value === 'function') return false;
@@ -48,7 +44,7 @@ function recordShape(value, tokens) {
     }
     return true;
   }
-  if (!isPlainObject(value)) return false;
+  if (!hasPlainPrototype(value)) return false;
   const keys = Object.keys(value);
   tokens.push(OBJECT_TOKEN, keys.length);
   for (const key of keys) {
@@ -72,7 +68,7 @@ function matchShape(value, tokens, cursor) {
     }
     return next;
   }
-  if (tokens[cursor] !== OBJECT_TOKEN || !isPlainObject(value)) return -1;
+  if (tokens[cursor] !== OBJECT_TOKEN || !hasPlainPrototype(value)) return -1;
   // for-in visits own string keys in Object.keys order without allocating
   // the key array (this walk runs over every tool schema on every send).
   let count = 0;

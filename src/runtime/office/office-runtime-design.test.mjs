@@ -8,6 +8,7 @@ import JSZip from 'jszip';
 import { defaultRenderOutput } from './core/office-sessions.mjs';
 import { applyPdfDesign, expandOfficeDesignOperations, resolveOfficeDesign } from './design/design-system.mjs';
 import { summarizeOfficeCompositions } from './design/composition-system.mjs';
+import { wrapWords } from './design/xlsx/design-xlsx-components.mjs';
 import {
   canonicalOfficeDesignPack,
   indexOfficeTemplates,
@@ -580,6 +581,9 @@ test('a QA verdict reaches the model without repeated fields or raw page measure
       document: {
         format: 'xlsx',
         defaultStyle,
+        definedNameCount: 0,
+        definedNames: [],
+        calculation: { mode: '', fullCalcOnLoad: false, forceFullCalc: false },
         sheets: [
           {
             name: 'S',
@@ -593,6 +597,10 @@ test('a QA verdict reaches the model without repeated fields or raw page measure
     },
     { action: 'snapshot' }
   );
+  // No defined names and no calculation settings read the same absent.
+  assert.equal(book.document.definedNames, undefined);
+  assert.equal(book.document.definedNameCount, undefined);
+  assert.equal(book.document.calculation, undefined);
   assert.equal(book.document.sheets[0].cells[0].style, undefined);
   assert.equal(book.document.sheets[0].cells[1].style.numberFormat, '0.0%');
   assert.deepEqual(book.document.defaultStyle, defaultStyle);
@@ -1454,6 +1462,92 @@ test('a composed sheet charts one unit, lists insights by line, and leads with t
   assert.notEqual(valueStyle('1,100건').fillColor, valueStyle('3,400만 원').fillColor, 'the marked card leads');
 });
 
+// A card reading the table by name held no value while the columns were floored, and its headline "204,300건"
+// printed ###; the two insights stood in a band Excel sized by its first column, a hand tall.
+test('a composed card that reads the table is floored like the value it shows, and the insight band takes its lines', () => {
+  const expand = (metric) =>
+    expandOfficeDesignOperations({
+      format: 'xlsx',
+      backend: 'mixdog-ooxml',
+      created: true,
+      operations: [
+        {
+          op: 'compose_sheet',
+          sheet: 'Sheet1',
+          kind: 'dashboard',
+          title: '야간 처리량',
+          tableName: 'Hubs',
+          headers: ['권역', '처리량 (건)', '가동률'],
+          rows: [
+            ['수도권', 82400, 0.81],
+            ['부산', 71600, 0.94],
+            ['호남', 50300, 0.67],
+          ],
+          metrics: [{ label: '3분기 야간 처리량', numberFormat: '#,##0"건"', emphasis: true, ...metric }, { label: '가동률', value: 0.94, numberFormat: '0%' }],
+          insights: ['증가분의 절반 이상을 부산 허브가 받았습니다.', '부산 허브 가동률이 설계 한계를 넘었습니다.'],
+        },
+      ],
+    }).operations;
+  const floors = (ops) =>
+    ops.filter((entry) => entry.op === 'autofit_range' && entry.minWidth && /^[A-Z]+:[A-Z]+$/.test(entry.range)).map((entry) => `${entry.range}=${entry.minWidth}`);
+  const read = expand({ formula: '=SUM(Hubs[처리량 (건)])' });
+  assert.deepEqual(floors(read), floors(expand({ value: 204300 })));
+  const cell = read.find((entry) => entry.op === 'set_cell' && String(entry.value).startsWith('• 증가분')).cell;
+  const row = Number(/\d+$/.exec(cell)[0]);
+  const band = read.find((entry) => entry.op === 'set_row_height' && entry.row === row);
+  assert.ok(band && band.height >= 2 * 10.5 * 1.3, `the band holds both lines: ${JSON.stringify(band)}`);
+});
+
+// A table takes no space above itself: under a bullet list its header sat on the last item, 3 pt below it.
+test('a composed section leaves the paragraph gap between its list and the table or callout under it', () => {
+  const lastBulletAfter = (section) => {
+    const ops = expandOfficeDesignOperations({
+      format: 'docx',
+      backend: 'mixdog-ooxml',
+      created: true,
+      design: { profile: 'executive' },
+      operations: [{ op: 'compose_document', title: '운영 보고', sections: [{ heading: '현황', bullets: ['첫째', '둘째'], ...section }] }],
+    }).operations;
+    const bullets = ops.filter((entry) => entry.op === 'append_text' && entry.properties?.listKind === 'bullet');
+    return bullets.map((entry) => entry.properties.spacingAfter);
+  };
+  const [first, last] = lastBulletAfter({ table: [['권역', '물량'], ['부산', '4,200']] });
+  assert.equal(first, 3, 'items keep their tight step');
+  assert.ok(last > 3, `the last item leaves the paragraph gap: ${last}`);
+  assert.ok(lastBulletAfter({ callout: '증설을 승인합니다.' })[1] > 3);
+  assert.deepEqual(lastBulletAfter({}), [3, 3], 'a list the next heading follows keeps its step');
+});
+
+// A callout straight under a section table sat on the table's last rule: the 2 pt spacer after a table was all
+// that stood between the two boxes.
+test('a callout under a section table stands apart from it', () => {
+  const spacerAfterTable = (section) => {
+    const ops = expandOfficeDesignOperations({
+      format: 'docx',
+      backend: 'mixdog-ooxml',
+      created: true,
+      design: { profile: 'executive' },
+      operations: [
+        {
+          op: 'compose_document',
+          title: '운영 보고',
+          sections: [{ heading: '대안 비교', table: [['대안', '비용'], ['분류기 증설', '24억 원']], ...section }],
+        },
+      ],
+    }).operations;
+    const table = ops.findIndex((entry) => entry.op === 'add_table');
+    return ops.slice(table).find((entry) => entry.op === 'append_text' && entry.text === '\u00A0').properties
+      .spacingAfter;
+  };
+  assert.equal(spacerAfterTable({ callout: '분류기 증설만이 성수기 물량을 흡수합니다.' }), 10);
+  assert.equal(spacerAfterTable({}), 2, 'a table the next heading follows keeps its spacer');
+  assert.equal(
+    spacerAfterTable({ callout: '분류기 증설만이 성수기 물량을 흡수합니다.', source: '자료: 운영관리시스템' }),
+    2,
+    'the source line under the table stands between them'
+  );
+});
+
 // An executive dashboard with a decision printed "[object Object]" under an English "DECISION WINDOW" when the decision
 // came as { label, text }, ran its panel thirteen columns wide beside a four-column table with the chart held to the
 // table, floored only the columns under the widest card (7월 narrow, 8월 and 9월 wide), and kept "+18%" as text.
@@ -1719,6 +1813,88 @@ test('a composed sheet keeps its chart inside the print area', () => {
   );
 });
 
+// A dashboard beside its decision panel runs its metric cards over the panel's columns, as every band under them runs:
+// held to the table, the cards left the page's top right bare above the panel. The table keeps its card floors.
+test('a dashboard with a decision panel runs its metric cards over the panel', () => {
+  const ops = expandOfficeDesignOperations({
+    format: 'xlsx',
+    backend: 'mixdog-ooxml',
+    created: true,
+    operations: [
+      {
+        op: 'compose_sheet',
+        sheet: 'Sheet1',
+        kind: 'dashboard',
+        title: '야간 처리량',
+        headers: ['권역', '처리량 (건)', '가동률'],
+        rows: [
+          ['수도권', 82400, 0.81],
+          ['부산', 71600, 0.94],
+        ],
+        metrics: [
+          { value: '154,000건', label: '처리량' },
+          { value: '94%', label: '가동률' },
+          { value: '1.2%', label: '지연률' },
+        ],
+        decision: '부산 허브 증설을 승인해 주십시오.',
+      },
+    ],
+  }).operations;
+  const rightEdge = (text) => {
+    const cell = ops.find((entry) => entry.op === 'set_cell' && String(entry.value).startsWith(text)).cell;
+    return /:([A-Z]+)\d+$/.exec(ops.find((entry) => entry.op === 'merge_cells' && entry.range.startsWith(`${cell}:`)).range)[1];
+  };
+  // The last card, found by its label (its figure is written as a number under its format).
+  assert.equal(rightEdge('지연률'), rightEdge('부산 허브 증설'), 'the last card ends where the panel ends');
+  const floors = ops.filter((entry) => entry.op === 'autofit_range' && entry.minWidth && /^([A-Z]+):\1$/.test(entry.range));
+  assert.ok(floors.length > 0, 'the table columns keep their card floors');
+});
+
+// A composed sheet cites its source as add_provenance does, in the copy's language, and a source written with its
+// own label keeps it: the note read "Source: 자료: 운영관리시스템", an English label in front of the caller's.
+test('a composed sheet cites its source in the copy language without a second label', () => {
+  const note = (source) =>
+    expandOfficeDesignOperations({
+      format: 'xlsx',
+      backend: 'mixdog-ooxml',
+      created: true,
+      operations: [
+        {
+          op: 'compose_sheet',
+          sheet: 'Sheet1',
+          kind: 'dashboard',
+          title: '야간 처리량',
+          source,
+          headers: ['권역', '처리량 (건)'],
+          rows: [['수도권', 82400]],
+        },
+      ],
+    }).operations.find((entry) => entry.op === 'add_note')?.text;
+  assert.equal(note('자료: 운영관리시스템, 9월 30일 마감'), '자료: 운영관리시스템, 9월 30일 마감');
+  assert.equal(note('운영관리시스템'), '출처: 운영관리시스템');
+  assert.equal(note('Operations system'), 'Source: Operations system');
+});
+
+// A composed band is broken between words, and words that read as one stay together: a decision read
+// "…을 10월 / 14일 투자심의에서" across Excel's lines.
+test('a composed band breaks between words but never inside a date, a fraction, or a sum', () => {
+  for (const text of [
+    '부산 허브 분류기 증설(24억 원)을 10월 14일 투자심의에서 3분의 1 이상 승인해 주십시오.',
+    '제휴 카페는 이용료로 한 달 12만 6천 원을 아끼고, 본사는 1억 3,500만 원의 월 매출을 낸다.',
+  ]) {
+    for (const width of [160, 200, 240, 280, 320, 360]) {
+      const lines = wrapWords(text, 15, width).split('\n');
+      assert.equal(lines.join(' '), text, `${width}: only spaces break`);
+      assert.ok(!lines.some((line) => /(?:\d월|\d분의|\d억|\d만)$/.test(line)), `${width}: ${lines.join(' / ')}`);
+    }
+  }
+  // A band never ends on one word alone under a full line: the word before it comes along, the lines stay two.
+  assert.equal(
+    wrapWords('야간 처리량 34% 증가, 부산 허브 증설이 필요합니다', 10, 300),
+    '야간 처리량 34% 증가, 부산 허브\n증설이 필요합니다'
+  );
+});
+
 test('a composed report sheet keeps its decision, gates, and actions under the table, in the copy language', () => {
   const expanded = expandOfficeDesignOperations({
     format: 'xlsx',
@@ -1742,9 +1918,12 @@ test('a composed report sheet keeps its decision, gates, and actions under the t
     design: {},
   });
   const cells = expanded.operations.filter((entry) => entry.op === 'set_cell');
-  const at = (text) => cells.find((entry) => entry.value === text);
+  // A long decision is broken into lines between its words, never inside one: Excel broke "주십 / 시오." at a
+  // syllable. Joined at its breaks it reads as written.
+  const at = (text) => cells.find((entry) => String(entry.value).split('\n').join(' ') === text);
   const decision = at('2대 증차를 승인해 주십시오. 대기 시간이 18분에서 7분으로 줄어듭니다.');
   assert.ok(decision, 'the decision is on the sheet');
+  assert.match(decision.value, /\n/, 'the decision is broken into lines at its spaces');
   // Under the table (rows through 3 hold the title band and the table's header and two rows), from column A.
   const [, column, row] = /^([A-Z]+)(\d+)$/.exec(decision.cell);
   assert.equal(column, 'A');
@@ -2625,6 +2804,8 @@ test('use_template_page reads the bundled template by its sidecar roles', async 
   assert.equal(charted.templateData?.length, 1, JSON.stringify(charted.templateData));
   const [kept] = charted.templateData;
   assert.deepEqual([kept.slide, kept.holds, kept.replaceWith], [3, 'chart', 'set_chart_data']);
+  // Its title is the template's words too, and new numbers alone keep it: the record names it for the caller.
+  assert.equal(kept.title, 'Workstream time · seconds');
   const after = await office({ action: 'snapshot', session: opened.session });
   assert.ok(after.document.slides[2].shapes.find((shape) => shape.index === kept.shape)?.chart, 'the named shape is the chart');
   // Its series take their colours from the theme (accent1, accent2): new data keeps them, resolved through the
@@ -2651,6 +2832,86 @@ test('use_template_page reads the bundled template by its sidecar roles', async 
   const title = /<c:title>[\s\S]*?<\/c:title>/.exec(chartXml)[0];
   assert.match(title, /월별 결정 시간 \(일\)/);
   assert.match(title, /sz="1862" b="0"/);
+});
+
+// A new title is words in the chart's own title block. Rebuilt for it, a template's bar chart turned its categories
+// over — PowerPoint's copy of the same page kept them — and redrew its legend in the runtime's own treatment.
+test('new numbers and a title keep a template chart as it stands but for its words', async (t) => {
+  const cwd = await workspace(t);
+  const office = async (args) => {
+    const raw = await executeOfficeTool(args, { cwd });
+    if (raw.isError) throw new Error(raw.content[0].text);
+    return value(raw);
+  };
+  const deck = join(cwd, 'retitled.pptx');
+  const created = await office({ action: 'create', path: deck, format: 'pptx', mode: 'portable' });
+  t.after(async () => {
+    await office({ action: 'close', session: created.session }).catch(() => {});
+  });
+  const filled = await office({
+    action: 'batch',
+    session: created.session,
+    operations: [
+      {
+        op: 'use_template_page',
+        path: fileURLToPath(new URL('./design/library/templates/mixdog-executive.pptx', import.meta.url)),
+        slide: 6,
+        after: 0,
+        title: '월별 오류 건수가 석 달 연속 줄었다',
+      },
+    ],
+  });
+  const [chart] = filled.templateData;
+  assert.equal(chart.title, 'Cycle time · seconds');
+  const chartXml = async () => {
+    const packaged = await parts(created.output || deck);
+    const rels = await packaged.text(`ppt/slides/_rels/slide${chart.slide}.xml.rels`);
+    return packaged.text(`ppt/charts/${/charts\/(chart\d+\.xml)/.exec(rels)[1]}`);
+  };
+  const before = await chartXml();
+  await office({
+    action: 'batch',
+    session: created.session,
+    operations: [
+      {
+        op: 'set_chart_data',
+        slide: chart.slide,
+        shape: chart.shape,
+        categories: ['6월', '7월', '8월', '9월'],
+        series: [{ name: '오류 (건)', values: [8400, 6100, 3900, 2700] }],
+        title: '월별 결제 오류 (건)',
+      },
+    ],
+  });
+  const after = await chartXml();
+  const legend = (xml) => /<c:legend>[\s\S]*?<\/c:legend>/.exec(xml)?.[0];
+  const order = (xml) => /<c:catAx>[\s\S]*?<c:orientation val="(\w+)"/.exec(xml)?.[1];
+  const title = (xml) => /<c:chart>(?:(?!<c:plotArea>)[\s\S])*?(<c:title>[\s\S]*?<\/c:title>)/.exec(xml)?.[1] || '';
+  const runProperties = (xml) => /<a:r><a:rPr\b[^>]*>/.exec(title(xml))?.[0];
+  assert.ok(legend(before), 'the template chart has a legend');
+  assert.equal(legend(after), legend(before), 'the legend stands as designed');
+  assert.equal(order(after), order(before), 'the categories keep their order');
+  assert.match(title(after), /월별 결제 오류 \(건\)/);
+  assert.doesNotMatch(title(after), /Cycle time/);
+  assert.equal(runProperties(after), runProperties(before), "in the title's own treatment");
+  // Value labels rebuild the chart; its categories still read in the order the template set, as PowerPoint keeps it.
+  await office({
+    action: 'batch',
+    session: created.session,
+    operations: [
+      {
+        op: 'set_chart_data',
+        slide: chart.slide,
+        shape: chart.shape,
+        categories: ['6월', '7월', '8월', '9월'],
+        series: [{ name: '오류 (건)', values: [8400, 6100, 3900, 2700] }],
+        showValues: true,
+      },
+    ],
+  });
+  const labelled = await chartXml();
+  assert.match(labelled, /<c:showVal val="1"\/>/);
+  assert.equal(order(labelled), order(before), 'the categories keep their order through the rebuild');
 });
 
 // Reuse, end to end: the page is chosen by the job it does, its slots take the

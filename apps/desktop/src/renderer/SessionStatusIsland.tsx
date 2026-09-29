@@ -10,19 +10,7 @@ import { t } from './i18n';
 import { MxIcon } from './MxIcon';
 import { showDesktopToast } from './notifications';
 import { ContextUsageIndicator, formatWorkElapsed } from './TranscriptView';
-
-/** The readout ticks its own 1s clock only while its session has live work,
- *  so an idle island costs no timers. */
-function useActivityClock(active: boolean): number {
-  const [clock, setClock] = useState(() => Date.now());
-  useEffect(() => {
-    if (!active) return undefined;
-    setClock(Date.now());
-    const timer = window.setInterval(() => setClock(Date.now()), 1_000);
-    return () => window.clearInterval(timer);
-  }, [active]);
-  return clock;
-}
+import { useClock } from './use-clock';
 
 // A background shell's argv is not a label: `pwsh -NoProfile -Command "npm run
 // build --prefix apps/desktop"` filled the card with flags, quotes and paths,
@@ -89,7 +77,8 @@ export function LiveWorkIndicator({
   // a live record for both and retires it the moment the command settles.
   const shellCount = Math.max(liveShellCount(snapshot), shells.length);
   const total = agentCount + shellCount;
-  const clock = useActivityClock(total > 0);
+  // The readout ticks its own clock only while the session has live work.
+  const clock = useClock(total > 0);
   const elapsed = (startedAt: number) => (startedAt ? formatWorkElapsed(clock - startedAt) || '0s' : '');
   // Every row carries BOTH cells, empty ones included: the card lays its
   // label/value pair out on one shared grid, so a missing value cell would

@@ -244,7 +244,7 @@ function WebhookEditor({
   }
   return (
     <SidebarDialogLayer onClose={onCancel}>
-      <section className="schedules-dialog" role="dialog" aria-modal="true" aria-labelledby="webhooks-dialog-title">
+      <section className="schedules-dialog webhooks-editor-dialog" role="dialog" aria-modal="true" aria-labelledby="webhooks-dialog-title">
         <header>
           <h2 id="webhooks-dialog-title">{editing ? t('Edit webhook') : t('Create webhook')}</h2>
           <div className="schedules-dialog-header-actions">

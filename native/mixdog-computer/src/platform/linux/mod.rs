@@ -14,7 +14,7 @@ mod wayland;
 mod x11;
 
 use super::unsupported::Unsupported;
-use super::{AppEntry, Background, Button, Desktop, Launched, WinState, WindowInfo, Wid};
+use super::{AppEntry, Background, Button, Desktop, Launched, Wid, WinState, WindowInfo};
 use crate::a11y::{Accessibility, MenuOutcome, Node};
 use crate::keys::{Key, Mod};
 use crate::observer::Shared;
@@ -28,7 +28,8 @@ use x11rb::protocol::xtest::ConnectionExt as _;
 use x11rb::wrapper::ConnectionExt as _;
 
 pub fn wayland_session() -> bool {
-    std::env::var_os("WAYLAND_DISPLAY").is_some() && std::env::var("XDG_SESSION_TYPE").map_or(true, |kind| kind == "wayland")
+    std::env::var_os("WAYLAND_DISPLAY").is_some()
+        && std::env::var("XDG_SESSION_TYPE").map_or(true, |kind| kind == "wayland")
 }
 
 pub fn create(observer: Arc<Shared>, _marker: i64) -> Box<dyn Desktop> {
@@ -55,18 +56,48 @@ pub fn release_owned_input() -> Result<(), String> {
     }
     let (conn, root) = x11::connect()?;
     mpx::remove_stale(&conn);
-    let pointer = conn.query_pointer(root).map_err(|error| error.to_string())?.reply().map_err(|error| error.to_string())?;
+    let pointer = conn
+        .query_pointer(root)
+        .map_err(|error| error.to_string())?
+        .reply()
+        .map_err(|error| error.to_string())?;
     let mask = u16::from(pointer.mask);
     for (bit, button) in [(0x100u16, 1u8), (0x200, 2), (0x400, 3)] {
         if mask & bit != 0 {
-            conn.xtest_fake_input(x11rb::protocol::xproto::BUTTON_RELEASE_EVENT, button, x11rb::CURRENT_TIME, root, 0, 0, 0).map_err(|error| error.to_string())?;
+            conn.xtest_fake_input(
+                x11rb::protocol::xproto::BUTTON_RELEASE_EVENT,
+                button,
+                x11rb::CURRENT_TIME,
+                root,
+                0,
+                0,
+                0,
+            )
+            .map_err(|error| error.to_string())?;
         }
     }
-    let keymap = conn.query_keymap().map_err(|error| error.to_string())?.reply().map_err(|error| error.to_string())?;
-    let modifiers = conn.get_modifier_mapping().map_err(|error| error.to_string())?.reply().map_err(|error| error.to_string())?;
+    let keymap = conn
+        .query_keymap()
+        .map_err(|error| error.to_string())?
+        .reply()
+        .map_err(|error| error.to_string())?;
+    let modifiers = conn
+        .get_modifier_mapping()
+        .map_err(|error| error.to_string())?
+        .reply()
+        .map_err(|error| error.to_string())?;
     for code in modifiers.keycodes.iter().copied().filter(|code| *code != 0) {
         if keymap.keys[(code / 8) as usize] & (1 << (code % 8)) != 0 {
-            conn.xtest_fake_input(x11rb::protocol::xproto::KEY_RELEASE_EVENT, code, x11rb::CURRENT_TIME, root, 0, 0, 0).map_err(|error| error.to_string())?;
+            conn.xtest_fake_input(
+                x11rb::protocol::xproto::KEY_RELEASE_EVENT,
+                code,
+                x11rb::CURRENT_TIME,
+                root,
+                0,
+                0,
+                0,
+            )
+            .map_err(|error| error.to_string())?;
         }
     }
     conn.sync().map_err(|error| error.to_string())
@@ -95,7 +126,10 @@ impl X11Desktop {
     }
 
     fn background_route(&self) -> mpx::MpxRoute<'_> {
-        mpx::MpxRoute { mpx: &self.mpx, x11: &self.x11 }
+        mpx::MpxRoute {
+            mpx: &self.mpx,
+            x11: &self.x11,
+        }
     }
 }
 
@@ -106,7 +140,12 @@ impl Desktop for X11Desktop {
 
     fn windows(&self) -> Result<Vec<WindowInfo>, String> {
         let active = self.x11.active();
-        Ok(self.x11.clients().into_iter().filter_map(|window| self.x11.info(window, active)).collect())
+        Ok(self
+            .x11
+            .clients()
+            .into_iter()
+            .filter_map(|window| self.x11.info(window, active))
+            .collect())
     }
 
     fn info(&self, handle: Wid) -> Option<WindowInfo> {
@@ -130,7 +169,13 @@ impl Desktop for X11Desktop {
     }
 
     fn related_windows(&self, handle: Wid) -> Vec<Wid> {
-        let Some(pid) = self.info(handle).map(|info| info.pid).filter(|pid| *pid > 0) else { return Vec::new() };
+        let Some(pid) = self
+            .info(handle)
+            .map(|info| info.pid)
+            .filter(|pid| *pid > 0)
+        else {
+            return Vec::new();
+        };
         self.x11
             .clients()
             .into_iter()
@@ -144,12 +189,21 @@ impl Desktop for X11Desktop {
             return false;
         }
         match (self.info(candidate), self.info(owner)) {
-            (Some(candidate), Some(owner_info)) => candidate.owner == owner || (candidate.pid > 0 && candidate.pid == owner_info.pid),
+            (Some(candidate), Some(owner_info)) => {
+                candidate.owner == owner || (candidate.pid > 0 && candidate.pid == owner_info.pid)
+            }
             _ => false,
         }
     }
 
-    fn move_window(&self, handle: Wid, x: i32, y: i32, width: i32, height: i32) -> Result<(), String> {
+    fn move_window(
+        &self,
+        handle: Wid,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+    ) -> Result<(), String> {
         self.x11.move_window(handle as u32, x, y, width, height)
     }
 
@@ -173,7 +227,14 @@ impl Desktop for X11Desktop {
         self.x11.motion(x, y)
     }
 
-    fn button(&self, button: Button, down: bool, x: i32, y: i32, _clicks: u32) -> Result<(), String> {
+    fn button(
+        &self,
+        button: Button,
+        down: bool,
+        x: i32,
+        y: i32,
+        _clicks: u32,
+    ) -> Result<(), String> {
         if self.x11.cursor() != (x, y) {
             self.x11.motion(x, y)?;
         }
@@ -267,13 +328,35 @@ impl Background for X11Desktop {
     fn validate(&self, window: Wid, action: &str) -> Result<(), String> {
         self.background_route().validate(window, action)
     }
-    fn pointer(&self, window: Wid, x: i32, y: i32, kind: &str, modifiers: &[Mod]) -> Result<String, String> {
-        self.background_route().pointer(window, x, y, kind, modifiers)
+    fn pointer(
+        &self,
+        window: Wid,
+        x: i32,
+        y: i32,
+        kind: &str,
+        modifiers: &[Mod],
+    ) -> Result<String, String> {
+        self.background_route()
+            .pointer(window, x, y, kind, modifiers)
     }
-    fn wheel(&self, window: Wid, x: i32, y: i32, clicks: i32, horizontal: bool, modifiers: &[Mod]) -> Result<String, String> {
-        self.background_route().wheel(window, x, y, clicks, horizontal, modifiers)
+    fn wheel(
+        &self,
+        window: Wid,
+        x: i32,
+        y: i32,
+        clicks: i32,
+        horizontal: bool,
+        modifiers: &[Mod],
+    ) -> Result<String, String> {
+        self.background_route()
+            .wheel(window, x, y, clicks, horizontal, modifiers)
     }
-    fn drag(&self, window: Wid, points: &[(i32, i32)], modifiers: &[Mod]) -> Result<String, String> {
+    fn drag(
+        &self,
+        window: Wid,
+        points: &[(i32, i32)],
+        modifiers: &[Mod],
+    ) -> Result<String, String> {
         self.background_route().drag(window, points, modifiers)
     }
     fn keys(&self, window: Wid, keys: &str) -> Result<String, String> {
@@ -289,20 +372,33 @@ impl Accessibility for X11Desktop {
         self.atspi().map(|_| ())
     }
 
-    fn snapshot(&self, window: &WindowInfo, include_noninteractive: bool, limit: usize) -> Result<Vec<Node>, String> {
-        self.atspi()?.snapshot(window, include_noninteractive, limit)
+    fn snapshot(
+        &self,
+        window: &WindowInfo,
+        include_noninteractive: bool,
+        limit: usize,
+    ) -> Result<Vec<Node>, String> {
+        self.atspi()?
+            .snapshot(window, include_noninteractive, limit)
     }
 
     fn focused_masked(&self) -> bool {
         let Ok(atspi) = self.atspi() else { return true };
-        let Some(window) = self.info(self.foreground()) else { return true };
+        let Some(window) = self.info(self.foreground()) else {
+            return true;
+        };
         match atspi.frame_for(&window) {
             Ok(frame) => atspi.focused_masked(&frame),
             Err(_) => true,
         }
     }
 
-    fn invoke_menu(&self, window: &WindowInfo, path: &[String], authorize: &dyn Fn() -> Result<(), String>) -> Result<MenuOutcome, String> {
+    fn invoke_menu(
+        &self,
+        window: &WindowInfo,
+        path: &[String],
+        authorize: &dyn Fn() -> Result<(), String>,
+    ) -> Result<MenuOutcome, String> {
         self.atspi()?.invoke_menu(window, path, authorize)
     }
 }

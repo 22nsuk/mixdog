@@ -33,8 +33,7 @@
     border: 0;
     background: transparent;
   }
-  .mixdog-settings__header h1,
-  .mixdog-settings__section h2 {
+  .mixdog-settings__header h1 {
     margin: 0;
   }
   .mixdog-settings__body {
@@ -42,7 +41,6 @@
     flex-direction: column;
     overflow-y: auto;
   }
-  .mixdog-settings__list,
   .settings-group-body {
     overflow: hidden;
   }
@@ -71,21 +69,10 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .mixdog-settings__section,
   .settings-group {
     display: flex;
     flex-direction: column;
   }
-  .settings-section-heading {
-    display: flex;
-    align-items: flex-start;
-  }
-  .settings-section-heading > div {
-    min-width: 0;
-    flex: 1;
-  }
-  .settings-section-heading h2,
-  .settings-section-heading p,
   .settings-group > header h3,
   .settings-group > header p {
     margin: 0;
@@ -107,7 +94,6 @@
     display: block;
     content: "";
   }
-  .mixdog-settings__error,
   .settings-empty,
   .settings-loading {
     margin: 0;
@@ -120,7 +106,6 @@
   .settings-form-controls,
   .settings-resource-actions,
   .settings-provider-secret,
-  .settings-button-row,
   .settings-oauth-code,
   .settings-oauth-dialog > footer {
     min-width: 0;
@@ -130,11 +115,6 @@
   }
   .settings-form-controls {
     justify-content: flex-end;
-  }
-  .settings-check {
-    display: inline-flex;
-    align-items: center;
-    white-space: nowrap;
   }
   .settings-form-controls {
     flex: 1.2;
@@ -169,48 +149,8 @@
     justify-content: flex-end;
     gap: 10px;
   }
-  .settings-domain-form {
-    display: grid;
-  }
-  .settings-domain-form > header {
-    display: flex;
-    align-items: flex-start;
-  }
-  .settings-domain-form > header > div {
-    display: grid;
-  }
-  .settings-domain-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .settings-domain-grid > label {
-    min-width: 0;
-    display: grid;
-    align-content: start;
-  }
-  .settings-domain-grid > label.wide {
-    grid-column: 1 / -1;
-  }
-  .settings-domain-grid input:not([type="checkbox"]),
-  .settings-domain-grid select,
-  .settings-domain-grid textarea {
-    width: 100%;
-    min-width: 0;
-  }
-  .settings-domain-form > footer {
-    display: flex;
-    justify-content: flex-end;
-    gap: 8px;
-  }
   .settings-status-stack,
-  .settings-sublist,
-  .settings-alert-list,
-  .core-memory-manager,
-  .core-memory-add-card,
-  .core-memory-add-card > header,
-  .core-memory-add,
   .core-memory-list,
-  .core-memory-row,
   .core-memory-edit {
     display: grid;
   }
@@ -237,24 +177,8 @@
     display: grid;
     place-items: center;
   }
-  .settings-alert-list p {
-    margin: 0;
-  }
-  .core-memory-add input,
   .core-memory-edit input {
     min-width: 0;
-  }
-  .core-memory-copy {
-    min-width: 0;
-    display: grid;
-  }
-  .settings-action-result {
-    overflow: hidden;
-  }
-  .settings-action-result pre {
-    margin: 0;
-    overflow: auto;
-    white-space: pre-wrap;
   }
   .settings-oauth-layer,
   .settings-confirm-layer {
@@ -351,12 +275,6 @@
     .settings-form-controls {
       justify-content: flex-start;
     }
-    .settings-domain-grid {
-      grid-template-columns: 1fr;
-    }
-    .settings-domain-grid > label.wide {
-      grid-column: auto;
-    }
     .settings-resource {
       align-items: flex-start;
       flex-wrap: wrap;
@@ -400,10 +318,8 @@
 }
 .mixdog-settings-v2 {
   width: min(980px, calc(100vw - 32px));
-  height: min(
-    650px,
-    calc(var(--vvh, 100vh) - var(--settings-layer-safe-top, 16px) - var(--settings-layer-safe-bottom, 16px))
-  );
+  /* Grows with the window, but stops at 760 (user: 팝업 상하 최대 크기). */
+  height: min(760px, var(--settings-panel-height));
   grid-template-columns: 240px minmax(0, 1fr);
 }
 .mixdog-settings__rail {
@@ -572,9 +488,12 @@
 /* Compact DESKTOP window: stop squeezing the centered card once either axis
    gets tight. The surface fills the viewport while its interactive chrome
    starts below Window Controls Overlay; this reclaims the side/bottom gutters
-   without putting categories or the in-app X under native caption buttons. */
+   without putting categories or the in-app X under native caption buttons.
+   Only the settings sheet does this: the other panels are rounded cards that
+   keep their margins, or a short window cut them off at its bottom edge
+   (user: 아주 좁을 때 아래 패딩이 없어지네). */
 @media (max-width: 760px), (max-height: 680px) {
-  .mixdog-settings-layer {
+  .mixdog-settings-layer:has(> .mixdog-settings-v2) {
     --settings-layer-safe-top: env(titlebar-area-height, 0px);
     --settings-layer-safe-bottom: 0px;
     place-items: stretch;
@@ -788,17 +707,13 @@
   .settings-connection-card {
     flex: 1 1 190px;
   }
-  .core-memory-add-card,
   .core-memory-list {
     padding-inline: 14px;
   }
-  .core-memory-edit,
-  .core-memory-row {
+  .core-memory-edit {
     grid-template-columns: minmax(0, 1fr);
   }
   .core-memory-edit input,
-  .core-memory-copy,
-  .core-memory-scope,
   .core-memory-actions {
     grid-column: 1;
   }
@@ -868,33 +783,4 @@
   color: var(--mx-text-muted);
   font-size: var(--mx-font-code);
   line-height: var(--mx-line-minor);
-}
-/* Settings row grammar: label left, value + copy right, divided rows. */
-.settings-connection-links {
-  display: grid;
-}
-.settings-connection-links > div {
-  min-height: 44px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding-block: 6px;
-}
-.settings-connection-links > div + div {
-  border-top: 0.5px solid var(--mx-border-muted);
-}
-.settings-connection-links span {
-  flex: 0 0 132px;
-  color: var(--mx-text-muted);
-  font-size: var(--mx-font-meta);
-}
-.settings-connection-links code {
-  flex: 1;
-  min-width: 0;
-  padding: 7px 9px;
-  border-radius: var(--mx-radius-md);
-  overflow-wrap: anywhere;
-  background: var(--mx-pressed);
-  font-size: var(--mx-font-meta);
-  user-select: text;
 }

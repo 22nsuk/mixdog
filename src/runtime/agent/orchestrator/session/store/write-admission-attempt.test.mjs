@@ -26,7 +26,13 @@ test.after(async () => {
 
 const fileOf = (id) => join(root, 'sessions', `${id}.json`);
 const record = (id, extra = {}) =>
-  JSON.stringify({ id, closed: false, generation: 1, messages: [{ role: 'user', content: 'x'.repeat(4096) }], ...extra });
+  JSON.stringify({
+    id,
+    closed: false,
+    generation: 1,
+    messages: [{ role: 'user', content: 'x'.repeat(4096) }],
+    ...extra,
+  });
 // Another process's writer: rename into place (never this realm's commit).
 const replace = (id, text) => {
   writeFileSync(`${fileOf(id)}.other`, text);

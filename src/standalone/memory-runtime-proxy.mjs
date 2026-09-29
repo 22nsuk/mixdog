@@ -88,6 +88,7 @@ function createStandaloneMemoryRuntime({ entry, dataDir, cwd = process.cwd() } =
     status,
     handleToolCall: calls.handleToolCall,
     buildSessionCoreMemoryPayload: calls.buildSessionCoreMemoryPayload,
+    warmupEmbedding: calls.warmupEmbedding,
     appendEntry: calls.appendEntry,
     ingestTranscript: calls.ingestTranscript,
     recordTraceEvents: calls.recordTraceEvents,

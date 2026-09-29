@@ -230,12 +230,23 @@ test('print fitting uses stored nonuniform dimensions and ignores style-only bla
       `<xdr:pos x="${200 * 12700}" y="${50 * 12700}"/><xdr:ext cx="${80 * 12700}" cy="${50 * 12700}"/>` +
       '</xdr:absoluteAnchor></xdr:wsDr>'
   );
-  assert.equal(await contentPrintArea(zip, sheet, xml), 'A1:D5');
+  // The picture's bottom edge (50 + 50 pt) meets the end of row 5 (40 + 4 × 15 pt): its corner lies in row 6, which
+  // Excel's content print area takes, so the page keeps room under the edge.
+  assert.equal(await contentPrintArea(zip, sheet, xml), 'A1:D6');
   zip.file(
     'xl/drawings/drawing1.xml',
     '<xdr:wsDr><xdr:twoCellAnchor><xdr:from><xdr:col>0</xdr:col><xdr:row>0</xdr:row></xdr:from>' +
       '<xdr:to><xdr:col>4</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>7</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to>' +
       '</xdr:twoCellAnchor></xdr:wsDr>'
   );
-  assert.equal(await contentPrintArea(zip, sheet, xml), 'A1:D7');
+  // A corner on the `to` cell's top-left point lies in that cell (E8), as Excel's BottomRightCell names it.
+  assert.equal(await contentPrintArea(zip, sheet, xml), 'A1:E8');
+  // A corner inside a row keeps that row: the picture ends 10 pt into row 5.
+  zip.file(
+    'xl/drawings/drawing1.xml',
+    '<xdr:wsDr><xdr:absoluteAnchor>' +
+      `<xdr:pos x="${200 * 12700}" y="${50 * 12700}"/><xdr:ext cx="${80 * 12700}" cy="${45 * 12700}"/>` +
+      '</xdr:absoluteAnchor></xdr:wsDr>'
+  );
+  assert.equal(await contentPrintArea(zip, sheet, xml), 'A1:D5');
 });

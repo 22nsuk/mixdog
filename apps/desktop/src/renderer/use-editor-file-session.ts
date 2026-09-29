@@ -15,6 +15,14 @@ import { t } from './i18n';
 
 type EditorInstance = import('monaco-editor').editor.IStandaloneCodeEditor;
 
+/** A read, stat or write that finds no file means the tab outlived its path
+ *  (deleted, or renamed outside this editor): say so instead of the raw
+ *  ENOENT text. */
+function fileAccessError(reason: unknown): string {
+  const message = reason instanceof Error ? reason.message : String(reason);
+  return /ENOENT|no such file|cannot find/i.test(message) ? t('File was deleted or renamed on disk.') : message;
+}
+
 export function useEditorFileSession({
   editorRef,
   modelRef,
@@ -39,7 +47,8 @@ export function useEditorFileSession({
   editorSettings: DesktopEditorSettings;
   notifyReady(): void;
   onDirty(dirty: boolean): void;
-  onSaveHandle?(handle: EditorFileHandle | null): void;
+  /** `null` releases `released`: only the handle this pane registered. */
+  onSaveHandle?(handle: EditorFileHandle | null, released?: EditorFileHandle): void;
   syncLspRef: RefObject<(kind?: 'change' | 'save') => Promise<boolean>>;
 }) {
   const api = window.mixdogDesktop;
@@ -164,7 +173,7 @@ export function useEditorFileSession({
         markDirty(content !== resolution.savedContent);
       })
       .catch((reason) => {
-        setError(reason instanceof Error ? reason.message : String(reason));
+        setError(fileAccessError(reason));
         if (loadedRef.current) setDiskChanged(true);
       });
   }, [accessToken, api, deleteBackup, readModel, markDirty, projectPath, relPath]);
@@ -203,7 +212,7 @@ export function useEditorFileSession({
         })
         .catch((reason) => {
           setLoad(null);
-          setError(reason instanceof Error ? reason.message : String(reason));
+          setError(fileAccessError(reason));
         });
       return;
     }
@@ -291,7 +300,7 @@ export function useEditorFileSession({
         return true;
       } catch (reason) {
         const message = reason instanceof Error ? reason.message : String(reason);
-        setSaveError(message);
+        setSaveError(fileAccessError(reason));
         if (/changed on disk|ENOENT|no such file|cannot find/i.test(message)) setDiskChanged(true);
         return false;
       } finally {
@@ -337,7 +346,7 @@ export function useEditorFileSession({
       discard,
     };
     onSaveHandleRef.current?.(handle);
-    return () => onSaveHandleRef.current?.(null);
+    return () => onSaveHandleRef.current?.(null, handle);
   }, [discard]);
 
   useEffect(() => {
@@ -356,7 +365,7 @@ export function useEditorFileSession({
         .catch((reason) => {
           if (!readModel()) return;
           setDiskChanged(true);
-          setSaveError(reason instanceof Error ? reason.message : 'File was deleted or renamed on disk.');
+          setSaveError(fileAccessError(reason));
         });
     }, 2_500);
     return () => window.clearInterval(timer);
@@ -435,7 +444,7 @@ export function useEditorFileSession({
       })
       .catch((reason) => {
         setDiskChanged(true);
-        setSaveError(reason instanceof Error ? reason.message : String(reason));
+        setSaveError(fileAccessError(reason));
       });
   }, [accessToken, api, deleteBackup, readModel, markDirty, projectPath, relPath, writeBackupNow]);
 

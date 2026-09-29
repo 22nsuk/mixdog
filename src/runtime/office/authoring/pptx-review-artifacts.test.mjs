@@ -14,7 +14,11 @@ test('the contact sheet image rides along only past four slides, and its file is
   const page = async (index) => ({
     page: index,
     path: join(dir, `page-${index}.png`),
-    data: (await sharp({ create: { width: 64, height: 36, channels: 3, background: '#e0e4ea' } }).png().toBuffer()).toString('base64'),
+    data: (
+      await sharp({ create: { width: 64, height: 36, channels: 3, background: '#e0e4ea' } })
+        .png()
+        .toBuffer()
+    ).toString('base64'),
     mimeType: 'image/png',
   });
   const preview = async (count) => ({

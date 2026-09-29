@@ -7,7 +7,8 @@
  * turn record below that finalization publishes as the turndone item.
  */
 import { applyUsageDelta } from './session-stats.mjs';
-import { pickVerb, pickDoneVerb, compactEventLabel, compactEventDetail } from './labels.mjs';
+import { compactEventLabel } from '../../runtime/shared/compact-event-label.mjs';
+import { pickVerb, pickDoneVerb, compactEventDetail } from './labels.mjs';
 import { toolErrorDisplay } from './tool-result-text.mjs';
 import { errText, isCancelLikeError } from '../../runtime/shared/err-text.mjs';
 import { preserveGoalStateAfterTurn } from './goal-turn-state.mjs';

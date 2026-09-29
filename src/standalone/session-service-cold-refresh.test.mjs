@@ -50,7 +50,10 @@ test('the cold-view refresh reads nothing while the session files keep their set
     let revision = opened.revision;
     let stamp = opened.projectionStamp;
     const refresh = () =>
-      service.readSession({ sessionId: id, ...LEGACY_PAGE, baseRevision: revision, baseProjectionStamp: stamp }, viewer);
+      service.readSession(
+        { sessionId: id, ...LEGACY_PAGE, baseRevision: revision, baseProjectionStamp: stamp },
+        viewer
+      );
 
     for (let tick = 0; tick < 3; tick += 1) {
       const unchanged = await refresh();

@@ -144,6 +144,37 @@ test('a step whose reading fails reports the cause and where to go next', async 
   assert.match(result.text, /frame topology changed during observation/);
 });
 
+test('a step that navigated its own document completes instead of failing its checkpoint', async (t) => {
+  const f = fixture(t);
+  for (const message of ['Inspected target navigated or closed', 'Execution context was destroyed.']) {
+    const navigated = createBrowserSettle({
+      diagnostics: () => f.diagnostics,
+      renderCheckpoint: async () => {
+        throw new Error(message);
+      },
+      pageText: async () => '',
+      quietMs: 20,
+      domTimeoutMs: 200,
+      loadTimeoutMs: 200,
+    });
+    assert.deepEqual(await navigated.stepSettleResult(f.guest, undefined, true), { outcome: 'completed', text: '' });
+    await navigated.settleAfterAction(f.guest, undefined, undefined, { background: true });
+  }
+  // A closed page is not a navigation: its reading still fails.
+  const closed = createBrowserSettle({
+    diagnostics: () => f.diagnostics,
+    renderCheckpoint: async () => {
+      throw new Error('Inspected target navigated or closed');
+    },
+    pageText: async () => '',
+    quietMs: 20,
+    domTimeoutMs: 200,
+    loadTimeoutMs: 200,
+  });
+  const gone = Object.assign(new EventEmitter(), { ...f.guest, isDestroyed: () => true });
+  assert.equal((await closed.stepSettleResult(gone, undefined, true)).outcome, 'inconclusive');
+});
+
 test('reload settlement waits for replacement frames before its rendering checkpoint', async () => {
   let loading = true;
   let checkpoints = 0;

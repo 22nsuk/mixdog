@@ -98,9 +98,25 @@ pub struct Launched {
 pub trait Background {
     /// Refuses before any input when this target cannot take background input.
     fn validate(&self, window: Wid, action: &str) -> Result<(), String>;
-    fn pointer(&self, window: Wid, x: i32, y: i32, kind: &str, modifiers: &[Mod]) -> Result<String, String>;
-    fn wheel(&self, window: Wid, x: i32, y: i32, clicks: i32, horizontal: bool, modifiers: &[Mod]) -> Result<String, String>;
-    fn drag(&self, window: Wid, points: &[(i32, i32)], modifiers: &[Mod]) -> Result<String, String>;
+    fn pointer(
+        &self,
+        window: Wid,
+        x: i32,
+        y: i32,
+        kind: &str,
+        modifiers: &[Mod],
+    ) -> Result<String, String>;
+    fn wheel(
+        &self,
+        window: Wid,
+        x: i32,
+        y: i32,
+        clicks: i32,
+        horizontal: bool,
+        modifiers: &[Mod],
+    ) -> Result<String, String>;
+    fn drag(&self, window: Wid, points: &[(i32, i32)], modifiers: &[Mod])
+        -> Result<String, String>;
     fn keys(&self, window: Wid, keys: &str) -> Result<String, String>;
     fn text(&self, window: Wid, text: &str) -> Result<String, String>;
 }
@@ -121,7 +137,14 @@ pub trait Desktop {
     fn related_windows(&self, handle: Wid) -> Vec<Wid>;
     /// A popup, sheet or dialog `candidate` that `owner` owns.
     fn is_owned_by(&self, candidate: Wid, owner: Wid) -> bool;
-    fn move_window(&self, handle: Wid, x: i32, y: i32, width: i32, height: i32) -> Result<(), String>;
+    fn move_window(
+        &self,
+        handle: Wid,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+    ) -> Result<(), String>;
     fn set_window_state(&self, handle: Wid, state: WinState) -> Result<(), String>;
     fn close_window(&self, handle: Wid) -> Result<bool, String>;
     fn is_responding(&self, handle: Wid) -> bool;
@@ -131,7 +154,8 @@ pub trait Desktop {
 
     fn cursor(&self) -> (i32, i32);
     fn move_pointer(&self, x: i32, y: i32) -> Result<(), String>;
-    fn button(&self, button: Button, down: bool, x: i32, y: i32, clicks: u32) -> Result<(), String>;
+    fn button(&self, button: Button, down: bool, x: i32, y: i32, clicks: u32)
+        -> Result<(), String>;
     /// Moves the pointer while the left button is held.
     fn drag_move(&self, x: i32, y: i32) -> Result<(), String>;
     fn wheel(&self, x: i32, y: i32, clicks: i32, horizontal: bool) -> Result<(), String>;
@@ -163,7 +187,9 @@ pub fn create(observer: Arc<Shared>, marker: i64) -> Box<dyn Desktop> {
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = (observer, marker);
-        Box::new(unsupported::Unsupported::new("platform_unsupported: this build has no desktop backend"))
+        Box::new(unsupported::Unsupported::new(
+            "platform_unsupported: this build has no desktop backend",
+        ))
     }
 }
 
@@ -200,7 +226,9 @@ pub fn terminate_pid(pid: i64) -> Result<(), String> {
 
 #[cfg(not(unix))]
 pub fn terminate_pid(pid: i64) -> Result<(), String> {
-    Err(format!("terminating pid {pid} is not supported on this platform"))
+    Err(format!(
+        "terminating pid {pid} is not supported on this platform"
+    ))
 }
 
 /// The process's parent pid, read from the OS process table.
@@ -224,7 +252,13 @@ pub fn parent_pid(pid: i64) -> i64 {
     unsafe {
         let mut info: libc::proc_bsdinfo = std::mem::zeroed();
         let size = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
-        let read = libc::proc_pidinfo(pid as i32, libc::PROC_PIDTBSDINFO, 0, &mut info as *mut _ as *mut libc::c_void, size);
+        let read = libc::proc_pidinfo(
+            pid as i32,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            &mut info as *mut _ as *mut libc::c_void,
+            size,
+        );
         if read == size {
             info.pbi_ppid as i64
         } else {

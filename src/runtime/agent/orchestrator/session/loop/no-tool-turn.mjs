@@ -76,7 +76,7 @@ export function createNoToolTurnResolver({
       const hasContent = typeof response.content === 'string' && response.content.trim().length > 0;
       const stopReason = response.stopReason ?? response.stop_reason ?? null;
       const isOutputLimitStop = isOutputLimitStopReason(stopReason);
-      if (hasContent && isOutputLimitStop) return resolveOutputLimit(response, ladder);
+      if (hasContent && (isOutputLimitStop || response.streamCut === true)) return resolveOutputLimit(response, ladder);
       if (stopReason === 'refusal') return resolveRefusal(response, hasContent, ladder);
       // Output-limit stops keep the bounded max-output ladder above and
       // refusals (already returned) keep the bounded refusal retry; both

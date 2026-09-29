@@ -332,7 +332,11 @@ test('hashed assets under a device route are cached once and reused from any rou
     (await caches.peek('mixdog-assets-v2').keys()).map((key) => key.url),
     [`${WORKER_ORIGIN}/assets/bootstrap-12345678.js`]
   );
-  for (const path of ['/d/device/assets/bootstrap-12345678.js', '/d/other/assets/bootstrap-12345678.js', '/assets/bootstrap-12345678.js']) {
+  for (const path of [
+    '/d/device/assets/bootstrap-12345678.js',
+    '/d/other/assets/bootstrap-12345678.js',
+    '/assets/bootstrap-12345678.js',
+  ]) {
     const again = dispatchFetch(worker, `${WORKER_ORIGIN}${path}`);
     assert.equal(await (await again.answer).text(), 'chunk');
     await again.done;
@@ -343,7 +347,11 @@ test('hashed assets under a device route are cached once and reused from any rou
 test('device-route live traffic and unhashed files never enter the asset cache', async () => {
   const caches = memoryCacheStorage();
   const worker = loadWorker({ caches });
-  for (const path of ['/d/device/manifest.webmanifest', '/d/device/assets/boot.js', '/media/device/file-12345678.png']) {
+  for (const path of [
+    '/d/device/manifest.webmanifest',
+    '/d/device/assets/boot.js',
+    '/media/device/file-12345678.png',
+  ]) {
     const result = dispatchFetch(worker, `${WORKER_ORIGIN}${path}`);
     await result.answer;
     await result.done;

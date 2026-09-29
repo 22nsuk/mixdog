@@ -11,12 +11,11 @@
 
 import { resolve as pathResolve, isAbsolute, relative as pathRelative, dirname as pathDirname } from 'node:path';
 
-import { statSync } from 'node:fs';
 import { normalizeInputPath } from '../builtin/path-utils.mjs';
 import { markScopedCacheIncomplete } from '../../session/cache/scoped-cache-outcome.mjs';
 import { CODE_GRAPH_TOOL_DEFS } from '../code-graph-tool-defs.mjs';
 import { CODE_GRAPH_OUTPUT_MAX_BYTES, capLineOrientedToolOutput } from '../builtin/tool-output-limit.mjs';
-import { _graphRel, _appendSameBasenameHint } from './source-access.mjs';
+import { _graphRel, _appendSameBasenameHint, _isExistingFile } from './source-access.mjs';
 import {
   _capGraphList,
   _symbolOutlineRows,
@@ -119,14 +118,6 @@ function _schedulePrewarm(args, cwd) {
 function _scopeRelPrefix(graphRel) {
   const r = graphRel.replace(/\\/g, '/').replace(/\/+$/, '');
   return !r || r === '.' ? null : `${r}/`;
-}
-
-function _isExistingFile(abs) {
-  try {
-    return statSync(abs).isFile();
-  } catch {
-    return false;
-  }
 }
 
 function collectGraphParseWarnings(graph, options) {

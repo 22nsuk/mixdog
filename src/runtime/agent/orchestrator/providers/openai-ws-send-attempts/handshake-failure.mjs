@@ -86,7 +86,7 @@ export async function resolveHandshakeFailure(
       retryLimit: ctx.maxMidstreamRetries,
       remember: !state.firstAttemptError,
     });
-    await ctx.backoff(attemptIndex + 1);
+    await ctx.backoff(attemptIndex + 1, err);
     return true;
   }
   // A later auth/upgrade decision must win over an earlier transient

@@ -581,9 +581,9 @@ html[data-mixdog-mobile-tabs] .conversation {
 .message.user .message-source {
   margin: 0 6px 3px 0;
   color: var(--mx-text-muted);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
+  font-size: var(--mx-font-micro);
+  font-weight: var(--mx-weight-semibold);
+  letter-spacing: var(--mx-tracking-wide);
 }
 .message.user .message-body {
   width: fit-content;
@@ -601,8 +601,7 @@ html[data-mixdog-mobile-tabs] .conversation {
 .message.user .message-body p {
   margin: 0;
 }
-.markdown pre,
-.detail-block pre {
+.markdown pre {
   padding: 12px;
   border: 0;
   /* Content containers share one rounded-8 language (Grok-web cleanliness):

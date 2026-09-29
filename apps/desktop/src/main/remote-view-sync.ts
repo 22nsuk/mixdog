@@ -268,9 +268,7 @@ export async function synchronizeRelayViews(
         if (event === 'sessions' && catchUp) continue;
         let payload = state.listDelta ? (encoder as KeyedListDeltaEncoder<unknown>).encode(items) : items;
         if (event === 'sessions' && rosterLog) payload = stampRoster(rosterLog, items, payload);
-        writes.push(
-          resumed ? sendDelta({ event, payload }, isNoListDelta(payload)) : sendBaseline({ event, payload })
-        );
+        writes.push(resumed ? sendDelta({ event, payload }, isNoListDelta(payload)) : sendBaseline({ event, payload }));
       }
       // All baseline encryptions are already queued. A later live frame now
       // follows them, including a change occurring before the receipt arrives.

@@ -386,7 +386,7 @@ test('production entry has no capture side effects and capture harness is exclud
   assert.match(capture, /method:\s*'dom-geometry-fallback'/);
   assert.doesNotMatch(capture, /measureSidebarGeometry|horizontal-pixel-scan/);
   assert.match(capture, /class CaptureService implements DesktopService/);
-  assert.match(capture, /SETTINGS_CATEGORIES/);
+  assert.match(capture, /settingsCategoriesForSurface\(false\)/);
   assert.doesNotMatch(capture, /railButtonCount\s*!==\s*14|railButtonCount,\s*14/);
   assert.match(capture, /async listSessions\(\): Promise<DesktopSessionSummary\[]>/);
   assert.match(capture, /new CaptureService/);
@@ -467,12 +467,12 @@ test('production entry has no capture side effects and capture harness is exclud
   assert.match(adapter, /metadata\.rendererValidation/);
   assert.match(adapter, /metadata\.captureEnvironment/);
   assert.match(adapter, /packaged:\s*false/);
-  assert.match(capture, /liveDesktop\.sidebarGap !== 0/);
-  assert.match(capture, /liveDesktop\.rects\.sidebar\.left !== 0/);
-  assert.match(capture, /liveDesktop\.rects\.sidebar\.top !== 41/);
-  assert.match(capture, /liveDesktop\.rects\.sidebar\.width !== 260/);
+  assert.match(capture, /liveDesktop\.sidebarGap !== CAPTURE_SIDEBAR_GEOMETRY\.gap/);
+  assert.match(capture, /liveDesktop\.rects\.sidebar\.left !== CAPTURE_SIDEBAR_GEOMETRY\.left/);
+  assert.match(capture, /liveDesktop\.rects\.sidebar\.top !== CAPTURE_SIDEBAR_GEOMETRY\.top/);
+  assert.match(capture, /liveDesktop\.rects\.sidebar\.width !== CAPTURE_SIDEBAR_GEOMETRY\.width/);
   assert.match(capture, /liveDesktop\.viewport\.height - liveDesktop\.rects\.sidebar\.bottom !== 0/);
-  assert.match(capture, /liveDesktop\.rects\.main\.left !== 260/);
+  assert.match(capture, /liveDesktop\.rects\.main\.left !== CAPTURE_SIDEBAR_GEOMETRY\.mainLeft/);
   assert.match(capture, /breakpointActive:\s*mobileViewport\.width <= 760/);
   assert.match(adapter, /mobile\.viewport\.width <= 760/);
   assert.match(capture, /const domSidebarGeometry = \{/);
@@ -490,8 +490,8 @@ test('production entry has no capture side effects and capture harness is exclud
   // records; nothing here may reintroduce that self-comparison.
   assert.doesNotMatch(capture, /imageMeasuredSidebar\.[\w.]+ !== domSidebarGeometry\./);
   assert.doesNotMatch(capture, /DOM\/pixel geometry mismatch/);
-  assert.match(adapter, /metadata\.imageMeasuredSidebar\.width,\s*260/);
-  assert.match(adapter, /mainLeft:\s*260/);
+  assert.match(adapter, /metadata\.imageMeasuredSidebar\.width,\s*251/);
+  assert.match(adapter, /mainLeft:\s*300/);
   assert.match(adapter, /metadata\.imageMeasuredSidebar\.left,\s*metadata\.domSidebarGeometry\.left/);
   assert.match(adapter, /metadata\.imageMeasuredSidebar\.right,\s*metadata\.domSidebarGeometry\.right - 1/);
   assert.match(adapter, /metadata\.imageMeasuredSidebar\.width,\s*metadata\.domSidebarGeometry\.width/);

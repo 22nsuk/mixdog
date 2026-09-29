@@ -227,6 +227,9 @@ function isDeferredTool(tool) {
 // measured. Everything the reading covered is redistributed so it sums exactly
 // to the measurement; items appended since scale by the same ratio. Ratios
 // outside the plausible band mean the reading is not about this request.
+// Attachments are already priced on the provider's own terms (pixels, bytes),
+// not through the text estimator the ratio corrects, so they keep their
+// allowance and only the text drafts absorb the remainder of the measurement.
 function calibrateDrafts(drafts, coverage) {
   const rawTotal = drafts.reduce((sum, draft) => sum + draft.tokens, 0);
   for (const draft of drafts) draft.estimatedTokens = draft.tokens;
@@ -235,21 +238,23 @@ function calibrateDrafts(drafts, coverage) {
   if (!Number.isInteger(count) || count < 0 || !(measured > 0))
     return { source: 'estimate', estimatedTokens: rawTotal };
   const covered = drafts.filter((draft) => draft.messageIndex === undefined || draft.messageIndex < count);
-  const coveredRaw = covered.reduce((sum, draft) => sum + draft.tokens, 0);
-  if (coveredRaw <= 0) return { source: 'estimate', estimatedTokens: rawTotal };
-  const ratio = measured / coveredRaw;
+  const scalable = covered.filter((draft) => draft.kind !== 'attachment');
+  const fixedTokens = covered.reduce((sum, draft) => sum + (draft.kind === 'attachment' ? draft.tokens : 0), 0);
+  const scalableRaw = scalable.reduce((sum, draft) => sum + draft.tokens, 0);
+  if (scalableRaw <= 0) return { source: 'estimate', estimatedTokens: rawTotal };
+  const ratio = (measured - fixedTokens) / scalableRaw;
   if (ratio < CALIBRATION_MIN || ratio > CALIBRATION_MAX) {
     return { source: 'estimate', estimatedTokens: rawTotal, rejectedRatio: Math.round(ratio * 1000) / 1000 };
   }
   const shares = contextShares(
-    covered.map((draft) => draft.tokens),
-    Math.round(measured)
+    scalable.map((draft) => draft.tokens),
+    Math.round(measured) - fixedTokens
   );
-  covered.forEach((draft, index) => {
+  scalable.forEach((draft, index) => {
     draft.tokens = shares[index];
   });
   for (const draft of drafts) {
-    if (draft.messageIndex !== undefined && draft.messageIndex >= count)
+    if (draft.messageIndex !== undefined && draft.messageIndex >= count && draft.kind !== 'attachment')
       draft.tokens = Math.round(draft.tokens * ratio);
   }
   return {

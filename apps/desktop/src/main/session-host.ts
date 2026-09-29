@@ -142,7 +142,8 @@ export class SessionHost implements DesktopService {
       },
       applySessionResult: (sessionId, value, publish) => this.publication.applySessionResult(sessionId, value, publish),
       heldTranscript: (sessionId) => this.publication.heldTranscript(sessionId),
-      applyTranscriptPage: (sessionId, value, publish) => this.publication.applyTranscriptPage(sessionId, value, publish),
+      applyTranscriptPage: (sessionId, value, publish) =>
+        this.publication.applyTranscriptPage(sessionId, value, publish),
       deleteProjection: (sessionId) => {
         this.publication.projections.delete(sessionId);
       },
@@ -537,8 +538,13 @@ export class SessionHost implements DesktopService {
     return this.lifecycle.setVisibleSessionsForSource(sourceId, sessionIds, legacyTranscript);
   }
 
-  async searchProjectFiles(projectIdOrWorkspaceId: string, query: string, limit = 50): Promise<string[]> {
-    return this.lifecycle.searchProjectFiles(projectIdOrWorkspaceId, query, limit);
+  async searchProjectFiles(
+    projectIdOrWorkspaceId: string,
+    query: string,
+    limit = 50,
+    includeIgnored = false
+  ): Promise<string[]> {
+    return this.lifecycle.searchProjectFiles(projectIdOrWorkspaceId, query, limit, includeIgnored);
   }
 
   async submitNewTask(

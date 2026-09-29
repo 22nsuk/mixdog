@@ -9,8 +9,16 @@ pub fn run() -> i32 {
     let released = platform::release_owned_input();
     let target = parse_window_id(&std::env::var("MIXDOG_ABORT_TARGET").unwrap_or_default());
     let restore = parse_window_id(&std::env::var("MIXDOG_ABORT_RESTORE").unwrap_or_default());
-    let number = |name: &str| std::env::var(name).ok().and_then(|value| value.trim().parse::<i32>().ok()).unwrap_or(0);
-    let (x, y) = (number("MIXDOG_ABORT_CURSOR_X"), number("MIXDOG_ABORT_CURSOR_Y"));
+    let number = |name: &str| {
+        std::env::var(name)
+            .ok()
+            .and_then(|value| value.trim().parse::<i32>().ok())
+            .unwrap_or(0)
+    };
+    let (x, y) = (
+        number("MIXDOG_ABORT_CURSOR_X"),
+        number("MIXDOG_ABORT_CURSOR_Y"),
+    );
     let mut restored = Ok(());
     if target != 0 {
         let observer = Observer::new();

@@ -16,6 +16,7 @@ export function useTranscriptReveal({
   draft,
   viewport,
   content,
+  scope,
   hasScrollGesture,
 }: {
   identity: string;
@@ -23,6 +24,9 @@ export function useTranscriptReveal({
   draft: boolean;
   viewport: RefObject<HTMLDivElement | null>;
   content: RefObject<HTMLDivElement | null>;
+  /** Conversation root: chrome outside the rows (the review bar) marks its
+   *  undecided entry state with `data-entry-pending`. */
+  scope?: RefObject<HTMLElement | null>;
   hasScrollGesture(): boolean;
 }): boolean {
   const [revealedIdentity, setRevealedIdentity] = useState(draft ? identity : '');
@@ -61,7 +65,10 @@ export function useTranscriptReveal({
         signature.push(Number(row.dataset.index), start, end);
       });
       const current = JSON.stringify(signature);
-      const pending = space.querySelector('[data-transcript-pending]') || document.fonts?.status === 'loading';
+      const pending =
+        space.querySelector('[data-transcript-pending]') ||
+        scope?.current?.querySelector('[data-entry-pending]') ||
+        document.fonts?.status === 'loading';
       const atEnd = position.maxScrollTop - top <= 1;
       const readerOwnsPosition = hasScrollGesture();
       const settled = visible > 0 && !pending && (atEnd || readerOwnsPosition) && current === previous;
@@ -74,6 +81,6 @@ export function useTranscriptReveal({
     };
     frame = requestAnimationFrame(sample);
     return () => cancelAnimationFrame(frame);
-  }, [content, draft, enabled, hasScrollGesture, identity, revealedIdentity, viewport]);
+  }, [content, draft, enabled, hasScrollGesture, identity, revealedIdentity, scope, viewport]);
   return draft || !enabled || revealedIdentity === identity;
 }

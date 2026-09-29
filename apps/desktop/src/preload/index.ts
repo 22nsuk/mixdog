@@ -207,8 +207,8 @@ const api: DesktopApi = {
   prefetchSession: (sessionId, transcriptItemLimit, readTraceId) =>
     ipcRenderer.invoke(DESKTOP_IPC.prefetchSession, sessionId, transcriptItemLimit, readTraceId),
   setVisibleSessions: (sessionIds) => ipcRenderer.invoke(DESKTOP_IPC.setVisibleSessions, sessionIds),
-  searchProjectFiles: (projectIdOrWorkspaceId, query, limit) =>
-    ipcRenderer.invoke(DESKTOP_IPC.searchProjectFiles, projectIdOrWorkspaceId, query, limit),
+  searchProjectFiles: (projectIdOrWorkspaceId, query, limit, includeIgnored) =>
+    ipcRenderer.invoke(DESKTOP_IPC.searchProjectFiles, projectIdOrWorkspaceId, query, limit, includeIgnored),
   searchWorkspaceText: (projectPath, options) =>
     ipcRenderer.invoke(DESKTOP_IPC.searchWorkspaceText, projectPath, options),
   replaceWorkspaceText: (projectPath, options, replacement, relPaths) =>
@@ -529,6 +529,8 @@ const api: DesktopApi = {
     ipcRenderer.invoke(DESKTOP_IPC.browserSetActiveGuest, sessionId, webContentsId, active),
   ...createBrowserTextureBridge(),
   browserPageControl: (sessionId, input) => ipcRenderer.invoke(DESKTOP_IPC.browserPageControl, sessionId, input),
+  browserPageMetadata: (sessionId) => ipcRenderer.invoke(DESKTOP_IPC.browserPageMetadata, sessionId),
+  browserPresentNative: (sessionId, rect) => ipcRenderer.invoke(DESKTOP_IPC.browserPresentNative, sessionId, rect),
   browserConfigureGuestViewport: (sessionId, webContentsId, config) =>
     ipcRenderer.invoke(DESKTOP_IPC.browserConfigureGuestViewport, sessionId, webContentsId, config),
   onBrowserGuestViewportChanged: (listener) => {
@@ -552,7 +554,6 @@ const api: DesktopApi = {
     return () => ipcRenderer.removeListener(DESKTOP_IPC.browserProfileImportProgress, receive);
   },
   browserHistorySearch: (query) => ipcRenderer.invoke(DESKTOP_IPC.browserHistorySearch, query),
-  browserClearData: (scopes) => ipcRenderer.invoke(DESKTOP_IPC.browserClearData, scopes),
   browserCredentialSuggestions: (sessionId) => ipcRenderer.invoke(DESKTOP_IPC.browserCredentialSuggestions, sessionId),
   browserCredentialFill: (sessionId, credentialId) =>
     ipcRenderer.invoke(DESKTOP_IPC.browserCredentialFill, sessionId, credentialId),

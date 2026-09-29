@@ -90,11 +90,14 @@ export function inlineConstants(formula) {
 }
 
 // A divisor that is a reference, a name, a function, or a bracketed expression
-// can be zero; a literal cannot. Any IF-family wrapper counts as a guard.
+// can be zero; a literal cannot. Any IF-family wrapper counts as a guard. A
+// compounding base — (1+rate), raised to a power or not — is zero only at a
+// rate of -100%: the discount factor 1/(1+r)^n was reported, and the IFERROR
+// the finding asks for would only hide a real error there.
 export function unguardedDivision(formula) {
   const text = formulaBody(formula);
   if (/(?<![A-Za-z0-9_.])(?:IFERROR|IFNA|IF|IFS)\s*\(/i.test(text)) return false;
-  return /\/\s*(?:\(|[A-Za-z_$'])/.test(text);
+  return /\/\s*(?:\(|[A-Za-z_$'])/.test(text.replace(/\/\s*\(\s*1\s*\+/g, '*(1+'));
 }
 
 // Single same-sheet references in a formula: not a range end, not another
@@ -482,7 +485,8 @@ export function mergeXlsxFormulaAudit(result, document, { auditProfile = '', she
     if (!cells.length) continue;
     const owner = `/sheet[${String(entry?.name || '').toLowerCase()}]`;
     if (!entry.truncated) readSheets.add(owner);
-    else for (const cell of cells) readCells.add(String(cell?.path || `${owner}/cell[${cell?.ref || ''}]`).toLowerCase());
+    else
+      for (const cell of cells) readCells.add(String(cell?.path || `${owner}/cell[${cell?.ref || ''}]`).toLowerCase());
   }
   const issues = (Array.isArray(result?.issues) ? result.issues : []).filter((entry) => {
     if (!SHARED_MODEL_VERDICTS.has(entry?.code)) return true;

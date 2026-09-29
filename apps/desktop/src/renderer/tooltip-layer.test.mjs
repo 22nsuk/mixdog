@@ -32,9 +32,14 @@ async function mount(html, t) {
 async function hover(target) {
   await act(async () => {
     target.dispatchEvent(new window.MouseEvent('pointerover', { bubbles: true }));
+    target.dispatchEvent(new window.MouseEvent('pointermove', { bubbles: true }));
     await new Promise((resolve) => window.setTimeout(resolve, 620));
   });
   return document.querySelector('[role="tooltip"]')?.textContent ?? null;
+}
+
+function key(type, name, init = {}) {
+  document.dispatchEvent(new window.KeyboardEvent(type, { key: name, bubbles: true, ...init }));
 }
 
 async function leave(target) {
@@ -123,7 +128,9 @@ test('keyboard focus shows help and Escape or activation dismisses it', async (t
   const host = await mount('<button aria-label="Open settings"><svg><path d="M0 0h1"/></svg></button>', t);
   const button = host.firstElementChild;
   await act(async () => {
+    key('keydown', 'Tab');
     button.focus();
+    key('keyup', 'Tab');
     await new Promise((resolve) => window.setTimeout(resolve, 170));
   });
   assert.equal(document.querySelector('[role="tooltip"]')?.textContent, 'Open settings');
@@ -131,6 +138,55 @@ test('keyboard focus shows help and Escape or activation dismisses it', async (t
   assert.equal(document.querySelector('[role="tooltip"]'), null);
   assert.equal(await hover(button), 'Open settings');
   await act(async () => button.click());
+  assert.equal(document.querySelector('[role="tooltip"]'), null);
+});
+
+test('a control that slides under a resting pointer stays silent until the pointer moves', async (t) => {
+  // Streaming rows, scrolls and click re-renders move content under a still
+  // pointer: the browser fires pointerover, but no pointermove.
+  const host = await mount('<button aria-label="Copy message"><svg><path d="M0 0h1"/></svg></button>', t);
+  const button = host.firstElementChild;
+  await act(async () => {
+    button.dispatchEvent(new window.MouseEvent('pointerover', { bubbles: true }));
+    await new Promise((resolve) => window.setTimeout(resolve, 620));
+  });
+  assert.equal(document.querySelector('[role="tooltip"]'), null);
+  await act(async () => {
+    button.dispatchEvent(new window.MouseEvent('pointermove', { bubbles: true }));
+    await new Promise((resolve) => window.setTimeout(resolve, 620));
+  });
+  assert.equal(document.querySelector('[role="tooltip"]')?.textContent, 'Copy message');
+});
+
+test('focus that script moves shows no help: a re-activated window, a trigger regaining focus, a shortcut', async (t) => {
+  const host = await mount(
+    `
+    <button aria-label="Open settings"><svg><path d="M0 0h1"/></svg></button>
+    <button aria-label="Model menu"><svg><path d="M0 0h1"/></svg></button>
+    <button aria-label="Sessions"><svg><path d="M0 0h1"/></svg></button>
+  `,
+    t
+  );
+  const [plain, trigger, shortcut] = host.children;
+  const settle = () => new Promise((resolve) => window.setTimeout(resolve, 170));
+  await act(async () => {
+    plain.focus();
+    await settle();
+  });
+  assert.equal(document.querySelector('[role="tooltip"]'), null);
+  await act(async () => {
+    key('keydown', 'Escape');
+    trigger.focus();
+    key('keyup', 'Escape');
+    await settle();
+  });
+  assert.equal(document.querySelector('[role="tooltip"]'), null);
+  await act(async () => {
+    key('keydown', 'Tab', { ctrlKey: true });
+    shortcut.focus();
+    key('keyup', 'Tab', { ctrlKey: true });
+    await settle();
+  });
   assert.equal(document.querySelector('[role="tooltip"]'), null);
 });
 

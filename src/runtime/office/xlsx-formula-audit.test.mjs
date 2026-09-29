@@ -66,6 +66,10 @@ test('inline constants and unguarded division follow the modelling rules', () =>
   assert.equal(unguardedDivision('=B5/100'), false);
   assert.equal(unguardedDivision('=IFERROR(B5/C5,0)'), false);
   assert.equal(unguardedDivision('=IF(C5=0,0,B5/C5)'), false);
+  // A discount factor's base is zero only at a -100% rate; a second division in the same formula still counts.
+  assert.equal(unguardedDivision('=1/(1+Assumptions!$B$9)^(C$3-$B$3)'), false);
+  assert.equal(unguardedDivision('=C7/(1+$B$9)'), false);
+  assert.equal(unguardedDivision('=C7/(1+$B$9)/D7'), true);
 });
 
 test('a table column where one row wears another number format is reported', () => {
@@ -444,7 +448,17 @@ test('financial-model audit reads notes, the Checks sheet, and merges into a hos
         { severity: 'warning', code: 'hardcode_missing_source', path: '/sheet[Big]/cell[B1]', message: 'host' },
       ],
     },
-    { sheets: [{ ...sheet('Big', [['A1', { value: 'x' }], ['B1', { value: 21 }]]), truncated: true }] },
+    {
+      sheets: [
+        {
+          ...sheet('Big', [
+            ['A1', { value: 'x' }],
+            ['B1', { value: 21 }],
+          ]),
+          truncated: true,
+        },
+      ],
+    },
     { auditProfile: 'financial-model' }
   );
   assert.deepEqual(
@@ -631,7 +645,11 @@ test('recalculation error summary tallies error cells by type with locations', a
 // hierarchy review on Excel and failed it portably.
 test('the workbook face on every cell is not a hierarchy', () => {
   const face = { fontName: '맑은 고딕', fontSize: 11 };
-  const cells = Array.from({ length: 12 }, (_, index) => ({ ref: `A${index + 1}`, value: `행 ${index + 1}`, style: face }));
+  const cells = Array.from({ length: 12 }, (_, index) => ({
+    ref: `A${index + 1}`,
+    value: `행 ${index + 1}`,
+    style: face,
+  }));
   const document = { sheets: [{ name: 'Data', path: '/sheet[Data]', cells }] };
   const codes = (sheetCells) =>
     reviewOfficeStructure({ format: 'xlsx', document: { sheets: [{ ...document.sheets[0], cells: sheetCells }] } }).map(

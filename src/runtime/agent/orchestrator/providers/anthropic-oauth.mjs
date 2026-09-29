@@ -8,7 +8,7 @@
 import { traceAgentSse, traceAgentUsage } from '../agent-trace.mjs';
 import { boundProviderAuthPath } from '../../../shared/provider-auth-binding.mjs';
 import { resolveAnthropicMaxTokens } from './anthropic-max-tokens.mjs';
-import { systemBlockItems, systemBlockTtl } from './anthropic-messages.mjs';
+import { MODELS, systemBlockItems, systemBlockTtl } from './anthropic-messages.mjs';
 import { prepareAnthropicImages } from './lib/anthropic-image-input.mjs';
 import {
   _loadModelCache,
@@ -525,6 +525,8 @@ export class AnthropicOAuthProvider {
       maxRetries: ANTHROPIC_MAX_MIDSTREAM_RETRIES,
       totalSignal,
       recovery,
+      onStageChange,
+      retry529: opts.retry529 !== false,
     });
 
     try {
@@ -772,41 +774,18 @@ export class AnthropicOAuthProvider {
     } catch (err) {
       if (!process.env.MIXDOG_QUIET_PROVIDER_LOG)
         process.stderr.write(`[anthropic-oauth] listModels fetch failed (${err.message})\n`);
-      // Fallback with full API model IDs. Short family tokens leaked
-      // through here would be accepted by setup and reintroduce the
-      // legacy shape. Env var override keeps this tracking defaults.
-      const opusId = process.env.ANTHROPIC_DEFAULT_OPUS_MODEL || 'claude-opus-4-8';
-      const sonnetId = process.env.ANTHROPIC_DEFAULT_SONNET_MODEL || 'claude-sonnet-4-6';
-      const haikuId = process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL || 'claude-haiku-4-5-20251001';
-      return [
-        {
-          id: opusId,
-          display: 'Opus (auto)',
-          family: 'opus',
-          provider: 'anthropic-oauth',
-          tier: 'family',
-          latest: true,
-          contextWindow: 1000000,
-        },
-        {
-          id: sonnetId,
-          display: 'Sonnet (auto)',
-          family: 'sonnet',
-          provider: 'anthropic-oauth',
-          tier: 'family',
-          latest: true,
-          contextWindow: 1000000,
-        },
-        {
-          id: haikuId,
-          display: 'Haiku (auto)',
-          family: 'haiku',
-          provider: 'anthropic-oauth',
-          tier: 'family',
-          latest: true,
-          contextWindow: 200000,
-        },
-      ];
+      // Fallback with full API model IDs (the shared offline list). Short
+      // family tokens leaked through here would be accepted by setup and
+      // reintroduce the legacy shape. ANTHROPIC_DEFAULT_<FAMILY>_MODEL
+      // overrides one family's id.
+      return MODELS.map((model) => ({
+        ...model,
+        id: process.env[`ANTHROPIC_DEFAULT_${model.family.toUpperCase()}_MODEL`] || model.id,
+        display: model.name,
+        provider: 'anthropic-oauth',
+        tier: 'family',
+        latest: true,
+      }));
     }
   }
 

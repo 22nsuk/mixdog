@@ -278,15 +278,24 @@ export function PaneSurfaceGate({
   label,
   transitionKey,
   fallback,
+  onRevealedChange,
   children,
 }: {
   ready: boolean;
   label: string;
   transitionKey?: string | number;
   fallback?: ReactNode;
+  /** The content became (in)visible. Hidden content cannot take focus, so a
+   *  surface that wants the keyboard asks again once it is revealed. */
+  onRevealedChange?(revealed: boolean): void;
   children: ReactNode;
 }) {
   const revealed = useStableSurfaceReveal(ready, transitionKey);
+  const onRevealedChangeRef = useRef(onRevealedChange);
+  onRevealedChangeRef.current = onRevealedChange;
+  useLayoutEffect(() => {
+    onRevealedChangeRef.current?.(revealed);
+  }, [revealed]);
   return (
     <div className="pane-surface-gate" data-ready={revealed ? 'true' : 'false'}>
       <div className="pane-surface-gate-content" aria-hidden={revealed ? undefined : true}>

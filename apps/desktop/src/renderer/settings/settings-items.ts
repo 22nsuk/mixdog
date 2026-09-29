@@ -51,7 +51,7 @@ export const SETTINGS_ITEMS = [
   // 'system-shell' stays TUI-only: the desktop hides the override (user
   // decision — automatic platform selection is the only sensible desktop
   // default; the shared config key remains editable from the TUI).
-  { value: 'developer', label: 'Developer', description: 'Developer-only options.', kind: 'open' },
+  { value: 'developer', label: 'Developer options', description: 'Developer-only options.', kind: 'open' },
   { value: 'update', label: 'Update', description: 'Check version and update mixdog.', kind: 'open' },
 ] as const satisfies ReadonlyArray<SettingsItem>;
 
@@ -133,7 +133,7 @@ export const SETTINGS_CATEGORIES = [
   // Runtime-driven developer toggles, grouped into headed sub-categories.
   {
     value: 'developer',
-    label: 'Developer',
+    label: 'Developer options',
     group: 'Support',
     items: ['developer'],
   },

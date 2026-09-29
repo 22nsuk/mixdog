@@ -306,7 +306,8 @@ export function transcriptScrollPosition(
 ): ScrollMetrics {
   const geometry = scrollGeometries.get(element);
   const extent = transcriptScrollExtent(element, observedViewportHeight);
-  const top = observedTop ?? (geometry ? Math.min(Math.max(0, geometry.scrollTop()), extent.maxScrollTop) : element.scrollTop);
+  const top =
+    observedTop ?? (geometry ? Math.min(Math.max(0, geometry.scrollTop()), extent.maxScrollTop) : element.scrollTop);
   return { top, ...extent };
 }
 

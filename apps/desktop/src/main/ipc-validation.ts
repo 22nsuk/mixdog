@@ -174,6 +174,7 @@ const CAPABILITY_ARITY = {
   updateProviderAccounts: [2, 2],
   getUsageDashboard: [0, 1],
   getUsageStats: [0, 1],
+  getQuotaHistory: [0, 1],
   consumeCodexRateLimitResetCredit: [1, 1],
   getSessionReviewDiff: [0, 0],
   getTurnReviewDiff: [0, 1],
@@ -216,6 +217,7 @@ const CAPABILITY_ARITY = {
   startMediaJob: [1, 1],
   cancelMediaJob: [1, 1],
   deleteMediaAsset: [1, 1],
+  deleteMediaAssets: [1, 1],
   openMediaAsset: [1, 1],
   openMediaFolder: [0, 1],
 } as const satisfies Record<DesktopCapability, readonly [number, number]>;
@@ -770,7 +772,7 @@ export function requiredExternalUrl(value: unknown): string {
   } catch {
     throw new TypeError('url is invalid.');
   }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+  if (url.protocol !== 'http:' && url.protocol !== 'https:' && url.protocol !== 'mailto:') {
     throw new TypeError('url protocol is unsupported.');
   }
   return url.toString();
@@ -870,7 +872,8 @@ export function requiredTextFileContent(value: unknown, name: string): string {
 }
 
 export function requiredTextFileEncoding(value: unknown): DesktopTextFileEncoding | undefined {
-  if (value === undefined) return undefined;
+  // The remote lane is JSON: an omitted encoding arrives as `null`.
+  if (value === undefined || value === null) return undefined;
   if (value === 'utf8' || value === 'utf8bom' || value === 'utf16le' || value === 'utf16be') {
     return value;
   }

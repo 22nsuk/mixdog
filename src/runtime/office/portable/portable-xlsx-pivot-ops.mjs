@@ -2,8 +2,9 @@
 // lay out, the source range read as a header row plus cached data rows, and
 // the destination the pivot part is written to. The pivot part itself is
 // written by portable-pivot.mjs.
-import { workbookSheets } from './portable-cells.mjs';
+import { cellStyleIndexes, columnLabel, setCellStylesInSheet, workbookSheets } from './portable-cells.mjs';
 import { summarizePivotFields, writePivotTable } from './portable-pivot.mjs';
+import { applyCellStyle, numberFormatId, resolveCellStyles } from './portable-sheet-styles.mjs';
 import { areaReference, parseAreaRange } from './portable-sheet-xml.mjs';
 import { sheetCellReader } from './portable-xlsx-cell-values.mjs';
 import { autofitWorksheetRange } from './portable-xlsx-range-layout.mjs';
@@ -50,6 +51,57 @@ async function pivotSourceTable(zip, xml, area) {
   return { headers, records };
 }
 
+// The pivot's figures in the format their source column carries, as Excel lays them out: written plain, 7,043 read
+// 7043 under a source column set #,##0. A pivot with a column field sums one value field across every data column;
+// without one, each data column is its own value field. The value field carries the format too: Excel lays a pivot
+// out again when it opens the file, from its definition, and the cells' own formats alone came back plain.
+async function formatPivotValues(zip, xml, area, destination, anchor, layout) {
+  const stylesXml = await zipText(zip, 'xl/styles.xml');
+  if (!stylesXml) return;
+  const styles = resolveCellStyles(stylesXml);
+  const sourceFormat = (field) => {
+    const ref = `${columnLabel(area.startCol + field)}${area.startRow + 1}`;
+    return styles[cellStyleIndexes(xml, [ref]).get(ref) ?? 0]?.numberFormat || '';
+  };
+  const formats = layout.valueFields.map(sourceFormat);
+  if (!formats.some(Boolean)) return;
+  let sheetXml = await zipText(zip, destination.path);
+  const headerRows = layout.columnField >= 0 ? 2 : 1;
+  const refs = [];
+  for (let row = anchor.startRow + headerRows; row < anchor.startRow + layout.rows; row += 1) {
+    for (let offset = 1; offset < layout.columns; offset += 1) {
+      const format = layout.columnField >= 0 ? formats[0] : formats[offset - 1];
+      if (format) refs.push({ ref: `${columnLabel(anchor.startCol + offset)}${row}`, format });
+    }
+  }
+  const current = cellStyleIndexes(
+    sheetXml,
+    refs.map((entry) => entry.ref)
+  );
+  let nextStyles = stylesXml;
+  const made = new Map();
+  const entries = refs.map(({ ref, format }) => {
+    const base = current.get(ref) ?? 0;
+    const key = `${base}\0${format}`;
+    if (!made.has(key)) {
+      const applied = applyCellStyle(nextStyles, base, { numberFormat: format });
+      nextStyles = applied.xml;
+      made.set(key, applied.index);
+    }
+    return { ref, style: made.get(key) };
+  });
+  sheetXml = setCellStylesInSheet(sheetXml, entries);
+  zip.file('xl/styles.xml', nextStyles);
+  zip.file(destination.path, sheetXml);
+  let table = await zipText(zip, layout.tablePart);
+  layout.valueFields.forEach((field, position) => {
+    const id = numberFormatId(nextStyles, formats[position]);
+    if (!id) return;
+    table = table.replace(new RegExp(`(<dataField\\b[^>]*\\bfld="${field}")([^>]*?)(\\/?>)`), `$1$2 numFmtId="${id}"$3`);
+  });
+  zip.file(layout.tablePart, table);
+}
+
 /** One row field and one column field over a bounded source range. */
 export async function addWorksheetPivotTable(zip, sheet, xml, op) {
   const area = parseAreaRange(op.source);
@@ -85,9 +137,16 @@ export async function addWorksheetPivotTable(zip, sheet, xml, op) {
     columnField: columnNames.length ? fieldIndex(columnNames[0]) : -1,
     valueFields: valueNames.map(fieldIndex),
   });
+  const anchor = parseAreaRange(String(op.destination || 'A1'));
+  await formatPivotValues(zip, xml, area, destination, anchor, {
+    valueFields: valueNames.map(fieldIndex),
+    columnField: columnNames.length ? fieldIndex(columnNames[0]) : -1,
+    rows: written.rows,
+    columns: written.columns,
+    tablePart: written.tablePart,
+  });
   // Excel fits a pivot's columns to what they hold when it lays the pivot out ("Autofit column widths on update" is
   // on by default); written at the sheet default, "Channel Partners" and 11,388,173 were cut to ### on the page.
-  const anchor = parseAreaRange(String(op.destination || 'A1'));
   await autofitWorksheetRange(zip, destination, await zipText(zip, destination.path), {
     op: 'autofit_range',
     range: areaReference({

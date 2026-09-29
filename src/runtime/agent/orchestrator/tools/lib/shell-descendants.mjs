@@ -19,6 +19,7 @@
 //            process-table read (shared with mcp/child-tree.mjs) which names
 //            the survivors that are still linked to the shell pid.
 import { collectDescendantProcesses, killProcessTrees } from '../../mcp/child-tree.mjs';
+import { isPidAlive } from '../../../../shared/pid-liveness.mjs';
 
 const isWin = process.platform === 'win32';
 
@@ -36,17 +37,6 @@ export const STDIO_HELD_AFTER_EXIT_MS = 1_500;
 // leaves the actual worker running (verified) and would only destroy the
 // witness.
 const CONSOLE_HOST = /^conhost\.exe$/i;
-
-export function pidAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    // EPERM: exists but is not ours to signal. ESRCH: gone.
-    return error?.code === 'EPERM';
-  }
-}
 
 function groupAlive(pgid) {
   if (!Number.isInteger(pgid) || pgid <= 0) return false;
@@ -85,7 +75,7 @@ export async function probeShellDescendants({ pid, stdioHeld = false } = {}) {
   }
   if (!stdioHeld) return null;
   const found = await collectDescendantProcesses(root).catch(() => []);
-  const live = found.filter((entry) => pidAlive(entry.pid));
+  const live = found.filter((entry) => isPidAlive(entry.pid));
   if (live.length === 0) return null;
   const killPids = live.filter((entry) => !CONSOLE_HOST.test(entry.name)).map((entry) => entry.pid);
   return {
@@ -100,7 +90,7 @@ export async function probeShellDescendants({ pid, stdioHeld = false } = {}) {
 export function descendantsAlive(handle) {
   if (!handle) return false;
   if (handle.groupPid) return groupAlive(handle.groupPid);
-  return handle.watchPids.some((pid) => pidAlive(pid));
+  return handle.watchPids.some((pid) => isPidAlive(pid));
 }
 
 /** Resolve once every observed survivor has exited. Poll-based on purpose:
@@ -138,6 +128,6 @@ export async function killShellDescendants(handle) {
     return { terminated: !groupAlive(handle.groupPid), survivors: [] };
   }
   await killProcessTrees(handle.killPids).catch(() => {});
-  const survivors = handle.watchPids.filter((pid) => pidAlive(pid));
+  const survivors = handle.watchPids.filter((pid) => isPidAlive(pid));
   return { terminated: survivors.length === 0, survivors };
 }

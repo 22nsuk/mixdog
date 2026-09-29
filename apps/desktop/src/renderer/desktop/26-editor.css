@@ -168,7 +168,7 @@
 }
 .editor-breadcrumb-picker {
   position: fixed;
-  z-index: 120;
+  z-index: var(--mx-menu-z-index);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -280,8 +280,10 @@
 .editor-breadcrumb-picker-tree > button:hover,
 .editor-breadcrumb-picker-tree > button:focus-visible,
 .editor-breadcrumb-picker-tree > button.selected {
+  /* The filled row is the accent SURFACE: white on the accent ink
+     (#8ab4f8 in dark) read 2.1:1. */
   color: var(--mx-grey-50);
-  background: var(--mx-focus);
+  background: var(--mx-accent-bg);
   outline: 0;
 }
 .editor-breadcrumb-picker-tree > button:hover > svg,
@@ -340,11 +342,6 @@
   flex: 0 0 22px;
   display: flex;
   align-items: center;
-}
-/* Unfocused panes RESERVE the statusbar row (no 22px focus jump) but hide
-   its content; visibility also removes it from hit-testing. */
-.editor-statusbar-idle {
-  visibility: hidden;
   justify-content: space-between;
   gap: 8px;
   padding: 0 4px;
@@ -352,6 +349,11 @@
   color: var(--mx-text);
   background: var(--mx-window-band);
   font-size: var(--mx-font-minor);
+}
+/* Unfocused panes RESERVE the statusbar row (no 22px focus jump) but hide
+   its content; visibility also removes it from hit-testing. */
+.editor-statusbar-idle {
+  visibility: hidden;
 }
 .editor-statusbar-left,
 .editor-statusbar-right {
@@ -533,7 +535,7 @@
   border-radius: var(--mx-radius-sm);
 }
 .editor-call-hierarchy-tree > [role="treeitem"].selected {
-  background: var(--mx-focus);
+  background: var(--mx-accent-bg);
   color: var(--mx-grey-50);
 }
 .editor-call-hierarchy-row {
@@ -856,145 +858,7 @@
     max-height: calc(100vh - 76px);
   }
 }
-.dock-task-row {
-  min-height: 36px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 3px 6px;
-}
-.dock-task-row + .dock-task-row {
-  border-top: 0;
-}
-.dock-task-row > i {
-  width: 6px;
-  height: 6px;
-  flex: 0 0 6px;
-  border-radius: 50%;
-  background: var(--mx-success);
-}
-.dock-task-row[data-state="done"] > i {
-  background: var(--mx-icon-muted);
-}
-.dock-task-row[data-state="failed"] > i {
-  background: var(--mx-danger);
-}
-.dock-task-copy {
-  min-width: 0;
-  flex: 1;
-  display: grid;
-}
-.dock-task-copy b {
-  font-size: var(--mx-font-ui);
-  font-weight: var(--mx-weight-regular);
-  line-height: var(--mx-line-ui);
-  letter-spacing: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.dock-task-copy small {
-  color: var(--mx-text-faint);
-  font-size: var(--mx-font-meta);
-  font-weight: var(--mx-weight-regular);
-  line-height: var(--mx-line-meta);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.dock-task-row > span {
-  flex: 0 0 auto;
-  color: var(--mx-text-faint);
-  font-size: var(--mx-font-meta);
-  font-variant-numeric: tabular-nums;
-}
-/* Rows are buttons now (click → output viewer). */
-.dock-task-row {
-  border: 0;
-  background: transparent;
-  text-align: left;
-  cursor: pointer;
-}
-.dock-task-row:hover:not(:disabled) {
-  background: var(--mx-hover);
-  border-radius: var(--mx-radius-sm);
-}
-.dock-task-row:disabled {
-  cursor: default;
-}
-/* Agent output viewer. */
-.dock-agent-view {
-  min-height: 0;
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.dock-agent-view header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.dock-agent-view header b {
-  font-size: var(--mx-font-ui);
-  font-weight: var(--mx-weight-semibold);
-  line-height: var(--mx-line-ui);
-  letter-spacing: 0;
-}
-.dock-agent-view header span {
-  margin-left: auto;
-  color: var(--mx-text-faint);
-  font-size: var(--mx-font-meta);
-}
-.dock-agent-view header span[data-state="failed"] {
-  color: var(--mx-danger);
-}
-.dock-agent-back {
-  width: 24px;
-  height: 24px;
-  display: grid;
-  place-items: center;
-  border: 0;
-  border-radius: var(--mx-radius-md);
-  color: var(--mx-icon-muted);
-  background: transparent;
-  cursor: pointer;
-}
-.dock-agent-back:hover {
-  color: var(--mx-icon);
-  background: var(--mx-hover);
-}
-.dock-agent-view pre {
-  min-height: 0;
-  flex: 1;
-  overflow: auto;
-  margin: 0;
-  padding: 10px 12px;
-  border-radius: var(--mx-radius-md);
-  color: var(--mx-text);
-  background: var(--mx-bg-base);
-  box-shadow: inset 0 0 0 0.5px var(--mx-border-muted);
-  font-size: var(--mx-font-minor);
-  line-height: var(--mx-line-minor);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-/* Terminal tab: always-dark surface (Cursor grammar) so ANSI palettes read. */
-/* Dock Git panel. */
-.dock-git {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.dock-git-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.dock-git-header b {
-  font-size: var(--mx-font-ui);
-  font-weight: var(--mx-weight-semibold);
-}
+/* ReviewPane header Git actions (push, clean push). */
 .dock-git-sync {
   padding: 2px 7px;
   border: 0;
@@ -1009,303 +873,6 @@
   background: var(--mx-hover);
 }
 .dock-git-sync:disabled {
-  cursor: default;
-}
-.dock-git-base {
-  color: var(--mx-text-faint);
-  font-size: var(--mx-font-minor);
-}
-.dock-git-total {
-  flex: 0 0 auto;
-  font-size: var(--mx-font-meta);
-}
-.dock-git-refresh {
-  width: 24px;
-  height: 24px;
-  margin-left: auto;
-  display: grid;
-  place-items: center;
-  border: 0;
-  border-radius: var(--mx-radius-md);
-  color: var(--mx-icon-muted);
-  background: transparent;
-  cursor: pointer;
-}
-.dock-git-refresh:hover {
-  color: var(--mx-icon);
-  background: var(--mx-hover);
-}
-/* Group headers: muted band, uppercase label,
-   count, right-aligned bulk action. */
-.dock-git section h4 {
-  min-height: 26px;
-  margin: 4px 0 2px;
-  padding: 0 8px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  border-radius: var(--mx-radius-md);
-  color: var(--mx-text-muted);
-  background: var(--mx-pressed);
-  font-size: var(--mx-font-meta);
-  font-weight: var(--mx-weight-semibold);
-  text-transform: uppercase;
-  letter-spacing: var(--mx-tracking-wide);
-}
-.dock-git section h4 small {
-  color: var(--mx-text-faint);
-  font-weight: var(--mx-weight-regular);
-  font-size: var(--mx-font-meta);
-}
-.dock-git-group-action {
-  margin-left: auto;
-  padding: 2px 6px;
-  border: 0;
-  border-radius: var(--mx-radius-sm);
-  color: var(--mx-text-muted);
-  background: transparent;
-  font-size: var(--mx-font-meta);
-  font-weight: var(--mx-weight-regular);
-  text-transform: none;
-  letter-spacing: 0;
-  cursor: pointer;
-}
-.dock-git-group-action:hover:not(:disabled) {
-  color: var(--mx-text);
-  background: var(--mx-hover);
-}
-.dock-git-empty-group {
-  margin: 2px 0 4px;
-  padding: 0 8px;
-  color: var(--mx-text-faint);
-  font-size: var(--mx-font-minor);
-  font-style: italic;
-}
-.dock-git-row {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  min-height: 26px;
-}
-.dock-git-path {
-  min-width: 0;
-  flex: 1;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 2px 6px;
-  border: 0;
-  border-radius: var(--mx-radius-md);
-  color: var(--mx-text);
-  background: transparent;
-  font-size: var(--mx-font-minor);
-  text-align: left;
-  cursor: pointer;
-}
-.dock-git-path:hover:not(:disabled) {
-  background: var(--mx-hover);
-}
-.dock-git-path:disabled {
-  cursor: default;
-}
-.dock-git-path code {
-  flex: 0 0 auto;
-  color: var(--mx-text-faint);
-  font-size: var(--mx-font-meta);
-}
-/* Git status-letter colors (functional signals). */
-.dock-git-path code[data-code="A"],
-.dock-git-path code[data-code="U"] {
-  color: var(--mx-success);
-}
-.dock-git-path code[data-code="M"] {
-  color: var(--mx-warning);
-}
-.dock-git-path code[data-code="D"] {
-  color: var(--mx-danger);
-}
-.dock-git-path span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  direction: rtl;
-  text-align: left;
-}
-.dock-git-action {
-  width: 22px;
-  height: 22px;
-  flex: 0 0 22px;
-  border: 0;
-  border-radius: var(--mx-radius-md);
-  color: var(--mx-text-muted);
-  background: transparent;
-  font-size: var(--mx-font-ui);
-  cursor: pointer;
-}
-.dock-git-action:hover:not(:disabled) {
-  color: var(--mx-text);
-  background: var(--mx-hover);
-}
-.dock-git-row-stats {
-  flex: 0 0 auto;
-  font-size: var(--mx-font-meta);
-}
-.dock-git-revert-confirm {
-  flex: 0 0 auto;
-  min-height: 22px;
-  padding: 0 8px;
-  border: 0;
-  border-radius: var(--mx-radius-md);
-  color: var(--mx-grey-100);
-  background: var(--mx-bg-contrast);
-  font-size: var(--mx-font-meta);
-  font-weight: var(--mx-weight-regular);
-  cursor: pointer;
-}
-/* Inline diff accordion under the clicked row (VSCode SCM grammar). */
-.dock-git-row[data-active] .dock-git-path {
-  background: var(--mx-pressed);
-}
-.dock-git-inline-diff {
-  margin: 2px 0 6px 12px;
-  padding-left: 8px;
-  border-left: 2px solid var(--mx-border-muted);
-  min-width: 0;
-}
-.dock-git-inline-diff .utility-dock-empty {
-  padding: 6px 0;
-  text-align: left;
-}
-.dock-git-commit {
-  display: grid;
-  gap: 6px;
-}
-/* Changes/Commits sub-tabs. */
-.dock-git-views {
-  display: flex;
-  border-bottom: 0.5px solid var(--mx-border-muted);
-}
-.dock-git-views > button {
-  flex: 1;
-  min-height: 30px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  border: 0;
-  border-bottom: 1px solid transparent;
-  color: var(--mx-text-muted);
-  background: transparent;
-  font-size: var(--mx-font-minor);
-  font-weight: var(--mx-weight-regular);
-  cursor: pointer;
-}
-.dock-git-views > button:hover {
-  color: var(--mx-text);
-}
-.dock-git-views > button.active {
-  color: var(--mx-text);
-  border-bottom-color: var(--mx-text);
-}
-.dock-git-views > button small {
-  padding: 0 6px;
-  border-radius: var(--mx-radius-pill);
-  color: var(--mx-text-muted);
-  background: var(--mx-pressed);
-  font-size: var(--mx-font-micro);
-  line-height: var(--mx-line-meta);
-}
-/* History list. */
-.dock-git-log {
-  display: grid;
-}
-.dock-git-commit-row {
-  width: 100%;
-  min-height: 40px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 8px;
-  border: 0;
-  border-radius: var(--mx-radius-md);
-  background: transparent;
-  text-align: left;
-  cursor: pointer;
-}
-.dock-git-commit-row:hover {
-  background: var(--mx-hover);
-}
-.dock-git-commit-row[data-active] {
-  background: var(--mx-pressed);
-}
-.dock-git-commit-row > div {
-  min-width: 0;
-  flex: 1;
-  display: grid;
-}
-.dock-git-commit-row b {
-  color: var(--mx-text);
-  font-size: var(--mx-font-minor);
-  font-weight: var(--mx-weight-semibold);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.dock-git-commit-row small {
-  color: var(--mx-text-faint);
-  font-size: var(--mx-font-meta);
-}
-/* Unpushed marker: one subtle dot per row — the count already lives in the
-   header chip and the Commits band. */
-.dock-git-unpushed {
-  flex: 0 0 6px;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--mx-warning);
-}
-.dock-git-commit footer {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.dock-git-commit footer > span {
-  color: var(--mx-text-faint);
-  font-size: var(--mx-font-meta);
-}
-.dock-git-commit footer > button {
-  margin-left: auto;
-  flex: 0 0 auto;
-  padding: 0 14px;
-}
-.dock-git-commit textarea {
-  min-height: 48px;
-  padding: 8px 10px;
-  border-radius: var(--mx-radius-md);
-  color: var(--mx-text);
-  background: var(--mx-bg-base);
-  box-shadow: inset 0 0 0 0.5px var(--mx-border-muted);
-  font-size: var(--mx-font-ui);
-}
-.dock-git-commit button {
-  justify-self: stretch;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  min-height: 28px;
-  padding: 0 12px;
-  border: 0;
-  border-radius: var(--mx-radius-md);
-  color: var(--mx-grey-100);
-  background: var(--mx-bg-contrast);
-  font-size: var(--mx-font-minor);
-  font-weight: var(--mx-weight-regular);
-  cursor: pointer;
-}
-.dock-git-commit button:disabled {
-  opacity: var(--mx-op-disabled);
   cursor: default;
 }
 .dock-git-clean-push {

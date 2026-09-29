@@ -4,6 +4,7 @@
  * fresh socket (true) or throw the error to surface.
  */
 import {
+  isToolInputCut,
   markProviderRecoveryExhausted,
   STREAM_STALL_RETRY_BUDGET_MS,
   shouldDropPreviousResponseId,
@@ -65,6 +66,9 @@ export async function resolveStreamFailure(ctx, err, { attemptIndex, entry, midS
   const { externalSignal, stallRetryBudget } = ctx.deps;
   stampStreamFailure(ctx, err, { entry, midState });
   if (stripReasoningReplay(ctx, err, { attemptIndex, entry })) return true;
+  // A cut while a tool call's arguments were streaming is replayed by the
+  // agent loop with a split-call notice, never re-sent unchanged here.
+  if (isToolInputCut(err)) throw ctx.surface(err);
   const classifier = err?.unsafeToRetry === true ? null : _classifyMidstreamError(err, midState);
   if (classifier === 'stream_stalled' && !stallRetryBudget.allowStallRetry()) {
     try {
@@ -84,7 +88,7 @@ export async function resolveStreamFailure(ctx, err, { attemptIndex, entry, midS
       tag(entry, { lastResponseId: null });
     }
     ctx.scheduleRetry(err, { attemptIndex, classifier, retryLimit, remember: true });
-    await ctx.backoff(attemptIndex + 1);
+    await ctx.backoff(attemptIndex + 1, err);
     return true;
   }
   // Not retryable, OR we've already exhausted the retry budget. Do not

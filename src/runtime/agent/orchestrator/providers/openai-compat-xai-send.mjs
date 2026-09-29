@@ -123,6 +123,7 @@ export async function sendXaiResponses(provider, messages, useModel, tools, opts
       {
         signal: totalSignal.signal,
         onRetry: compatStreamRetryReporter('xai:responses', opts),
+        retry529: opts.retry529,
       }
     );
   } finally {

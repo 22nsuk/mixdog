@@ -283,11 +283,16 @@ export function WorkbenchQuickAccess({
     if (!commandMode) {
       return [...new Set(files)].map((path) => ({ key: `file:${path}`, kind: 'file', path }));
     }
+    // Rows render translated, so a query matches what the user reads; the
+    // English command names keep matching too.
     return commands
-      .map((command) => ({
-        command,
-        score: fuzzyScore(`${command.category}: ${command.label}`, commandQuery),
-      }))
+      .map((command) => {
+        const scores = [
+          fuzzyScore(`${t(command.category)}: ${t(command.label)}`, commandQuery),
+          fuzzyScore(`${command.category}: ${command.label}`, commandQuery),
+        ].filter((score): score is number => score !== null);
+        return { command, score: scores.length ? Math.min(...scores) : null };
+      })
       .filter((entry): entry is { command: WorkbenchCommand; score: number } => entry.score !== null)
       .sort((left, right) => left.score - right.score || left.command.label.localeCompare(right.command.label))
       .map(({ command }) => ({ key: `command:${command.id}`, kind: 'command', command }));

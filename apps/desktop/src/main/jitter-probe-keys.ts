@@ -10,7 +10,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { BrowserWindow } from 'electron';
 import { assistantMarkdown, coldHistoryItems, paragraph } from './jitter-probe-fixtures';
-import { waitForProbeSessionRow } from './jitter-probe-session';
+import { TOOL_DISCLOSURE_HEADERS, waitForProbeSessionRow } from './jitter-probe-session';
 
 interface KeysProbeDeps {
   window: BrowserWindow;
@@ -191,7 +191,7 @@ export async function runKeysProbe({
       const el = ${pickKeysTranscript};
       if (!el) return null;
       const box = el.getBoundingClientRect();
-      return [...el.querySelectorAll('.tool-card .tool-header')]
+      return [...el.querySelectorAll(${JSON.stringify(TOOL_DISCLOSURE_HEADERS)})]
         .find((node) => {
           const rect = node.getBoundingClientRect();
           return rect.top >= box.top && rect.bottom <= box.bottom;

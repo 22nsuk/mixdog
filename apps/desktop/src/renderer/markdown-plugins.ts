@@ -401,6 +401,9 @@ function codeMention(
   // Without an extension only well-known names count (`scripts/Dockerfile`,
   // `.gitignore`, `.env.local`): `owner/repo` and `@scope/package` are not files.
   const knownName = BARE_FILE_NAMES.has(name.toLowerCase()) || /^\.env\./i.test(name);
+  // A drive path without an extension names a folder whose trailing separator
+  // was left off (`C:\Temp\refs`); `owner/repo` never carries a drive.
+  if (drive && !extension && !knownName) return { path: `${path}${path[2]}`, bare: false };
   if (!extension && !knownName && !(allowIncompletePath && hasSeparator)) return null;
   if (!hasSeparator && !knownName && !BARE_FILE_EXTENSIONS.has(extension)) return null;
   return { path, bare: !hasSeparator, ...matchedLocation(match?.groups) };

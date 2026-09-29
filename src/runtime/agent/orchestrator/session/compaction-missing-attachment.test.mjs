@@ -65,7 +65,13 @@ function attachmentContent(tag) {
     content: [
       { type: 'text', text: `[Image: source: shot-${tag}.png]` },
       { type: 'image', mimeType: 'image/png', attachmentRef: image.ref, sizeBytes: image.sizeBytes },
-      { type: 'file', mimeType: 'text/plain', filename: 'notes.txt', attachmentRef: file.ref, sizeBytes: file.sizeBytes },
+      {
+        type: 'file',
+        mimeType: 'text/plain',
+        filename: 'notes.txt',
+        attachmentRef: file.ref,
+        sizeBytes: file.sizeBytes,
+      },
     ],
   };
 }

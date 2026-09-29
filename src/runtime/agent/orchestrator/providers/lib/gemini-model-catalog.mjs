@@ -1,12 +1,12 @@
 import { getLlmDispatcher } from '../../../../shared/llm/http-agent.mjs';
 import { makeModelCache } from '../model-cache.mjs';
 
+// Offline fallback (no key or /models failure) mirroring the live catalog's
+// current generation. The first entry is the availability-probe model.
 export const GEMINI_MODELS = [
-  { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash Preview', provider: 'gemini', contextWindow: 1048576 },
+  { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash', provider: 'gemini', contextWindow: 1048576 },
   { id: 'gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro Preview', provider: 'gemini', contextWindow: 1048576 },
-  { id: 'gemini-3-pro-preview', name: 'Gemini 3 Pro Preview', provider: 'gemini', contextWindow: 1048576 },
-  { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', provider: 'gemini', contextWindow: 1048576 },
-  { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', provider: 'gemini', contextWindow: 1048576 },
+  { id: 'gemini-3.5-flash-lite', name: 'Gemini 3.5 Flash Lite', provider: 'gemini', contextWindow: 1048576 },
 ];
 
 export const DEFAULT_GEMINI_MODEL = GEMINI_MODELS[0].id;

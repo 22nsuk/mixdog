@@ -36,7 +36,10 @@ pub struct Shared {
 impl Shared {
     pub fn record(&self, own: bool) {
         let tick = now_ms();
-        let mut ledger = self.ledger.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut ledger = self
+            .ledger
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         ledger.latest_tick = tick;
         ledger.latest_own = own;
         if own {
@@ -57,7 +60,10 @@ impl Shared {
     pub fn mark_own_input(&self, grace_ms: u64) {
         let until = now_ms() + grace_ms;
         self.own_until.fetch_max(until, Ordering::SeqCst);
-        let mut ledger = self.ledger.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut ledger = self
+            .ledger
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         ledger.last_own_tick = now_ms();
     }
 }
@@ -89,7 +95,11 @@ impl Observer {
     }
 
     pub fn read(&self) -> Snapshot {
-        let ledger = self.shared.ledger.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let ledger = self
+            .shared
+            .ledger
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         Snapshot {
             ready: self.shared.ready.load(Ordering::SeqCst),
             generation: self.generation.clone(),
@@ -101,11 +111,19 @@ impl Observer {
 
     /// Milliseconds since input that was not this process's own.
     pub fn foreign_idle_ms(&self) -> u64 {
-        let ledger = self.shared.ledger.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let ledger = self
+            .shared
+            .ledger
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if ledger.foreign_sequence == 0 {
             return u32::MAX as u64;
         }
-        let last_foreign = if ledger.latest_own { 0 } else { ledger.latest_tick };
+        let last_foreign = if ledger.latest_own {
+            0
+        } else {
+            ledger.latest_tick
+        };
         if last_foreign == 0 {
             // The newest event was ours; the foreign one is at least that old.
             return now_ms().saturating_sub(ledger.last_own_tick);
@@ -138,10 +156,17 @@ impl Scope {
         Ok(())
     }
 
-    pub fn begin_expected(&mut self, observer: &Observer, generation: &str, sequence: i64) -> Result<(), String> {
+    pub fn begin_expected(
+        &mut self,
+        observer: &Observer,
+        generation: &str,
+        sequence: i64,
+    ) -> Result<(), String> {
         let value = observer.read();
         if !value.ready || value.generation != generation {
-            return Err("input_observation_unavailable: original observation is unavailable".into());
+            return Err(
+                "input_observation_unavailable: original observation is unavailable".into(),
+            );
         }
         if value.sequence != sequence {
             return Err("user_input_active: observation was superseded by external input".into());
@@ -185,7 +210,10 @@ mod tests {
         observer.shared.record(true);
         scope.assert_continue(&observer).unwrap();
         observer.shared.record(false);
-        assert!(scope.assert_continue(&observer).unwrap_err().starts_with("user_input_active"));
+        assert!(scope
+            .assert_continue(&observer)
+            .unwrap_err()
+            .starts_with("user_input_active"));
         scope.end();
         observer.shared.record(false);
         scope.assert_continue(&observer).unwrap();
@@ -195,7 +223,10 @@ mod tests {
     fn unready_observer_refuses_input() {
         let observer = Observer::new();
         let mut scope = Scope::default();
-        assert!(scope.begin(&observer).unwrap_err().starts_with("input_observation_unavailable"));
+        assert!(scope
+            .begin(&observer)
+            .unwrap_err()
+            .starts_with("input_observation_unavailable"));
     }
 
     #[test]

@@ -21,6 +21,8 @@ import {
   mergeWordCellProperties,
   mergeWordRunFonts,
   replaceDocxTable,
+  missingDocxCellError,
+  missingDocxRowError,
   replaceWordProperties,
   rowCellMatches,
   tableRowMatches,
@@ -123,16 +125,22 @@ function cachedTocPages(cache) {
   const pages = new Map();
   for (const line of String(cache).split(/<w:r><w:br\/><\/w:r>/)) {
     const texts = [...line.matchAll(/<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/g)].map((match) => xmlDecode(match[1]));
-    if (texts.length === 2 && /<w:tab\/>/.test(line) && /^\d+$/.test(texts[1])) pages.set(texts[0].trim(), Number(texts[1]));
+    if (texts.length === 2 && /<w:tab\/>/.test(line) && /^\d+$/.test(texts[1]))
+      pages.set(texts[0].trim(), Number(texts[1]));
   }
   return pages;
 }
 
+// The heading levels a contents field lists, by its \o switch (1-3 when it names none).
+function tocFieldLevels(instruction) {
+  const range = /\\o\s*(?:"|&quot;)(\d+)-(\d+)(?:"|&quot;)/.exec(instruction);
+  const lower = Math.max(1, Number(range?.[1]) || 1);
+  return { lower, upper: Math.max(lower, Number(range?.[2]) || 3) };
+}
+
 function rebuildTableOfContents(current, headingLevels, pageFor) {
   return current.replace(TOC_FIELD, (_whole, attributes, instruction, cache) => {
-    const range = /\\o\s*(?:"|&quot;)(\d+)-(\d+)(?:"|&quot;)/.exec(instruction);
-    const lower = Math.max(1, Number(range?.[1]) || 1);
-    const upper = Math.max(lower, Number(range?.[2]) || 3);
+    const { lower, upper } = tocFieldLevels(instruction);
     const carried = cachedTocPages(cache);
     const entries = docxTocEntries(current, lower, upper, headingLevels).map((entry, index) => ({
       ...entry,
@@ -155,37 +163,51 @@ export async function refreshDocxTableOfContents(zip) {
 }
 
 /** The page every contents entry lands on, read from a rendered copy of the document: `pageTexts` is each page's
- *  text with the whitespace removed. The contents page itself lists every heading once, so there a heading counts
- *  only when it appears a second time. Returns whether the cache changed; the paragraph holding the field takes a
- *  right tab with a dot leader on the text edge so the numbers line up. */
+ *  text with the whitespace removed. The rendered text meets the headings in document order, and the contents list
+ *  itself — each entry once more, on one page or across several — where the field stands; walked in that order, a
+ *  heading is found past the list and past the heading before it. The walk takes the field's own levels: read as
+ *  every level, a list of levels 1-2 in a document with level 3 headings was found on no page, and each entry was
+ *  numbered with the contents page it is listed on. Returns whether the cache changed; the paragraph holding the
+ *  field takes a right tab with a dot leader on the text edge so the numbers line up. */
 export async function writeDocxTocPages(zip, pageTexts) {
   const current = await zipText(zip, 'word/document.xml');
-  if (!/<w:fldSimple\b[^>]*\bw:instr="[^"]*TOC/.test(current)) return false;
+  const field = /<w:fldSimple\b[^>]*\bw:instr="([^"]*TOC[^"]*)"/.exec(current);
+  if (!field) return false;
   const headingLevels = await docxHeadingLevels(zip);
+  const { lower, upper } = tocFieldLevels(field[1]);
   const squash = (value) => String(value).replace(/\s+/g, '');
-  const occurrences = (page, text) => (text ? page.split(text).length - 1 : 0);
-  const entries = docxTocEntries(current, 1, 9, headingLevels);
-  const tocPage = pageTexts.findIndex((page) => entries.length && entries.every((entry) => page.includes(squash(entry.text))));
-  let cursor = Math.max(0, tocPage);
-  const pageFor = (entry) => {
-    const text = squash(entry.text);
-    for (let index = cursor; index < pageTexts.length; index += 1) {
-      if (occurrences(pageTexts[index], text) >= (index === tocPage ? 2 : 1)) {
-        cursor = index;
-        return index + 1;
-      }
-    }
-    return undefined;
+  const entries = docxTocEntries(current, lower, upper, headingLevels);
+  const above = docxTocEntries(current.slice(0, field.index), lower, upper, headingLevels).length;
+  const text = pageTexts.join('');
+  const pageStarts = [];
+  for (let index = 0, offset = 0; index < pageTexts.length; offset += pageTexts[index].length, index += 1)
+    pageStarts.push(offset);
+  let cursor = 0;
+  const pageOf = (entry) => {
+    const needle = squash(entry.text);
+    const at = needle ? text.indexOf(needle, cursor) : -1;
+    if (at < 0) return undefined;
+    cursor = at + needle.length;
+    return pageStarts.findLastIndex((start) => start <= at) + 1;
   };
+  const pages = entries.slice(0, above).map(pageOf);
+  for (const entry of entries) pageOf(entry);
+  pages.push(...entries.slice(above).map(pageOf));
+  const pageFor = (_entry, index) => pages[index];
   let next = rebuildTableOfContents(current, headingLevels, pageFor);
   // The field's paragraph: a right tab at the text edge of its section, behind dots.
-  next = next.replace(/<w:p(?:\s[^>]*)?>(?:(?!<\/w:p>)[\s\S])*?<w:fldSimple\b[^>]*\bw:instr="[^"]*TOC[\s\S]*?<\/w:p>/, (paragraph, offset) => {
-    const section = /<w:sectPr\b[\s\S]*?<\/w:sectPr>/.exec(next.slice(offset))?.[0] || '';
-    const width = Number(/<w:pgSz\b[^>]*\bw:w="(\d+)"/.exec(section)?.[1]) || 11906;
-    const left = Number(/<w:pgMar\b[^>]*\bw:left="(\d+)"/.exec(section)?.[1]) || 1440;
-    const right = Number(/<w:pgMar\b[^>]*\bw:right="(\d+)"/.exec(section)?.[1]) || 1440;
-    return patchParagraphFormat(paragraph, { tabStops: [{ position: (width - left - right) / 20, alignment: 'right', leader: 'dot' }] });
-  });
+  next = next.replace(
+    /<w:p(?:\s[^>]*)?>(?:(?!<\/w:p>)[\s\S])*?<w:fldSimple\b[^>]*\bw:instr="[^"]*TOC[\s\S]*?<\/w:p>/,
+    (paragraph, offset) => {
+      const section = /<w:sectPr\b[\s\S]*?<\/w:sectPr>/.exec(next.slice(offset))?.[0] || '';
+      const width = Number(/<w:pgSz\b[^>]*\bw:w="(\d+)"/.exec(section)?.[1]) || 11906;
+      const left = Number(/<w:pgMar\b[^>]*\bw:left="(\d+)"/.exec(section)?.[1]) || 1440;
+      const right = Number(/<w:pgMar\b[^>]*\bw:right="(\d+)"/.exec(section)?.[1]) || 1440;
+      return patchParagraphFormat(paragraph, {
+        tabStops: [{ position: (width - left - right) / 20, alignment: 'right', leader: 'dot' }],
+      });
+    }
+  );
   if (next === current) return false;
   zip.file('word/document.xml', next);
   return true;
@@ -335,7 +357,9 @@ export async function setDocxDocumentFont(zip, op) {
     name: String(properties.name || '').trim(),
     nameEastAsia: String(properties.nameEastAsia || '').trim(),
     size: Number(properties.size) || 0,
-    color: String(properties.color || '').replace(/^#/, '').trim(),
+    color: String(properties.color || '')
+      .replace(/^#/, '')
+      .trim(),
   };
   if (!font.name && !font.nameEastAsia && !(font.size > 0) && !font.color) {
     throw new Error('set_document_font needs properties.name, nameEastAsia, size, or color');
@@ -345,15 +369,18 @@ export async function setDocxDocumentFont(zip, op) {
   const defaults = /<w:rPrDefault>\s*<w:rPr>([\s\S]*?)<\/w:rPr>\s*<\/w:rPrDefault>/.exec(styles);
   const defaultRun = `<w:rPrDefault><w:rPr>${mergeWordRunFonts(defaults?.[1] || '', font)}</w:rPr></w:rPrDefault>`;
   if (defaults) styles = styles.replace(defaults[0], () => defaultRun);
-  else if (/<w:docDefaults>/.test(styles)) styles = styles.replace('<w:docDefaults>', () => `<w:docDefaults>${defaultRun}`);
+  else if (/<w:docDefaults>/.test(styles))
+    styles = styles.replace('<w:docDefaults>', () => `<w:docDefaults>${defaultRun}`);
   else styles = styles.replace(/<w:styles\b[^>]*>/, (open) => `${open}<w:docDefaults>${defaultRun}</w:docDefaults>`);
   // A Normal style that names its own face or size outranks the defaults; it takes the same values. Normal is the
   // default paragraph style — Korean Word writes it as styleId "a", so it is found by w:default, not by its id — and
   // it is cut out first, so a Normal without run properties never reaches into the style after it.
-  styles = styles.replace(/<w:style\b(?=[^>]*\bw:type="paragraph")(?=[^>]*\bw:default="1")[^>]*>[\s\S]*?<\/w:style>/, (normal) =>
-    normal.replace(/<w:rPr>([\s\S]*?)<\/w:rPr>/, (whole, inner) =>
-      /<w:(rFonts|sz)\b/.test(inner) ? `<w:rPr>${mergeWordRunFonts(inner, font)}</w:rPr>` : whole
-    )
+  styles = styles.replace(
+    /<w:style\b(?=[^>]*\bw:type="paragraph")(?=[^>]*\bw:default="1")[^>]*>[\s\S]*?<\/w:style>/,
+    (normal) =>
+      normal.replace(/<w:rPr>([\s\S]*?)<\/w:rPr>/, (whole, inner) =>
+        /<w:(rFonts|sz)\b/.test(inner) ? `<w:rPr>${mergeWordRunFonts(inner, font)}</w:rPr>` : whole
+      )
   );
   zip.file('word/styles.xml', styles);
   return { op: op.op, changed: true, ...font };
@@ -407,16 +434,14 @@ function sectionWithPage(section, properties, { orientation, columnCount, column
   const withSize = upsertSectionChild(
     section,
     'pgSz',
-    `<w:pgSz w:w="${pageWidth}" w:h="${pageHeight}"${landscape ? ' w:orient="landscape"' : ''}/>`,
-    ['type']
+    `<w:pgSz w:w="${pageWidth}" w:h="${pageHeight}"${landscape ? ' w:orient="landscape"' : ''}/>`
   );
   const withMargins = upsertSectionChild(
     withSize,
     'pgMar',
     `<w:pgMar w:top="${margin('top', 'topMargin', 1418)}" w:right="${margin('right', 'rightMargin', 1418)}"` +
       ` w:bottom="${margin('bottom', 'bottomMargin', 1418)}" w:left="${margin('left', 'leftMargin', 1418)}"` +
-      ` w:header="${margin('header', 'headerMargin', 709)}" w:footer="${margin('footer', 'footerMargin', 709)}" w:gutter="0"/>`,
-    ['pgSz']
+      ` w:header="${margin('header', 'headerMargin', 709)}" w:footer="${margin('footer', 'footerMargin', 709)}" w:gutter="0"/>`
   );
   if (columnCount === null && columnSpacing === null) return withMargins;
   // The text flows through the columns the section declares, so a brochure
@@ -429,8 +454,7 @@ function sectionWithPage(section, properties, { orientation, columnCount, column
   return upsertSectionChild(
     withMargins,
     'cols',
-    `<w:cols${count > 1 ? ` w:num="${count}" w:equalWidth="1"` : ''} w:space="${space}"/>`,
-    ['pgMar', 'pgSz']
+    `<w:cols${count > 1 ? ` w:num="${count}" w:equalWidth="1"` : ''} w:space="${space}"/>`
   );
 }
 
@@ -464,7 +488,9 @@ function usableTextWidth(documentXml) {
 }
 
 // Every cell's width becomes the grid columns it spans; its span, merge,
-// border, shading and alignment properties are kept.
+// border, shading, margins and alignment properties are kept. The margins are the gutter a column of words takes
+// after a column of figures and a layout grid's flush edges: dropped here, every preset table lost its gutter to the
+// fit that follows it ("+45%" ran into "11월") while Word kept it.
 function fitTableCells(tableXml, widths) {
   return tableXml.replace(/<w:tr(?:\s[^>]*)?>[\s\S]*?<\/w:tr>/g, (row) => {
     let index = 0;
@@ -484,6 +510,7 @@ function fitTableCells(tableXml, widths) {
           keep(/<w:vMerge\b[^>]*\/>/) +
           keep(/<w:tcBorders>[\s\S]*?<\/w:tcBorders>/) +
           keep(/<w:shd\b[^>]*\/>/) +
+          keep(/<w:tcMar>[\s\S]*?<\/w:tcMar>/) +
           keep(/<w:vAlign\b[^>]*\/>/)
       );
     });
@@ -643,7 +670,8 @@ export async function editDocxParagraph(zip, op, tracking) {
     // The only paragraph between two tables is what keeps them two: removed, Word and LibreOffice read one table
     // with the second one's rows under the first. Its words go and an empty paragraph stays.
     between =
-      /<\/w:tbl>\s*$/.test(nextInner.slice(0, paragraph.start)) && /^\s*<w:tbl[\s>]/.test(nextInner.slice(paragraph.end));
+      /<\/w:tbl>\s*$/.test(nextInner.slice(0, paragraph.start)) &&
+      /^\s*<w:tbl[\s>]/.test(nextInner.slice(paragraph.end));
     nextInner = splice(between ? '<w:p/>' : '');
   } else if (op.op === 'move_paragraph') {
     nextInner = movedParagraphInner(nextInner, model, paragraph, Math.max(1, Number(op.index)));
@@ -674,10 +702,13 @@ function styledDocxCell(cell, op) {
   const cellEastAsia = op.properties?.fontNameEastAsia ? xmlEncode(String(op.properties.fontNameEastAsia)) : '';
   const latinFontAttrs = cellFont ? ` w:ascii="${cellFont}" w:hAnsi="${cellFont}" w:cs="${cellFont}"` : '';
   const eastAsiaFontAttrs = cellEastAsia ? ` w:eastAsia="${cellEastAsia}"` : '';
+  // bold:false and italic:false switch the weight off, as the Word backend's Font.Bold = 0 does: a data row inserted
+  // before a total copies the total's bold, and asking for it back to regular changed nothing here.
+  const toggled = (tag, value) => (value === undefined ? '' : value ? `<w:${tag}/><w:${tag}Cs/>` : `<w:${tag} w:val="0"/><w:${tag}Cs w:val="0"/>`);
   const runFormat = [
     cellFont || cellEastAsia ? `<w:rFonts${latinFontAttrs}${eastAsiaFontAttrs}/>` : '',
-    op.properties?.bold ? '<w:b/>' : '',
-    op.properties?.italic ? '<w:i/>' : '',
+    toggled('b', op.properties?.bold),
+    toggled('i', op.properties?.italic),
     op.properties?.color ? `<w:color w:val="${xmlEncode(String(op.properties.color).replace(/^#/, ''))}"/>` : '',
     Number.isFinite(cellSize) && cellSize > 0
       ? `<w:sz w:val="${Math.round(cellSize * 2)}"/><w:szCs w:val="${Math.round(cellSize * 2)}"/>`
@@ -710,37 +741,54 @@ function styledDocxCell(cell, op) {
   return nextCell;
 }
 
+// A merged cell keeps what it carried (its shading, its borders, the bottom alignment a header row sits on, as Word
+// keeps them) and takes the spans; its width becomes the widths it joins. The whole tcPr used to be replaced, and a
+// two-level header's merged labels rose to the top of their cells on this backend only. Children stay in schema
+// order: cnfStyle, tcW, gridSpan, vMerge, then the rest.
+function mergedCellXml(joined, spans) {
+  const existing = /<w:tcPr(?:\s[^>]*)?>([\s\S]*?)<\/w:tcPr>/.exec(joined[0])?.[1] || '';
+  const kept = existing.replace(/<w:(tcW|gridSpan|hMerge|vMerge)\b[^>]*?(?:\/>|>[\s\S]*?<\/w:\1>)/g, '');
+  const conditional = /<w:cnfStyle\b[^>]*?(?:\/>|>[\s\S]*?<\/w:cnfStyle>)/.exec(kept)?.[0] || '';
+  const rest = conditional ? kept.replace(conditional, '') : kept;
+  const widths = joined.map((xml) => /<w:tcW\b[^>]*\bw:w="(\d+)"[^>]*\bw:type="dxa"/.exec(xml)?.[1]);
+  const width = widths.every(Boolean)
+    ? `<w:tcW w:w="${widths.reduce((sum, value) => sum + Number(value), 0)}" w:type="dxa"/>`
+    : '';
+  return replaceWordProperties(joined[0], 'tc', 'tcPr', `${conditional}${width}${spans}${rest}`);
+}
+
 // Merges the located cell across colSpan columns (dropping the absorbed
-// cells) and rowSpan rows (continuation cells become vMerge).
+// cells) and rowSpan rows (continuation cells become vMerge, spanning the same columns: a block merge left the
+// continuation rows' absorbed cells in place, one grid column too many a cell).
 function mergedDocxTable({ table, rows, row, cells, cell }, op) {
   const colSpan = Math.max(1, Number(op.colSpan) || 1);
   const rowSpan = Math.max(1, Number(op.rowSpan) || 1);
-  const merged = replaceWordProperties(
-    cell[0],
-    'tc',
-    'tcPr',
-    `${colSpan > 1 ? `<w:gridSpan w:val="${colSpan}"/>` : ''}${rowSpan > 1 ? '<w:vMerge w:val="restart"/>' : ''}`
+  const gridSpan = colSpan > 1 ? `<w:gridSpan w:val="${colSpan}"/>` : '';
+  const first = Number(op.col) - 1;
+  // By position: two cells of one row can read the same (empty, equally wide), and replacing by text took the first.
+  const mergeRow = (rowXml, rowCells, spans) => {
+    const joined = rowCells.slice(first, first + colSpan);
+    const end = joined.at(-1).index + joined.at(-1)[0].length;
+    const merged = mergedCellXml(
+      joined.map((entry) => entry[0]),
+      spans
+    );
+    return `${rowXml.slice(0, joined[0].index)}${merged}${rowXml.slice(end)}`;
+  };
+  let nextTable = table[0].replace(
+    row[0],
+    mergeRow(row[0], cells, `${gridSpan}${rowSpan > 1 ? '<w:vMerge w:val="restart"/>' : ''}`)
   );
-  let nextRow = row[0].replace(cell[0], merged);
-  for (let index = Number(op.col); index < Number(op.col) + colSpan - 1; index += 1) {
-    const remove = cells[index];
-    if (remove) nextRow = nextRow.replace(remove[0], '');
-  }
-  let nextTable = table[0].replace(row[0], nextRow);
   if (rowSpan > 1) {
     for (let rowIndex = Number(op.row); rowIndex < Number(op.row) + rowSpan - 1; rowIndex += 1) {
       const continuationRow = rows[rowIndex];
       if (!continuationRow) break;
       const continuationCells = rowCellMatches(continuationRow[0]);
-      const continuation = continuationCells[Number(op.col) - 1];
-      if (!continuation) continue;
-      const nextCell = replaceWordProperties(
-        continuation[0],
-        'tc',
-        'tcPr',
-        `${colSpan > 1 ? `<w:gridSpan w:val="${colSpan}"/>` : ''}<w:vMerge/>`
+      if (!continuationCells[first]) continue;
+      nextTable = nextTable.replace(
+        continuationRow[0],
+        mergeRow(continuationRow[0], continuationCells, `${gridSpan}<w:vMerge/>`)
       );
-      nextTable = nextTable.replace(continuation[0], nextCell);
     }
   }
   return nextTable;
@@ -752,10 +800,10 @@ export async function styleOrMergeDocxTableCell(zip, op) {
   const table = docxTable(current, op.table);
   const rows = tableRowMatches(table[0]);
   const row = rows[Number(op.row) - 1];
-  if (!row) throw new Error(`DOCX table row ${op.row} not found`);
+  if (!row) throw missingDocxRowError(op, table[0]);
   const cells = rowCellMatches(row[0]);
   const cell = cells[Number(op.col) - 1];
-  if (!cell) throw new Error(`DOCX table cell ${op.col} not found`);
+  if (!cell) throw missingDocxCellError(op, cells);
   const nextTable =
     op.op === 'set_table_cell_style'
       ? table[0].replace(cell[0], styledDocxCell(cell[0], op))

@@ -18,16 +18,24 @@ interface BootWarmupTask {
  *  settings sweep last — it only has to beat the user to the gear icon. */
 export const BOOT_WARMUP = Object.freeze({
   sidebarPanel: 20,
+  /** The rail usage flyout, so its first open paints rows, not a placeholder. */
+  usageFlyoutModule: 25,
   utilityDockModule: 30,
   dockGitState: 40,
   dockBody: 45,
   transcript: 50,
+  /** Goal capsule, so the first Goal session entered after boot shows it in
+   *  the same frame as its transcript. */
+  sessionGoalModule: 55,
   surfaceChunk: 60,
   /** Hidden mount of the composer's full model list, so the Model row opens
    *  onto rows that already exist. */
   modelCatalog: 65,
   studioModule: 70,
   commandSurfaceModule: 72,
+  /** The subscription usage that dialog opens on, so its first open paints
+   *  instead of waiting on a cold ledger read. */
+  quotaUsage: 74,
   settingsPreload: 80,
   settingsMount: 85,
 });

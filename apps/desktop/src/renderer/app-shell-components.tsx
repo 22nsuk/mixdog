@@ -145,6 +145,7 @@ export function ReadyEditorPane(props: React.ComponentProps<typeof EditorPane>) 
   }, [metricKey]);
   const [readyKey, setReadyKey] = useState('');
   const [expiredKey, setExpiredKey] = useState('');
+  const [revealed, setRevealed] = useState(false);
   useEffect(() => {
     const timer = window.setTimeout(() => setExpiredKey(metricKey), EDITOR_COVER_MAX_MS);
     return () => window.clearTimeout(timer);
@@ -154,10 +155,12 @@ export function ReadyEditorPane(props: React.ComponentProps<typeof EditorPane>) 
       ready={readyKey === metricKey || expiredKey === metricKey}
       transitionKey={metricKey}
       label="Loading editor…"
+      onRevealedChange={setRevealed}
     >
       <Suspense fallback={<div className="editor-pane editor-pane-cold-shell" aria-hidden="true" />}>
         <EditorPane
           {...props}
+          revealed={revealed}
           onReady={() => {
             setReadyKey(metricKey);
             reportBootSurfaceStage('editor', metricKey, 'dom', 'shell');

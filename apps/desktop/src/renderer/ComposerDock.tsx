@@ -1,5 +1,16 @@
-import { lazy, Suspense, useEffect, useState, type MutableRefObject, type ReactNode } from 'react';
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useLayoutEffect,
+  useReducer,
+  useRef,
+  useState,
+  type MutableRefObject,
+  type ReactNode,
+} from 'react';
 import type { TranscriptItem } from './desktop-types';
+import { closeDockSlot, openDockSlot } from './dock-slot-motion';
 import { SessionGoalHost } from './session-goal-submission';
 
 // The review bar only paints for a file-touching turn, so its diff analysis
@@ -18,8 +29,11 @@ const TurnReviewBar = lazy(() => import('./TurnReview').then((module) => ({ defa
  *     diff read never leaves a blank plate above the input;
  *   - the draft context bar leaves through a measured collapse instead of an
  *     instant unmount;
+ *   - the tool approval card opens and collapses over the dock motion
+ *     (dock-slot-motion), so its ~290px never moves the transcript at once;
  *   - freed space is never held on a timer. A slot that is really gone
- *     releases its height in the same commit that removes it.
+ *     releases its height in the same commit that removes it, or shrinks
+ *     away with its content still in place.
  */
 
 type ComposerContextBarPhase = 'open' | 'collapsing' | 'closed';
@@ -50,6 +64,49 @@ function useComposerContextBarPhase(
     return () => window.clearTimeout(timer);
   }, [showProjectSelector, softCollapse]);
   return phase;
+}
+
+/** Tool approval card. It arrives and leaves while the reader follows the
+ *  tail, and landing or leaving in one frame moved the whole transcript by
+ *  its height (user: 여러 사례에서 튄다). The answered card stays through its
+ *  collapse, inert; another session's card is never carried over. */
+function DockApprovalRow({ approval, scope }: { approval?: ReactNode; scope: string }) {
+  const row = useRef<HTMLDivElement>(null);
+  const shown = useRef<{ card: ReactNode; scope: string } | null>(null);
+  const [, released] = useReducer((count: number) => count + 1, 0);
+  if (approval) shown.current = { card: approval, scope };
+  else if (shown.current?.scope !== scope) shown.current = null;
+  const open = Boolean(approval);
+  const closing = !open && shown.current !== null;
+  useLayoutEffect(() => {
+    const element = row.current;
+    if (!element) return undefined;
+    if (open) {
+      const opening = openDockSlot(element);
+      return () => opening?.cancel();
+    }
+    const release = () => {
+      shown.current = null;
+      released();
+    };
+    const collapse = closeDockSlot(element);
+    if (!collapse) {
+      release();
+      return undefined;
+    }
+    collapse.onfinish = release;
+    return () => {
+      collapse.onfinish = null;
+      collapse.cancel();
+    };
+  }, [open]);
+  const card = approval ?? (closing ? shown.current?.card : null);
+  if (!card) return null;
+  return (
+    <div ref={row} className="composer-approval-row" inert={closing}>
+      {card}
+    </div>
+  );
 }
 
 export function ComposerDock({
@@ -93,7 +150,7 @@ export function ComposerDock({
         {goalIsland}
       </SessionGoalHost>
       {runtimeProgress}
-      {approval ? <div className="composer-approval-row">{approval}</div> : null}
+      <DockApprovalRow approval={approval} scope={reviewSessionId} />
       {(showProjectSelector || contextBarPhase !== 'closed') && (
         <div className={`composer-context-bar${showProjectSelector ? '' : ' composer-context-bar-collapsing'}`}>
           {contextBar}
@@ -103,7 +160,7 @@ export function ComposerDock({
           It is not a timeline row: as scroll content it read as a detached
           card floating over the composer. */}
       <div className="turn-review-slot">
-        <Suspense fallback={null}>
+        <Suspense fallback={<span hidden data-entry-pending />}>
           <TurnReviewBar
             items={reviewItems}
             active={reviewActive}

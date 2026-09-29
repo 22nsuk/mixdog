@@ -3,9 +3,8 @@
 // mutation uses, and the per-session serialization of those transactions.
 // Nothing here decides WHAT to queue — only how the file is read, written and
 // kept well-formed.
-import { join } from 'node:path';
-import { resolvePluginData } from '../../../../shared/plugin-paths.mjs';
 import { updateJsonAtomic } from '../../../../shared/atomic-file.mjs';
+import { PENDING_MESSAGES_MODE, pendingMessagesPath } from './pending-spool-path.mjs';
 import {
   COMPLETION_NOTIFICATION_KIND,
   completionExecutionId,
@@ -13,13 +12,10 @@ import {
   pendingMessageId,
 } from './pending-message-entry.mjs';
 
-const PENDING_MESSAGES_FILE = 'session-pending-messages.json';
-const PENDING_MESSAGES_MODE = 0o600;
 export const _pendingPersistTails = new Map();
 
-export function pendingMessagesPath() {
-  return join(resolvePluginData(), PENDING_MESSAGES_FILE);
-}
+// The spool location is shared with the TUI steering mirror.
+export { pendingMessagesPath, touchPendingSessionEntry } from './pending-spool-path.mjs';
 
 // Single spool transaction shape: every mutation of the shared file is locked,
 // compact and non-fsync; `extra` only ever relaxes the lock timeout.
@@ -123,9 +119,4 @@ export function normalizePendingStore(raw) {
     }
   }
   return out;
-}
-
-export function touchPendingSessionEntry(next, sessionId, now = Date.now()) {
-  if (!next.sessionTouchedAt || typeof next.sessionTouchedAt !== 'object') next.sessionTouchedAt = {};
-  next.sessionTouchedAt[sessionId] = now;
 }

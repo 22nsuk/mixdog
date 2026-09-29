@@ -1,5 +1,6 @@
 import { transportErrorText } from './transport-error-text.mjs';
 import { describeError, safeErrorDetails } from './error-presentation.mjs';
+import { oneLine } from './clean.mjs';
 
 // HTTP status carried by a provider/transport error, or 0 when absent.
 export function errorHttpStatus(err) {
@@ -20,12 +21,6 @@ export function errText(e) {
     if (j && j !== '{}' && j !== 'null') return j;
   } catch {}
   return String(e);
-}
-
-function oneLine(value) {
-  return String(value ?? '')
-    .replace(/\s+/g, ' ')
-    .trim();
 }
 
 function stripErrorPrefix(value) {
@@ -300,15 +295,20 @@ export function presentErrorText(error, options = {}) {
   return capText(safeErrorDetails(text) || 'Unknown error', max);
 }
 
-export function providerRetryStatusText(error, options = {}) {
-  const reason = presentErrorText(error, {
+/** Why a provider request is being retried, as one short status phrase. */
+export function retryReasonText(error, options = {}) {
+  return presentErrorText(error, {
     surface: options.surface || 'request',
     max: options.max ?? 120,
   }).replace(/\.$/, '');
-  const attempt = Math.max(1, Number(options.attempt) || 1);
-  const maxAttempts = Math.max(attempt, Number(options.maxAttempts) || attempt);
-  const delayMs = Math.max(0, Number(options.delayMs) || 0);
-  return `${reason} · retry ${attempt}/${maxAttempts}${delayMs > 0 ? ` in ${formatDurationMs(delayMs)}` : ''}`;
+}
+
+/** The one retry status line every surface shows: `reason · retry n/max in 15s`. */
+export function retryStatusLine({ reason, attempt, maxAttempts, delayMs }) {
+  const count = Math.max(1, Number(attempt) || 1);
+  const max = Math.max(count, Number(maxAttempts) || count);
+  const wait = Math.max(0, Number(delayMs) || 0);
+  return `${reason} · retry ${count}/${max}${wait > 0 ? ` in ${formatDurationMs(wait)}` : ''}`;
 }
 
 /**

@@ -1,5 +1,7 @@
 import type React from 'react';
-import { lazy, Suspense, useRef, type ComponentProps } from 'react';
+import { lazy, Suspense, useEffect, useRef, type ComponentProps } from 'react';
+import { OPEN_DOCTOR_EVENT } from '../command-surface-doctor-event';
+import type { SettingsSection as SlashSettingsSection } from '../slash-commands';
 import type { DesktopModelSelection } from '../../shared/contract';
 import { EMPTY_SNAPSHOT, type Snapshot } from '../desktop-types';
 import type { WorkspaceSelection, WorkspaceTab } from '../navigation';
@@ -47,6 +49,8 @@ export interface AppShellOverlaysProps {
   settingsMounted: React.RefObject<boolean>;
   settingsPrewarmed: boolean;
   setSettingsOpen: (open: boolean) => void;
+  /** Routes a /doctor fix to its settings page, like the typed slash command. */
+  openSettings?: (section?: SlashSettingsSection | null) => void;
 
   commandSurface: string | null;
   commandSurfaceSessionId: string;
@@ -90,6 +94,7 @@ export function AppShellOverlays({
   settingsMounted,
   settingsPrewarmed,
   setSettingsOpen,
+  openSettings,
   commandSurface,
   commandSurfaceSessionId,
   commandSurfaceLane,
@@ -109,6 +114,18 @@ export function AppShellOverlays({
 }: AppShellOverlaysProps) {
   const mountedCommandSurfaces = useRef(new Set<string>());
   if (commandSurface) mountedCommandSurfaces.current.add(commandSurface);
+
+  // Settings → System → Doctor opens the same /doctor dialog instead of
+  // running the checks where their result has nowhere to show.
+  useEffect(() => {
+    const openDoctor = () => {
+      setSettingsOpen(false);
+      setCommandSurfaceSessionId('');
+      setCommandSurface('doctor');
+    };
+    window.addEventListener(OPEN_DOCTOR_EVENT, openDoctor);
+    return () => window.removeEventListener(OPEN_DOCTOR_EVENT, openDoctor);
+  }, [setCommandSurface, setCommandSurfaceSessionId, setSettingsOpen]);
 
   return (
     <>
@@ -190,6 +207,7 @@ export function AppShellOverlays({
               sessionId={sessionId}
               snapshot={surfaceSnapshot}
               onInherit={surface === 'inherit' ? replaceWithInheritedSession : undefined}
+              onOpenSettings={surface === 'doctor' ? openSettings : undefined}
               onClose={() => {
                 setCommandSurface(null);
                 setCommandSurfaceSessionId('');

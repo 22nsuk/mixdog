@@ -3,18 +3,22 @@
 // context cost of any one tool call is bounded and consistent. Override with
 // MIXDOG_TOOL_OUTPUT_MAX_BYTES. Line-based sub-caps (e.g. bash max lines) stay
 // per-tool; this governs only the byte budget.
-function _envInt(name, fallback) {
+// A positive integer from an env var, or `fallback` when unset or invalid.
+export function positiveEnvInt(name, fallback) {
   const v = parseInt(process.env[name], 10);
   return Number.isFinite(v) && v > 0 ? v : fallback;
 }
-export const TOOL_OUTPUT_MAX_BYTES = _envInt('MIXDOG_TOOL_OUTPUT_MAX_BYTES', 50 * 1024);
-export const LOCATOR_OUTPUT_MAX_BYTES = _envInt('MIXDOG_LOCATOR_OUTPUT_MAX_BYTES', 20 * 1024);
-export const GREP_OUTPUT_MAX_BYTES = _envInt('MIXDOG_GREP_OUTPUT_MAX_BYTES', 10 * 1024);
-export const CODE_GRAPH_OUTPUT_MAX_BYTES = _envInt('MIXDOG_CODE_GRAPH_OUTPUT_MAX_BYTES', 30 * 1024);
+export const TOOL_OUTPUT_MAX_BYTES = positiveEnvInt('MIXDOG_TOOL_OUTPUT_MAX_BYTES', 50 * 1024);
+export const LOCATOR_OUTPUT_MAX_BYTES = positiveEnvInt('MIXDOG_LOCATOR_OUTPUT_MAX_BYTES', 20 * 1024);
+// grep results stay in context for the rest of the session. 2026-09-28 cost
+// audit: only 6% of greps capped at 10KB were paged, so carrying the tail cost
+// more than the follow-up turns it saved.
+export const GREP_OUTPUT_MAX_BYTES = positiveEnvInt('MIXDOG_GREP_OUTPUT_MAX_BYTES', 5 * 1024);
+export const CODE_GRAPH_OUTPUT_MAX_BYTES = positiveEnvInt('MIXDOG_CODE_GRAPH_OUTPUT_MAX_BYTES', 30 * 1024);
 // recall/memory search returns model-facing prose blocks; uncapped multi-query
 // browses were observed injecting 42KB in one call (2026-08-05 audit). Same
 // class as locators: 20KB with a factual continuation footer.
-export const RECALL_OUTPUT_MAX_BYTES = _envInt('MIXDOG_RECALL_OUTPUT_MAX_BYTES', 20 * 1024);
+export const RECALL_OUTPUT_MAX_BYTES = positiveEnvInt('MIXDOG_RECALL_OUTPUT_MAX_BYTES', 20 * 1024);
 
 function _prefixByBytes(value, maxBytes) {
   const text = String(value || '');

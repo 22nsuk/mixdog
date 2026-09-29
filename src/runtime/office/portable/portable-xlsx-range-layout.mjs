@@ -7,14 +7,20 @@ import {
   columnLabel,
   columnNumber,
   expandRange,
+  iterateSheetCells,
   parseCellRef,
   setCellStylesInSheet,
   setCellsInSheet,
   sharedStrings,
 } from './portable-cells.mjs';
 import { zipText } from './portable-opc.mjs';
+import { expandSharedFormulas } from './portable-shared-formulas.mjs';
+import { sortedFormula } from './portable-xlsx-reference-shift.mjs';
+import { UnsupportedFormula } from './xlsx-formula-engine.mjs';
 import { resolveCellStyles } from './portable-sheet-styles.mjs';
+import { columnFileWidth, maximumDigitWidth, textCharacters } from './portable-sheet-page.mjs';
 import {
+  cellWidthScale,
   displayWidth,
   formattedNumberWidth,
   hiddenSheetAreas,
@@ -69,24 +75,35 @@ function compareSortValues(left, right) {
 }
 
 // The sorts Excel itself refuses, and the ones that would silently corrupt
-// the sheet: formulas inside the moved rows, hidden rows among them, and
-// merged cells crossing them.
-function refuseUnsortableRange(xml, area, firstRow, records, refAt) {
-  // A sort moves whole rows. A formula inside them would keep pointing at
-  // the row number it was written for, so the sorted sheet would compute
-  // someone else's numbers: sort the values, then write the formulas.
-  const formulas = [];
-  for (let row = firstRow; row <= area.endRow; row += 1) {
-    for (let col = area.startCol; col <= area.endCol; col += 1) {
-      if (records.get(refAt(row, col))?.formula) formulas.push(refAt(row, col));
+// the sheet: a formula stored once for cells the sort would split, hidden
+// rows among the moved ones, and merged cells crossing them.
+function refuseUnsortableRange(xml, area, firstRow) {
+  // A formula filled down is stored once for the whole run, and an array formula once for its block: moving one row
+  // of either rewrites the others. Excel refuses to change part of an array.
+  const inBody = (ref) => {
+    const at = parseCellRef(ref);
+    const column = columnNumber(at.col);
+    return at.row >= firstRow && at.row <= area.endRow && column >= area.startCol && column <= area.endCol;
+  };
+  const groups = new Map();
+  for (const cell of iterateSheetCells(xml)) {
+    const attributes = /<f\b([^>]*?)\/?>/.exec(cell.body)?.[1];
+    if (attributes === undefined) continue;
+    if (/\bt="array"/.test(attributes) && inBody(cell.ref)) {
+      throw new Error(
+        `XLSX sort_range cannot move the array formula at ${cell.ref}; Excel refuses to change part of an array. Sort a range without it.`
+      );
     }
+    const id = /\bt="shared"/.test(attributes) ? /\bsi="([^"]+)"/.exec(attributes)?.[1] : undefined;
+    if (id === undefined) continue;
+    const group = groups.get(id) || { inside: [], outside: [] };
+    (inBody(cell.ref) ? group.inside : group.outside).push(cell.ref);
+    groups.set(id, group);
   }
-  if (formulas.length) {
-    const named = formulas.slice(0, 3).join(', ') + (formulas.length > 3 ? ` and ${formulas.length - 3} more` : '');
-    const holds =
-      formulas.length === 1 ? 'holds a formula whose references would' : 'hold formulas whose references would';
+  const split = [...groups.values()].find((group) => group.inside.length && group.outside.length);
+  if (split) {
     throw new Error(
-      `XLSX sort_range moves rows, and ${named} ${holds} follow the move. Sort a range of values, then write the formulas over the sorted rows.`
+      `XLSX sort_range would move part of a formula filled down as one, ${split.inside[0]} through ${split.outside.at(-1)}. Sort the whole filled range, or write the formula into each row with set_formula first.`
     );
   }
   // A filtered sheet hides rows, not records: the flag stays on the row
@@ -122,13 +139,22 @@ function rangeRows(area, firstRow, refAt) {
   );
 }
 
+// A formula travels with its row as Excel moves it (sortedFormula); one that cannot be moved refuses the sort.
 function writeSortedRows(xml, sorted, area, firstRow, refAt) {
   const placed = sorted.flatMap((cells, offset) =>
     cells.map((cell, index) => ({ ref: refAt(firstRow + offset, area.startCol + index), ...cell }))
   );
   const withValues = setCellsInSheet(
     xml,
-    placed.map(({ ref, value }) => ({ ref, value }))
+    placed.map(({ ref, value, formula, row }) => {
+      if (!formula) return { ref, value };
+      try {
+        return { ref, formula: sortedFormula(formula, parseCellRef(ref).row - row) };
+      } catch (error) {
+        if (!(error instanceof UnsupportedFormula)) throw error;
+        throw new Error(`XLSX sort_range cannot move the formula in ${refAt(row, columnNumber(parseCellRef(ref).col))} (=${formula}): ${error.reason}.`);
+      }
+    })
   );
   return setCellStylesInSheet(
     withValues,
@@ -139,11 +165,14 @@ function writeSortedRows(xml, sorted, area, firstRow, refAt) {
 /** Sorts the values of a range, refusing the cases Excel itself refuses. */
 export async function sortWorksheetRange(zip, sheet, xml, op) {
   const area = expandRange(op.range);
-  const records = new Map(cellRecords(xml, await sharedStrings(zip)).map((cell) => [cell.ref, cell]));
   const header = op.hasHeader !== false;
   const firstRow = area.startRow + (header ? 1 : 0);
   const refAt = (row, col) => `${columnLabel(col)}${row}`;
-  refuseUnsortableRange(xml, area, firstRow, records, refAt);
+  refuseUnsortableRange(xml, area, firstRow);
+  // Each cell of a filled-down run holds its own formula once the run moves whole, as a plain formula Excel reads alike.
+  const list = cellRecords(xml, await sharedStrings(zip));
+  expandSharedFormulas(xml, list);
+  const records = new Map(list.map((cell) => [cell.ref, cell]));
   const column = sortKeyColumn(op, area, (col) => records.get(refAt(area.startRow, col))?.value);
   const descending = String(op.order || 'asc')
     .trim()
@@ -152,7 +181,12 @@ export async function sortWorksheetRange(zip, sheet, xml, op) {
   const rows = rangeRows(area, firstRow, refAt);
   const styles = cellStyleIndexes(xml, rows.flat());
   const body = rows.map((refs) =>
-    refs.map((ref) => ({ value: records.get(ref)?.value ?? null, style: styles.get(ref) || 0 }))
+    refs.map((ref) => ({
+      value: records.get(ref)?.value ?? null,
+      formula: records.get(ref)?.formula || '',
+      row: parseCellRef(ref).row,
+      style: styles.get(ref) || 0,
+    }))
   );
   const keyIndex = column - area.startCol;
   const sorted = [...body].sort(
@@ -198,7 +232,8 @@ function spillingText(records, area) {
   return spilling;
 }
 
-function measuredColumnWidths(records, area, spans, baseSize) {
+function measuredColumnWidths(records, area, spans, baseStyle, digitWidth) {
+  const baseSize = Number(baseStyle?.fontSize) || 11;
   const measured = new Map();
   const spilling = spillingText(records, area);
   for (const record of records) {
@@ -221,11 +256,13 @@ function measuredColumnWidths(records, area, spans, baseSize) {
     const value = record.formula ? record.cachedValue : record.value;
     const text = String(value ?? '');
     const numeric = record.dataType !== 'text' && text.trim() !== '' && Number.isFinite(Number(text));
-    // An indent level holds about one character of the column before the text starts.
-    const scale = (Number(record.style?.fontSize) || baseSize) / baseSize;
+    // An indent level holds about one character of the column before the text starts. A cell on the default style
+    // carries no record style, and its face is the one the width counts in. A text is measured in its own face, as
+    // the fit audit measures it; a figure counts the digits its format prints.
     const needed =
-      (numeric ? formattedNumberWidth(Number(text), record.style?.numberFormat || '') : displayWidth(text)) * scale +
-      (Number(record.style?.indent) || 0);
+      (numeric
+        ? formattedNumberWidth(Number(text), record.style?.numberFormat || '') * cellWidthScale(record.style, baseSize)
+        : textCharacters(text, record.style || baseStyle, digitWidth)) + (Number(record.style?.indent) || 0);
     measured.set(column, Math.max(measured.get(column) || 0, needed));
   }
   return measured;
@@ -242,10 +279,12 @@ export async function autofitWorksheetRange(zip, sheet, xml, op) {
   }
   // Widths follow what the cell prints: a number carries its format's
   // separators, decimals, and units, not the digits it stores.
-  const cellStyles = resolveCellStyles(await zipText(zip, 'xl/styles.xml'));
+  const stylesXml = await zipText(zip, 'xl/styles.xml');
+  const cellStyles = resolveCellStyles(stylesXml);
   const records = cellRecords(xml, await sharedStrings(zip), { styles: cellStyles });
   const spans = mergedRanges(xml).map((entry) => parseAreaRange(entry));
-  const measured = measuredColumnWidths(records, area, spans, Number(cellStyles[0]?.fontSize) || 11);
+  const digitWidth = maximumDigitWidth(stylesXml);
+  const measured = measuredColumnWidths(records, area, spans, cellStyles[0], digitWidth);
   // Fit-to-page never enlarges a sheet, so a layout whose columns hold only
   // their text prints as a small block in the corner of the page. minWidth is
   // the floor a composed sheet asks for: the columns still grow to their
@@ -257,10 +296,11 @@ export async function autofitWorksheetRange(zip, sheet, xml, op) {
       if (!measured.has(column)) measured.set(column, 0);
     }
   }
+  // Characters, stored with Excel's cell padding as set_column_width stores them.
   const widths = new Map(
     [...measured.entries()].map(([column, width]) => [
       column,
-      Math.min(80, Math.max(floor, Math.round((width + 2) * 10) / 10)),
+      columnFileWidth(Math.min(80, Math.max(floor, Math.round((width + 2) * 10) / 10)), digitWidth),
     ])
   );
   zip.file(sheet.path, writeColumnWidths(xml, widths));

@@ -131,11 +131,13 @@ test('explicit preparation is append-only and the first model request has the bo
             assert.equal(JSON.stringify(messages).split('Selected guide').length - 1, 1);
             if (provider === 'openai-oauth') {
               const payload = buildRequestBody(messages, 'gpt-6-astra', sentTools);
-              const call = payload.input.find((item) => item.type === 'tool_search_call');
-              const output = payload.input.find((item) => item.type === 'tool_search_output');
+              const call = payload.input.find((item) => item.type === 'function_call' && item.name === 'Skill');
+              const output = payload.input.find((item) => item.type === 'function_call_output');
+              const load = payload.input.find((item) => item.type === 'tool_search_output');
               assert.ok(call);
               assert.equal(output.call_id, call.call_id);
-              assert.deepEqual(output.tools.find((tool) => tool.name === 'office').parameters, office.inputSchema);
+              assert.equal(load.call_id, `${call.call_id}_load`);
+              assert.deepEqual(load.tools.find((tool) => tool.name === 'office').parameters, office.inputSchema);
               assert.deepEqual(payload.tools, buildRequestBody(prefix, 'gpt-6-astra', tools).tools);
             } else if (provider === 'anthropic-oauth') {
               assert.ok(

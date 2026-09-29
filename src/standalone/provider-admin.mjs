@@ -86,60 +86,58 @@ const API_PROVIDERS = Object.freeze([
   Object.freeze({ id: 'xai', name: 'xAI API', env: 'XAI_API_KEY', url: 'https://console.x.ai' }),
 ]);
 
-const OAUTH_PROVIDERS = Object.freeze(
-  [
-    Object.freeze({
-      id: 'openai-oauth',
-      name: 'OpenAI OAuth',
-      desc: 'Mixdog OAuth credentials',
-      has: hasOpenAIOAuthCredentials,
-      describe: describeOpenAIOAuthCredentials,
-      forget: forgetOpenAIOAuthCredentials,
-      begin: beginOpenAIOAuthLogin,
-      login: loginOpenAIOAuth,
-    }),
-    Object.freeze({
-      id: 'anthropic-oauth',
-      name: 'Anthropic OAuth',
-      desc: 'Mixdog OAuth credentials',
-      has: hasAnthropicOAuthCredentials,
-      describe: describeAnthropicOAuthCredentials,
-      forget: forgetAnthropicOAuthCredentials,
-      begin: beginAnthropicOAuthLogin,
-      login: loginAnthropicOAuth,
-    }),
-    Object.freeze({
-      id: 'grok-oauth',
-      name: 'Grok OAuth',
-      desc: 'Mixdog OAuth credentials (Grok Build)',
-      has: hasGrokOAuthCredentials,
-      describe: describeGrokOAuthCredentials,
-      forget: forgetGrokOAuthCredentials,
-      begin: beginGrokOAuthLogin,
-      login: loginGrokOAuth,
-    }),
-    Object.freeze({
-      id: 'cursor-oauth',
-      name: 'Cursor OAuth',
-      desc: 'Sign in with your Cursor account',
-      has: hasCursorOAuthCredentials,
-      describe: describeCursorOAuthCredentials,
-      forget: forgetCursorOAuthCredentials,
-      begin: beginCursorOAuthLogin,
-      login: loginCursorOAuth,
-    }),
-    Object.freeze({
-      id: 'antigravity-oauth',
-      name: 'Antigravity OAuth',
-      desc: 'Sign in with Google (Gemini + Claude)',
-      has: hasAntigravityOAuthCredentials,
-      describe: describeAntigravityOAuthCredentials,
-      forget: forgetAntigravityOAuthCredentials,
-      begin: beginAntigravityOAuthLogin,
-      login: loginAntigravityOAuth,
-    }),
-  ]
-);
+const OAUTH_PROVIDERS = Object.freeze([
+  Object.freeze({
+    id: 'openai-oauth',
+    name: 'OpenAI OAuth',
+    desc: 'Mixdog OAuth credentials',
+    has: hasOpenAIOAuthCredentials,
+    describe: describeOpenAIOAuthCredentials,
+    forget: forgetOpenAIOAuthCredentials,
+    begin: beginOpenAIOAuthLogin,
+    login: loginOpenAIOAuth,
+  }),
+  Object.freeze({
+    id: 'anthropic-oauth',
+    name: 'Anthropic OAuth',
+    desc: 'Mixdog OAuth credentials',
+    has: hasAnthropicOAuthCredentials,
+    describe: describeAnthropicOAuthCredentials,
+    forget: forgetAnthropicOAuthCredentials,
+    begin: beginAnthropicOAuthLogin,
+    login: loginAnthropicOAuth,
+  }),
+  Object.freeze({
+    id: 'grok-oauth',
+    name: 'Grok OAuth',
+    desc: 'Mixdog OAuth credentials (Grok Build)',
+    has: hasGrokOAuthCredentials,
+    describe: describeGrokOAuthCredentials,
+    forget: forgetGrokOAuthCredentials,
+    begin: beginGrokOAuthLogin,
+    login: loginGrokOAuth,
+  }),
+  Object.freeze({
+    id: 'cursor-oauth',
+    name: 'Cursor OAuth',
+    desc: 'Sign in with your Cursor account',
+    has: hasCursorOAuthCredentials,
+    describe: describeCursorOAuthCredentials,
+    forget: forgetCursorOAuthCredentials,
+    begin: beginCursorOAuthLogin,
+    login: loginCursorOAuth,
+  }),
+  Object.freeze({
+    id: 'antigravity-oauth',
+    name: 'Antigravity OAuth',
+    desc: 'Sign in with Google (Gemini + Claude)',
+    has: hasAntigravityOAuthCredentials,
+    describe: describeAntigravityOAuthCredentials,
+    forget: forgetAntigravityOAuthCredentials,
+    begin: beginAntigravityOAuthLogin,
+    login: loginAntigravityOAuth,
+  }),
+]);
 
 const BUILTIN_PROVIDER_IDS = new Set(['mixdog-local']);
 

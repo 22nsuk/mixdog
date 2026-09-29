@@ -43,20 +43,33 @@ function blendHex(fg, bg, alpha) {
     .toUpperCase();
 }
 
+const SOFT_BREAK = /<a:br\b[^>]*?(?:\/>|>[\s\S]*?<\/a:br>)/g;
+
 export function shapeParagraphs(shapeXml) {
   const paragraphs = [];
   for (const match of shapeXml.matchAll(/<a:p>[\s\S]*?<\/a:p>/g)) {
     const block = match[0];
-    const text = [...block.matchAll(/<a:t(?:\s[^>]*)?>([\s\S]*?)<\/a:t>/g)].map((node) => xmlDecode(node[1])).join('');
+    // A soft break (<a:br/>, which the kit and the HTML route write between lines) reads as '\n', so the
+    // measure breaks the line where PowerPoint does instead of running two lines together as one word.
+    const text = [...block.replace(SOFT_BREAK, '<a:t>\n</a:t>').matchAll(/<a:t(?:\s[^>]*)?>([\s\S]*?)<\/a:t>/g)]
+      .map((node) => xmlDecode(node[1]))
+      .join('');
     const runElement = /<a:rPr\b[^>]*?(?:\/>|>[\s\S]*?<\/a:rPr>)/.exec(block)?.[0] || '';
     const runProperties = /^<a:rPr\b([^>]*?)(?:\/>|>)/.exec(runElement)?.[1] || '';
     const size = Number(xmlAttribute(runProperties, 'sz'));
     if (!Number.isFinite(size) || size <= 0) return null;
     // Each run with its own size, so a figure and its smaller unit are measured as they are set.
-    const runs = [...block.matchAll(/<a:r>([\s\S]*?)<\/a:r>/g)].map((run) => ({
-      text: [...run[1].matchAll(/<a:t(?:\s[^>]*)?>([\s\S]*?)<\/a:t>/g)].map((node) => xmlDecode(node[1])).join(''),
-      fontSize: (Number(/<a:rPr\b[^>]*\bsz="(\d+)"/.exec(run[1])?.[1]) || size) / 100,
-    }));
+    const runs = [];
+    for (const token of block.matchAll(/<a:r>([\s\S]*?)<\/a:r>|<a:br\b[^>]*?(?:\/>|>[\s\S]*?<\/a:br>)/g)) {
+      if (token[1] === undefined) {
+        runs.push({ text: '\n', fontSize: runs[runs.length - 1]?.fontSize ?? size / 100 });
+        continue;
+      }
+      runs.push({
+        text: [...token[1].matchAll(/<a:t(?:\s[^>]*)?>([\s\S]*?)<\/a:t>/g)].map((node) => xmlDecode(node[1])).join(''),
+        fontSize: (Number(/<a:rPr\b[^>]*\bsz="(\d+)"/.exec(token[1])?.[1]) || size) / 100,
+      });
+    }
     // Tracking is stored in hundredths of a point on the run. Latin small caps
     // want it; Hangul and CJK break apart under it, so the reading is kept.
     const tracking = Number(xmlAttribute(runProperties, 'spc'));
@@ -289,17 +302,24 @@ export function setTableValues(shapeXml, values) {
     inner = `${inner.slice(0, row.start)}<a:tr${attrs}>${body}</a:tr>${inner.slice(row.end)}`;
     filledRows += 1;
   }
-  // Data wider or longer than the table grows it, as PowerPoint's own table grows under the Office backend: a new
-  // column repeats the last one (its width, its cells' formatting), a new row repeats the last row. The rows past
-  // the table's end had been dropped, so a refresh with one more hub lost that hub.
+  // Data wider or longer than the table grows it: a new column repeats the last one (its cells' formatting), a new
+  // row repeats the last row. The rows past the table's end had been dropped, so a refresh with one more hub lost
+  // that hub. The table grows down; its width is the page's, and the columns it gains share it with the others — a
+  // template's three-column table given four columns ran past the slide's edge and cut the last one off.
   const columns = Math.max(...values.map((source) => source.length));
   const grid = elementSpans(inner, 'a:gridCol');
   const addedColumns = Math.max(0, columns - grid.length);
-  let addedWidth = 0;
   if (addedColumns) {
     const last = grid.at(-1);
-    addedWidth = (Number(/\bw="(\d+)"/.exec(last.xml)?.[1]) || 0) * addedColumns;
+    const widthOf = (column) => Number(/\bw="(\d+)"/.exec(column.xml)?.[1]) || 0;
+    const frame = grid.reduce((total, column) => total + widthOf(column), 0);
+    const widths = [...grid.map(widthOf), ...Array.from({ length: addedColumns }, () => widthOf(last))];
+    const grown = widths.reduce((total, width) => total + width, 0);
+    const shared = widths.map((width) => (grown ? Math.round((width * frame) / grown) : width));
+    if (grown) shared[shared.length - 1] += frame - shared.reduce((total, width) => total + width, 0);
     inner = `${inner.slice(0, last.end)}${last.xml.repeat(addedColumns)}${inner.slice(last.end)}`;
+    let column = 0;
+    inner = inner.replace(/<a:gridCol\b([^>]*?)\bw="\d+"/g, (_match, head) => `<a:gridCol${head}w="${shared[column++]}"`);
     const current = elementSpans(inner, 'a:tr');
     for (let rowIndex = current.length - 1; rowIndex >= 0; rowIndex -= 1) {
       const row = current[rowIndex];
@@ -333,7 +353,6 @@ export function setTableValues(shapeXml, values) {
     capacity: rows.length,
     ...(appended.length ? { addedRows: appended.length } : {}),
     ...(addedColumns ? { addedColumns } : {}),
-    addedWidth,
     addedHeight,
     ...(removedRows ? { removedRows } : {}),
   };
@@ -433,21 +452,28 @@ export function updateShapeGeometry(shape, properties) {
           (containerInner(next, 'p:spPr')?.inner || '').replace(/<a:ln\b[^>]*?(?:\/>|>[\s\S]*?<\/a:ln>)/, '')
         )?.[1]
       : undefined);
-  if (fillColor != null) {
+  // fillColor: null takes the fill away (the Office backend's Fill.Visible = 0), as add_shape reads it. Only the shape's
+  // own fill is replaced: the first solidFill anywhere in its properties could be its outline's colour, and a shape
+  // that inherited its fill lost the colour of its line.
+  const clearing = Object.hasOwn(properties, 'fillColor') && properties.fillColor === null;
+  if (fillColor != null || clearing) {
     const shapeProperties = containerInner(next, 'p:spPr');
-    const fill = solidFillXml(fillColor, properties.fillTransparency);
+    const fill = clearing ? '<a:noFill/>' : solidFillXml(fillColor, properties.fillTransparency);
     if (shapeProperties && fill) {
-      const cleaned = shapeProperties.inner
-        .replace(/<a:solidFill\b[^>]*?(?:\/>|>[\s\S]*?<\/a:solidFill>)/, '')
-        .replace(/<a:noFill\s*\/>/, '');
-      const geometry = /<a:prstGeom\b[^>]*?(?:\/>|>[\s\S]*?<\/a:prstGeom>)/.exec(cleaned);
-      const position = geometry ? geometry.index + geometry[0].length : cleaned.length;
+      let cleaned = shapeProperties.inner;
+      for (const element of topLevelElements(cleaned, SHAPE_FILLS).reverse()) {
+        cleaned = `${cleaned.slice(0, element.start)}${cleaned.slice(element.end)}`;
+      }
+      const later = topLevelElements(cleaned, ['a:ln', 'a:effectLst', 'a:effectDag', 'a:scene3d', 'a:sp3d', 'a:extLst'])[0];
+      const position = later ? later.start : cleaned.length;
       const inner = `${cleaned.slice(0, position)}${fill}${cleaned.slice(position)}`;
       next = `${next.slice(0, shapeProperties.start)}${inner}${next.slice(shapeProperties.end)}`;
     }
   }
   return next;
 }
+
+const SHAPE_FILLS = ['a:noFill', 'a:solidFill', 'a:gradFill', 'a:blipFill', 'a:pattFill', 'a:grpFill'];
 
 export function nextShapeId(xml) {
   const ids = [...xml.matchAll(/\bcNvPr\s+id="(\d+)"/g)].map((match) => Number(match[1]));

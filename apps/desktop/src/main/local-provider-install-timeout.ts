@@ -8,6 +8,12 @@ const LOCAL_PROVIDER_INSTALL_REQUEST_TIMEOUT_MS = LOCAL_PROVIDER_DOWNLOAD_TIMEOU
 // sized for interactive calls.
 const SESSION_INHERIT_REQUEST_TIMEOUT_MS = 10 * 60_000;
 
+// Built-in dependency installs run inside their own budgets: winget/brew get
+// up to 20 minutes (LibreOffice is ~350 MB) and the voice model alone has a
+// 20-minute download window. The request must outlive the longest of them.
+const DEPENDENCY_INSTALL_REQUEST_TIMEOUT_MS = 30 * 60_000 + TRANSPORT_COMPLETION_GRACE_MS;
+const DEPENDENCY_INSTALL_OPERATIONS = new Set(['installGitCli', 'installGithubCli', 'installLibreOffice']);
+
 /** Deadline for the few calls that legitimately outlive an interactive
  *  request. Everything else keeps the ordinary request timeout. */
 export function longRunningRequestTimeout(method: string, args: unknown[] = []): number | undefined {
@@ -19,6 +25,15 @@ export function longRunningRequestTimeout(method: string, args: unknown[] = []):
   // interactive one.
   if (method === 'installBuiltinFeature' && (args[0] === 'localProvider' || args[0] === 'tidy')) {
     return LOCAL_PROVIDER_INSTALL_REQUEST_TIMEOUT_MS;
+  }
+  // Every other built-in Install downloads too (the Memory embedding model,
+  // Office fonts), as do the guided system installs and turning Voice on.
+  if (
+    method === 'installBuiltinFeature' ||
+    DEPENDENCY_INSTALL_OPERATIONS.has(method) ||
+    (method === 'toggleVoice' && args[0] === true)
+  ) {
+    return DEPENDENCY_INSTALL_REQUEST_TIMEOUT_MS;
   }
   if (method === 'inheritFrom') return SESSION_INHERIT_REQUEST_TIMEOUT_MS;
   return undefined;

@@ -45,7 +45,6 @@ test('repeated Stop shares one completion and a failed Stop can be retried', asy
     fail;
   const controller = createComputerOverlayController(
     {
-      resume: async () => {},
       stop: async () => {
         calls++;
         if (calls === 1)
@@ -56,13 +55,13 @@ test('repeated Stop shares one completion and a failed Stop can be retried', asy
     },
     () => {}
   );
-  const first = controller.invoke('stop', 1, ['fixture']);
-  const second = controller.invoke('stop', 2, ['fixture']);
+  const first = controller.invoke('stop', ['fixture']);
+  const second = controller.invoke('stop', ['fixture']);
   assert.equal(first, second);
   assert.equal(calls, 1);
   fail(new Error('computer_stop_unconfirmed'));
   await Promise.all([first, second]);
-  assert.deepEqual(controller.state(3), { busy: false, error: 'stop' });
+  assert.deepEqual(controller.state(), { busy: false, error: 'stop' });
   const presentation = computerUseOverlayPresentation(
     {
       revision: 1,
@@ -76,14 +75,13 @@ test('repeated Stop shares one completion and a failed Stop can be retried', asy
       targetLeases: [],
     },
     'ko',
-    controller.state(3)
+    controller.state()
   );
-  assert.equal(presentation.canResume, false);
   assert.equal(presentation.attention, true);
   assert.equal(presentation.visible, true);
-  await controller.invoke('stop', 3, ['fixture']);
+  await controller.invoke('stop', ['fixture']);
   assert.equal(calls, 2);
-  assert.deepEqual(controller.state(4), { busy: false, error: '' });
+  assert.deepEqual(controller.state(), { busy: false, error: '' });
 });
 
 test('a session holding the user window keeps the controls on screen between commands', () => {
@@ -98,8 +96,8 @@ test('a session holding the user window keeps the controls on screen between com
     keystrokes: [],
     targetLeases: [{ sessionId: 'holder', windowId: 'hwnd:0x1', expiresAt: null }],
   };
-  // A command runs for a fraction of a second; the user reaches for Pause or
-  // Stop between commands, when the session still holds their window.
+  // A command runs for a fraction of a second; the user reaches for Stop
+  // between commands, when the session still holds their window.
   const held = computerUseOverlayPresentation(snapshot, 'ko');
   assert.equal(held.visible, true);
   assert.deepEqual(held.sessionIds, ['holder']);
@@ -108,24 +106,22 @@ test('a session holding the user window keeps the controls on screen between com
   assert.equal(released.visible, false);
 });
 
-test('target-local cleanup failure remains a cleanup error across Stop generations', async () => {
+test('target-local cleanup failure is reported as a cleanup error', async () => {
   const controller = createComputerOverlayController(
     {
-      resume: async () => {},
       stop: async () => {
         throw new Error('computer_background_cleanup_unconfirmed');
       },
     },
     () => {}
   );
-  await controller.invoke('stop', 1, []);
-  assert.equal(controller.state(2).error, 'cleanup');
+  await controller.invoke('stop', []);
+  assert.equal(controller.state().error, 'cleanup');
 });
 
-test('Pause failure survives its generation change without calling task-ending Stop', async () => {
+test('a lost control surface reports its pause failure without calling task-ending Stop', async () => {
   const controller = createComputerOverlayController(
     {
-      resume: async () => {},
       stop: async () => {
         assert.fail('Pause must not cancel the task');
       },
@@ -135,8 +131,8 @@ test('Pause failure survives its generation change without calling task-ending S
     },
     () => {}
   );
-  await controller.invoke('pause', 1, ['fixture']);
-  assert.equal(controller.state(2).error, 'cleanup');
+  await controller.invoke('pause', ['fixture']);
+  assert.equal(controller.state().error, 'cleanup');
 });
 
 test('a control that never settles releases the pill and accepts the next press', async (t) => {
@@ -144,7 +140,6 @@ test('a control that never settles releases the pill and accepts the next press'
   let calls = 0;
   const controller = createComputerOverlayController(
     {
-      resume: async () => {},
       stop: () => {
         calls += 1;
         return new Promise(() => {});
@@ -152,13 +147,13 @@ test('a control that never settles releases the pill and accepts the next press'
     },
     () => {}
   );
-  const first = controller.invoke('stop', 1, ['fixture']);
+  const first = controller.invoke('stop', ['fixture']);
   t.mock.timers.tick(15_000);
-  assert.equal(await first, true);
+  await first;
   // The unanswered request must not hold the pill busy or swallow the next
   // Stop, which is the user's only guaranteed way out.
-  assert.deepEqual(controller.state(1), { busy: false, error: 'failed' });
-  const second = controller.invoke('stop', 1, ['fixture']);
+  assert.deepEqual(controller.state(), { busy: false, error: 'failed' });
+  const second = controller.invoke('stop', ['fixture']);
   t.mock.timers.tick(15_000);
   await second;
   assert.equal(calls, 2);

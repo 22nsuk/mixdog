@@ -253,8 +253,7 @@ test('a block cut from the live tail keeps its last parse until its own parse la
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   const host = dom.window.document.getElementById('root');
   const root = createRoot(host);
-  const render = (text) =>
-    root.render(React.createElement(StreamingMarkdownBody, { text, copyControl: () => null }));
+  const render = (text) => root.render(React.createElement(StreamingMarkdownBody, { text, copyControl: () => null }));
   const tail = 'Frozen **block** one\n\nNext block starting';
   const frozen = 'Frozen **block** one\n\n';
   try {

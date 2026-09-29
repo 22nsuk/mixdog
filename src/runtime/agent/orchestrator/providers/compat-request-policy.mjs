@@ -1,6 +1,5 @@
 // Shared request controls for Chat Completions and Responses gateways.
-import { retryDelayLabel } from './retry-classifier.mjs';
-import { providerRetryStatusText } from '../../../shared/err-text.mjs';
+import { emitProviderRetryStage, retryDelayLabel } from './retry-classifier.mjs';
 
 // withRetry onRetry for the compat stream sends: one stderr line plus a
 // display-only 'reconnecting' stage for the UI.
@@ -10,17 +9,7 @@ export function compatStreamRetryReporter(label, opts) {
     process.stderr.write(
       `[${label}] retry attempt ${attempt + 1} after ${lastErr?.message || lastErr?.code || 'transient error'}${delayLabel}\n`
     );
-    try {
-      opts.onStageChange?.('reconnecting', {
-        attempt: attempt + 1,
-        max: maxAttempts,
-        waitMs: delayMs,
-        classifier: lastErr?.retryClassifier || lastErr?.code || null,
-        message: providerRetryStatusText(lastErr, { attempt: attempt + 1, maxAttempts, delayMs }),
-      });
-    } catch {
-      /* display-only */
-    }
+    emitProviderRetryStage(opts?.onStageChange, { attempt: attempt + 1, maxAttempts, lastErr, delayMs });
   };
 }
 

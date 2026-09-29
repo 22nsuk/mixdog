@@ -18,6 +18,7 @@ import { attachPartial, stampCompatOutcome } from './stream-state.mjs';
 export function incompleteStreamError(state, label) {
   if (!state.sawFirstEvent) return stampCompatOutcome(state, firstByteCompatStreamError(label));
   const err = truncatedCompatStreamError(label, 'no finish_reason');
+  attachPartial(state, err);
   if (state.emittedText) {
     markErrorLiveTextEmitted(err);
     try {
@@ -25,7 +26,6 @@ export function incompleteStreamError(state, label) {
     } catch {
       /* best-effort */
     }
-    attachPartial(state, err);
   }
   return stampCompatOutcome(state, markUnsafeRetryIfToolEmitted(err, state.streamEmitState));
 }

@@ -109,7 +109,11 @@ try {
   const bounds = await ok({ action: 'window_bounds', window_id: window.id, read_only: true });
   assert.equal(bounds.window_id, window.id);
 
-  const { entry } = await until('entry exposed', () => entryOf(window.id), (found) => Boolean(found.entry));
+  const { entry } = await until(
+    'entry exposed',
+    () => entryOf(window.id),
+    (found) => Boolean(found.entry)
+  );
   console.log('entry', entry);
   const written = await ok({ action: 'set_value', ref: entry.ref, text: 'hello', window_id: window.id });
   assert.equal(written.verified, true, JSON.stringify(written));
@@ -140,7 +144,11 @@ try {
   assert.equal(cleared.verified, true, JSON.stringify(cleared));
   const background = await ok({ action: 'type', text: 'bg 7', window_id: window.id, delivery: 'background' });
   assert.equal(background.delivery_accepted, true, JSON.stringify(background));
-  await until('background text reached the entry', () => entryOf(window.id), (found) => found.entry?.value === 'bg 7');
+  await until(
+    'background text reached the entry',
+    () => entryOf(window.id),
+    (found) => found.entry?.value === 'bg 7'
+  );
   const buttons = (await entryOf(window.id)).snapshot.elements.filter((element) => element.role === 'Button');
   const confirm = buttons.find((button) => button.name === 'OK');
   assert.ok(confirm, JSON.stringify(buttons));

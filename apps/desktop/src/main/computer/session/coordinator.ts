@@ -425,6 +425,7 @@ export class ComputerUseCoordinator {
 
   endExecution(sessionId: string): void {
     this.forgetSession(sessionId);
+    this.releaseEndedPause(sessionId);
     this.clearTakeoverReasonWhenIdle();
     this.changed();
   }
@@ -738,6 +739,17 @@ export class ComputerUseCoordinator {
     this.cursors.delete(sessionId);
     this.keystrokes.delete(sessionId);
     if (this.attentionRequired?.sessionId === sessionId) this.attentionRequired = null;
+  }
+
+  /** A turn that ended while paused has nothing left to resume, so the pause
+   *  ends with the last paused session. Stop confirms its own cleanup and
+   *  resumes itself, and input that may still be held stays with the user. */
+  private releaseEndedPause(sessionId: string): void {
+    if (!this.pausedSessionIds.delete(sessionId) || this.pausedSessionIds.size > 0) return;
+    if (!this.userControlActive || this.cleanup.blocked) return;
+    if (this.takeoverReason === 'user_stop' || this.takeoverReason === 'input_cleanup_unconfirmed') return;
+    this.userControlActive = false;
+    this.takeoverReason = '';
   }
 
   private clearTakeoverReasonWhenIdle(): void {

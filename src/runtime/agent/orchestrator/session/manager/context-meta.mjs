@@ -4,34 +4,8 @@
 import { getModelMetadataSync } from '../../providers/model-catalog.mjs';
 import { positiveInt } from '../../../../shared/numbers.mjs';
 
-// Known context windows for the current-generation models this plugin
-// routes to. Anything not listed falls through to guessContextWindow() —
-// local llama/mistral/phi default to 8192, everything else 128000. Keep
-// this map trimmed to live models; older generations slow down reads
-// without buying anything.
-const CONTEXT_WINDOWS = {
-  // OpenAI GPT-5.x family (openai / openai-oauth)
-  'gpt-5.5': 272000,
-  'gpt-5.4': 272000,
-  'gpt-5.4-mini': 272000,
-  'gpt-5.4-nano': 272000,
-  // Anthropic Claude 4.x
-  'claude-opus-4-8': 1000000,
-  'claude-opus-4-7': 1000000,
-  'claude-sonnet-4-6': 1000000,
-  'claude-haiku-4-5-20251001': 200000,
-  // Google Gemini 3.x
-  'gemini-3.1-pro': 1000000,
-  'gemini-3-pro': 1000000,
-  'gemini-3.5-flash': 1000000,
-  'gemini-3-flash': 1000000,
-  // xAI Grok (catalog polyfill mirror — model-catalog PRICING_OVERRIDES)
-  'grok-build-0.1': 256000,
-  'grok-4.20': 1000000,
-};
-// Family-pattern fallback used only when both the provider catalog and the
-// exact-id table miss (cold metadata, before the LiteLLM/models.dev catalog
-// warms). Keep these aligned with the catalog so /context, gateway, and the
+// Family-pattern fallback used only when the provider and external catalogs
+// both miss (cold metadata, before the LiteLLM/models.dev catalog warms). Keep these aligned with the catalog so /context, gateway, and the
 // runtime agree on the boundary the first time a model is routed. Local models
 // (llama/mistral/phi/qwen/gemma) stay small so an unknown local id never claims
 // a giant window.
@@ -44,7 +18,6 @@ function guessContextWindow(model, provider = null) {
   // catalog has not warmed yet. Larger Max windows are model metadata, not
   // a safe cold-start request boundary.
   if ((p === 'cursor-oauth' || p === 'cursor-api') && m) return 200000;
-  if (CONTEXT_WINDOWS[model]) return CONTEXT_WINDOWS[model];
   // Local/self-hosted families — never inflate an unknown local id.
   if (
     isLocalProvider &&
@@ -59,12 +32,13 @@ function guessContextWindow(model, provider = null) {
   )
     return 8192;
   // Current hosted families by name pattern.
-  if (m.startsWith('claude-opus') || m.startsWith('claude-sonnet')) return 1000000;
-  if (m.startsWith('claude-haiku') || m.startsWith('claude-')) return 200000;
+  if (/^claude-(opus|sonnet|fable)/.test(m)) return 1000000;
+  if (m.startsWith('claude-')) return 200000;
   if (m.startsWith('gemini-3') || m.startsWith('gemini-2')) return 1000000;
-  if (m.startsWith('gpt-5')) return 272000;
+  if (/^gpt-[56]/.test(m)) return 272000;
   if (m.startsWith('grok-build')) return 256000;
-  if (m.startsWith('grok-')) return 1000000;
+  // Grok 4.5+ serve 500k; older 1M SKUs only lose headroom on a cold catalog.
+  if (m.startsWith('grok-')) return 500000;
   if (m.startsWith('deepseek-v')) return 1000000;
   return 128000;
 }

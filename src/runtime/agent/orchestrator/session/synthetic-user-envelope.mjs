@@ -37,7 +37,12 @@ const RUNTIME_CONTROL_TEXT_RE =
 // `task-notification` is the structural mark a drained tool/agent completion
 // carries (pending-messages mode → agent-loop / ask-session meta.source); the
 // "Async … task … finished." text test below stays as the meta-less fallback.
-const RUNTIME_CONTROL_SOURCES = new Set(['max-output-recovery', 'refusal-recovery', 'task-notification']);
+const RUNTIME_CONTROL_SOURCES = new Set([
+  'max-output-recovery',
+  'refusal-recovery',
+  'stream-cut-recovery',
+  'task-notification',
+]);
 const ENVELOPE_OPEN_RE = new RegExp(`^\\s*<${SYNTHETIC_USER_ENVELOPE_TAG}\\b`, 'i');
 
 function messageText(message) {

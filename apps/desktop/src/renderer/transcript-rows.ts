@@ -162,7 +162,10 @@ function toolActivityRowKey(
   pending: readonly PendingToolActivityItem[]
 ): string {
   const first = pending[0] as PendingToolActivityItem;
-  const ids = pending.map(({ item }) => item?.id).filter((id) => id !== undefined && id !== null).map(String);
+  const ids = pending
+    .map(({ item }) => item?.id)
+    .filter((id) => id !== undefined && id !== null)
+    .map(String);
   const own = `${transcriptRowKey(sessionKey, first.item, first.index)}:tool-activity`;
   if (ids.length === 0) return own;
   const memory = toolGroupKeyMemory(sessionKey);

@@ -8,11 +8,8 @@ const presentation = {
   title: 'Computer in use',
   accent: '#58a6ff',
   paused: false,
-  canResume: false,
   generation: 0,
   detail: '',
-  busy: false,
-  idleResumeSeconds: 5,
   attention: false,
 };
 
@@ -84,7 +81,7 @@ test('a superseded render cannot show UI while the newer presentation is still p
   revision = 2;
   const latest = renderComputerOverlayWindows(
     [fixture.entry],
-    { ...presentation, paused: true, canResume: true },
+    { ...presentation, paused: true },
     2,
     () => revision === 2
   );

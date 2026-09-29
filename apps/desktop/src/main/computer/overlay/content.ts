@@ -1,117 +1,93 @@
 import { overlayStyles } from './content-styles';
+import { loadOverlayFont } from './font-asset';
 
-export const OVERLAY_WIDTH = 280;
-export const OVERLAY_HEIGHT = 72;
+export const OVERLAY_WIDTH = 224;
+export const OVERLAY_HEIGHT = 62;
 
-const PAUSE_ICON_PATH = 'M6 4h4v16H6zM14 4h4v16h-4z';
-const RESUME_ICON_PATH = 'M7 4v16l14-8z';
+const STOP_ICON_PATH =
+  'M8.5 6h7a2.5 2.5 0 0 1 2.5 2.5v7a2.5 2.5 0 0 1-2.5 2.5h-7A2.5 2.5 0 0 1 6 15.5v-7A2.5 2.5 0 0 1 8.5 6z';
+// The Mixdog mark (design/brand): three arcs that turn while the agent works,
+// around a star drawn larger than the logo's so it still reads at 20px.
+const MARK_ARC_PATH = 'M116.2 61A68 68 0 0 1 191.9 104.7';
+const MARK_STAR_POINTS = '128,100 137,119 156,128 137,137 128,156 119,137 100,128 119,119';
+// The desktop's own face, so the pill reads like the app that owns it rather
+// than Segoe UI with a system Hangul fallback. Bundles embed these bytes.
+const OVERLAY_FONT = loadOverlayFont('pretendard/dist/web/static/woff2-subset/Pretendard-Medium.subset.woff2');
 
 /** The wording the page starts with and the script re-renders, in one place. */
 function overlayLabels(locale: string) {
   const ko = locale.toLowerCase().startsWith('ko');
   return {
-    ko,
     title: ko ? '컴퓨터 사용 중' : 'Computer in use',
-    pause: ko ? '중단' : 'Pause',
-    stop: ko ? '작업 종료' : 'Stop',
+    stop: ko ? '중단' : 'Stop',
+    stopping: ko ? '중단 중' : 'Stopping',
+    failed: ko ? '실패' : 'Failed',
   };
 }
 
 /**
- * A Pause/Resume toggle preserves the task and Stop ends it. Both controls are
- * always present and always pressable: a latched cleanup, an unconfirmed
- * request, or another control still running must never leave the user with a
- * dead pill and Ctrl+Alt+Esc as the only way out.
+ * One control. Stop ends the task and is always present, pressable, and in the
+ * same place: reaching for it can itself pause the agent (the user's own
+ * input, which resumes once the user is idle), and nothing on the pill ever
+ * changes what the press does. A latched cleanup or an unconfirmed request
+ * never leaves the user with a dead pill.
  */
 export function overlayHtml(locale: string): string {
   const labels = overlayLabels(locale);
   return `<!doctype html><html><head><meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'none'">
-<style>${overlayStyles}</style></head><body><div id="pill">
-<svg id="outline" aria-hidden="true"><rect class="track"/><rect class="highlight" pathLength="100"/></svg>
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; font-src data:; script-src 'none'">
+<style>@font-face{font-family:"Mixdog Overlay";font-weight:500;font-display:block;src:url(data:font/woff2;base64,${OVERLAY_FONT}) format("woff2")}
+${overlayStyles}</style></head><body><div id="pill">
+<svg id="mark" viewBox="44 44 168 168" aria-hidden="true"><g id="arcs" fill="none" stroke-width="24" stroke-linecap="round"><path d="${MARK_ARC_PATH}"/><path d="${MARK_ARC_PATH}" transform="rotate(120 128 128)"/><path d="${MARK_ARC_PATH}" transform="rotate(240 128 128)"/></g><polygon id="star" points="${MARK_STAR_POINTS}"/></svg>
 <div id="status" role="status"><div id="title">${labels.title}</div></div>
-<div id="controls">
-<button id="toggle" type="button" aria-label="${labels.pause}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="${PAUSE_ICON_PATH}"/></svg></button>
-<button id="stop" type="button" aria-label="${labels.stop}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12 19 6.4 17.6 5 12 10.6z"/></svg></button>
-</div>
+<button id="stop" type="button" aria-label="${labels.stop}" title="${labels.stop} (Ctrl+Alt+Esc)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="${STOP_ICON_PATH}"/></svg></button>
 </div></body></html>`;
 }
 
 export function overlayScript(locale = 'en'): string {
   const labels = overlayLabels(locale);
-  const { ko } = labels;
   return `(() => {
-    let state = { paused:false, canResume:false, busy:false, generation:0 };
-    let armed, renderedRevision = -1, requestSequence = 0, pending = '', failed = false;
-    const toggle = document.getElementById('toggle');
+    let state = { paused:false, generation:0 };
+    let renderedRevision = -1, requestSequence = 0, pending = false, failed = false;
     const stopControl = document.getElementById('stop');
-    const action = () => {
-      if (armed?.action) return armed.action;
-      if (pending === 'resume') return 'pause';
-      return state.paused ? 'resume' : 'pause';
+    const title = document.getElementById('title');
+    // Evidence that the pointer reached Stop, recorded by the host next to the
+    // press outcome; delivery never affects the control itself.
+    const report = () => {
+      void Promise.resolve()
+        .then(() => window.mixdogComputerControl({ action:'press', control:'stop' }))
+        .catch(() => {});
     };
     const render = () => {
-      const attention = failed || Boolean(state.attention);
-      document.body.dataset.paused = String(state.paused);
-      document.body.dataset.error = String(attention);
-      let title;
-      if (failed) title = ${JSON.stringify(ko ? '실패' : 'Failed')};
-      else if (pending === 'pause') title = ${JSON.stringify(ko ? '중단 중' : 'Pausing')};
-      else if (pending === 'resume') title = ${JSON.stringify(ko ? '재개 중' : 'Resuming')};
-      else if (pending === 'stop') title = ${JSON.stringify(ko ? '종료 중' : 'Stopping')};
-      else title = state.title || ${JSON.stringify(labels.title)};
-      document.getElementById('title').textContent = title;
-      const resuming = action() === 'resume';
-      const label = resuming ? ${JSON.stringify(ko ? '재개' : 'Resume')} : ${JSON.stringify(labels.pause)};
-      toggle.setAttribute('aria-label', label);
-      toggle.title = label + ${JSON.stringify(ko ? ' (비상 중지: Ctrl+Alt+Esc)' : ' (emergency Stop: Ctrl+Alt+Esc)')};
-      toggle.querySelector('path').setAttribute('d', resuming ? '${RESUME_ICON_PATH}' : '${PAUSE_ICON_PATH}');
-      // No control is ever disabled or hidden. A running, dropped, or latched
-      // request reports itself through the wording and aria-busy only, so every
-      // press reaches the host and Stop is always one click away.
-      toggle.setAttribute('aria-busy', String(Boolean(pending) || Boolean(state.busy)));
-      stopControl.title = ${JSON.stringify(labels.stop)} + ' (Ctrl+Alt+Esc)';
-      stopControl.setAttribute('aria-busy', String(pending === 'stop'));
+      document.body.dataset.paused = String(Boolean(state.paused));
+      document.body.dataset.error = String(failed || Boolean(state.attention));
+      if (failed) title.textContent = ${JSON.stringify(labels.failed)};
+      else if (pending) title.textContent = ${JSON.stringify(labels.stopping)};
+      else title.textContent = state.title || ${JSON.stringify(labels.title)};
+      // Never disabled: a running or failed Stop reports itself through the
+      // wording and aria-busy only, so every press reaches the host.
+      stopControl.setAttribute('aria-busy', String(pending));
     };
-    const send = async (request) => {
+    const stop = async () => {
       const sequence = ++requestSequence;
-      pending = request.action; failed = false; render();
+      pending = true; failed = false; render();
       let deadline;
       try {
         const reply = await Promise.race([
-          window.mixdogComputerControl(request),
+          window.mixdogComputerControl({ action:'stop', generation:state.generation }),
           new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('timeout')), 20000); }),
         ]);
-        if (sequence !== requestSequence) return;
-        // Pause moves the generation itself; only Resume is stale across generations.
-        if (request.action === 'resume' && request.generation !== state.generation) return;
-        // Dropped because another control was still running: not a failure,
-        // and the control stays live for the next press.
-        if (reply?.error === 'busy') return;
         if (!reply?.accepted || reply.error) throw new Error('not accepted');
       } catch {
-        if (sequence === requestSequence
-          && (request.action === 'pause' || request.generation === state.generation)) failed = true;
+        // Stop moves the generation itself, so its failure outlives that change.
+        if (sequence === requestSequence) failed = true;
       } finally {
         clearTimeout(deadline);
-        if (sequence === requestSequence) { pending = ''; render(); }
+        if (sequence === requestSequence) { pending = false; render(); }
       }
     };
-    const arm = () => { armed = { action:action(), generation:state.generation }; };
-    toggle.onpointerdown = arm;
-    toggle.onpointercancel = () => { armed = undefined; render(); };
-    toggle.onkeydown = (event) => {
-      if (!event.repeat && (event.key === 'Enter' || event.key === ' ')) arm();
-    };
-    toggle.onclick = () => {
-      const request = armed || { action:action(), generation:state.generation };
-      armed = undefined;
-      void send(request);
-    };
-    stopControl.onclick = () => {
-      armed = undefined;
-      void send({ action:'stop', generation:state.generation });
-    };
+    stopControl.onpointerdown = report;
+    stopControl.onclick = () => { void stop(); };
     window.mixdogComputerOverlay = (next) => {
       if (next.renderRevision < renderedRevision) return;
       renderedRevision = next.renderRevision;

@@ -66,7 +66,14 @@ test('usage statistics wait for queued sends; a failing row fails alone', async 
   t.after(() => ledger.close());
   ledger.set('importedThrough', Number.MAX_SAFE_INTEGER);
   const row = (responseId) =>
-    makeUsageRecord({ ts: Date.now(), provider: 'openai', model: 'gpt-5.5', inputTokens: 50, outputTokens: 5, responseId });
+    makeUsageRecord({
+      ts: Date.now(),
+      provider: 'openai',
+      model: 'gpt-5.5',
+      inputTokens: 50,
+      outputTokens: 5,
+      responseId,
+    });
   const good = ledger.recordQueued(row('queued-a'));
   const bad = ledger.recordQueued({ ...row('queued-bad'), day: 'not-a-day' }).then(
     () => null,
@@ -144,7 +151,9 @@ test('an async repair writes nothing when another writer changed a planned row',
   t.mock.method(ledger, 'workerRequest', async (op, payload) => {
     if (op === 'applyRepair') {
       // Another writer prices row x first.
-      ledger.db.prepare("UPDATE usage_events SET cost_usd=0.25 WHERE id=(SELECT id FROM usage_events ORDER BY ts LIMIT 1)").run();
+      ledger.db
+        .prepare('UPDATE usage_events SET cost_usd=0.25 WHERE id=(SELECT id FROM usage_events ORDER BY ts LIMIT 1)')
+        .run();
     }
     return request(op, payload);
   });

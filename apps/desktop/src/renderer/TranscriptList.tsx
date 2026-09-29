@@ -48,7 +48,11 @@ const coreScrollState = (instance: TranscriptVirtualizer) => instance as unknown
  *  (ref registration, a detached node, a headless layout reporting no box)
  *  keeps the size the timeline already holds: a synchronous rect read per
  *  mounted row forced a layout of the whole list inside every commit. */
-function measureTranscriptRow(element: Element, entry: ResizeObserverEntry | undefined, instance: TranscriptVirtualizer): number {
+function measureTranscriptRow(
+  element: Element,
+  entry: ResizeObserverEntry | undefined,
+  instance: TranscriptVirtualizer
+): number {
   const observed = Number(entry?.borderBoxSize?.[0]?.blockSize);
   if (Number.isFinite(observed) && observed > 0) return Math.round(observed);
   const index = instance.indexFromElement(element as HTMLDivElement);
@@ -513,9 +517,7 @@ export function TranscriptList({
   const pendingAnchor = useRef<{ base: readonly TranscriptRowModel[]; anchor: ReadingAnchor | null } | null>(null);
   // `start`: where the anchor sat when last applied. `landedAt` bounds how
   // long late sizes may extend the hold.
-  const anchorHold = useRef<(ReadingAnchor & { until: number; start: number | null; landedAt: number }) | null>(
-    null
-  );
+  const anchorHold = useRef<(ReadingAnchor & { until: number; start: number | null; landedAt: number }) | null>(null);
   const anchorRestoreQueued = useRef(false);
   // The hold is NOT a reader-gesture decision. A page lands when the reader
   // reaches the top — inside the wheel/touch window by construction — and the

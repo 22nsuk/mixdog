@@ -63,7 +63,7 @@
   inset: 12px 12px auto;
   padding: 16px;
   border: 1px solid var(--mx-border-muted);
-  border-radius: 8px;
+  border-radius: var(--mx-radius-lg);
   background: var(--mx-surface-plate);
   color: var(--mx-text);
   box-shadow: var(--mx-floating);

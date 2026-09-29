@@ -2,7 +2,7 @@ import { app, BrowserWindow } from 'electron';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { cursorHtml, cursorScript, CURSOR_HOTSPOT, CURSOR_SIZE } from '../cursor-art';
-import { emulateMotionPreference } from './outline-check';
+import { emulateMotionPreference } from './pill-motion';
 
 app.disableHardwareAcceleration();
 app.setPath('userData', join(process.env.CURSOR_TEST_DIRECTORY!, 'profile'));

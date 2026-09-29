@@ -302,6 +302,7 @@ export default function EditorPane({
   onOpenAt,
   onNavigationLocation,
   onReady,
+  revealed = true,
 }: {
   projectPath: string;
   relPath: string;
@@ -311,12 +312,15 @@ export default function EditorPane({
   active: boolean;
   focused: boolean;
   onDirty(dirty: boolean): void;
-  onSaveHandle?(handle: EditorFileHandle | null): void;
+  onSaveHandle?(handle: EditorFileHandle | null, released?: EditorFileHandle): void;
   reveal?: { line: number; nonce: number } | null;
   codeGraph?(mode: EditorCodeGraphMode, query: string): Promise<string>;
   onOpenAt?(rel: string, line: number): void;
   onNavigationLocation?(rel: string, line: number, column: number): void;
   onReady?(): void;
+  /** The loading cover has lifted: a hidden editor cannot take focus, so a
+   *  first open claims the keyboard only once it is visible. */
+  revealed?: boolean;
 }) {
   const api = window.mixdogDesktop;
   ensureEditorLoad(projectPath, relPath, accessToken);
@@ -590,8 +594,8 @@ export default function EditorPane({
       editorLayoutSize.current = null;
       layoutEditorToHost(editor, layoutHost);
     }
-    if (focused) editor?.focus();
-  }, [active, focused, layoutEditorToHost, load]);
+    if (focused && revealed) editor?.focus();
+  }, [active, focused, layoutEditorToHost, load, revealed]);
   useEffect(() => {
     if (!modelUri) return;
     const model = editorRef.current?.getModel();

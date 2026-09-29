@@ -16,7 +16,7 @@
   min-height: 36px;
   padding: 7px 10px;
   border: 0;
-  border-radius: 7px;
+  border-radius: var(--mx-radius-md);
   background: transparent;
   color: var(--mx-text);
   text-align: left;

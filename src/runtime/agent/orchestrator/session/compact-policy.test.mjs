@@ -12,6 +12,7 @@ import {
   resolveContextUsageSnapshot,
   resolveGaugeContextTokens,
   resolveWorkerCompactPolicy,
+  shouldCompactForRequestMedia,
   shouldCompactForSession,
 } from './loop/compact-policy.mjs';
 import { contextMessagesSignature, estimateMessagesTokens } from './context-utils.mjs';
@@ -30,6 +31,21 @@ test('Cursor main sessions preserve the configured 200k compact boundary', () =>
   assert.equal(policy.triggerTokens, 200_000);
   assert.equal(policy.bufferTokens, 0);
   assert.equal(policy.compactTargetTokens, 50_000);
+});
+
+test('tool-result media at the request byte cap arms compaction; user attachments never do', () => {
+  const screenshot = { type: 'image', data: 'A'.repeat(1_000_000), mimeType: 'image/png' };
+  const toolTurns = (count) =>
+    Array.from({ length: count }, (_, index) => [
+      { role: 'assistant', content: '', toolCalls: [{ id: `call-${index}`, name: 'browser', arguments: '{}' }] },
+      { role: 'tool', toolCallId: `call-${index}`, content: [{ type: 'text', text: 'shot' }, screenshot] },
+    ]).flat();
+  assert.equal(shouldCompactForRequestMedia(toolTurns(23)), false);
+  assert.equal(shouldCompactForRequestMedia(toolTurns(24)), true);
+  assert.equal(
+    shouldCompactForRequestMedia([{ role: 'user', content: Array.from({ length: 30 }, () => screenshot) }]),
+    false
+  );
 });
 
 test('successful compaction publishes post-compact pressure and invalidates the old baseline', () => {

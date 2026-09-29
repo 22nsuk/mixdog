@@ -10,6 +10,7 @@ import { sessions } from './core/office-core.mjs';
 import { recalculateForReview } from './core/office-recalculation.mjs';
 import { cellRecords, sheetFormulaTotals } from './portable/portable-cells.mjs';
 import { chartPartSnapshot } from './portable/portable-snapshot-shared.mjs';
+import { columnFileWidth, columnPixels, maximumDigitWidth } from './portable/portable-sheet-page.mjs';
 
 process.env.MIXDOG_OOXML_VALIDATOR_DISABLED = '1';
 
@@ -60,6 +61,7 @@ test('the preset speaks the sheet language and formats the columns it was given'
     issues.filter((issue) => issue.code === 'number_stored_as_text'),
     []
   );
+  // The same text in a grid cell is typed as the figure it shows, as Excel types it: 0.928 under 0.00%.
   value(
     await executeOfficeTool(
       {
@@ -70,10 +72,15 @@ test('the preset speaks the sheet language and formats the columns it was given'
       { cwd }
     )
   );
+  const typed = value(
+    await executeOfficeTool({ action: 'snapshot', session: created.session, range: 'H30:H30' }, { cwd })
+  ).document.sheets[0].cells.find((cell) => cell.ref === 'H30');
+  assert.equal(typed.value, 0.928);
+  assert.equal(typed.style?.numberFormat, '0.00%');
   const grid = value(await executeOfficeTool({ action: 'issues', session: created.session }, { cwd })).issues || [];
   assert.deepEqual(
     grid.filter((issue) => issue.code === 'number_stored_as_text').map((issue) => issue.path),
-    ['/sheet[Sheet1]/cell[H30]']
+    []
   );
   const mismatched = await executeOfficeTool(
     {
@@ -235,7 +242,13 @@ test('a composed document makes its body face, size, and ink the document defaul
         format: 'docx',
         mode: 'portable',
         design: { profile: 'data' },
-        operations: [{ op: 'compose_document', title: '야간 이용 분석', sections: [{ heading: '해석', paragraphs: ['본문입니다.'] }] }],
+        operations: [
+          {
+            op: 'compose_document',
+            title: '야간 이용 분석',
+            sections: [{ heading: '해석', paragraphs: ['본문입니다.'] }],
+          },
+        ],
       },
       { cwd }
     )
@@ -263,7 +276,11 @@ test('a composed document makes its body face, size, and ink the document defaul
   const opened = value(await executeOfficeTool({ action: 'open', path: korean, mode: 'portable' }, { cwd }));
   value(
     await executeOfficeTool(
-      { action: 'batch', session: opened.session, operations: [{ op: 'set_document_font', properties: { name: '맑은 고딕', size: 10.5 } }] },
+      {
+        action: 'batch',
+        session: opened.session,
+        operations: [{ op: 'set_document_font', properties: { name: '맑은 고딕', size: 10.5 } }],
+      },
       { cwd }
     )
   );
@@ -295,18 +312,29 @@ test('a document keeps a paragraph after its last table and between two tables',
     )
   );
   const blocks = async () =>
-    [...(await (await parts(path)).text('word/document.xml')).replace(/<w:tc>[\s\S]*?<\/w:tc>/g, '').matchAll(/<w:(p|tbl)\b(\/)?/g)]
+    [
+      ...(await (await parts(path)).text('word/document.xml'))
+        .replace(/<w:tc>[\s\S]*?<\/w:tc>/g, '')
+        .matchAll(/<w:(p|tbl)\b(\/)?/g),
+    ]
       .map((match) => (match[1] === 'tbl' ? 'T' : match[2] ? 'e' : 'p'))
       .join('');
   assert.equal(await blocks(), 'pTeTe');
   value(
-    await executeOfficeTool({ action: 'batch', session: created.session, operations: [{ op: 'append_text', text: '뒤 문단' }] }, { cwd })
+    await executeOfficeTool(
+      { action: 'batch', session: created.session, operations: [{ op: 'append_text', text: '뒤 문단' }] },
+      { cwd }
+    )
   );
   assert.equal(await blocks(), 'pTeTp', 'the closing paragraph is filled, not followed by a blank line');
   // Placed under a paragraph that a table follows, a new table keeps a paragraph between it and that table.
   value(
     await executeOfficeTool(
-      { action: 'batch', session: created.session, operations: [{ op: 'add_table', paragraph: 1, rows: 1, columns: 1, values: [['앞']] }] },
+      {
+        action: 'batch',
+        session: created.session,
+        operations: [{ op: 'add_table', paragraph: 1, rows: 1, columns: 1, values: [['앞']] }],
+      },
       { cwd }
     )
   );
@@ -332,18 +360,40 @@ test('a document keeps a paragraph after its last table and between two tables',
     )
   );
   const between = value(
-    await executeOfficeTool({ action: 'batch', session: paired.session, operations: [{ op: 'remove_paragraph', paragraph: 2 }] }, { cwd })
+    await executeOfficeTool(
+      { action: 'batch', session: paired.session, operations: [{ op: 'remove_paragraph', paragraph: 2 }] },
+      { cwd }
+    )
   );
   assert.equal(between.results[0].keptBetweenTables, true);
-  const pairBlocks = [...(await (await parts(pair)).text('word/document.xml')).replace(/<w:tc>[\s\S]*?<\/w:tc>/g, '').matchAll(/<w:(p|tbl)\b(\/)?/g)]
+  const pairBlocks = [
+    ...(await (await parts(pair)).text('word/document.xml'))
+      .replace(/<w:tc>[\s\S]*?<\/w:tc>/g, '')
+      .matchAll(/<w:(p|tbl)\b(\/)?/g),
+  ]
     .map((match) => (match[1] === 'tbl' ? 'T' : match[2] ? 'e' : 'p'))
     .join('');
   assert.equal(pairBlocks, 'pTeTp');
   // Moving that paragraph away leaves the tables apart too.
   value(
-    await executeOfficeTool({ action: 'batch', session: paired.session, operations: [{ op: 'remove_paragraph', paragraph: 1 }, { op: 'append_text', text: '사이 2' }, { op: 'move_paragraph', paragraph: 1, index: 3 }] }, { cwd })
+    await executeOfficeTool(
+      {
+        action: 'batch',
+        session: paired.session,
+        operations: [
+          { op: 'remove_paragraph', paragraph: 1 },
+          { op: 'append_text', text: '사이 2' },
+          { op: 'move_paragraph', paragraph: 1, index: 3 },
+        ],
+      },
+      { cwd }
+    )
   );
-  const moved = [...(await (await parts(pair)).text('word/document.xml')).replace(/<w:tc>[\s\S]*?<\/w:tc>/g, '').matchAll(/<w:(p|tbl)\b(\/)?/g)]
+  const moved = [
+    ...(await (await parts(pair)).text('word/document.xml'))
+      .replace(/<w:tc>[\s\S]*?<\/w:tc>/g, '')
+      .matchAll(/<w:(p|tbl)\b(\/)?/g),
+  ]
     .map((match) => (match[1] === 'tbl' ? 'T' : match[2] ? 'e' : 'p'))
     .join('');
   assert.doesNotMatch(moved, /TT/, moved);
@@ -414,8 +464,14 @@ test('a chart on a summary sheet reads its source from the sheet it names', asyn
   assert.match(chart, /<c:v>18522000<\/c:v>/);
   const workbook = await zip.text('xl/workbook.xml');
   const summaryId = /<sheet\b[^>]*name="요약"[^>]*r:id="([^"]+)"/.exec(workbook)[1];
-  const summaryPath = new RegExp(`Id="${summaryId}"[^>]*Target="([^"]+)"`).exec(await zip.text('xl/_rels/workbook.xml.rels'))[1];
-  assert.match(await zip.text(`xl/${summaryPath.replace(/^\/?xl\//, '')}`), /<drawing r:id=/, 'the frame stands on 요약');
+  const summaryPath = new RegExp(`Id="${summaryId}"[^>]*Target="([^"]+)"`).exec(
+    await zip.text('xl/_rels/workbook.xml.rels')
+  )[1];
+  assert.match(
+    await zip.text(`xl/${summaryPath.replace(/^\/?xl\//, '')}`),
+    /<drawing r:id=/,
+    'the frame stands on 요약'
+  );
 
   for (const [range, fault] of [
     ["'월별 계산'!A1:A3,D1:D3", /some areas and none on others/],
@@ -423,7 +479,14 @@ test('a chart on a summary sheet reads its source from the sheet it names', asyn
     ['없는시트!A1:B3', /does not hold/],
   ]) {
     const refused = await executeOfficeTool(
-      { action: 'create', path: join(cwd, 'refused.xlsx'), format: 'xlsx', mode: 'portable', overwrite: true, operations: [{ op: 'add_chart', range }] },
+      {
+        action: 'create',
+        path: join(cwd, 'refused.xlsx'),
+        format: 'xlsx',
+        mode: 'portable',
+        overwrite: true,
+        operations: [{ op: 'add_chart', range }],
+      },
       { cwd }
     );
     assert.equal(refused.isError, true, range);
@@ -443,19 +506,40 @@ test('a pivot over Korean fields takes Korean captions', async (t) => {
         format: 'xlsx',
         mode: 'portable',
         operations: [
-          { op: 'set_range', range: 'A1:C4', values: [['권역', '분기', '매출'], ['서울', '1분기', 820], ['부산', '1분기', 410], ['서울', '2분기', 910]] },
-          { op: 'add_pivot_table', source: 'A1:C4', destination: 'E1', rows: ['권역'], columns: ['분기'], values: ['매출'] },
+          {
+            op: 'set_range',
+            range: 'A1:C4',
+            values: [
+              ['권역', '분기', '매출'],
+              ['서울', '1분기', 820],
+              ['부산', '1분기', 410],
+              ['서울', '2분기', 910],
+            ],
+          },
+          {
+            op: 'add_pivot_table',
+            source: 'A1:C4',
+            destination: 'E1',
+            rows: ['권역'],
+            columns: ['분기'],
+            values: ['매출'],
+          },
         ],
       },
       { cwd }
     )
   );
-  const sheet = value(await executeOfficeTool({ action: 'snapshot', session: created.session }, { cwd })).document.sheets[0];
+  const sheet = value(await executeOfficeTool({ action: 'snapshot', session: created.session }, { cwd })).document
+    .sheets[0];
   const values = sheet.cells.map((cell) => cell.value);
   assert.ok(values.includes('합계 : 매출') && values.includes('총합계'), JSON.stringify(values));
   assert.ok(!values.includes('Grand Total'));
   // The read names the pivot as Excel's does, and the row header keeps its field's name through a refresh.
-  assert.deepEqual(sheet.pivots?.map((pivot) => pivot.name), ['MixdogPivot1'], JSON.stringify(sheet.pivots));
+  assert.deepEqual(
+    sheet.pivots?.map((pivot) => pivot.name),
+    ['MixdogPivot1'],
+    JSON.stringify(sheet.pivots)
+  );
   const definition = await (await parts(path)).text('xl/pivotTables/pivotTable1.xml');
   assert.match(definition, /grandTotalCaption="총합계"/);
   assert.match(definition, /rowHeaderCaption="[^"]+"/);
@@ -475,8 +559,19 @@ test('a multi-column fit is not widened by a line of text alone in its row', asy
         format: 'xlsx',
         mode: 'portable',
         operations: [
-          { op: 'set_range', range: 'A1:A2', values: [['경비 신청서'], ['파란 칸에 입력하세요. 둘째 줄은 작성 예시입니다.']] },
-          { op: 'set_range', range: 'A4:C5', values: [['사용일', '구분', '금액'], ['2026-10-02', '교통', 18400]] },
+          {
+            op: 'set_range',
+            range: 'A1:A2',
+            values: [['경비 신청서'], ['파란 칸에 입력하세요. 둘째 줄은 작성 예시입니다.']],
+          },
+          {
+            op: 'set_range',
+            range: 'A4:C5',
+            values: [
+              ['사용일', '구분', '금액'],
+              ['2026-10-02', '교통', 18400],
+            ],
+          },
           { op: 'autofit_range', range: 'A:C' },
         ],
       },
@@ -488,7 +583,12 @@ test('a multi-column fit is not widened by a line of text alone in its row', asy
     return Number(new RegExp(`<col min="${column}" max="${column}" width="([\\d.]+)"`).exec(xml)?.[1]);
   };
   assert.ok((await widthOf(1)) < 16, `column A fits its dates, not the instruction line: ${await widthOf(1)}`);
-  value(await executeOfficeTool({ action: 'batch', session: created.session, operations: [{ op: 'autofit_range', range: 'A:A' }] }, { cwd }));
+  value(
+    await executeOfficeTool(
+      { action: 'batch', session: created.session, operations: [{ op: 'autofit_range', range: 'A:A' }] },
+      { cwd }
+    )
+  );
   assert.ok((await widthOf(1)) > 30, `a fit of column A alone still takes the line: ${await widthOf(1)}`);
 });
 
@@ -537,7 +637,16 @@ test('a General number is cut only when its integer part outruns the column', as
         path: join(cwd, 'general.xlsx'),
         format: 'xlsx',
         mode: 'portable',
-        operations: [{ op: 'set_range', range: 'A1:B2', values: [['비율', '건수'], [0.5 + 0.07, 123456789012]] }],
+        operations: [
+          {
+            op: 'set_range',
+            range: 'A1:B2',
+            values: [
+              ['비율', '건수'],
+              [0.5 + 0.07, 123456789012],
+            ],
+          },
+        ],
       },
       { cwd }
     )
@@ -574,21 +683,24 @@ test('portable cells carry the workbook types Excel reports', async (t) => {
           },
           { op: 'set_cell', cell: 'A3', value: '1,240' },
           { op: 'set_cell', cell: 'B3', value: -18.5 },
+          { op: 'set_cell', cell: 'A4', value: '007' },
         ],
       },
       { cwd }
     )
   );
-  assert.equal(created.batch.results.length, 3);
+  assert.equal(created.batch.results.length, 4);
   const snapshot = value(await executeOfficeTool({ action: 'snapshot', session: created.session }, { cwd }));
   const cells = new Map(snapshot.document.sheets[0].cells.map((cell) => [cell.ref, cell]));
   assert.equal(cells.get('B2').value, 1240);
   assert.equal(cells.get('C2').value, 0.928);
   assert.equal(cells.get('B3').value, -18.5);
-  // Text that merely looks numeric stays text, and keeps saying so: that flag
-  // is how a reader knows Excel will not sum it.
-  assert.equal(cells.get('A3').value, '1,240');
-  assert.equal(cells.get('A3').dataType, 'text');
+  // A grouped figure written as text is the number Excel types from it, under #,##0; a code Excel would strip
+  // ("007") stays text and keeps saying so: that flag is how a reader knows Excel will not sum it.
+  assert.equal(cells.get('A3').value, 1240);
+  assert.equal(cells.get('A3').dataType, undefined);
+  assert.equal(cells.get('A4').value, '007');
+  assert.equal(cells.get('A4').dataType, 'text');
   assert.equal(cells.get('B2').dataType, undefined);
   assert.equal(cells.get('D2').value, '9월 실측');
 });
@@ -700,7 +812,7 @@ test('portable snapshots expose cell styles and the issues audit reads them', as
           { op: 'set_cell', cell: 'B2', value: 2024 },
           { op: 'set_style', cell: 'B2', properties: { numberFormat: '#,##0' } },
           { op: 'set_formula', cell: 'B3', formula: '=B1*B2' },
-          { op: 'set_cell', cell: 'E2', value: '1,234' },
+          { op: 'set_cell', cell: 'E2', value: '0123' },
           { op: 'freeze_panes', row: 2, column: 1 },
           { op: 'merge_cells', range: 'A5:B5' },
         ],
@@ -933,7 +1045,8 @@ test('an empty-string formula result counts as a cached value', () => {
     ]
   );
   // Microsoft Excel writes the same empty result as a self-closing <v/>, and the sheet totals read it the same way.
-  const excel = '<sheetData><row r="6"><c r="D6" t="str"><f>IF(C6="","",C6*0.1)</f><v/></c><c r="E6"><f>D6*2</f></c></row></sheetData>';
+  const excel =
+    '<sheetData><row r="6"><c r="D6" t="str"><f>IF(C6="","",C6*0.1)</f><v/></c><c r="E6"><f>D6*2</f></c></row></sheetData>';
   assert.deepEqual(
     cellRecords(excel, []).map((cell) => [cell.ref, cell.cacheState]),
     [
@@ -1050,6 +1163,38 @@ test('a chart takes comma-joined areas, and a drawing over another is reported',
   );
   assert.match(overlaps[0].message, /over the chart at E2:/);
   value(await executeOfficeTool({ action: 'close', session: created.session }, { cwd }));
+});
+
+// A 220 pt chart anchored at A8 reached row 22 and covered the block of cells written there; the page showed the
+// chart and hid the figures. A chart clear of every filled cell is not reported.
+test('a drawing laid over filled cells is reported, one clear of them is not', async (t) => {
+  const cwd = await workspace(t);
+  const audit = async (cell) => {
+    const created = value(
+      await executeOfficeTool(
+        {
+          action: 'create',
+          path: join(cwd, `cover-${cell}.xlsx`),
+          format: 'xlsx',
+          mode: 'portable',
+          overwrite: true,
+          operations: [
+            { op: 'set_range', range: 'A1:B3', values: [['연도', '순현금흐름'], ['2027', 9.2], ['2028', 10.0]] },
+            { op: 'set_range', range: 'A22:B22', values: [['비고', '재무팀 검토']] },
+            { op: 'add_chart', range: 'A1:B3', cell, chartType: 'column', title: '순현금흐름 (억원)', width: 300, height: 220 },
+          ],
+        },
+        { cwd }
+      )
+    );
+    const audited = value(await executeOfficeTool({ action: 'issues', session: created.session }, { cwd }));
+    value(await executeOfficeTool({ action: 'close', session: created.session }, { cwd }));
+    return audited.issues.filter((issue) => issue.code === 'drawing_covers_cells');
+  };
+  const covering = await audit('A8');
+  assert.deepEqual(covering.map((issue) => issue.path), ['/sheet[Sheet1]/chart[1]'], JSON.stringify(covering));
+  assert.match(covering[0].message, /over 2 filled cells \(A22, B22\)/);
+  assert.deepEqual(await audit('D2'), []);
 });
 
 // A sheet that grows a column per period is already written the other way:
@@ -1265,6 +1410,73 @@ test('fitting columns keeps a withheld column withheld', async (t) => {
 // their text prints as a small block in the corner of the paper. minWidth is the
 // floor the layout asks for; a row fit that came after it used to rewrite every
 // width from the text again and undo it.
+test('a column width is stored as Excel stores it: the characters asked for and its padding, in the default digit', async (t) => {
+  const fonts = (name) => `<styleSheet><fonts count="1"><font><sz val="11"/><name val="${name}"/></font></fonts></styleSheet>`;
+  assert.equal(maximumDigitWidth(fonts('Calibri')), 7);
+  assert.equal(maximumDigitWidth(fonts('맑은 고딕')), 8);
+  // The values Excel itself wrote for ColumnWidth 9 and 5.2 in 맑은 고딕 11 (a column snaps to whole pixels).
+  assert.equal(columnFileWidth(9, 8), 9.625);
+  assert.equal(columnFileWidth(5.2, 8), 5.875);
+  assert.equal(columnFileWidth(9, 7), 9.7109375);
+  assert.equal(columnPixels(9.625, 8), 77);
+  assert.equal(columnPixels(9.7109375, 7), 68);
+  const cwd = await workspace(t);
+  const path = join(cwd, 'widths.xlsx');
+  const created = value(
+    await executeOfficeTool(
+      {
+        action: 'create',
+        path,
+        mode: 'portable',
+        operations: [{ op: 'set_column_width', column: 'F', width: 9 }],
+      },
+      { cwd }
+    )
+  );
+  value(await executeOfficeTool({ action: 'close', session: created.session }, { cwd }));
+  const sheet = await (await parts(path)).text('xl/worksheets/sheet1.xml');
+  // Stored bare as 9, the column opened in Excel as 8.29 characters, 5 pixels short of the same call made there.
+  assert.match(sheet, /<col\b[^>]*\bmin="6"[^>]*\bwidth="9\.7109375"/);
+});
+
+test('a label is measured in its own face: a bold header that prints inside its column is not reported cut', async (t) => {
+  const cwd = await workspace(t);
+  const created = value(
+    await executeOfficeTool(
+      {
+        action: 'create',
+        path: join(cwd, 'header.xlsx'),
+        mode: 'portable',
+        operations: [
+          { op: 'set_range', range: 'A1:C2', values: [['시작', '기간 (일)', '진행률'], ['2026-10-05', 12, 0.4]] },
+          { op: 'set_style', range: 'A1:C1', properties: { fontName: 'Malgun Gothic', fontSize: 10, bold: true } },
+          { op: 'set_column_width', column: 'B', width: 9 },
+        ],
+      },
+      { cwd }
+    )
+  );
+  const cut = async () =>
+    (value(await executeOfficeTool({ action: 'issues', session: created.session }, { cwd })).issues || [])
+      .filter((issue) => issue.code === 'label_truncated')
+      .map((issue) => issue.path);
+  // Counted as ten characters (two a Hangul letter, one a space or a bracket, a fifth more for bold), it was
+  // reported cut in a column of nine it prints inside with room to spare.
+  assert.deepEqual(await cut(), []);
+  value(
+    await executeOfficeTool(
+      {
+        action: 'batch',
+        session: created.session,
+        operations: [{ op: 'set_cell', cell: 'B1', value: '계획 대비 실제 소요 기간 (일)' }],
+      },
+      { cwd }
+    )
+  );
+  assert.deepEqual(await cut(), ['/sheet[Sheet1]/cell[B1]']);
+  value(await executeOfficeTool({ action: 'close', session: created.session }, { cwd }));
+});
+
 test('a fitted column keeps the floor the layout asked for, and a row fit leaves it alone', async (t) => {
   const cwd = await workspace(t);
   const created = value(
@@ -1288,10 +1500,13 @@ test('a fitted column keeps the floor the layout asked for, and a row fit leaves
       { cwd }
     )
   );
+  // The characters a column holds, read back from the width the file stores with Excel's 5 pixels of padding (the
+  // workbook's Calibri 11 digit is 7 pixels wide).
   const columnWidth = async (column) => {
     const sheet = await (await parts(join(cwd, 'floor.xlsx'))).text('xl/worksheets/sheet1.xml');
     const found = sheet.match(new RegExp(`<col\\b[^>]*\\bmin="${column}"[^>]*>`));
-    return found ? Number(/width="([\d.]+)"/.exec(found[0])?.[1]) : 0;
+    const stored = found ? Number(/width="([\d.]+)"/.exec(found[0])?.[1]) : 0;
+    return stored ? (Math.trunc(((256 * stored + 18) / 256) * 7) - 5) / 7 : 0;
   };
   value(
     await executeOfficeTool(

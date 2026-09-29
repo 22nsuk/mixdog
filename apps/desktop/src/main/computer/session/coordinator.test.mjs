@@ -179,7 +179,7 @@ test('overlay model distinguishes user control and confirmation while listing ev
   }
 });
 
-test('execution stays visible between commands and disappears only on explicit end', () => {
+test('between commands the controls stay only while the session holds its window', () => {
   const coordinator = new ComputerUseCoordinator();
   try {
     begin(coordinator, 'session-lifecycle', 'background', 'capture');
@@ -196,7 +196,14 @@ test('execution stays visible between commands and disappears only on explicit e
     assert.equal(coordinator.snapshot().cursors.length, 1, 'the pointer stays where the session last acted');
     const thinking = coordinator.snapshot();
     assert.equal(thinking.activities[0]?.phase, 'thinking');
-    assert.equal(computerUseOverlayPresentation(thinking, 'ko-KR').visible, true);
+    // Thinking alone is not using the computer; the grace hold on the window is.
+    assert.equal(computerUseOverlayPresentation(thinking, 'ko-KR').visible, false);
+    const holding = {
+      ...thinking,
+      targetLeases: [{ sessionId: 'session-lifecycle', windowId: 'hwnd:0x1', expiresAt: 1 }],
+    };
+    assert.equal(computerUseOverlayPresentation(holding, 'ko-KR').visible, true);
+    assert.deepEqual(computerUseOverlayPresentation(thinking, 'ko-KR').sessionIds, ['session-lifecycle']);
 
     coordinator.endExecution('session-lifecycle');
     const ended = coordinator.snapshot();
@@ -306,6 +313,64 @@ test('takeover can cancel a host-queued session before its activity begins', () 
     coordinator.reset();
   }
 });
+
+test('a turn that ends while paused ends the pause unless another session, Stop, or held input needs it', () => {
+  const coordinator = new ComputerUseCoordinator();
+  try {
+    begin(coordinator, 'paused-a');
+    begin(coordinator, 'paused-b');
+    coordinator.pauseForUser('user_input_active');
+    coordinator.endExecution('paused-a');
+    assert.equal(coordinator.snapshot().userControlActive, true, 'another paused session still waits');
+    coordinator.endExecution('paused-b');
+    const released = coordinator.snapshot();
+    assert.equal(released.userControlActive, false);
+    assert.equal(computerUseOverlayPresentation(released, 'ko-KR').visible, false);
+
+    begin(coordinator, 'held-input');
+    coordinator.pauseForUser('input_cleanup_unconfirmed');
+    coordinator.endExecution('held-input');
+    assert.equal(coordinator.snapshot().userControlActive, true);
+  } finally {
+    coordinator.reset();
+  }
+});
+
+test('finished work whose end signal never arrives leaves nothing on screen once its window hold lapses', async () => {
+  let now = 1_000;
+  const coordinator = new ComputerUseCoordinator({ now: () => now });
+  try {
+    begin(coordinator, 'no-end-signal');
+    await coordinator.acquireTargets('no-end-signal', ['hwnd:0x1']);
+    coordinator.finishCommand('no-end-signal');
+    assert.equal(computerUseOverlayPresentation(coordinator.snapshot(), 'ko').visible, true);
+    now += 10_000;
+    const lapsed = computerUseOverlayPresentation(coordinator.snapshot(), 'ko');
+    assert.equal(lapsed.visible, false);
+    // Hidden is not forgotten: the emergency Stop still reaches a turn that is only thinking.
+    assert.deepEqual(lapsed.sessionIds, ['no-end-signal']);
+  } finally {
+    coordinator.reset();
+  }
+});
+
+for (const reason of ['user_pause', 'desktop_unavailable', 'display_changed']) {
+  test(`a pause that never resumes by itself (${reason}) ends with the turn that held it`, () => {
+    const coordinator = new ComputerUseCoordinator();
+    try {
+      begin(coordinator, 'ended-while-paused');
+      coordinator.finishCommand('ended-while-paused');
+      coordinator.pauseForUser(reason);
+      assert.equal(computerUseOverlayPresentation(coordinator.snapshot(), 'ko').title, '일시정지');
+      coordinator.endExecution('ended-while-paused');
+      const ended = coordinator.snapshot();
+      assert.equal(ended.userControlActive, false);
+      assert.equal(computerUseOverlayPresentation(ended, 'ko').visible, false);
+    } finally {
+      coordinator.reset();
+    }
+  });
+}
 
 for (const finish of ['endExecution', 'cancelSession']) {
   test(`${finish} preserves user control when removing the last activity`, () => {

@@ -1,6 +1,7 @@
 // Workbook structure review: sheet layout, formulas, charts and print areas.
 import { auditXlsxFormulas } from '../portable/xlsx-formula-audit.mjs';
 import { columnNumber as columnIndex } from '../portable/portable-cells.mjs';
+import { sheetPath } from '../portable/xlsx-audit-support.mjs';
 import { issue } from './assurance-issue.mjs';
 
 function cellRow(ref) {
@@ -53,10 +54,6 @@ function printAreas(reference) {
     .filter(Boolean);
 }
 
-function sheetAt(sheet) {
-  return sheet.path || `/sheet[${sheet.name || ''}]`;
-}
-
 // The face a sheet's plain cells wear: the workbook's default where the reading states it, else the commonest.
 function baseFace(cells, defaults) {
   if (defaults?.fontName || defaults?.fontSize) return { fontName: defaults.fontName, fontSize: defaults.fontSize };
@@ -89,7 +86,7 @@ function reviewXlsxHierarchy(sheet, cells, issues, defaults) {
   issues.push(
     issue(
       'worksheet_hierarchy_missing',
-      sheetAt(sheet),
+      sheetPath(sheet),
       'Data sheet has no styled title, header, table, or visual hierarchy.'
     )
   );
@@ -114,7 +111,7 @@ function reviewXlsxFormulaErrors(sheet, cells, issues) {
     issues.push(
       issue(
         'formula_error',
-        cell.path || `${sheetAt(sheet)}/cell[${cell.ref || ''}]`,
+        cell.path || `${sheetPath(sheet)}/cell[${cell.ref || ''}]`,
         `Formula evaluates to ${cell.value}.`,
         'format-review',
         'error'
@@ -141,7 +138,7 @@ function chartLastMissedRow(cells, ranges, lastRead, totalRows) {
 
 function reviewXlsxChartRanges(sheet, cells, totalRows, issues) {
   for (const chart of sheet.charts || []) {
-    const chartPath = chart.path || `${sheetAt(sheet)}/chart`;
+    const chartPath = chart.path || `${sheetPath(sheet)}/chart`;
     const formulas = (chart.series || [])
       .flatMap((series) => [series.formula, series.categoryFormula, series.valueFormula])
       .filter(Boolean);
@@ -185,7 +182,7 @@ function reviewXlsxPrintFit(sheet, pageSetup, issues) {
   issues.push(
     issue(
       'worksheet_print_fit_missing',
-      sheetAt(sheet),
+      sheetPath(sheet),
       'Large worksheet has no one-page-wide print fit and uses an enlarged print zoom.'
     )
   );
@@ -218,7 +215,7 @@ function reviewXlsxPrintArea(sheet, pageSetup, drawings, issues) {
     issues.push(
       issue(
         'drawing_outside_print_area',
-        entry.path || sheetAt(sheet),
+        entry.path || sheetPath(sheet),
         areas.length
           ? `${kind} spans ${anchor.from}:${anchor.to}, past the print area ${pageSetup.printArea}; a print or PDF export cuts it.`
           : `${kind} spans ${anchor.from}:${anchor.to} and the sheet declares no print area or one-page-wide fit, so an export may paginate through it.`,
@@ -245,13 +242,47 @@ function reviewXlsxDrawingOverlap(sheet, drawings, issues) {
       issues.push(
         issue(
           'drawing_overlap',
-          drawings[second].entry.path || sheetAt(sheet),
+          drawings[second].entry.path || sheetPath(sheet),
           `${drawings[second].kind} spans ${right.from}:${right.to}, over the ${drawings[first].kind.toLowerCase()} at ${left.from}:${left.to}; place it below or beside it.`,
           'format-review',
           'warning'
         )
       );
     }
+  }
+}
+
+// A chart or picture laid over filled cells hides them: the figures stay in the file while the page shows the drawing
+// on top of them. A 220 pt chart anchored at A8 reached row 22 and covered the block of cells written there.
+function reviewXlsxDrawingCover(sheet, cells, drawings, issues) {
+  // A formula shows its result whether or not the result is cached yet.
+  const filled = cells.filter((cell) => cell?.formula || String(cell?.value ?? '').trim() !== '');
+  for (const { kind, entry } of drawings) {
+    const anchor = entry.anchor;
+    const under = filled.filter((cell) => {
+      const row = cellRow(cell.ref);
+      const column = cellColumn(cell.ref);
+      return (
+        row >= Number(anchor.startRow) &&
+        row <= Number(anchor.endRow) &&
+        column >= Number(anchor.startColumn) &&
+        column <= Number(anchor.endColumn)
+      );
+    });
+    if (!under.length) continue;
+    const shown = `${under
+      .slice(0, 3)
+      .map((cell) => cell.ref)
+      .join(', ')}${under.length > 3 ? ', …' : ''}`;
+    issues.push(
+      issue(
+        'drawing_covers_cells',
+        entry.path || sheetPath(sheet),
+        `${kind} spans ${anchor.from}:${anchor.to} over ${under.length} filled cell${under.length === 1 ? '' : 's'} (${shown}) and hides ${under.length === 1 ? 'it' : 'them'}; move it clear with set_drawing, or move the cells.`,
+        'format-review',
+        'warning'
+      )
+    );
   }
 }
 
@@ -268,6 +299,7 @@ export function reviewXlsxStructure(document, auditProfile = '') {
     reviewXlsxPrintFit(sheet, pageSetup, issues);
     reviewXlsxPrintArea(sheet, pageSetup, drawings, issues);
     reviewXlsxDrawingOverlap(sheet, drawings, issues);
+    reviewXlsxDrawingCover(sheet, cells, drawings, issues);
   }
   for (const finding of auditXlsxFormulas(sheets, { auditProfile, definedNames: document?.definedNames })) {
     issues.push(issue(finding.code, finding.path, finding.message, 'format-review', finding.severity));

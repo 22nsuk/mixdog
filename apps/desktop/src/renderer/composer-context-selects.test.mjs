@@ -79,6 +79,7 @@ async function mount(element, t) {
 async function hover(target, expected) {
   await act(async () => {
     target.dispatchEvent(new window.MouseEvent('pointerover', { bubbles: true }));
+    target.dispatchEvent(new window.MouseEvent('pointermove', { bubbles: true }));
     await new Promise((resolve) => window.setTimeout(resolve, 620));
   });
   assert.equal(document.querySelector('[role="tooltip"]')?.textContent, expected);

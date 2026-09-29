@@ -153,12 +153,18 @@ function worksheetPageSetup(xml, printArea) {
   const options = /<printOptions\b([^>]*?)\/?>/.exec(xml)?.[1] || '';
   // xsd:boolean: Excel writes "1", LibreOffice's recalculation save writes "true".
   const fitToPage = /<pageSetUpPr\b[^>]*\bfitToPage="(?:1|true)"/.test(xml);
+  // A count the file leaves out is 1, the schema's default and how Excel and LibreOffice print it; 0 is automatic.
+  // A missing height had read as free while the sheet printed shrunk onto one page.
+  const fitCount = (name) => {
+    const count = xmlAttribute(setup, name);
+    return count === '' ? 1 : Number(count) || 0;
+  };
   return {
     orientation: xmlAttribute(setup, 'orientation') || '',
     zoom: Number(xmlAttribute(setup, 'scale')) || 100,
     fitToPage,
-    fitToPagesWide: fitToPage ? Number(xmlAttribute(setup, 'fitToWidth')) || 1 : 0,
-    fitToPagesTall: fitToPage ? Number(xmlAttribute(setup, 'fitToHeight')) || 0 : 0,
+    fitToPagesWide: fitToPage ? fitCount('fitToWidth') : 0,
+    fitToPagesTall: fitToPage ? fitCount('fitToHeight') : 0,
     centerHorizontally: booleanXmlAttribute(options, 'horizontalCentered'),
     centerVertically: booleanXmlAttribute(options, 'verticalCentered'),
     // What every printed page of this sheet says, beside what the grid holds.
@@ -255,7 +261,7 @@ const sqrefRanges = (attributes) =>
     .split(/\s+/)
     .filter(Boolean);
 
-function worksheetValidations(xml, sheetName) {
+export function worksheetValidations(xml, sheetName) {
   const validations = [];
   for (const match of xml.matchAll(/<dataValidation\b([^>]*?)(?:\/>|>([\s\S]*?)<\/dataValidation>)/g)) {
     const attributes = match[1];

@@ -12,6 +12,9 @@ export function createSnapshotTrackerFactory({
 }) {
   return function createSnapshotTracker(options) {
     const tracker = { sessionId: null, promise: null };
+    // A completion wake continues the user turn whose review already exists;
+    // aborting the wake seals that review instead of discarding it.
+    const continueTurn = options.continueTurn === true;
     const cancel = () => {
       try {
         cancelTurnSnapshotForTurn(tracker.sessionId);
@@ -27,12 +30,13 @@ export function createSnapshotTrackerFactory({
             // The first submitted row is the outer prompt. Mid-loop steering
             // is drained inside this ask() and deliberately keeps this ID.
             checkpointId: String(options.id || '').trim(),
+            continueTurn,
           })
         )
         .catch(() => undefined);
     };
     tracker.finish = async (signal, awaitTurn) => {
-      if (signal.aborted) {
+      if (signal.aborted && !continueTurn) {
         cancel();
         void Promise.resolve(tracker.promise).catch(() => {});
         return;
@@ -44,7 +48,7 @@ export function createSnapshotTrackerFactory({
       } catch {
         /* optional review cleanup never overrides turn settlement */
       }
-      if (signal.aborted) cancel();
+      if (signal.aborted && !continueTurn) cancel();
     };
     return tracker;
   };

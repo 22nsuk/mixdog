@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import { agentLoop } from './agent-loop.mjs';
 import {
@@ -6,13 +9,22 @@ import {
   confirmedImageRejection,
   isImageProcessingError,
   isLikelyImageBodyRejected,
-  persistenceMessagesForConfirmedImageRejection,
+  persistsConfirmedImageRejection,
   promptHasInlineImages,
   shouldStripImagesForRetry,
   stripInlineImages,
   stripInlineImagesFromLatestTurn,
 } from './image-strip-recovery.mjs';
 import { isRetryableStreamErrorEvent } from '../providers/retry-classifier.mjs';
+
+function imageParts(messages) {
+  return messages.flatMap((message) => {
+    let content = [];
+    if (Array.isArray(message?.content)) content = message.content;
+    else if (Array.isArray(message?.content?.content)) content = message.content.content;
+    return content.filter((part) => part?.type === 'image');
+  });
+}
 
 test('strips user image parts to the Grok Build placeholder', () => {
   const messages = [
@@ -92,8 +104,9 @@ test('confirmed rejection persistently removes only one newly introduced image',
     { role: 'assistant', content: 'seen' },
     { role: 'user', content: [{ type: 'text', text: 'next' }, badImage] },
   ];
-  const persisted = persistenceMessagesForConfirmedImageRejection(err, messages);
-  assert.ok(persisted);
+  const tail = stripInlineImagesFromLatestTurn(messages);
+  assert.equal(persistsConfirmedImageRejection(err, tail), true);
+  const persisted = stripInlineImages(messages, { ids: new Set(tail.imageIds) }).messages;
   assert.equal(persisted[0].content[0].type, 'image');
   assert.equal(persisted[2].content[1].text, IMAGE_STRIP_PLACEHOLDER);
 
@@ -104,7 +117,7 @@ test('confirmed rejection persistently removes only one newly introduced image',
       content: [badImage, { type: 'image', data: 'other', mimeType: 'image/png' }],
     },
   ];
-  assert.equal(persistenceMessagesForConfirmedImageRejection(err, ambiguous), null);
+  assert.equal(persistsConfirmedImageRejection(err, stripInlineImagesFromLatestTurn(ambiguous)), false);
 });
 
 test('image retry projection preserves images from already-sent turns', () => {
@@ -123,13 +136,6 @@ test('image retry projection preserves images from already-sent turns', () => {
 
 test('agent loop heals one rejected tail image and the next turn stays usable', async () => {
   const tools = [{ name: 'read', inputSchema: { type: 'object', properties: {} } }];
-  const imageParts = (messages) =>
-    messages.flatMap((message) => {
-      let content = [];
-      if (Array.isArray(message?.content)) content = message.content;
-      else if (Array.isArray(message?.content?.content)) content = message.content.content;
-      return content.filter((part) => part?.type === 'image');
-    });
   const messages = [
     { role: 'system', content: 'system' },
     { role: 'user', content: [{ type: 'image', data: 'old-valid', mimeType: 'image/png' }] },
@@ -203,6 +209,60 @@ test('agent loop heals one rejected tail image and the next turn stays usable', 
   );
   assert.equal(next.content, 'still usable');
   assert.equal(nextCalls, 1);
+});
+
+test('an image-strip retry that still overflows re-sends the compacted transcript', async (t) => {
+  const previousDataDir = process.env.MIXDOG_DATA_DIR;
+  const dataDir = mkdtempSync(join(tmpdir(), 'mixdog-image-strip-compact-'));
+  process.env.MIXDOG_DATA_DIR = dataDir;
+  t.after(() => {
+    if (previousDataDir === undefined) delete process.env.MIXDOG_DATA_DIR;
+    else process.env.MIXDOG_DATA_DIR = previousDataDir;
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+  const tools = [{ name: 'read', inputSchema: { type: 'object', properties: {} } }];
+  const toolTurn = (id, label) => [
+    { role: 'assistant', content: '', toolCalls: [{ id, name: 'read', arguments: '{}' }] },
+    {
+      role: 'tool',
+      toolCallId: id,
+      content: [
+        { type: 'text', text: `${label} screen` },
+        { type: 'image', data: `${label}${'A'.repeat(200_000)}`, mimeType: 'image/png' },
+      ],
+    },
+  ];
+  const messages = [
+    { role: 'system', content: 'system' },
+    { role: 'user', content: 'inspect both screens' },
+    ...toolTurn('call-old', 'OLD'),
+    ...toolTurn('call-new', 'NEW'),
+  ];
+  const sentImages = [];
+  const provider = {
+    async send(sentMessages) {
+      sentImages.push(imageParts(sentMessages).map((part) => part.data.slice(0, 3)));
+      if (sentImages.length < 3) {
+        throw Object.assign(new Error('Request exceeds the maximum allowed size of 32 MB'), { httpStatus: 413 });
+      }
+      return { content: 'done', toolCalls: [], stopReason: 'end_turn' };
+    },
+  };
+  const session = {
+    id: 'image-strip-compact-test',
+    owner: 'cli',
+    contextWindow: 200_000,
+    rawContextWindow: 200_000,
+    compaction: { auto: true },
+  };
+  const result = await agentLoop(provider, messages, 'fake-model', tools, null, process.cwd(), {
+    session,
+    sessionId: session.id,
+  });
+  assert.equal(result.content, 'done');
+  // The full request, the latest-turn strip, then the transcript compaction
+  // rebuilt — never the strip of the pre-compaction history again.
+  assert.deepEqual(sentImages, [['OLD', 'NEW'], ['OLD'], []]);
 });
 
 test('agent loop keeps provider tool snapshots turn-local', async () => {

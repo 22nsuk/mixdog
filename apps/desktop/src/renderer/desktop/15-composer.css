@@ -282,7 +282,7 @@
   border-radius: var(--mx-radius-pill);
   background: var(--mx-accent-bg);
   transform: scaleY(calc(0.14 + var(--mx-dictation-level, 0) * var(--mx-dictation-gain, 1) * 0.86));
-  transition: transform 70ms linear;
+  transition: transform var(--mx-motion-fast) linear;
 }
 .composer-dictation-elapsed {
   color: var(--mx-text);
@@ -367,7 +367,6 @@
 }
 .composer-tool,
 .send-button,
-.fast-mode-toggle,
 .effort-control select {
   width: 28px;
   height: 28px;
@@ -379,7 +378,6 @@
 }
 .composer-tool:hover,
 .composer-tool:focus-visible,
-.fast-mode-toggle:hover:not(:disabled),
 .effort-control select:hover {
   color: var(--mx-text);
   background: var(--mx-hover);
@@ -431,7 +429,7 @@
   }
   .composer-dictation-progress > span {
     animation: none;
-    opacity: 0.65;
+    opacity: var(--mx-op-secondary);
     transform: scaleY(0.45);
   }
   .composer-dictation-meter > span {
@@ -470,39 +468,6 @@
 .effort-control {
   position: relative;
 }
-.fast-control {
-  width: 28px;
-  min-width: 28px;
-  height: 28px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.route-controls > .fast-control {
-  flex: 0 0 28px;
-}
-.fast-mode-toggle {
-  display: inline-grid;
-  place-items: center;
-  padding: 0;
-  cursor: pointer;
-}
-.fast-mode-toggle.is-on {
-  color: var(--mx-text-accent);
-}
-.fast-mode-toggle.is-on:hover:not(:disabled) {
-  color: var(--mx-text-accent);
-}
-.fast-mode-toggle:disabled {
-  opacity: var(--mx-op-disabled);
-  cursor: default;
-}
-.fast-mode-toggle svg.lucide {
-  stroke-width: 1.25px;
-}
-.fast-control[aria-busy="true"] .fast-mode-toggle {
-  cursor: progress;
-}
 .model-trigger:hover,
 .model-trigger:focus-visible,
 .effort-control select:hover {
@@ -510,8 +475,7 @@
   background: var(--mx-hover);
 }
 .mx-select-root.route-select,
-.effort-control .mx-select-root.route-select,
-.fast-control .mx-select-root.route-select {
+.effort-control .mx-select-root.route-select {
   width: max-content;
   min-width: 0;
   flex: 0 0 auto;
@@ -578,21 +542,6 @@
 }
 .model-trigger:focus-visible {
   outline: 0;
-}
-.provider-icon {
-  width: 16px;
-  height: 16px;
-  flex: 0 0 16px;
-  color: currentColor;
-}
-.model-trigger .provider-icon {
-  opacity: var(--mx-op-secondary);
-  transition: opacity var(--mx-motion-chrome);
-}
-.model-trigger:hover .provider-icon,
-.model-trigger:focus-visible .provider-icon,
-.model-trigger[aria-expanded="true"] .provider-icon {
-  opacity: 1;
 }
 .model-trigger > span {
   font-size: var(--mx-font-ui);
@@ -857,18 +806,6 @@
   white-space: nowrap;
   padding-bottom: 2px;
 }
-.list-item-selected-icon {
-  width: 24px;
-  height: 24px;
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--mx-radius-md);
-  color: var(--mx-success);
-  background: var(--mx-bg-base);
-  box-shadow: inset 0 0 0 0.5px var(--mx-border-muted);
-}
 .model-empty {
   margin: 0;
   padding: 24px 16px;
@@ -937,39 +874,8 @@
   height: 16px;
   color: var(--mx-icon);
 }
-.model-provider-setup {
-  width: auto !important;
-  height: 20px;
-  margin-left: auto;
-  padding: 0 6px;
-  border: 0;
-  border-radius: var(--mx-radius-sm);
-  color: var(--mx-text-muted);
-  background: var(--mx-bg-layer-2);
-  font-size: var(--mx-font-meta);
-  line-height: var(--mx-line-meta);
-}
-.model-provider-setup:hover {
-  background: var(--mx-hover);
-}
-.model-provider-setup:focus-visible {
-  background: var(--mx-hover);
-  outline: 1px solid var(--mx-focus);
-}
 .model-notice {
   margin: 4px 6px 8px;
-  padding: 7px 9px;
-  border-radius: var(--mx-radius-md);
-  color: var(--mx-text-muted);
-  background: var(--mx-bg-layer-2);
-  font-size: var(--mx-font-meta);
-  line-height: var(--mx-line-meta);
-}
-.model-notice--error {
-  color: var(--mx-warning);
-}
-.model-provider-empty {
-  margin: 0 10px 8px;
   padding: 7px 9px;
   border-radius: var(--mx-radius-md);
   color: var(--mx-text-muted);
@@ -994,20 +900,6 @@
 .slash-palette button[aria-selected="true"] {
   color: var(--mx-text);
   background: var(--mx-hover);
-}
-.model-loading {
-  position: sticky;
-  bottom: 2px;
-  margin: 4px 2px 2px;
-  padding: 6px 10px;
-  border-radius: var(--mx-radius-sm);
-  color: var(--mx-text-faint);
-  background: color-mix(in srgb, var(--mx-bg-layer-1) 94%, transparent);
-  box-shadow: 0 0 0 0.5px var(--mx-border-muted);
-  font-size: var(--mx-font-meta);
-  font-weight: var(--mx-weight-regular);
-  line-height: var(--mx-line-meta);
-  text-align: center;
 }
 .slash-palette {
   padding: 4px;
@@ -1065,38 +957,6 @@
 .composer-region {
   position: relative;
 }
-/* Aggregate activity chip (user decision): spinner + count, breakdown in a
-   hover/focus popover — the header stays quiet. */
-.live-work-status {
-  position: relative;
-  margin-left: 0;
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  height: 28px;
-  padding: 0 7px;
-  border-radius: var(--mx-radius-md);
-  /* Same voice as the toggle cluster: label ink, no accent green. */
-  color: var(--mx-text);
-  font-size: var(--mx-font-minor);
-  line-height: var(--mx-line-meta);
-}
-.live-work-status:hover,
-.live-work-status:focus {
-  background: color-mix(in srgb, var(--mx-text) 4%, transparent);
-  outline: 0;
-}
-/* Digit centers on the spinner box exactly (user: count sat low). */
-.live-work-count {
-  display: inline-flex;
-  align-items: center;
-  height: 16px;
-  font-weight: var(--mx-weight-regular);
-  font-variant-numeric: tabular-nums;
-  line-height: 1;
-}
 .live-work-popover {
   position: absolute;
   z-index: 20;
@@ -1131,13 +991,6 @@
     visibility var(--mx-motion-fast);
   pointer-events: none;
 }
-.live-work-status:hover .live-work-popover,
-.live-work-status:focus .live-work-popover,
-.live-work-status:focus-within .live-work-popover {
-  opacity: 1;
-  visibility: visible;
-  transform: translateY(0);
-}
 /* The row is a grouping element only; its label and value join the card's grid
    so both columns align across every row. */
 .live-work-row {
@@ -1158,13 +1011,6 @@
   font-size: var(--mx-font-meta);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
-}
-.live-work-spinner {
-  flex: 0 0 auto;
-  display: block;
-  color: currentColor;
-  /* Calm rotation — user tuned: 3s still read fast; half speed again. */
-  animation: spin 6s linear infinite;
 }
 .composer-attachments {
   align-items: center;
@@ -1219,10 +1065,6 @@
 .composer-attachments .attachment-remove:hover {
   color: var(--mx-danger);
   background: var(--mx-hover);
-}
-.composer-error {
-  color: var(--mx-danger);
-  background: var(--mx-danger-bg);
 }
 .composer-notice {
   color: var(--mx-text-muted);

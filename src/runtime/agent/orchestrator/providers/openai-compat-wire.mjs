@@ -15,11 +15,7 @@ import {
   splitToolContentForOpenAIChat,
   splitToolContentForXaiResponses,
 } from './media-normalization.mjs';
-import {
-  customToolCallFromResponseItem,
-  nativeToolSearchCallFromArguments,
-  responsesToolLoadingSurface,
-} from './custom-tool-wire.mjs';
+import { customToolCallFromResponseItem, nativeToolSearchCallFromArguments } from './custom-tool-wire.mjs';
 import { providerReplayItems } from './lib/provider-replay.mjs';
 import { ensureResponsesCallOutputs } from './lib/wire-pairing.mjs';
 
@@ -149,7 +145,7 @@ export function toResponsesTools(tools, options = {}) {
   const allowNativeToolSearch =
     options?.nativeToolSearch === true ||
     (options?.nativeToolSearch !== false && (provider === 'openai' || provider === 'openai-oauth'));
-  return (allowNativeToolSearch ? responsesToolLoadingSurface(tools) : tools).map((t) => {
+  return tools.map((t) => {
     // load_tool advertises as the OpenAI-native `tool_search` wire type
     // (legacy 'tool_search' name still accepted for back-compat). xAI/Grok
     // Responses rejects that OpenAI-only variant ("unknown variant

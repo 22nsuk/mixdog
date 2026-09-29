@@ -9,3 +9,10 @@ export function clean(value) {
 export function cleanString(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
+
+// Collapse every whitespace run (newlines included) into one space and trim.
+export function oneLine(value) {
+  return String(value ?? '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}

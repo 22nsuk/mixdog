@@ -7,7 +7,9 @@ import { addFormField, fieldText, lintPdfFormFields } from './pdf-forms.mjs';
 import { figureColumnAlignments } from '../shared/column-alignments.mjs';
 import { naturalColumnWidths } from '../shared/column-widths.mjs';
 
-const HEADING_SIZES = Object.freeze({ 1: 20, 2: 15, 3: 12.5 });
+// Word's own heading sizes over the 11 pt body, the ladder the Word writer's anatomy sets: at 20 pt a section head
+// stood nearly as large as the 26 pt cover title and the page read as a row of titles.
+const HEADING_SIZES = Object.freeze({ 1: 16, 2: 13, 3: 12 });
 
 const FLOW_FIELDS = ['before', 'after', 'x', 'width', 'color', 'align'];
 
@@ -58,6 +60,10 @@ const BLOCK_FIELDS = Object.freeze({
   }),
   caption: Object.freeze({ required: ['text'], optional: [...FLOW_FIELDS, 'size'] }),
   stats: Object.freeze({ required: ['items'], optional: [...FLOW_FIELDS, 'size', 'labelSize', 'accent', 'rule'] }),
+  chart: Object.freeze({
+    required: ['categories', 'values'],
+    optional: [...FLOW_FIELDS, 'chartType', 'title', 'unit', 'highlight', 'forecast', 'height', 'size', 'accent'],
+  }),
   rule: Object.freeze({ required: [], optional: [...FLOW_FIELDS, 'thickness'] }),
   // A form box that travels with the copy introducing it, rather than with a
   // page number the text may have moved off.
@@ -119,7 +125,54 @@ function blockShapeFaults(type, block, at) {
   if (type === 'cover' && block.meta !== undefined && !Array.isArray(block.meta)) {
     faults.push(`PDF ${at} (cover) meta must be an array of strings (one line each).`);
   }
+  if (type === 'chart') faults.push(...chartShapeFaults(block, at));
   return faults;
+}
+
+function chartShapeFaults(block, at) {
+  const faults = [];
+  const { categories, values } = block;
+  if (categories !== undefined && !Array.isArray(categories)) {
+    faults.push(`PDF ${at} (chart) categories must be an array of labels.`);
+  }
+  if (
+    values !== undefined &&
+    !(
+      Array.isArray(values) &&
+      values.length > 0 &&
+      values.every((value) => typeof value === 'number' && Number.isFinite(value) && value >= 0)
+    )
+  ) {
+    faults.push(`PDF ${at} (chart) values must be a non-empty array of numbers, zero or more.`);
+  } else if (Array.isArray(categories) && Array.isArray(values) && categories.length !== values.length) {
+    faults.push(
+      `PDF ${at} (chart) has ${categories.length} categories and ${values.length} values; give one value per category.`
+    );
+  }
+  if (block.chartType !== undefined && !['bar', 'column'].includes(String(block.chartType).toLowerCase())) {
+    faults.push(`PDF ${at} (chart) chartType is bar (bars across) or column (bars upright).`);
+  }
+  // A projection named wrong would be drawn as a counted figure without a word: every one must name a bar.
+  if (block.forecast !== undefined && Array.isArray(categories)) {
+    const unknown = forecastEntries(block).filter((entry) => forecastIndex(categories, entry) < 0);
+    if (unknown.length) {
+      faults.push(
+        `PDF ${at} (chart) forecast names ${unknown.map((entry) => JSON.stringify(entry)).join(', ')}, not a category or its index; name the projected bars as categories names them.`
+      );
+    }
+  }
+  return faults;
+}
+
+// forecast: the bars that are projections, as an index, a category, or a list of them.
+function forecastEntries(block) {
+  if (block.forecast === undefined || block.forecast === null) return [];
+  return Array.isArray(block.forecast) ? block.forecast : [block.forecast];
+}
+
+function forecastIndex(categories, entry) {
+  if (typeof entry === 'number') return Number.isInteger(entry) && entry >= 0 && entry < categories.length ? entry : -1;
+  return categories.map((category) => String(category ?? '')).indexOf(String(entry));
 }
 
 function pdfBlockFaults(block, index, kinds) {
@@ -175,6 +228,10 @@ function blockText(block) {
       .join(' ');
   if (type === 'callout') return `${block.label ?? ''} ${block.text ?? ''}`;
   if (type === 'quote') return `${block.text ?? ''} ${block.attribution ?? ''}`;
+  if (type === 'chart')
+    return [block.title, block.unit, ...(Array.isArray(block.categories) ? block.categories : [])]
+      .map((value) => String(value ?? ''))
+      .join(' ');
   if (type === 'image' || type === 'pagebreak' || type === 'rule') return '';
   return String(block?.text ?? '');
 }
@@ -220,17 +277,38 @@ function keepTogether(flow, height) {
 // dropped at the top of a page, where there is nothing to separate from.
 function spaceBefore(block, type) {
   if (Number.isFinite(Number(block.before))) return Math.max(0, Number(block.before));
+  // A quote is set apart from what it follows as from what follows it: with no space of its own, one under a list
+  // sat as close to the last item as the items to each other and read as one more of them. A chart under a paragraph
+  // sat on its last line the same way.
+  if (type === 'quote' || type === 'chart') return 6;
   if (type !== 'heading') return 0;
   const level = Math.min(3, Math.max(1, Number(block.level) || 1));
   return Math.round(Number(block.size || HEADING_SIZES[level]) * 0.8);
 }
 
-async function drawImageBlock(flow, block, baseDir) {
+// The picture a block places, embedded once per document: the heading before it measures it, and drawImageBlock
+// draws the same embedding rather than a second copy of the image.
+async function blockImage(flow, block, baseDir) {
+  flow.images ||= new Map();
+  if (!flow.images.has(block)) flow.images.set(block, await embedImage(flow.document, resolve(baseDir, String(block.path || ''))));
+  return flow.images.get(block);
+}
+
+// The picture's placed size and the room it takes with the caption that names it (captionHeight): a caption on its
+// own opened the next page under nothing, as a table's once did.
+async function imageUnit(flow, block, baseDir, following) {
   const { margin } = flow;
-  const placed = await embedImage(flow.document, resolve(baseDir, String(block.path || '')));
+  const placed = await blockImage(flow, block, baseDir);
   const width = Number(block.width || Math.min(placed.width, flow.page.getWidth() - margin * 2));
   const height = Number(block.height || (placed.height * width) / placed.width);
-  if (flow.y - height < margin) flow.newPage();
+  const trailing = captionHeight(following, flow.font, flow.page.getWidth() - margin * 2);
+  return { placed, width, height, needed: height + (trailing ? Number(block.after ?? 12) + trailing : 0) };
+}
+
+async function drawImageBlock(flow, block, baseDir, following) {
+  const { margin } = flow;
+  const { placed, width, height, needed } = await imageUnit(flow, block, baseDir, following);
+  if (flow.y - needed < margin && !atTop(flow)) flow.newPage();
   const align = String(block.align || 'left').toLowerCase();
   let defaultX = margin;
   if (align === 'center') defaultX = (flow.page.getWidth() - width) / 2;
@@ -244,8 +322,9 @@ async function drawImageBlock(flow, block, baseDir) {
   flow.y -= height + Number(block.after ?? 12);
 }
 // A list is the marker plus a hanging indent, so a wrapped item lines up
-// under its own text rather than under the bullet.
-function drawListBlock(flow, block) {
+// under its own text rather than under the bullet. The measured lines serve the
+// drawing and the room a heading keeps for the list it opens.
+function listLayout(flow, block) {
   const { font, margin } = flow;
   const items = (Array.isArray(block.items) ? block.items : []).map((value) => String(value ?? ''));
   const fontSize = Number(block.size || 11);
@@ -260,15 +339,41 @@ function drawListBlock(flow, block) {
   const indent = Number(block.indent ?? Math.max(fontSize * 1.4, widestMarker + fontSize * 0.5));
   const left = Number(block.x ?? margin);
   const textWidth = Number(block.width || flow.page.getWidth() - margin - left) - indent;
+  const lines = items.map((item) => wrapText(item, font, fontSize, Math.max(8, textWidth)));
+  const height = (from, through) =>
+    lines.slice(from, through + 1).reduce((sum, itemLines) => sum + itemLines.length * lineHeight, 0);
+  return { items, fontSize, lineHeight, ordered, markers, markerWidth, widestMarker, indent, left, lines, height };
+}
+
+// The last item a page break may not separate from the one at `index`. A list never leaves one item alone at a page
+// edge — the first two open a page together and the last two close one, the widow and orphan rule a table's rows
+// keep — so a list of three or fewer moves as one. The last of three bullets had opened the next page by itself.
+function listKeepThrough(count, index) {
+  if (count <= 3) return index === 0 ? count - 1 : index;
+  if (index === 0) return 1;
+  return index === count - 2 ? count - 1 : index;
+}
+
+// The room the first unit of a list takes, which the heading that opens it keeps beside itself.
+function listLeadHeight(flow, block) {
+  if (blockType(block) !== 'list') return 0;
+  const layout = listLayout(flow, block);
+  return layout.items.length ? layout.height(0, listKeepThrough(layout.items.length, 0)) : 0;
+}
+
+function drawListBlock(flow, block) {
+  const { font, margin } = flow;
+  const layout = listLayout(flow, block);
+  const { items, fontSize, lineHeight, ordered, markers, markerWidth, widestMarker, indent, left } = layout;
   const tint = color(block.color);
   items.forEach((item, itemIndex) => {
     const marker = markers[itemIndex];
     const markerX = ordered ? left + widestMarker - markerWidth(marker) : left;
-    const lines = wrapText(item, font, fontSize, Math.max(8, textWidth));
+    const lines = layout.lines[itemIndex];
     // One item is one unit: broken line by line, an item that met the foot
     // of a page left its marker and first line there with the rest overleaf,
     // where no bullet introduces them.
-    keepTogether(flow, lines.length * lineHeight);
+    keepTogether(flow, layout.height(itemIndex, listKeepThrough(items.length, itemIndex)));
     lines.forEach((line, lineIndex) => {
       if (flow.y - lineHeight < margin) flow.newPage();
       flow.y -= lineHeight;
@@ -317,12 +422,15 @@ function tableLayout(flow, block, rows) {
   const totalWeight = weights.reduce((sum, value) => sum + value, 0) || columns;
   const cellWidths = weights.map((weight) => width * (weight / totalWeight));
   const minRowHeight = Number(block.rowHeight || 24);
+  // The space over a row's first line and under its last: a one-line row's text centred in the row, and every
+  // row after it keeps the same inset, so a wrapped row grows by its lines and nothing else.
+  const inset = Math.max(padding, (minRowHeight - lineHeight) / 2);
   const laidOut = rows.map((row, rowIndex) => {
     const face = faceOf(rowIndex);
     const cells = Array.from({ length: columns }, (_, column) =>
       wrapText(row[column] ?? '', face, fontSize, Math.max(4, cellWidths[column] - padding * 2 - leads[column]))
     );
-    const height = Math.max(minRowHeight, Math.max(...cells.map((lines) => lines.length)) * lineHeight + padding * 2);
+    const height = Math.max(minRowHeight, Math.max(...cells.map((lines) => lines.length)) * lineHeight + inset * 2);
     return { cells, height, face };
   });
   return {
@@ -331,6 +439,7 @@ function tableLayout(flow, block, rows) {
     fontSize,
     lineHeight,
     padding,
+    inset,
     header,
     total,
     // The table anatomy the Word writer draws (docx skill §4): a bold header on a rule, hairlines between the
@@ -348,7 +457,7 @@ function tableLayout(flow, block, rows) {
 }
 
 function drawTableRow(flow, block, layout, rowIndex) {
-  const { cellWidths, fontSize, lineHeight, padding } = layout;
+  const { cellWidths, fontSize, lineHeight, padding, inset } = layout;
   const { cells, height, face } = layout.laidOut[rowIndex];
   const isHeader = layout.header && rowIndex === 0;
   const isTotal = layout.total && rowIndex === layout.laidOut.length - 1;
@@ -375,7 +484,9 @@ function drawTableRow(flow, block, layout, rowIndex) {
         ...(layout.grid ? { borderWidth: 0.5, borderColor: layout.borderColor } : {}),
       });
     }
-    const textTop = top - Math.max(padding, (height - lines.length * lineHeight) / 2);
+    // The Word writer's anatomy: a body row reads from its first line — every cell starts it at the same height, where
+    // a one-line cell centred beside a wrapped one had floated between its two lines — and the header sits on its rule.
+    const textTop = isHeader ? top - (height - inset - lines.length * lineHeight) : top - inset;
     const right = layout.alignments[column] === 'right';
     lines.forEach((line, lineIndex) => {
       const inset = right
@@ -410,6 +521,36 @@ function captionHeight(following, font, width) {
   );
 }
 
+// The last row a page break may not separate from the one at `index`, the Word writer's rule: the header travels with
+// the first two rows and the last two rows travel together, and a table of six rows or fewer moves whole. Row by row,
+// the last of 24 weeks opened the next page alone under its repeated header.
+function tableKeepThrough(count, index) {
+  if (count <= 6) return index === 0 ? count - 1 : index;
+  if (index === 0) return 2;
+  return index === count - 2 ? count - 1 : index;
+}
+
+function tableUnitHeight(layout, from, through) {
+  return layout.laidOut.slice(from, through + 1).reduce((sum, row) => sum + row.height, 0);
+}
+
+// The first lines of a paragraph a page may not leave behind (drawLines widows): the whole of a short one, else two.
+function paragraphLeadHeight(flow, block) {
+  if (blockType(block) !== 'paragraph') return 0;
+  const size = Number(block.size || 11);
+  const lh = Number(block.lineHeight || size * 1.5);
+  const count = wrapText(String(block.text ?? ''), flow.font, size, Math.max(8, textBox(flow, block).width)).length;
+  return (count <= 3 ? count : 2) * lh;
+}
+
+// The room the first unit of a table takes, which the heading that opens it keeps beside itself.
+function tableLeadHeight(flow, block) {
+  if (blockType(block) !== 'table') return 0;
+  const rows = tableRows(block);
+  if (!rows.length) return 0;
+  return tableUnitHeight(tableLayout(flow, block, rows), 0, tableKeepThrough(rows.length, 0));
+}
+
 function drawTableBlock(flow, block, following) {
   const rows = tableRows(block);
   if (!rows.length) return;
@@ -417,8 +558,9 @@ function drawTableBlock(flow, block, following) {
   const trailing = captionHeight(following, flow.font, layout.width);
   const last = layout.laidOut.length - 1;
   for (let rowIndex = 0; rowIndex <= last; rowIndex += 1) {
-    const needed = layout.laidOut[rowIndex].height + (rowIndex === last ? trailing : 0);
-    if (flow.y - needed < flow.margin) {
+    const through = tableKeepThrough(last + 1, rowIndex);
+    const needed = tableUnitHeight(layout, rowIndex, through) + (through === last ? trailing : 0);
+    if (flow.y - needed < flow.margin && !atTop(flow)) {
       flow.newPage();
       if (rowIndex > 0 && layout.header && block.repeatHeader !== false) drawTableRow(flow, block, layout, 0);
     }
@@ -440,14 +582,29 @@ function linesHeight(font, text, size, width, lh = size * 1.35) {
 }
 
 // Lines of one role at one x: the shared way a cover's title, a quote, and a caption put words down.
-function drawLines(flow, box, text, size, { lh = size * 1.35, x = box.left, width = box.width, tint, face } = {}) {
+// widows: a paragraph that meets the foot of a page leaves at least two lines there and carries at least two over;
+// one of three lines or fewer moves whole — a single line had been left at the foot, or alone atop the next page.
+function drawLines(
+  flow,
+  box,
+  text,
+  size,
+  { lh = size * 1.35, x = box.left, width = box.width, tint, face, widows = false } = {}
+) {
   const { margin } = flow;
   const font = face || flow.font;
-  for (const line of wrapText(String(text ?? ''), font, size, Math.max(8, width))) {
-    if (flow.y - lh < margin) flow.newPage();
+  const lines = wrapText(String(text ?? ''), font, size, Math.max(8, width));
+  let splitAt = -1;
+  const room = Math.floor((flow.y - margin) / lh + 1e-6);
+  if (widows && !atTop(flow) && room < lines.length) {
+    if (room < 2 || lines.length <= 3) flow.newPage();
+    else if (lines.length - room < 2) splitAt = room - 1;
+  }
+  lines.forEach((line, index) => {
+    if (index === splitAt || flow.y - lh < margin) flow.newPage();
     flow.page.drawText(line, { x, y: flow.y - size, size, font, color: color(tint) });
     flow.y -= lh;
-  }
+  });
 }
 
 function drawRule(flow, box, thickness, tint) {
@@ -581,7 +738,13 @@ function drawStatsBlock(flow, block, box) {
   const top = flow.y;
   items.forEach((item, index) => {
     const x = box.left + index * (colW + gap);
-    flow.page.drawText(item.value, { x, y: top - size, size, font: flow.bold, color: color(block.accent || INK.accent) });
+    flow.page.drawText(item.value, {
+      x,
+      y: top - size,
+      size,
+      font: flow.bold,
+      color: color(block.accent || INK.accent),
+    });
     let ly = top - size * 1.15 - 4;
     for (const line of wrapText(item.label, font, labelSize, colW)) {
       flow.page.drawText(line, { x, y: ly - labelSize, size: labelSize, font, color: color(INK.muted) });
@@ -593,6 +756,153 @@ function drawStatsBlock(flow, block, box) {
   flow.y -= Number(block.after ?? 16);
 }
 
+// A bar chart the page draws itself, in the document's face and accent: categories and one series of values, each
+// value labelled at its bar and the axis left quiet (no grid; the labels carry the numbers). chartType 'bar' lays the
+// bars across, a ranking whose names read on the left; 'column' stands them up, periods from left to right. highlight
+// (an index or a category) takes the accent and the other bars recede, so the page says which bar it is about.
+// forecast (an index, a category, or a list of them) draws those bars as projections: a pale fill inside a dashed
+// outline, their values muted — a projected quarter had stood in the same grey as the counted ones.
+function chartLayout(flow, block, box) {
+  const { font, bold } = flow;
+  const size = Number(block.size || 9.5);
+  const categories = block.categories.map((category) => String(category ?? ''));
+  const values = block.values.map(Number);
+  const unit = String(block.unit ?? '');
+  const labels = values.map((value) => `${value.toLocaleString('en-US', { maximumFractionDigits: 2 })}${unit}`);
+  const across = String(block.chartType || 'bar').toLowerCase() !== 'column';
+  const titleSize = size + 1;
+  const titleH = block.title ? linesHeight(bold, block.title, titleSize, box.width, titleSize * 1.3) + 6 : 0;
+  const highlight =
+    block.highlight === undefined
+      ? -1
+      : typeof block.highlight === 'number'
+        ? block.highlight
+        : categories.indexOf(String(block.highlight));
+  const forecast = new Set(forecastEntries(block).map((entry) => forecastIndex(categories, entry)));
+  const base = { size, categories, values, labels, titleSize, titleH, highlight, forecast, across };
+  if (across) {
+    // The names column is as wide as its longest name, a third of the width at most, where a longer name wraps.
+    const labelW = Math.min(box.width / 3, Math.max(...categories.map((name) => font.widthOfTextAtSize(name, size))) + 10);
+    const valueW = Math.max(...labels.map((label) => bold.widthOfTextAtSize(label, size))) + 8;
+    const names = categories.map((name) => wrapText(name, font, size, Math.max(8, labelW - 10)));
+    const rows = names.map((lines) => Math.max(size * 2.4, lines.length * size * 1.25 + 8));
+    return { ...base, labelW, valueW, names, rows, height: titleH + rows.reduce((sum, row) => sum + row, 0) };
+  }
+  const plotH = Number(block.height || 150);
+  const colW = box.width / Math.max(1, values.length);
+  const names = categories.map((name) => wrapText(name, font, size, Math.max(8, colW - 6)));
+  const nameH = Math.max(1, ...names.map((lines) => lines.length)) * size * 1.3;
+  return { ...base, plotH, colW, names, height: titleH + size * 1.6 + plotH + 6 + nameH };
+}
+
+// The chart and the caption under it, measured as one unit: a caption alone atop the next page cites nothing.
+function chartUnitHeight(flow, block, following) {
+  if (blockType(block) !== 'chart') return 0;
+  const box = textBox(flow, block);
+  const trailing = captionHeight(following, flow.font, box.width);
+  return chartLayout(flow, block, box).height + (trailing ? Number(block.after ?? 10) + trailing : 0);
+}
+
+function drawChartBlock(flow, block, following) {
+  const box = textBox(flow, block);
+  const layout = chartLayout(flow, block, box);
+  keepTogether(flow, chartUnitHeight(flow, block, following));
+  const { page, font, bold } = flow;
+  const { size, values, labels, highlight, forecast, names } = layout;
+  const accent = color(block.accent || INK.accent);
+  const lit = (index) => highlight < 0 || index === highlight;
+  // A projected bar keeps its colour at a third of its strength inside a dashed outline, and its value reads muted.
+  const bar = (index) => {
+    const fill = lit(index) ? accent : color(INK.line);
+    if (!forecast.has(index)) return { color: fill };
+    const outline = lit(index) && highlight >= 0 ? accent : color(INK.muted);
+    return { color: fill, opacity: 0.35, borderColor: outline, borderWidth: 0.8, borderDashArray: [2.4, 1.6] };
+  };
+  const labelInk = (index) => (lit(index) && !forecast.has(index) ? color('1F2937') : color(INK.muted));
+  if (block.title) {
+    drawLines(flow, box, block.title, layout.titleSize, { lh: layout.titleSize * 1.3, face: bold, tint: '1F2937' });
+    flow.y -= 6;
+  }
+  const scale = Math.max(...values, 0) || 1;
+  const ink = color('1F2937');
+  if (layout.across) {
+    const track = Math.max(40, box.width - layout.labelW - layout.valueW);
+    const left = box.left + layout.labelW;
+    const top = flow.y;
+    values.forEach((value, index) => {
+      const rowH = layout.rows[index];
+      const mid = flow.y - rowH / 2;
+      // The name stands against the bars, its lines centred on the bar.
+      names[index].forEach((line, lineIndex) => {
+        const y = mid + ((names[index].length - 1) / 2 - lineIndex) * size * 1.25 - size * 0.35;
+        page.drawText(line, { x: left - 10 - font.widthOfTextAtSize(line, size), y, size, font, color: ink });
+      });
+      const width = (value / scale) * track;
+      const barH = Math.min(rowH - 6, size * 1.5);
+      if (width > 0) {
+        page.drawRectangle({
+          x: left,
+          y: mid - barH / 2,
+          width,
+          height: barH,
+          ...bar(index),
+        });
+      }
+      page.drawText(labels[index], {
+        x: left + width + 4,
+        y: mid - size * 0.35,
+        size,
+        font: lit(index) && highlight >= 0 ? bold : font,
+        color: labelInk(index),
+      });
+      flow.y -= rowH;
+    });
+    page.drawLine({ start: { x: left, y: top }, end: { x: left, y: flow.y }, thickness: 0.6, color: color(INK.line) });
+  } else {
+    const baseline = flow.y - size * 1.6 - layout.plotH;
+    values.forEach((value, index) => {
+      const x = box.left + index * layout.colW;
+      const barW = Math.min(layout.colW * 0.56, 64);
+      const height = (value / scale) * layout.plotH;
+      if (height > 0) {
+        page.drawRectangle({
+          x: x + (layout.colW - barW) / 2,
+          y: baseline,
+          width: barW,
+          height,
+          ...bar(index),
+        });
+      }
+      const face = lit(index) && highlight >= 0 ? bold : font;
+      const label = labels[index];
+      page.drawText(label, {
+        x: x + (layout.colW - face.widthOfTextAtSize(label, size)) / 2,
+        y: baseline + height + 4,
+        size,
+        font: face,
+        color: labelInk(index),
+      });
+      names[index].forEach((line, lineIndex) => {
+        page.drawText(line, {
+          x: x + (layout.colW - font.widthOfTextAtSize(line, size)) / 2,
+          y: baseline - 6 - size - lineIndex * size * 1.3,
+          size,
+          font,
+          color: ink,
+        });
+      });
+    });
+    page.drawLine({
+      start: { x: box.left, y: baseline },
+      end: { x: box.left + box.width, y: baseline },
+      thickness: 0.6,
+      color: color(INK.line),
+    });
+    flow.y = flow.y - (layout.height - layout.titleH);
+  }
+  flow.y -= Number(block.after ?? 10);
+}
+
 function drawProseBlock(flow, block, box, type) {
   const heading = type === 'heading';
   const level = Math.min(3, Math.max(1, Number(block.level) || 1));
@@ -601,7 +911,12 @@ function drawProseBlock(flow, block, box, type) {
   const lineHeight = Number(block.lineHeight || fontSize * (heading ? 1.2 : 1.5));
   // A heading never ends a page: it moves with the first lines of what it opens.
   if (heading && flow.y - lineHeight * 3 < flow.margin) flow.newPage();
-  drawLines(flow, box, block.text, fontSize, { lh: lineHeight, tint: block.color, face: heading ? flow.bold : flow.font });
+  drawLines(flow, box, block.text, fontSize, {
+    lh: lineHeight,
+    tint: block.color,
+    face: heading ? flow.bold : flow.font,
+    widows: !heading,
+  });
   flow.y -= Number(block.after ?? (heading ? 8 : 6));
 }
 
@@ -669,7 +984,10 @@ const MARK_SIZE = 14;
 // in one row. Drawn like a single mark, every option sat on the same spot under the question alone — one circle,
 // no choices, and the lint reported the group's buttons overlapping each other.
 const isChoiceGroup = (item) =>
-  String(item?.type || '') === 'radio' && Array.isArray(item.options) && item.options.length > 0 && !(Number(item.width) > 0);
+  String(item?.type || '') === 'radio' &&
+  Array.isArray(item.options) &&
+  item.options.length > 0 &&
+  !(Number(item.width) > 0);
 const isMarkField = (item) =>
   ['checkbox', 'radio'].includes(String(item?.type || '')) && !(Number(item.width) > 0) && !isChoiceGroup(item);
 
@@ -678,7 +996,9 @@ const isMarkField = (item) =>
 function fieldRowGeometry(block, items) {
   const labelSize = Number(block.labelSize) > 0 ? Number(block.labelSize) : 9;
   const marksOnly = items.every((item) => isMarkField(item) || isChoiceGroup(item));
-  const height = marksOnly ? Math.max(MARK_SIZE + 4, labelSize * 1.8) : Number(block.height) > 0 ? Number(block.height) : FIELD_HEIGHT;
+  let height = FIELD_HEIGHT;
+  if (marksOnly) height = Math.max(MARK_SIZE + 4, labelSize * 1.8);
+  else if (Number(block.height) > 0) height = Number(block.height);
   const caption = items.some((item) => !isMarkField(item) && String(item.label ?? '').trim()) ? labelSize * 1.7 : 0;
   return { labelSize, height, caption };
 }
@@ -718,12 +1038,30 @@ function placeFieldBlock(flow, block, box, type, following) {
   items.forEach((item, index) => {
     const x = box.left + (share + gutter) * index;
     if (isMarkField(item)) {
-      flow.resolvedFields.push({ labelSize, ...item, page, x, y: top - height + (height - MARK_SIZE) / 2, width: MARK_SIZE, height: MARK_SIZE, labelBeside: true });
+      flow.resolvedFields.push({
+        labelSize,
+        ...item,
+        page,
+        x,
+        y: top - height + (height - MARK_SIZE) / 2,
+        width: MARK_SIZE,
+        height: MARK_SIZE,
+        labelBeside: true,
+      });
       return;
     }
     if (isChoiceGroup(item)) {
       const y = top - height + (height - MARK_SIZE) / 2;
-      flow.resolvedFields.push({ labelSize, ...item, page, x, y, width: MARK_SIZE, height: MARK_SIZE, options: choiceOptions(flow, item, x, y, labelSize) });
+      flow.resolvedFields.push({
+        labelSize,
+        ...item,
+        page,
+        x,
+        y,
+        width: MARK_SIZE,
+        height: MARK_SIZE,
+        options: choiceOptions(flow, item, x, y, labelSize),
+      });
       return;
     }
     flow.resolvedFields.push({
@@ -751,19 +1089,32 @@ async function flowBlocks(flow, blocks, baseDir) {
     if (before && !atTop(flow)) flow.y -= before;
     // A heading that introduces a form travels with it: the boxes it names must
     // not start on the next page while the words stay behind on this one. The
-    // reservation is what the heading itself will consume, plus the form.
-    const companion = fieldBlockHeight(blocks[index + 1] || {});
-    if (type === 'heading' && companion) {
+    // reservation is what the heading itself will consume, plus the form — or
+    // the first unit of the list, table, or paragraph it opens, or the picture
+    // it introduces with that picture's caption, each of which keeps together itself.
+    const next = blocks[index + 1] || {};
+    const companion =
+      type === 'heading'
+        ? fieldBlockHeight(next) ||
+          listLeadHeight(flow, next) ||
+          tableLeadHeight(flow, next) ||
+          paragraphLeadHeight(flow, next) ||
+          chartUnitHeight(flow, next, blocks[index + 2]) ||
+          (blockType(next) === 'image' ? (await imageUnit(flow, next, baseDir, blocks[index + 2])).needed : 0)
+        : 0;
+    if (companion) {
       const level = Math.min(3, Math.max(1, Number(block.level) || 1));
       const size = Number(block.size || HEADING_SIZES[level]);
       const lineHeight = Number(block.lineHeight || size * 1.2);
       const headingHeight = linesHeight(flow.font, block.text, size, textBox(flow, block).width, lineHeight);
       keepTogether(flow, headingHeight + Number(block.after ?? 8) + companion);
     }
-    if (type === 'field' || type === 'fieldRow') placeFieldBlock(flow, block, textBox(flow, block), type, blocks[index + 1]);
-    else if (type === 'image') await drawImageBlock(flow, block, baseDir);
+    if (type === 'field' || type === 'fieldRow')
+      placeFieldBlock(flow, block, textBox(flow, block), type, blocks[index + 1]);
+    else if (type === 'image') await drawImageBlock(flow, block, baseDir, blocks[index + 1]);
     else if (type === 'list') drawListBlock(flow, block);
     else if (type === 'table') drawTableBlock(flow, block, blocks[index + 1]);
+    else if (type === 'chart') drawChartBlock(flow, block, blocks[index + 1]);
     else (TEXT_BLOCKS[type] ?? drawProseBlock)(flow, block, textBox(flow, block), type);
   }
 }
@@ -848,7 +1199,13 @@ async function drawFormFields(document, fields, font) {
     if (page) {
       const labelSize = Number(field.labelSize) > 0 ? Number(field.labelSize) : 9;
       for (const option of Array.isArray(field.options) ? field.options : []) {
-        if (!option || typeof option !== 'object' || !String(option.label ?? '').trim() || !Number.isFinite(Number(option.x))) continue;
+        if (
+          !option ||
+          typeof option !== 'object' ||
+          !String(option.label ?? '').trim() ||
+          !Number.isFinite(Number(option.x))
+        )
+          continue;
         page.drawText(String(option.label), {
           x: Number(option.x) + Number(field.width) + 6,
           y: Number(option.y) + (Number(field.height) - labelSize * 0.72) / 2,
@@ -862,6 +1219,31 @@ async function drawFormFields(document, fields, font) {
     await addFormField(document, control, font);
   }
   if (fields?.length) document.getForm().updateFieldAppearances(font);
+}
+
+/**
+ * One chart block on a page of its own size — `width` points wide, as tall as the chart — for a document that places
+ * the chart as a picture (a Word report): the same drawing the PDF chart block makes, cut to the chart.
+ */
+export async function createChartPdf(path, block, { width = 420 } = {}) {
+  const chart = { ...block, type: 'chart', x: 0, width, before: 0, after: 0 };
+  assertPdfBlocks([chart]);
+  const document = await PDFDocument.create();
+  const text = blockText(chart);
+  const { font, fontPath } = await embedDocumentFont(document, { text });
+  const bold = await embedBoldFont(document, { font, fontPath, text });
+  const pad = 4;
+  const { height } = chartLayout({ font, bold }, chart, { left: 0, width });
+  const flow = createFlow(document, {
+    size: [width + pad * 2, height + pad * 2],
+    margin: pad,
+    font,
+    bold,
+    background: 'FFFFFF',
+  });
+  drawChartBlock(flow, { ...chart, x: pad }, null);
+  await writeFile(path, await document.save(SAVE_OPTIONS));
+  return { path, width: width + pad * 2, height: height + pad * 2 };
 }
 
 /**
@@ -886,7 +1268,13 @@ export async function createPdf(path, { blocks = [], fields = [], properties = {
     text: coverage,
   });
   const bold = await embedBoldFont(document, { font, fontPath, text: coverage });
-  const flow = createFlow(document, { size: pageSize(properties), margin, font, bold, background: properties.background });
+  const flow = createFlow(document, {
+    size: pageSize(properties),
+    margin,
+    font,
+    bold,
+    background: properties.background,
+  });
   await flowBlocks(flow, Array.isArray(blocks) ? blocks : [], dirname(path));
   const pageCount = document.getPageCount();
   const numbering = pageNumbering(properties, pageCount);

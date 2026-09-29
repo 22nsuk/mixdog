@@ -201,8 +201,10 @@ function checkPptx(document, violations) {
       if (!(typeof type === 'number' || (typeof type === 'string' && type))) {
         violations.push({ path: shapePath, message: 'shape.type must be a number or a non-empty string' });
       }
-      if (!(shape?.text === null || typeof shape?.text === 'string')) {
-        violations.push({ path: shapePath, message: 'shape.text must be a string or null' });
+      // A chart, table, or picture holds no text of its own: the model-facing digest leaves its null out, and absent
+      // reads the same.
+      if (!(shape?.text == null || typeof shape?.text === 'string')) {
+        violations.push({ path: shapePath, message: 'shape.text must be a string, null, or absent' });
       }
     });
   }

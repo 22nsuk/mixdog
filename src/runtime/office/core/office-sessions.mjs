@@ -1,6 +1,8 @@
-import { access, copyFile, mkdir, stat } from 'node:fs/promises';
+import { access, copyFile, mkdir, rm, stat } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { randomUUID } from 'node:crypto';
 import {
   callMicrosoftOffice,
   detectMicrosoftOffice,
@@ -8,6 +10,9 @@ import {
   openMicrosoftOfficeSession,
 } from '../com/com-adapter.mjs';
 import { snapshotPortableOoxml } from '../portable/portable-ooxml.mjs';
+import { workbookSheets } from '../portable/portable-cells.mjs';
+import { loadPackage, zipText } from '../portable/portable-opc.mjs';
+import { worksheetValidations } from '../portable/portable-snapshot-xlsx.mjs';
 import { normalizeExcelCellStyle } from '../portable/portable-sheet-styles.mjs';
 import { summarizeXlsxConventions } from '../portable/xlsx-conventions.mjs';
 import { createPortableOoxmlDocument, portableCreateSupported } from '../portable/portable-package.mjs';
@@ -631,7 +636,17 @@ export async function materializeWorkingCopy(session) {
 // an expression) and reads its formulas with a leading "="; the portable reader names them as the file does. One
 // shape from both: the OOXML word, the ranges as a list, the formulas without "=", a list literal in its quotes.
 const EXCEL_VALIDATION_TYPES = ['none', 'whole', 'decimal', 'list', 'date', 'time', 'textLength', 'custom'];
-const EXCEL_OPERATORS = ['', 'between', 'notBetween', 'equal', 'notEqual', 'greaterThan', 'lessThan', 'greaterThanOrEqual', 'lessThanOrEqual'];
+const EXCEL_OPERATORS = [
+  '',
+  'between',
+  'notBetween',
+  'equal',
+  'notEqual',
+  'greaterThan',
+  'lessThan',
+  'greaterThanOrEqual',
+  'lessThanOrEqual',
+];
 const EXCEL_CONDITION_TYPES = {
   1: 'cellIs',
   2: 'expression',
@@ -660,7 +675,7 @@ function normalizeExcelRules(sheet) {
       return {
         ...entry,
         type,
-        operator: type === 'list' || type === 'custom' ? '' : EXCEL_OPERATORS[entry.operator] ?? '',
+        operator: type === 'list' || type === 'custom' ? '' : (EXCEL_OPERATORS[entry.operator] ?? ''),
         formula1,
         formula2: withoutEquals(entry.formula2),
       };
@@ -673,9 +688,11 @@ function normalizeExcelRules(sheet) {
       const type = EXCEL_CONDITION_TYPES[entry.type] ?? String(entry.type);
       return {
         ...rest,
-        ranges: String(range || '').split(/[ ,]+/).filter(Boolean),
+        ranges: String(range || '')
+          .split(/[ ,]+/)
+          .filter(Boolean),
         type,
-        operator: type === 'cellIs' ? EXCEL_OPERATORS[entry.operator] ?? '' : '',
+        operator: type === 'cellIs' ? (EXCEL_OPERATORS[entry.operator] ?? '') : '',
         formulas: [formula1, formula2].filter(Boolean).map(withoutEquals),
       };
     });
@@ -705,14 +722,26 @@ function seriesArguments(formula) {
   return parts;
 }
 
-const EXCEL_CHART_KINDS = { 51: 'column', 52: 'stacked_column', 57: 'bar', 58: 'stacked_bar', 4: 'line', 65: 'line', 1: 'area', 5: 'pie', '-4120': 'doughnut', '-4169': 'scatter' };
+const EXCEL_CHART_KINDS = {
+  51: 'column',
+  52: 'stacked_column',
+  57: 'bar',
+  58: 'stacked_bar',
+  4: 'line',
+  65: 'line',
+  1: 'area',
+  5: 'pie',
+  '-4120': 'doughnut',
+  '-4169': 'scatter',
+};
 
 function normalizeExcelCharts(sheet) {
   if (!Array.isArray(sheet?.charts)) return;
   sheet.charts = sheet.charts.map((chart) => {
     if (!chart || typeof chart !== 'object') return chart;
     const next = { ...chart };
-    if (typeof next.chartType === 'number' && EXCEL_CHART_KINDS[next.chartType]) next.chartType = EXCEL_CHART_KINDS[next.chartType];
+    if (typeof next.chartType === 'number' && EXCEL_CHART_KINDS[next.chartType])
+      next.chartType = EXCEL_CHART_KINDS[next.chartType];
     if (Array.isArray(next.series)) {
       next.series = next.series.map((series) => {
         const parts = seriesArguments(series?.formula);
@@ -748,6 +777,49 @@ function normalizeExcelSnapshotStyles(document) {
   }
 }
 
+// The live Office document copied aside and read as a package, for what the application will not report itself. The
+// copy is removed afterwards; the user's file is never saved over.
+export async function readComSavedCopy(session, read) {
+  const copy = join(tmpdir(), `mixdog-office-copy-${randomUUID()}.${session.format}`);
+  try {
+    const saved = await callMicrosoftOffice(
+      {
+        action: 'save_copy',
+        session: session.id,
+        format: session.format,
+        mode: session.mode,
+        path: session.target,
+        output: copy,
+      },
+      { signal: session.activeSignal || null, timeoutMs: 120_000 }
+    );
+    if (!saved.ok) throw new Error(saved.error || 'save-copy failed');
+    return await read(copy);
+  } finally {
+    await rm(copy, { force: true }).catch(() => {});
+  }
+}
+
+// Excel will not look for the validated cells of a protected sheet (SpecialCells refuses there), so a finished form
+// read back on Excel with no dropdowns at all while the portable reader named them. A protected sheet's rules come
+// from the saved copy instead, in the portable reader's shape.
+async function readProtectedSheetValidations(session, document) {
+  const guarded = (document?.sheets || []).filter(
+    (sheet) => sheet?.protection?.protected === true && !sheet.validations?.length
+  );
+  if (!guarded.length) return;
+  await readComSavedCopy(session, async (copy) => {
+    const zip = await loadPackage(copy);
+    const parts = new Map((await workbookSheets(zip)).map((sheet) => [sheet.name, sheet.path]));
+    for (const sheet of guarded) {
+      const part = parts.get(sheet.name);
+      if (!part) continue;
+      sheet.validations = worksheetValidations(await zipText(zip, part), sheet.name);
+      sheet.validationCount = sheet.validations.length;
+    }
+  });
+}
+
 async function fetchSnapshotDocument(session, request, { maxChars, password }) {
   if (session.backend === 'microsoft-office-com') {
     const result = await callMicrosoftOffice(
@@ -762,7 +834,10 @@ async function fetchSnapshotDocument(session, request, { maxChars, password }) {
       { signal: session.activeSignal || null }
     );
     if (!result.ok) throw new Error(result.error || 'Microsoft Office snapshot failed');
-    if (session.format === 'xlsx') normalizeExcelSnapshotStyles(result.value);
+    if (session.format === 'xlsx') {
+      normalizeExcelSnapshotStyles(result.value);
+      await readProtectedSheetValidations(session, result.value);
+    }
     return result.value;
   }
   // A user password only unlocks this read; it is never kept on the session.
@@ -860,7 +935,8 @@ export async function snapshot(session, args, { full = false } = {}) {
 }
 
 function modelFacingLength(value) {
-  const document = value?.document && typeof value.document === 'object' ? officeDocumentDigest(value.document) : value?.document;
+  const document =
+    value?.document && typeof value.document === 'object' ? officeDocumentDigest(value.document) : value?.document;
   return serializedToolValue({ ...value, ...(document ? { document } : {}) }).length;
 }
 

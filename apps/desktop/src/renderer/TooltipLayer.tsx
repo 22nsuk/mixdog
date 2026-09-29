@@ -49,6 +49,9 @@ const ICON_CONTROLS = ['button[aria-label]', 'a[href][aria-label]', '[role="butt
    it is a deliberate landing. */
 const HOVER_DELAY_MS = 600;
 const FOCUS_DELAY_MS = 150;
+/* Keys that MOVE focus: sequential Tab navigation and the arrow/Home/End
+   roving inside toolbars and lists. */
+const NAVIGATION_KEYS = new Set(['Tab', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End']);
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), Math.max(min, max));
@@ -64,6 +67,9 @@ function tooltipTarget(value: EventTarget | null): HTMLElement | null {
   if (!target) return null;
   // A control that already shows text must not echo its accessible name.
   if (!explicit && (target.textContent ?? '').trim()) return null;
+  // A trigger whose popup is open would label the control already in use,
+  // on top of the popup itself.
+  if (target.getAttribute('aria-expanded') === 'true') return null;
   return target.closest('[inert], [aria-hidden="true"]') ? null : target;
 }
 
@@ -115,6 +121,16 @@ export function TooltipLayer() {
 
   useEffect(() => {
     let watchdog: number | null = null;
+    /* Help answers the person's own gesture only (user: 호버도 안 했는데
+       팁이 뜬다). Hover needs a pointer that MOVED over the control: content
+       sliding under a resting pointer — a streaming transcript, a scroll, a
+       row re-rendered by a click — fires pointerover but never pointermove.
+       Keyboard help needs focus a navigation key moved: script focus (a menu
+       or dialog handing focus back to its trigger after Escape, a closing
+       sidebar parking it on the rail, the window regaining activation) still
+       matches :focus-visible after any typing. */
+    let hovered: HTMLElement | null = null;
+    let navigating = false;
     const stopWatchdog = () => {
       if (watchdog !== null) window.clearInterval(watchdog);
       watchdog = null;
@@ -137,6 +153,7 @@ export function TooltipLayer() {
       if (timer.current !== null) window.clearTimeout(timer.current);
       timer.current = null;
       stopWatchdog();
+      hovered = null;
       active.current = null;
       setPosition(null);
       setTooltip(null);
@@ -183,8 +200,13 @@ export function TooltipLayer() {
       }, delay);
     };
     const onPointerOver = (event: PointerEvent) => {
-      const target = tooltipTarget(event.target);
-      if (target) reveal(target, HOVER_DELAY_MS);
+      hovered = tooltipTarget(event.target);
+    };
+    const onPointerMove = () => {
+      const target = hovered;
+      if (!target) return;
+      hovered = null;
+      reveal(target, HOVER_DELAY_MS);
     };
     const onPointerOut = (event: PointerEvent) => {
       const target = tooltipTarget(event.target);
@@ -193,16 +215,24 @@ export function TooltipLayer() {
     };
     const onFocusIn = (event: FocusEvent) => {
       const target = tooltipTarget(event.target);
-      // Pointer clicks move focus and re-summoned the tooltip right after the
-      // pointerdown dismissal, leaving it floating once the button moved or
-      // re-rendered (user: lingering description bubbles). Only keyboard
-      // focus reveals tooltips.
-      if (target?.matches(':focus-visible')) reveal(target, FOCUS_DELAY_MS);
+      // Pointer clicks move focus too and re-summoned the tooltip right after
+      // the pointerdown dismissal (user: lingering description bubbles); only
+      // focus a navigation key moved reveals help.
+      if (target && navigating) reveal(target, FOCUS_DELAY_MS);
     };
     const onFocusOut = (event: FocusEvent) => {
       if (tooltipTarget(event.target)) cancel();
     };
+    const onKeyUp = () => {
+      navigating = false;
+    };
+    // A key released outside the window never reports its keyup.
+    const onBlur = () => {
+      navigating = false;
+      cancel();
+    };
     const onKeyDown = (event: KeyboardEvent) => {
+      navigating = NAVIGATION_KEYS.has(event.key) && !event.altKey && !event.ctrlKey && !event.metaKey;
       const activationTarget = event.target instanceof Node ? event.target : null;
       if (
         event.key === 'Escape' ||
@@ -214,6 +244,7 @@ export function TooltipLayer() {
       }
     };
     document.addEventListener('pointerover', onPointerOver);
+    document.addEventListener('pointermove', onPointerMove);
     document.addEventListener('pointerout', onPointerOut);
     document.addEventListener('focusin', onFocusIn);
     document.addEventListener('focusout', onFocusOut);
@@ -222,21 +253,24 @@ export function TooltipLayer() {
     // unmounts (busy-state swaps) never fires pointerout — reap it.
     document.addEventListener('click', cancel, true);
     document.addEventListener('keydown', onKeyDown, true);
+    document.addEventListener('keyup', onKeyUp, true);
     window.addEventListener('scroll', cancel, true);
     window.addEventListener('resize', cancel);
-    window.addEventListener('blur', cancel);
+    window.addEventListener('blur', onBlur);
     return () => {
       cancel();
       document.removeEventListener('pointerover', onPointerOver);
+      document.removeEventListener('pointermove', onPointerMove);
       document.removeEventListener('pointerout', onPointerOut);
       document.removeEventListener('focusin', onFocusIn);
       document.removeEventListener('focusout', onFocusOut);
       document.removeEventListener('pointerdown', cancel, true);
       document.removeEventListener('click', cancel, true);
       document.removeEventListener('keydown', onKeyDown, true);
+      document.removeEventListener('keyup', onKeyUp, true);
       window.removeEventListener('scroll', cancel, true);
       window.removeEventListener('resize', cancel);
-      window.removeEventListener('blur', cancel);
+      window.removeEventListener('blur', onBlur);
     };
   }, []);
 

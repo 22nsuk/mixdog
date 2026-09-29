@@ -93,7 +93,7 @@ export function viewSkill(cwd, name, session = null) {
   if (!skillName) return 'Error: skill name is required';
   const missingFeature = skillMissingFeature(skillName);
   if (missingFeature) {
-    return `Error: skill "${skillName}" needs the ${missingFeature} built-in feature, which is not installed or is switched off in Settings → Built-in`;
+    return `Error: skill "${skillName}" needs the ${missingFeature} built-in feature, which is not installed or is switched off in Extensions → Plugin → Built-in`;
   }
   if (isSkillDisabled(skillName)) return `Error: skill "${skillName}" is disabled`;
   const res = loadSkillResource(skillName, cwd);

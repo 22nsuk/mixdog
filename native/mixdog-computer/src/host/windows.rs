@@ -43,8 +43,16 @@ impl Host {
                 } else {
                     ""
                 };
-                let owner = if info.owner != 0 { format!(" owner={}", info.owner_id()) } else { String::new() };
-                let title = if info.title.is_empty() { "<untitled>" } else { info.title.as_str() };
+                let owner = if info.owner != 0 {
+                    format!(" owner={}", info.owner_id())
+                } else {
+                    String::new()
+                };
+                let title = if info.title.is_empty() {
+                    "<untitled>"
+                } else {
+                    info.title.as_str()
+                };
                 format!(
                     "{} | app={} pid={} class={}{}{}{} | \"{}\" | {}x{} at {},{}",
                     info.id(),
@@ -67,13 +75,23 @@ impl Host {
     }
 
     pub(super) fn window_snapshot(&self) -> Res<Obj> {
-        let rows: Vec<Value> = self.desktop.windows()?.iter().map(|info| window_row(info, false)).collect();
+        let rows: Vec<Value> = self
+            .desktop
+            .windows()?
+            .iter()
+            .map(|info| window_row(info, false))
+            .collect();
         Ok(obj! { "windows" => rows })
     }
 
     pub(super) fn related_windows(&self, req: &Req) -> Res<Obj> {
         let info = self.resolve_window(req)?;
-        let ids: Vec<String> = self.desktop.related_windows(info.handle).into_iter().map(window_id).collect();
+        let ids: Vec<String> = self
+            .desktop
+            .related_windows(info.handle)
+            .into_iter()
+            .map(window_id)
+            .collect();
         Ok(obj! { "window_ids" => ids })
     }
 
@@ -82,7 +100,12 @@ impl Host {
         if info.width <= 0 || info.height <= 0 {
             return Err(format!("window has no capturable bounds: {}", info.id()));
         }
-        let related: Vec<String> = self.desktop.related_windows(info.handle).into_iter().map(window_id).collect();
+        let related: Vec<String> = self
+            .desktop
+            .related_windows(info.handle)
+            .into_iter()
+            .map(window_id)
+            .collect();
         let (client_x, client_y, client_width, client_height) = info.client;
         Ok(obj! {
             "text" => format!("window bounds: {}", info.title),
@@ -142,16 +165,29 @@ impl Host {
         }
         self.authorize(req, info.handle)?;
         if info.minimized {
-            let _ = self.desktop.set_window_state(info.handle, WinState::Restore);
+            let _ = self
+                .desktop
+                .set_window_state(info.handle, WinState::Restore);
         }
         self.desktop
             .move_window(info.handle, x, y, width, height)
             .map_err(|error| format!("could not move window: {} ({error})", info.id()))?;
         sleep_ms(80);
         let after = self.desktop.info(info.handle);
-        let verified = after.is_some_and(|after| after.x == x && after.y == y && after.width == width && after.height == height);
+        let verified = after.is_some_and(|after| {
+            after.x == x && after.y == y && after.width == width && after.height == height
+        });
         let message = format!("moved {} to {x},{y} size {width}x{height}", info.id());
-        Ok(self.action_result("move_window", self.desktop.name(), effect(verified), verified, &message, None, "background", Some(info.id())))
+        Ok(self.action_result(
+            "move_window",
+            self.desktop.name(),
+            effect(verified),
+            verified,
+            &message,
+            None,
+            "background",
+            Some(info.id()),
+        ))
     }
 
     pub(super) fn window_state(&self, req: &Req) -> Res<Obj> {
@@ -168,32 +204,65 @@ impl Host {
         let mut verified = false;
         for _ in 0..10 {
             sleep_ms(80);
-            verified = self.desktop.info(info.handle).is_some_and(|after| match state {
-                WinState::Minimize => after.minimized,
-                WinState::Maximize => after.maximized,
-                WinState::Restore => !after.minimized && !after.maximized,
-            });
+            verified = self
+                .desktop
+                .info(info.handle)
+                .is_some_and(|after| match state {
+                    WinState::Minimize => after.minimized,
+                    WinState::Maximize => after.maximized,
+                    WinState::Restore => !after.minimized && !after.maximized,
+                });
             if verified {
                 break;
             }
         }
-        Ok(self.action_result("window_state", self.desktop.name(), effect(verified), verified, &format!("{wanted} window {}", info.id()), None, "background", Some(info.id())))
+        Ok(self.action_result(
+            "window_state",
+            self.desktop.name(),
+            effect(verified),
+            verified,
+            &format!("{wanted} window {}", info.id()),
+            None,
+            "background",
+            Some(info.id()),
+        ))
     }
 
     pub(super) fn close_window(&self, req: &Req) -> Res<Obj> {
         let info = self.resolve_window(req)?;
         self.authorize(req, info.handle)?;
         if !self.desktop.close_window(info.handle)? {
-            return Ok(self.action_result("close_window", self.desktop.name(), "suspected_noop", false, &format!("could not request close for {}", info.id()), Some("window_close_rejected"), "background", Some(info.id())));
+            return Ok(self.action_result(
+                "close_window",
+                self.desktop.name(),
+                "suspected_noop",
+                false,
+                &format!("could not request close for {}", info.id()),
+                Some("window_close_rejected"),
+                "background",
+                Some(info.id()),
+            ));
         }
         sleep_ms(120);
         let verified = !self.is_window(info.handle);
         let message = if verified {
             format!("closed window {}", info.id())
         } else {
-            format!("close requested for {}; the app may be showing a save or confirmation dialog", info.id())
+            format!(
+                "close requested for {}; the app may be showing a save or confirmation dialog",
+                info.id()
+            )
         };
-        Ok(self.action_result("close_window", self.desktop.name(), effect(verified), verified, &message, None, "background", Some(info.id())))
+        Ok(self.action_result(
+            "close_window",
+            self.desktop.name(),
+            effect(verified),
+            verified,
+            &message,
+            None,
+            "background",
+            Some(info.id()),
+        ))
     }
 
     /// Killing a process has nothing to undo, so it needs the caller's repeated
@@ -203,19 +272,58 @@ impl Host {
         let id = Some(info.id());
         if req.text("confirm") != "terminate" {
             let message = format!("terminating {} discards unsaved work; confirm=terminate is required and the user has to agree first", info.id());
-            return Ok(self.action_result("terminate_process", "none", "suspected_noop", false, &message, Some("confirmation_required"), "background", id));
+            return Ok(self.action_result(
+                "terminate_process",
+                "none",
+                "suspected_noop",
+                false,
+                &message,
+                Some("confirmation_required"),
+                "background",
+                id,
+            ));
         }
         if self.desktop.is_responding(info.handle) {
-            let message = format!("window {} still answers; close it the ordinary way instead of killing its process", info.id());
-            return Ok(self.action_result("terminate_process", "none", "suspected_noop", false, &message, Some("window_still_responding"), "background", id));
+            let message = format!(
+                "window {} still answers; close it the ordinary way instead of killing its process",
+                info.id()
+            );
+            return Ok(self.action_result(
+                "terminate_process",
+                "none",
+                "suspected_noop",
+                false,
+                &message,
+                Some("window_still_responding"),
+                "background",
+                id,
+            ));
         }
         self.authorize(req, info.handle)?;
         if let Err(error) = self.desktop.terminate(info.pid) {
             let message = format!("could not terminate pid {}: {error}", info.pid);
-            return Ok(self.action_result("terminate_process", self.desktop.name(), "suspected_noop", false, &message, Some("terminate_failed"), "background", id));
+            return Ok(self.action_result(
+                "terminate_process",
+                self.desktop.name(),
+                "suspected_noop",
+                false,
+                &message,
+                Some("terminate_failed"),
+                "background",
+                id,
+            ));
         }
         let verified = !self.is_window(info.handle);
-        Ok(self.action_result("terminate_process", self.desktop.name(), effect(verified), verified, &format!("terminated pid {} behind {}", info.pid, info.id()), None, "background", id))
+        Ok(self.action_result(
+            "terminate_process",
+            self.desktop.name(),
+            effect(verified),
+            verified,
+            &format!("terminated pid {} behind {}", info.pid, info.id()),
+            None,
+            "background",
+            id,
+        ))
     }
 
     pub(super) fn do_focus(&self, req: &Req) -> Res<Obj> {
@@ -228,10 +336,28 @@ impl Host {
         self.remember_focus_origin(previous, info.handle);
         self.mark_own();
         if !self.desktop.focus(info.handle) {
-            return Ok(self.action_result("focus_window", "foreground", "suspected_noop", false, &format!("could not bring window to foreground: {}", info.title), Some("foreground_unavailable"), "foreground", Some(info.id())));
+            return Ok(self.action_result(
+                "focus_window",
+                "foreground",
+                "suspected_noop",
+                false,
+                &format!("could not bring window to foreground: {}", info.title),
+                Some("foreground_unavailable"),
+                "foreground",
+                Some(info.id()),
+            ));
         }
         self.session(|session| session.last_focus = info.handle);
-        Ok(self.action_result("focus_window", "foreground", "confirmed", true, &format!("focused: {}", info.title), None, "foreground", Some(info.id())))
+        Ok(self.action_result(
+            "focus_window",
+            "foreground",
+            "confirmed",
+            true,
+            &format!("focused: {}", info.title),
+            None,
+            "foreground",
+            Some(info.id()),
+        ))
     }
 }
 

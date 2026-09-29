@@ -1,4 +1,4 @@
-/* Desktop layer 16 — Menus, toasts, tooltips, runtime status popover.
+/* Desktop layer 16 — Menus, toasts, tooltips.
    Loaded in fixed order from ../desktop.css; the cascade depends on that
    order, so rules must never move between layers or be re-sorted. */
 @import "./menu-items.css";
@@ -49,7 +49,9 @@
 /* Toasts. */
 .mx-toast-region {
   position: fixed;
-  z-index: 1000;
+  z-index: var(--mx-toast-z-index);
+  /* Fallback lane; DesktopToastRegion places it inline (right, top, width,
+     maxHeight) under the main panel's tab strip. */
   right: 16px;
   top: 54px;
   width: min(320px, calc(100vw - 32px));
@@ -57,7 +59,14 @@
   flex-direction: column;
   gap: 8px;
   max-height: calc(var(--vvh, 100vh) - 32px);
-  padding: 1px;
+  /* A scroll box clips at its padding edge. The lane is the CONTENT box and
+     the padding grows outward over matching negative margins to hold the
+     popup shadow's reach (0 12px 28px: 16px above, 28px beside, 40px below),
+     so toasts still land exactly where the inline placement measures them.
+     The right reserve ends at the default 16px window margin. */
+  box-sizing: content-box;
+  padding: 16px 16px 40px 28px;
+  margin: -16px -16px -40px -28px;
   overflow-y: auto;
   overscroll-behavior: contain;
   pointer-events: none;
@@ -137,7 +146,10 @@
 /* Tooltips. */
 .mx-tooltip {
   position: fixed;
-  z-index: 1200;
+  /* The top transient layer: above menus, the route sheet and their flyouts,
+     so a control inside a floating surface still shows its label. A trigger
+     whose popup is open shows none (TooltipLayer). */
+  z-index: var(--mx-tooltip-z-index);
   max-width: min(280px, calc(100vw - 16px));
   box-sizing: border-box;
   padding: 6px 8px;
@@ -190,129 +202,6 @@
   text-transform: uppercase;
 }
 
-.runtime-status-icon {
-  position: relative;
-  width: 16px;
-  height: 16px;
-  display: grid;
-  place-items: center;
-}
-.runtime-status-icon i {
-  position: absolute;
-  top: -2px;
-  right: -2px;
-  width: 7px;
-  height: 7px;
-  border: 1.5px solid var(--mx-bg-base);
-  border-radius: 50%;
-  background: var(--mx-border-strong);
-}
-.runtime-status-icon i[data-tone="healthy"] {
-  background: var(--mx-success);
-}
-.runtime-status-icon i[data-tone="critical"] {
-  background: var(--mx-danger);
-}
-.runtime-status-icon i[data-tone="idle"] {
-  background: var(--mx-warning);
-}
-.runtime-status-popover {
-  position: fixed;
-  z-index: 1100;
-  width: min(320px, calc(100vw - 16px));
-  overflow: hidden;
-  border: var(--mx-popup-border);
-  border-radius: var(--mx-popup-radius);
-  color: var(--mx-text);
-  background: var(--mx-popup-bg);
-  box-shadow: var(--mx-popup-shadow);
-}
-.runtime-status-popover > header {
-  min-height: 52px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 10px 10px 14px;
-  border-bottom: 0.5px solid var(--mx-border);
-}
-.runtime-status-popover > header > div {
-  min-width: 0;
-  flex: 1;
-  display: grid;
-}
-.runtime-status-popover > header b {
-  font-size: var(--mx-font-ui);
-  font-weight: var(--mx-weight-semibold);
-}
-.runtime-status-popover > header span {
-  color: var(--mx-text-muted);
-  font-size: var(--mx-font-meta);
-}
-.runtime-status-popover > header span[data-tone="healthy"] {
-  color: var(--mx-success);
-}
-.runtime-status-popover > header span[data-tone="critical"] {
-  color: var(--mx-danger);
-}
-.runtime-status-popover button {
-  min-height: 28px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 0 9px;
-  border: 0;
-  border-radius: var(--mx-radius-md);
-  color: var(--mx-text);
-  background: var(--mx-popup-action-bg);
-  box-shadow: var(--mx-popup-action-ring);
-}
-.runtime-status-popover > header button {
-  width: 24px;
-  min-height: 24px;
-  padding: 0;
-  background: transparent;
-  box-shadow: none;
-}
-.runtime-status-body {
-  display: grid;
-  padding: 8px 14px;
-}
-.runtime-status-body > div {
-  min-height: 32px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-.runtime-status-body span {
-  color: var(--mx-text-muted);
-  font-size: var(--mx-font-minor);
-}
-.runtime-status-body b {
-  font-size: var(--mx-font-minor);
-  font-weight: var(--mx-weight-semibold);
-}
-.runtime-status-body p {
-  margin: 6px 0;
-  color: var(--mx-danger);
-  font-size: var(--mx-font-meta);
-  line-height: var(--mx-line-meta);
-}
-.runtime-status-popover > footer {
-  padding: 8px 10px;
-  border-top: 0.5px solid var(--mx-border);
-}
-.runtime-status-popover button:hover:not(:disabled) {
-  background: var(--mx-hover);
-  box-shadow: var(--mx-popup-action-ring-hover);
-}
-.runtime-status-popover > header button:hover:not(:disabled) {
-  box-shadow: none;
-}
-.runtime-status-popover button:disabled {
-  opacity: var(--mx-op-disabled);
-}
 .mx-tooltip[data-side="bottom"] {
   transform-origin: top center;
 }

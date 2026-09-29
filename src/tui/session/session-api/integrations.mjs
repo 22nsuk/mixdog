@@ -15,7 +15,14 @@ export function filesFromPatch(patch) {
   for (const line of String(patch || '').split('\n')) {
     const header = /^diff --git a\/(.+?) b\/(.+)$/.exec(line);
     if (header) {
-      current = { path: header[2], oldPath: header[1] === header[2] ? null : header[1], status: 'M', additions: 0, deletions: 0, binary: false };
+      current = {
+        path: header[2],
+        oldPath: header[1] === header[2] ? null : header[1],
+        status: 'M',
+        additions: 0,
+        deletions: 0,
+        binary: false,
+      };
       files.push(current);
       continue;
     }
@@ -58,6 +65,9 @@ export function createSessionIntegrationsApi(bag, { oauthFlows }) {
     getUsageStats: async (options = {}) => {
       return await runtime.getUsageStats?.(options);
     },
+    getQuotaHistory: async (options = {}) => {
+      return await runtime.getQuotaHistory?.(options);
+    },
     consumeCodexRateLimitResetCredit: async (options = {}) => {
       // Desktop capability parity: without this delegation the session runtime
       // surface rejects the sidebar's reset-credit invoke as unsupported even
@@ -74,7 +84,11 @@ export function createSessionIntegrationsApi(bag, { oauthFlows }) {
       // A collapsed bar shows files and line counts only. A Git-backed review
       // carries those per file, so its patch text (tens of KB mid-turn) is
       // left out until the bar is opened; other kinds count from the patch.
-      if (summary === true && (review.snapshotKind === 'worktree' || review.snapshotKind === 'scoped') && review.patch) {
+      if (
+        summary === true &&
+        (review.snapshotKind === 'worktree' || review.snapshotKind === 'scoped') &&
+        review.patch
+      ) {
         review = { ...review, patch: '', patchOmitted: true };
       } else if (summary === true && review.snapshotKind === 'tool' && review.patch && !review.files?.length) {
         // A contended worktree (several sessions on one repo) reviews this

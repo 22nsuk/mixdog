@@ -86,6 +86,21 @@ export function createResponseStamps({ state }) {
     return err;
   };
 
+  // What a stream that ended without its terminal frame completed. A partial
+  // a watchdog already attached is kept.
+  const attachStreamPartial = (err) => {
+    if (!err || err.partialContent !== undefined) return err;
+    try {
+      err.partialContent = state.content;
+      err.partialToolCalls = state.toolCalls.length ? state.toolCalls.slice() : undefined;
+      err.partialModel = state.model || undefined;
+      err.pendingToolUse = toolInputPending(state);
+    } catch {
+      /* best-effort enrichment */
+    }
+    return err;
+  };
+
   // EOF without a terminal frame is ALWAYS a failure, regardless of how much
   // partial text or how many tool calls were streamed. The turn has no
   // terminal signal, so it is a continuation: returning it would report an
@@ -93,22 +108,20 @@ export function createResponseStamps({ state }) {
   // already dispatched, a half-finished side-effecting turn). The partial
   // rides on the error for interrupted-turn persistence.
   const endedEarlyError = () => {
-    const err = stampToolSafety(
-      new Error(
-        `${LABEL} ended before response.completed (text=${state.content.length} chars, toolCalls=${state.toolCalls.length})`
+    const err = attachStreamPartial(
+      stampToolSafety(
+        new Error(
+          `${LABEL} ended before response.completed (text=${state.content.length} chars, toolCalls=${state.toolCalls.length})`
+        )
       )
     );
     try {
-      err.partialContent = state.content;
-      err.partialToolCalls = state.toolCalls.length ? state.toolCalls.slice() : undefined;
       err.partialProviderReplay = createProviderReplay('openai-responses', state.responseItems);
-      err.partialModel = state.model || undefined;
-      err.pendingToolUse = toolInputPending(state);
     } catch {
       /* best-effort enrichment */
     }
     return stampOutcome(err, { terminalObserved: false, continuation: true });
   };
 
-  return { stampToolSafety, stampOutcome, stallPartial, stampStreamError, endedEarlyError };
+  return { stampToolSafety, stampOutcome, stallPartial, stampStreamError, attachStreamPartial, endedEarlyError };
 }

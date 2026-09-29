@@ -16,4 +16,5 @@ remains.
 
 While an approved Goal is active, work inside its objective is already
 approved: carry it out without stepwise approval. Reserve questions for scope
-outside that objective and for irreversible actions.
+outside that objective, including a commit, push, release, deployment, or
+payment the user has not requested.

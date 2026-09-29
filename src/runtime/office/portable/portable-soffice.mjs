@@ -1,4 +1,4 @@
-import { basename, dirname, extname, join, posix } from 'node:path';
+import { basename, dirname, extname, join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
 import { constants as fsConstants, rmSync } from 'node:fs';
@@ -6,8 +6,16 @@ import { pathToFileURL } from 'node:url';
 import JSZip from 'jszip';
 import { copyFile, readFile, rename, writeFile, mkdir, mkdtemp, rm, stat } from 'node:fs/promises';
 import { zipText } from './portable-opc.mjs';
-import { iterateSheetCells, workbookCalculation, workbookSheets } from './portable-cells.mjs';
-import { xmlAttribute, xmlDecode } from './portable-xml.mjs';
+import {
+  computedCellValues,
+  iterateSheetCells,
+  sharedStrings,
+  workbookCalculation,
+  workbookSheets,
+  writeCachedValues,
+} from './portable-cells.mjs';
+import { xmlDecode } from './portable-xml.mjs';
+import { refreshChartCaches } from './portable-xlsx-charts.mjs';
 
 const SOFFICE_PROBE_TIMEOUT_MS = 20_000;
 const SOFFICE_RENDER_TIMEOUT_MS = 120_000;
@@ -315,65 +323,6 @@ async function convertWorkbookWithLibreOffice(program, path, source, signal) {
   }
 }
 
-// The recalculation is a roundtrip through another office suite, and it comes
-// back with more than the values. These are the parts it invents: the chart
-// style and colour-style extensions, which this runtime never authors and
-// which fail Microsoft's schema, so a workbook carrying a chart could never be
-// finalized once it had been calculated.
-const OPTIONAL_CHART_PARTS = /^xl\/charts\/(?:style|colors)\d*\.xml$/i;
-
-const FONT_ELEMENT = /<font\b[^>]*>[\s\S]*?<\/font>|<font\b[^>]*\/>/g;
-
-async function dropRemovedParts(zip, removed) {
-  const partNames = new Set(removed.map((name) => `/${name}`));
-  const types = await zipText(zip, '[Content_Types].xml');
-  if (types) {
-    zip.file(
-      '[Content_Types].xml',
-      types.replace(/<Override\b[^>]*\/>/g, (entry) => (partNames.has(xmlAttribute(entry, 'PartName')) ? '' : entry))
-    );
-  }
-  for (const name of Object.keys(zip.files)) {
-    if (!/\.rels$/i.test(name)) continue;
-    const xml = await zipText(zip, name);
-    if (!xml) continue;
-    // xl/charts/_rels/chart1.xml.rels resolves its targets against xl/charts.
-    const owner = posix.dirname(posix.dirname(name));
-    const next = xml.replace(/<Relationship\b[^>]*\/>/g, (entry) => {
-      const target = String(xmlAttribute(entry, 'Target') || '');
-      if (!target || /^[a-z]+:/i.test(target)) return entry;
-      const resolved = target.startsWith('/') ? target.slice(1) : posix.normalize(posix.join(owner, target));
-      return removed.includes(resolved) ? '' : entry;
-    });
-    if (next !== xml) zip.file(name, next);
-  }
-}
-
-// Hangul cells came back in a face the converter chose, while the numbers
-// beside them kept the authored one, so a sheet written in a single family
-// reached the reader in two. The authored names are written back by position;
-// anything the styles gained keeps what it came with.
-async function restoreAuthoredFonts(originalZip, produced) {
-  const before = await zipText(originalZip, 'xl/styles.xml');
-  const after = await zipText(produced, 'xl/styles.xml');
-  if (!before || !after) return 0;
-  const authored = String(before).match(FONT_ELEMENT) || [];
-  if (!authored.length) return 0;
-  const fontName = (entry) => /<name\s+val="([^"]*)"/i.exec(entry)?.[1] || '';
-  let restored = 0;
-  let index = -1;
-  const next = String(after).replace(FONT_ELEMENT, (entry) => {
-    index += 1;
-    const wanted = fontName(authored[index] || '');
-    const actual = fontName(entry);
-    if (!wanted || !actual || wanted === actual) return entry;
-    restored += 1;
-    return entry.replace(/<name\s+val="[^"]*"/i, `<name val="${wanted}"`);
-  });
-  if (restored) produced.file('xl/styles.xml', next);
-  return restored;
-}
-
 // The mark an edit leaves says the values are stale. Once they have been
 // calculated it comes off, or every later read pays for a recalculation that
 // has nothing left to do.
@@ -412,35 +361,25 @@ async function withoutFormulaCache(source) {
   });
 }
 
-/** Keeps the values the roundtrip computed and returns everything it invented
- *  or substituted to the way the workbook was authored. */
-async function normalizeRoundtrip(originalZip, bytes) {
-  const produced = await JSZip.loadAsync(bytes);
-  const removedParts = [];
-  const restoredParts = [];
-  for (const name of Object.keys(produced.files)) {
-    if (!OPTIONAL_CHART_PARTS.test(name)) continue;
-    const original = originalZip.file(name);
-    if (original) {
-      produced.file(name, await original.async('nodebuffer'));
-      restoredParts.push(name);
-      continue;
-    }
-    produced.remove(name);
-    removedParts.push(name);
+// The roundtrip is asked for values and nothing else. What LibreOffice writes back is its own reading of the
+// workbook: its own style table, where the authored faces came back on other cells (a Batang title in Malgun Gothic,
+// the Malgun Gothic insights beside it in Batang), its own chart parts (a Korean chart title in Calibri, style
+// extensions that fail Microsoft's schema), its own widths and flags. Each computed value is carried into the
+// workbook as authored instead, the way the in-process engine writes its own, each chart's copy of its cells is taken
+// again from them, and the copy is dropped.
+async function withComputedValues(originalZip, produced) {
+  const strings = await sharedStrings(produced);
+  const calculated = new Map((await workbookSheets(produced)).map((sheet) => [sheet.name, sheet.path]));
+  for (const sheet of await workbookSheets(originalZip)) {
+    const part = calculated.get(sheet.name);
+    if (!part) continue;
+    const computed = computedCellValues(await zipText(produced, part), strings);
+    if (computed.size) originalZip.file(sheet.path, writeCachedValues(await zipText(originalZip, sheet.path), computed));
   }
-  if (removedParts.length) await dropRemovedParts(produced, removedParts);
-  const restoredFonts = await restoreAuthoredFonts(originalZip, produced);
-  const workbookXml = await zipText(produced, 'xl/workbook.xml');
-  if (workbookXml) produced.file('xl/workbook.xml', clearForcedRecalculation(workbookXml));
-  return {
-    bytes: await produced.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }),
-    summary: {
-      ...(removedParts.length ? { removedParts } : {}),
-      ...(restoredParts.length ? { restoredParts } : {}),
-      ...(restoredFonts ? { restoredFonts } : {}),
-    },
-  };
+  await refreshChartCaches(originalZip);
+  const workbookXml = await zipText(originalZip, 'xl/workbook.xml');
+  if (workbookXml) originalZip.file('xl/workbook.xml', clearForcedRecalculation(workbookXml));
+  return await originalZip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
 }
 
 export async function recalculateLibreOfficeWorkbook(path, { force = false, signal = null } = {}) {
@@ -491,9 +430,12 @@ export async function recalculateLibreOfficeWorkbook(path, { force = false, sign
       reason: converted.reason,
     };
   }
-  const normalized = await normalizeRoundtrip(zip, converted.recalculated);
-  await writeFile(path, normalized.bytes);
-  const errors = await workbookFormulaErrors(await JSZip.loadAsync(normalized.bytes));
+  const produced = await JSZip.loadAsync(converted.recalculated);
+  // Read in LibreOffice's copy, which writes every formula it parsed back in upper case: that is how one it could
+  // not parse is told apart.
+  const errors = await workbookFormulaErrors(produced);
+  const bytes = await withComputedValues(zip, produced);
+  await writeFile(path, bytes);
   return {
     needed: true,
     available: true,
@@ -506,8 +448,7 @@ export async function recalculateLibreOfficeWorkbook(path, { force = false, sign
     totalErrors: errors.total,
     errorSummary: errors.byType,
     ...(errors.unparsed.length ? { unparsedFormulas: errors.unparsed } : {}),
-    ...(Object.keys(normalized.summary).length ? { normalized: normalized.summary } : {}),
-    outputBytes: normalized.bytes.length,
+    outputBytes: bytes.length,
   };
 }
 

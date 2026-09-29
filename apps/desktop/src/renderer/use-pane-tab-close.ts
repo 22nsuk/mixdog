@@ -1,5 +1,6 @@
 import { useState, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
 
+import { t } from './i18n';
 import { disposeTerminalPane } from './lazy-widgets';
 import { nextWorkspaceTabAfterClose } from './nav-types';
 import type { NavigationSelection, WorkspaceTab } from './navigation';
@@ -162,7 +163,7 @@ export function usePaneTabClose({
     if (!pending || unsavedCloseBusy) return;
     const handle = editorSaveHandles.current.get(pending.tab.key);
     if (!handle) {
-      setUnsavedCloseError('The editor is unavailable. Return to the file and try again.');
+      setUnsavedCloseError(t('The editor is unavailable. Return to the file and try again.'));
       return;
     }
     setUnsavedCloseBusy(true);
@@ -170,7 +171,7 @@ export function usePaneTabClose({
     const saved = await handle.save();
     setUnsavedCloseBusy(false);
     if (!saved) {
-      setUnsavedCloseError('The file could not be saved. Resolve the editor error and try again.');
+      setUnsavedCloseError(t('The file could not be saved. Resolve the editor error and try again.'));
       return;
     }
     setPendingUnsavedCloses((queue) => queue.slice(1));

@@ -1,6 +1,12 @@
 import { useEffect, useState } from 'react';
 
-function useMediaBand(queryText: string): boolean {
+/** The two shell bands, named once for script. The stylesheets repeat the same
+ *  widths as literals (760/761px and 940px) because a media query cannot read
+ *  a custom property; keep both sides in step. */
+export const NARROW_SHELL_QUERY = '(max-width: 760px)';
+export const BOTTOM_SHEET_QUERY = '(max-width: 940px)';
+
+export function useMediaBand(queryText: string): boolean {
   const [matches, setMatches] = useState(() => window.matchMedia?.(queryText).matches === true);
   useEffect(() => {
     const query = window.matchMedia?.(queryText);
@@ -13,8 +19,8 @@ function useMediaBand(queryText: string): boolean {
 }
 
 export function useResponsiveShellBands() {
-  const narrowShell = useMediaBand('(max-width: 760px)');
-  const bottomSheetBand = useMediaBand('(max-width: 940px)');
+  const narrowShell = useMediaBand(NARROW_SHELL_QUERY);
+  const bottomSheetBand = useMediaBand(BOTTOM_SHEET_QUERY);
 
   useEffect(() => {
     const root = document.documentElement;

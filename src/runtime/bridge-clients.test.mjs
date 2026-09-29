@@ -1676,11 +1676,11 @@ test('computer tool contract exposes stable targets, frames, and explicit delive
   assert.ok(COMPUTER_TOOL_DEFS[0].description.includes('Input requires a fresh observation from capture'));
   assert.ok(COMPUTER_TOOL_DEFS[0].description.includes('Never guess ids'));
   assert.ok(COMPUTER_TOOL_DEFS[0].description.includes('Browser Use'));
-  // The desktop is the last rung: MCP, shell, and the browser come first, and
-  // a page action the browser refused is never re-tried through the screen.
+  // The screen takes only steps no built-in tool, MCP, shell/CLI, or Browser
+  // Use covers, and a page action the browser refused is never re-tried there.
   assert.match(
     COMPUTER_TOOL_DEFS[0].description.slice(0, 260),
-    /Last resort after an MCP tool, shell\/CLI, and Browser Use/
+    /Only for steps no built-in, mcp__\* \(deferred too\), shell\/CLI, or Browser Use tool covers/
   );
   assert.ok(COMPUTER_TOOL_DEFS[0].description.includes('never a stand-in for a page action browser refused'));
   assert.ok(COMPUTER_TOOL_DEFS[0].description.includes('one computer call per model turn'));
@@ -1762,17 +1762,91 @@ test('computer results reach the model without host diagnostics or default eleme
   assert.equal(value.observation.capture_attempts, undefined);
   assert.deepEqual(value.window_transition, transition);
   assert.equal(value.actions[0].window_transition, undefined, 'a transition repeated on its step is dropped');
-  assert.deepEqual(value.observation.elements, [
-    { mark: 1, ref: 's1:e0', role: 'Button', name: 'OK' },
-    { mark: 2, ref: 's1:e1', source: 'msaa', role: 'Edit', name: 'Name', enabled: false },
-  ]);
+  assert.deepEqual(value.observation.elements, ['#1 [s1:e0] Button "OK"', '#2 [s1:e1] Edit "Name" source=msaa disabled']);
   const capture = JSON.parse(
     canonicalComputerResultText(
       JSON.stringify({ ok: true, action: 'capture', elements: [{ ref: 's2:e0', source: 'ocr', enabled: true }] }),
       { action: 'capture', input: { window_id: 'hwnd:0x1' } }
     )
   );
-  assert.deepEqual(capture.elements, [{ ref: 's2:e0', source: 'ocr' }]);
+  assert.deepEqual(capture.elements, ['[s2:e0] Unknown "" source=ocr']);
+});
+
+test('computer elements and OCR text reach the model one line each', () => {
+  const value = JSON.parse(
+    canonicalComputerResultText(
+      JSON.stringify({
+        ok: true,
+        action: 'capture',
+        elements: [
+          {
+            mark: 1,
+            ref: 's2:e0',
+            source: 'uia',
+            role: 'Button',
+            name: '최소화',
+            value: '',
+            state: '',
+            enabled: true,
+            x: 1196,
+            y: 1,
+            width: 28,
+            height: 21,
+            center_x: 1210,
+            center_y: 12,
+            actions: ['click', 'invoke'],
+            has_keyboard_focus: false,
+            in_document: false,
+            ancestors: [],
+            bounds: [1196, 1, 28, 21],
+            center: [1210, 12],
+            screen_bounds: [2145, 24, 45, 34],
+          },
+          {
+            mark: 2,
+            ref: 's2:e1',
+            source: 'uia',
+            role: 'Edit',
+            name: 'Find what',
+            value: 'needle',
+            state: 'selected=False;expanded=LeafNode',
+            enabled: true,
+            has_keyboard_focus: true,
+            access_key: 'Alt+N',
+            bounds: [10, 20, 300, 24],
+            actions: ['click', 'set_value'],
+          },
+          {
+            mark: 3,
+            ref: 'ocr:frame-2:3',
+            source: 'ocr',
+            role: 'Text',
+            name: 'Agent:',
+            state: 'ocr',
+            enabled: true,
+            bounds: [115, 22, 35, 11],
+            actions: ['click'],
+          },
+          { mark: 4, ref: 's2:e2', role: 'CheckBox', name: 'Wrap', state: '사용할 수 없음', enabled: false, bounds: [1, 2, 3, 4] },
+        ],
+        ocr: {
+          ok: true,
+          mode: 'fallback',
+          lines: [{ line: 0, text: 'GPT-6 Medium', x: 44, y: 78, width: 76, height: 7 }],
+          words: [{ mark: 9, text: 'GPT-6', line: 0, x: 44, y: 78, width: 30, height: 7, center_x: 59, center_y: 81 }],
+        },
+      }),
+      { action: 'capture', input: { window_id: 'hwnd:0x1', mode: 'som' } }
+    )
+  );
+  assert.deepEqual(value.elements, [
+    '#1 [s2:e0] Button "최소화" @1196,1,28,21 click,invoke',
+    '#2 [s2:e1] Edit "Find what" value="needle" state=selected=False;expanded=LeafNode focused @10,20,300,24 click,set_value access_key=Alt+N',
+    '#3 [ocr:frame-2:3] Text "Agent:" source=ocr @115,22,35,11 click',
+    '#4 [s2:e2] CheckBox "Wrap" state="사용할 수 없음" disabled @1,2,3,4',
+  ]);
+  assert.deepEqual(value.ocr.lines, ['"GPT-6 Medium" @44,78,76,7 line=0']);
+  assert.deepEqual(value.ocr.words, ['#9 "GPT-6" @44,78,30,7 line=0']);
 });
 
 test('computer errors return one deterministic recovery instead of permission guesses', () => {

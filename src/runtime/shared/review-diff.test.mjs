@@ -4,7 +4,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { boundReviewPatch } from './review-diff.mjs';
-import { _resetTurnSnapshotForTest, getTurnReviewDiff, recordTurnDiffChanges } from './turn-snapshot.mjs';
+import {
+  _resetTurnSnapshotForTest,
+  beginAgentTurnReview,
+  beginTurnSnapshot,
+  completeAgentTurnReview,
+  completeTurnSnapshot,
+  getTurnReviewDiff,
+  recordTurnDiffChanges,
+} from './turn-snapshot.mjs';
 import { executeBuiltinTool } from '../agent/orchestrator/tools/builtin.mjs';
 import { executePatchTool, takeApplyPatchUiDiff } from '../agent/orchestrator/tools/patch.mjs';
 import { parseUnifiedDiff } from '../../../apps/desktop/src/renderer/renderer-logic.mjs';
@@ -50,6 +58,42 @@ test('tracked review over two million characters retains large and subsequent fi
     assert.match(patch, /-old\n\+new\n/);
   } finally {
     _resetTurnSnapshotForTest();
+  }
+});
+
+test('a completion wake continues the user turn review with its Lead edits and worker diffs', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mixdog-turn-wake-'));
+  const lead = 'wake-lead';
+  try {
+    await beginTurnSnapshot(root, lead, { checkpointId: 'prompt-1' });
+    const worker = beginAgentTurnReview(lead, 'wake-worker', { tag: 'split' });
+    recordTurnDiffChanges(lead, [
+      { path: join(root, 'lead.txt'), displayPath: 'lead.txt', before: 'a\n', after: 'b\n' },
+    ]);
+    await completeTurnSnapshot(lead);
+    recordTurnDiffChanges('wake-worker', [
+      { path: join(root, 'worker.txt'), displayPath: 'worker.txt', before: null, after: 'w\n' },
+    ]);
+    completeAgentTurnReview(worker);
+
+    await beginTurnSnapshot(root, lead, { continueTurn: true });
+    recordTurnDiffChanges(lead, [{ path: join(root, 'fix.txt'), displayPath: 'fix.txt', before: 'x\n', after: 'y\n' }]);
+    const review = await getTurnReviewDiff(root, lead);
+    assert.equal(review.checkpointId, 'prompt-1');
+    assert.deepEqual(
+      parseUnifiedDiff(review.patch).map((file) => file.newFile.fileName),
+      ['fix.txt', 'lead.txt']
+    );
+    assert.deepEqual(
+      review.agents.map((agent) => [agent.tag, parseUnifiedDiff(agent.patch).map((file) => file.newFile.fileName)]),
+      [['split', ['worker.txt']]]
+    );
+
+    await beginTurnSnapshot(root, lead, { checkpointId: 'prompt-2' });
+    assert.deepEqual((await getTurnReviewDiff(root, lead)).agents, []);
+  } finally {
+    _resetTurnSnapshotForTest();
+    await rm(root, { recursive: true, force: true });
   }
 });
 

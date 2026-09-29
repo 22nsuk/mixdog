@@ -22,7 +22,11 @@ export const FIELD_ALIASES = Object.freeze({
   // align_shapes takes align and distribute_shapes takes direction: the same
   // gesture, named after two different things. The word the operation is called
   // by reaches its field too.
-  pptx: { set_hyperlink: { url: 'address' }, distribute_shapes: { distribute: 'direction' } },
+  pptx: {
+    set_hyperlink: { url: 'address' },
+    distribute_shapes: { distribute: 'direction' },
+    set_table_cell_style: { column: 'col' },
+  },
 });
 
 // Font keys drifted apart between property sets of the same format: a Word run

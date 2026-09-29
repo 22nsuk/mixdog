@@ -48,9 +48,9 @@
   height: 24px;
   padding: 0 4px;
   border: 2px solid currentColor;
-  border-radius: 7px;
+  border-radius: var(--mx-radius-md);
   font-style: normal;
-  font-size: 12px;
+  font-size: var(--mx-font-micro);
   font-weight: 650;
   line-height: 1;
 }
@@ -59,7 +59,7 @@
   height: 44px;
   padding: 0 16px;
   border: 0;
-  border-radius: 22px;
+  border-radius: var(--mx-radius-pill);
   color: var(--mx-text);
   background: var(--mx-hover);
   font-size: 15px;
@@ -154,7 +154,7 @@
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
   color: var(--mx-text-muted);
-  font-size: 12px;
+  font-size: var(--mx-font-meta);
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
@@ -364,9 +364,6 @@
 .workbench-side-section-body .session-sidebar-resize {
   display: none;
 }
-.workbench-side-section-body .sidebar-view-section-header[hidden] {
-  display: none;
-}
 .workbench-side-section-body > .utility-dock .utility-dock-header {
   position: relative;
   box-sizing: border-box;
@@ -382,6 +379,9 @@
   font-weight: var(--mx-weight-semibold);
   line-height: var(--mx-line-emphasis);
   letter-spacing: 0;
+  /* A panel title reads like the app destinations beside it (Sessions,
+     Projects), not like the dock's caps label. */
+  text-transform: none;
   cursor: grab;
   user-select: none;
 }
@@ -431,15 +431,3 @@
    (pane-side-dock): a narrow PANE overlays its own panel via the container
    query in pane-layout.css, and the phone keeps its fixed sheet in
    07-mobile-chrome.css. */
-@media (max-width: 760px) {
-  .sidebar-drawer-frame > .workbench-side-panel {
-    /* The frame is `display: contents` in this band, so this percentage
-       resolves against the WORKBENCH, not the drawer: the panel spanned the
-       whole window minus the rail. Cap it on the shared sheet grammar, rail
-       width included, so the drawer stays a sheet over the thread. */
-    width: min(calc(100% - 48px), calc(var(--mx-side-sheet-width) - 48px));
-    min-width: 0;
-    max-width: none;
-    flex: 1 1 auto;
-  }
-}

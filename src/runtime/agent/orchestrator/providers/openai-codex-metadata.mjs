@@ -5,15 +5,12 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { cleanString } from '../../../shared/clean.mjs';
 import { getPluginData } from '../config.mjs';
 import { activateCodexTurnState } from './openai-turn-state.mjs';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 let _installationId = null;
-
-function _cleanMetaString(value) {
-  return typeof value === 'string' ? value.trim() : '';
-}
 
 function _codexUuidV7(value) {
   const clean = String(value || '')
@@ -57,13 +54,13 @@ function _sessionStartedAtUnixMs(sessionId) {
 }
 
 function _codexRequestKind(sendOpts, sessionId) {
-  const explicit = _cleanMetaString(sendOpts?.requestKind || sendOpts?.codexRequestKind);
+  const explicit = cleanString(sendOpts?.requestKind || sendOpts?.codexRequestKind);
   if (explicit) return explicit;
   return String(sessionId || '').includes(':compact') ? 'compaction' : 'turn';
 }
 
 function _codexInstallationId(sendOpts) {
-  const explicit = _cleanMetaString(
+  const explicit = cleanString(
     sendOpts?.installationId || sendOpts?.codexInstallationId || process.env.MIXDOG_CODEX_INSTALLATION_ID
   ).toLowerCase();
   if (UUID_RE.test(explicit)) return explicit;
@@ -100,7 +97,7 @@ function _codexInstallationId(sendOpts) {
 // replay the first turn's identity.
 function _codexMetadataBase(_entry, { poolKey, cacheKey, sendOpts, handshake = false } = {}) {
   const rawSessionId =
-    _cleanMetaString(
+    cleanString(
       sendOpts?.codexSessionId ||
         sendOpts?.session?.codexWireSessionId ||
         sendOpts?.session?.codexSessionId ||
@@ -108,7 +105,7 @@ function _codexMetadataBase(_entry, { poolKey, cacheKey, sendOpts, handshake = f
         cacheKey
     ) || 'mixdog-session';
   const rawThreadId =
-    _cleanMetaString(
+    cleanString(
       sendOpts?.threadId ||
         sendOpts?.codexThreadId ||
         sendOpts?.session?.codexWireSessionId ||
@@ -128,10 +125,8 @@ function _codexMetadataBase(_entry, { poolKey, cacheKey, sendOpts, handshake = f
   // the real turn, so the handshake is always identified as a prewarm rather
   // than as a live turn.
   const isPrewarm = requestKind === 'prewarm' || handshake === true;
-  const rawExplicitTurnId = _cleanMetaString(sendOpts?.turnId || sendOpts?.codexTurnId || sendOpts?.session?.turnId);
-  const explicitWindowId = _cleanMetaString(
-    sendOpts?.windowId || sendOpts?.codexWindowId || sendOpts?.session?.windowId
-  );
+  const rawExplicitTurnId = cleanString(sendOpts?.turnId || sendOpts?.codexTurnId || sendOpts?.session?.turnId);
+  const explicitWindowId = cleanString(sendOpts?.windowId || sendOpts?.codexWindowId || sendOpts?.session?.windowId);
   const turnId = isPrewarm ? '' : _codexUuidV7(rawExplicitTurnId || `${rawSessionId}:turn`);
   const effectiveRequestKind = isPrewarm ? 'prewarm' : requestKind;
   // Window id is `<thread-id>:<auto-compact window number>`, and that counter
@@ -200,9 +195,9 @@ export function _codexWsCompatibilityHeaders(context = {}) {
   // prefix. Measured 2026-08-22: without the hint, 3 of 8 parallel sessions
   // started with 0 cached tokens and 6 warm calls missed; the run that
   // happened to carry a priority tier (its own routing signal) missed none.
-  const model = _cleanMetaString(context?.model || context?.sendOpts?.model);
+  const model = cleanString(context?.model || context?.sendOpts?.model);
   if (model) {
-    const serviceTier = _cleanMetaString(
+    const serviceTier = cleanString(
       context?.serviceTier || context?.sendOpts?.serviceTier || context?.sendOpts?.service_tier
     );
     headers['x-codex-routing-hint'] = serviceTier ? `model=${model};tier=${serviceTier}` : `model=${model}`;
@@ -213,11 +208,11 @@ export function _codexWsCompatibilityHeaders(context = {}) {
 export function _withCodexWsClientMetadata(frame, entry, enabled, context = {}) {
   if (!enabled || !frame || typeof frame !== 'object') return frame;
   const base = _codexMetadataBase(entry, context);
-  const explicitLogicalTurnId = _cleanMetaString(
+  const explicitLogicalTurnId = cleanString(
     context?.sendOpts?.turnId || context?.sendOpts?.codexTurnId || context?.sendOpts?.session?.turnId
   );
   const logicalTurnId = explicitLogicalTurnId ? _codexUuidV7(explicitLogicalTurnId) : base.turn_id;
-  const turnStateScope = _cleanMetaString(context?.poolKey);
+  const turnStateScope = cleanString(context?.poolKey);
   const metadata = {
     ...base,
     ...(frame.client_metadata && typeof frame.client_metadata === 'object' ? frame.client_metadata : {}),

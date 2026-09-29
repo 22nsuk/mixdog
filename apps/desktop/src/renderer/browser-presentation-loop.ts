@@ -8,8 +8,10 @@ export function createBrowserPresentationLoop(host: {
   schedule(callback: () => void, delay: number): unknown;
   cancel(handle: unknown): void;
   failed(error: unknown): number;
+  /** Cadence override; a natively presented page only needs its metadata. */
+  interval?(): number;
 }) {
-  const interval = 1000 / 60;
+  const displayInterval = 1000 / 60;
   let stopped = false;
   let running = false;
   let timer: unknown;
@@ -31,6 +33,7 @@ export function createBrowserPresentationLoop(host: {
       if (!stopped) delay = host.failed(error);
     } finally {
       running = false;
+      const interval = host.interval?.() ?? displayInterval;
       if (!stopped && host.visible()) schedule(delay ?? Math.max(0, interval - (host.now() - started)));
     }
   }

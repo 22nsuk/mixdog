@@ -15,7 +15,14 @@ const AUTHORED_ADVISORY_SOURCES = new Set([
   'text-metrics',
 ]);
 
-function blocksFinalize(issue, { failOn, authored }) {
+// What a reader sees broken whatever the author meant: a chart or picture over filled cells, or over another drawing,
+// hides them on the page. An authored document's warnings are the model's call, and a financial model passed finalize
+// with its chart laid over the figures it was drawn from.
+const VISIBLE_DEFECT_CODES = new Set(['drawing_covers_cells', 'drawing_overlap']);
+
+export function blocksFinalize(issue, { failOn, authored }) {
+  if (VISIBLE_DEFECT_CODES.has(String(issue?.code || '')) && ['error', 'warning'].includes(String(issue?.severity || '')))
+    return true;
   if (authored && AUTHORED_ADVISORY_SOURCES.has(String(issue?.source || ''))) return false;
   return issue?.severity === 'error' || (failOn === 'warning' && issue?.severity === 'warning');
 }
@@ -67,8 +74,7 @@ export async function reviewForFinalize(session, args, cwd, { timedStep, failOn,
       : await timedStep('review', async () => await qa(session, args, cwd, { reuseRender: true }));
   // A reused preview is the render the caller already received with its token;
   // only pixels this call produced are new evidence worth sending again.
-  const reviewImages =
-    reviewed?.preview?.reused !== true && Array.isArray(reviewed?._images) ? reviewed._images : [];
+  const reviewImages = reviewed?.preview?.reused !== true && Array.isArray(reviewed?._images) ? reviewed._images : [];
   const review = reviewed ? { ...reviewed } : null;
   const pptx = session.format === 'pptx' ? applyPptxAcceptance(session, args, review) : null;
   const documentVisualReview = applyDocumentAcceptance(session, args, review);

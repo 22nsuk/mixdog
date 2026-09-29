@@ -5,7 +5,7 @@ import { parseDocument } from 'yaml';
 export const SKILL_TRIGGER_LISTING_MAX = 100;
 export const SKILL_TRIGGER_LISTING_MIN = 60;
 
-const SKILL_FRONTMATTER_RE =/^(?:\uFEFF)?---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
+const SKILL_FRONTMATTER_RE = /^(?:\uFEFF)?---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
 
 const scalarText = (value, field) => {
   if (typeof value !== 'string') {

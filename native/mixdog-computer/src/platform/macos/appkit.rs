@@ -101,7 +101,10 @@ pub fn screens() -> Vec<(CGRect, CGRect)> {
                 primary_height = frame.size.height;
             }
             let flip = |rect: CGRect| CGRect {
-                origin: CGPoint { x: rect.origin.x, y: primary_height - rect.origin.y - rect.size.height },
+                origin: CGPoint {
+                    x: rect.origin.x,
+                    y: primary_height - rect.origin.y - rect.size.height,
+                },
                 size: rect.size,
             };
             out.push((flip(frame), flip(visible)));

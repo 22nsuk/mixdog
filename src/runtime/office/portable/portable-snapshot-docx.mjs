@@ -280,6 +280,15 @@ function applyDocxStyleFonts(model, styleFonts) {
   }
 }
 
+// A numbering level's format: its numFmt, or 'bullet' when the level shows a literal mark with no %n placeholder.
+// Word saves the document's own bullet list (office-com-host Get-WordBulletTemplate) as decimal with the mark "•",
+// since an outline template cannot take the bullet style; read by numFmt alone, those bullets were numbers.
+export function numberingLevelFormat(levelXml) {
+  const format = /<w:numFmt\b[^>]*\bw:val="([^"]+)"/.exec(levelXml)?.[1] || '';
+  const text = /<w:lvlText\b[^>]*\bw:val="([^"]*)"/.exec(levelXml)?.[1] || '';
+  return format === 'bullet' || (text && !text.includes('%')) ? 'bullet' : format;
+}
+
 // A paragraph's numId names a definition in numbering.xml; the level's
 // number format tells a bullet from a numbered list.
 function applyDocxListKinds(model, numbering) {
@@ -294,7 +303,7 @@ function applyDocxListKinds(model, numbering) {
     /<w:abstractNum\b[^>]*\bw:abstractNumId="(\d+)"[^>]*>([\s\S]*?)<\/w:abstractNum>/g
   )) {
     for (const level of abstract[2].matchAll(/<w:lvl\b[^>]*\bw:ilvl="(\d+)"[^>]*>([\s\S]*?)<\/w:lvl>/g)) {
-      formats.set(`${abstract[1]}:${level[1]}`, /<w:numFmt\b[^>]*\bw:val="([^"]+)"/.exec(level[2])?.[1] || '');
+      formats.set(`${abstract[1]}:${level[1]}`, numberingLevelFormat(level[2]));
     }
   }
   for (const paragraph of model.paragraphs) {
@@ -688,11 +697,16 @@ function docxSections(documentXml, relationshipsXml, partText, referenced) {
           path: `/section[${index}]/${location}[${kind}]`,
           kind,
           location,
-          text: part ? partText.get(part) ?? '' : '',
+          text: part ? (partText.get(part) ?? '') : '',
           ...(linked ? { linkToPrevious: true } : {}),
         });
       }
     }
+    // The columns the text flows through, as set_page columns lays them out: a newsletter's two columns read back as
+    // one section like any other, and nothing said they were there.
+    const cols = /<w:cols\b([^>]*?)\/?>/.exec(sectionXml)?.[1] || '';
+    const columns = Number(/\bw:num="(\d+)"/.exec(cols)?.[1]) || 1;
+    const space = Number(/\bw:space="(\d+)"/.exec(cols)?.[1]);
     return {
       path: `/section[${index}]`,
       index,
@@ -701,6 +715,11 @@ function docxSections(documentXml, relationshipsXml, partText, referenced) {
       bottomMargin: margin('bottom'),
       leftMargin: margin('left'),
       rightMargin: margin('right'),
+      columns,
+      // Word's own spacing when the file names none is half an inch.
+      ...(columns > 1
+        ? { columnSpacing: Number.isFinite(space) ? Math.round((space / TWIPS_PER_POINT) * 100) / 100 : 36 }
+        : {}),
       stories,
     };
   });

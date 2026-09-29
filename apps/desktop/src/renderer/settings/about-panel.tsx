@@ -1,16 +1,24 @@
 import { useEffect, useState } from 'react';
 import type { DesktopApi } from '../../shared/contract';
+import { copyTextToClipboard } from '../text-format';
 import { ActionButton, Group, ResourceRow } from './capability-controls';
 import { readGithubStarred, rememberGithubStarred } from './github-star-storage';
 
 const MIXDOG_REPO_URL = 'https://github.com/tribgames/mixdog';
 const MIXDOG_ISSUES_URL = 'https://github.com/tribgames/mixdog/issues';
+const MIXDOG_SUPPORT_EMAIL = 'support@tribgames.com';
 
 export function AboutPanel() {
   const host = (window as unknown as { mixdogDesktop?: DesktopApi }).mixdogDesktop;
   const [ghReady, setGhReady] = useState(false);
   const [starred, setStarred] = useState(readGithubStarred);
   const [busy, setBusy] = useState(false);
+  const [emailCopied, setEmailCopied] = useState(false);
+  useEffect(() => {
+    if (!emailCopied) return;
+    const timer = setTimeout(() => setEmailCopied(false), 1500);
+    return () => clearTimeout(timer);
+  }, [emailCopied]);
   useEffect(() => {
     if (readGithubStarred()) return;
     let live = true;
@@ -72,6 +80,26 @@ export function AboutPanel() {
           <ActionButton disabled={busy} onClick={() => open(MIXDOG_ISSUES_URL)}>
             Issues ↗
           </ActionButton>
+        }
+      />
+      <ResourceRow
+        title="Contact support"
+        className="settings-about-row"
+        actions={
+          <>
+            <ActionButton
+              onClick={() =>
+                void copyTextToClipboard(MIXDOG_SUPPORT_EMAIL)
+                  .then(() => setEmailCopied(true))
+                  .catch(() => undefined)
+              }
+            >
+              {emailCopied ? 'Copied' : 'Copy'}
+            </ActionButton>
+            <ActionButton disabled={busy} onClick={() => open(`mailto:${MIXDOG_SUPPORT_EMAIL}`)}>
+              Email ↗
+            </ActionButton>
+          </>
         }
       />
     </Group>

@@ -15,6 +15,20 @@
 .extensions-dialog[data-dialog-width="editor"] {
   --mx-editor-width: 800px;
 }
+/* Height ladder (user: 팝업 상하 최대 크기): short detail cards 480, the
+   list-heavy details 600, Markdown editors 720; the body scrolls past it. */
+.extensions-dialog {
+  --mx-dialog-max-height: 480px;
+}
+.extensions-dialog[data-feature-id="localProvider"],
+.extensions-dialog[data-feature-id="git"],
+.extensions-plugin-detail-dialog {
+  --mx-dialog-max-height: 600px;
+}
+.extensions-skill-dialog,
+.extensions-mcp-dialog {
+  --mx-dialog-max-height: 720px;
+}
 
 /* Identity glyph on the title line: the list row's plate, so the card opens
    as a continuation of the row that was clicked. */

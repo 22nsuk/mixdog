@@ -1,10 +1,19 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
-import { buildDoctorReport, nodeEngineSupport } from './doctor.mjs';
+import { buildDoctorReport, formatDoctorReport, nodeEngineSupport, runDoctorChecks } from './doctor.mjs';
 
 const pkg = JSON.parse(readFileSync(new URL('../../../package.json', import.meta.url), 'utf8'));
 const state = () => ({ provider: 'openai' });
+
+// The local-installation checks read the data folder; keep them off the
+// developer's real ~/.mixdog.
+const dataRoot = mkdtempSync(join(tmpdir(), 'mixdog-doctor-'));
+process.env.MIXDOG_DATA_DIR = join(dataRoot, 'data');
+mkdirSync(process.env.MIXDOG_DATA_DIR);
+writeFileSync(join(process.env.MIXDOG_DATA_DIR, 'mixdog-config.json'), '{}');
 
 // Fixtures follow the runtime contracts, including enabled/activeHere rather
 // than the obsolete disabled field and configuredEvents rather than events.
@@ -69,13 +78,77 @@ test('unknown engine syntax or missing metadata is unverified, never healthy', (
 
 test('healthy report preserves the shared desktop/TUI text contract without speculative Defender advice', async () => {
   const report = await buildDoctorReport(runtime(), state);
-  assert.equal(report.split('\n').length, 10);
-  assert.equal(report.split('\n')[0], 'mixdog doctor — installation health');
+  const lines = report.split('\n');
+  assert.equal(lines.length, 14);
+  assert.equal(lines[0], 'mixdog doctor — installation health');
+  assert.equal(lines.at(-1), '12 ok · 0 warnings · 0 failed');
   assert.equal(reportRow(report, 'mixdog'), '✓ mixdog: v1.0.0 · up to date');
   assert.equal(reportRow(report, 'providers'), '✓ providers: 1 ready · route openai');
   assert.equal(reportRow(report, 'memory'), '✓ memory: installed · enabled · recap enabled');
   assert.equal(reportRow(report, 'hooks'), '✓ hooks: enabled · 0 rules · 0 configured events');
+  assert.equal(reportRow(report, 'config'), '✓ config: mixdog-config.json is valid');
+  assert.doesNotMatch(report, /→/);
   assert.doesNotMatch(report, /Defender|Add-MpPreference|pgdata|core memory available/i);
+});
+
+test('structured rows carry summary counts and the command that fixes each problem', async () => {
+  const result = await runDoctorChecks(
+    runtime({
+      checkForUpdate: async () => ({ currentVersion: '1.0.0', latestVersion: '1.1.0', updateAvailable: true }),
+      getProviderSetup: async () => ({
+        api: [{ id: 'openai', type: 'api-key', enabled: true, authenticated: false }],
+        oauth: [],
+        local: [],
+      }),
+    }),
+    state
+  );
+  const byId = Object.fromEntries(result.checks.map((check) => [check.id, check]));
+  assert.deepEqual(
+    result.checks.map((check) => check.id),
+    ['mixdog', 'node', 'providers', 'mcp', 'memory', 'channels', 'skills', 'plugins', 'hooks', 'data', 'config', 'logs']
+  );
+  assert.deepEqual(result.summary, { ok: 10, warn: 1, fail: 1 });
+  assert.deepEqual(byId.mixdog.fix, { command: '/update' });
+  assert.equal(byId.providers.level, 'fail');
+  assert.deepEqual(byId.providers.fix, { command: '/providers' });
+  assert.equal(byId.hooks.fix, undefined);
+  const report = formatDoctorReport(result);
+  assert.match(report, /✗ providers: route openai has no auth · 0 ready\n {4}→ run \/providers\n/);
+  assert.equal(report.split('\n').at(-1), '10 ok · 1 warnings · 1 failed');
+});
+
+test('a stalled check times out without holding back the others', async () => {
+  const started = Date.now();
+  const result = await runDoctorChecks(runtime({ mcpStatus: () => new Promise(() => {}) }), state, {
+    timeoutMs: 50,
+  });
+  assert.ok(Date.now() - started < 2000);
+  const mcp = result.checks.find((check) => check.id === 'mcp');
+  assert.equal(mcp.level, 'warn');
+  assert.match(mcp.detail, /^no response within/);
+  assert.equal(result.checks.find((check) => check.id === 'providers').level, 'ok');
+});
+
+test('local installation checks cover a missing folder, a broken config and runaway logs', async () => {
+  const missing = await runDoctorChecks(runtime(), state, { dataDir: join(dataRoot, 'absent') });
+  const missingById = Object.fromEntries(missing.checks.map((check) => [check.id, check]));
+  assert.equal(missingById.data.level, 'fail');
+  assert.match(missingById.data.detail, /^not found · /);
+  assert.equal(missingById.config.level, 'ok');
+  assert.equal(missingById.logs.level, 'fail');
+
+  const broken = join(dataRoot, 'broken');
+  mkdirSync(broken);
+  writeFileSync(join(broken, 'mixdog-config.json'), '{"channels": ');
+  for (let index = 0; index < 301; index++) writeFileSync(join(broken, `mcp-debug.${index}.1.log`), '');
+  const result = await runDoctorChecks(runtime(), state, { dataDir: broken });
+  const byId = Object.fromEntries(result.checks.map((check) => [check.id, check]));
+  assert.equal(byId.data.level, 'ok');
+  assert.equal(byId.config.level, 'fail');
+  assert.ok(byId.config.fix?.hint);
+  assert.equal(byId.logs.level, 'warn');
+  assert.equal(byId.logs.detail, '301 log files in the data folder (over 300)');
 });
 
 test('missing, null, empty and rejected accessors never become healthy defaults', async () => {

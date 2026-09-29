@@ -100,6 +100,8 @@ export const CATALOG = {
         'set_font',
         'set_document_font',
         'add_image',
+        // Drawn as a picture before either backend sees it (office-actions-batch withDocumentCharts).
+        'add_chart',
         'set_header_footer',
         'set_page',
         'add_page_numbers',
@@ -164,6 +166,7 @@ export const CATALOG = {
         'columnAlignments',
         'repeatHeader',
         'headerBold',
+        'headerRows',
         'keepWithNext',
       ],
       tableCell: [
@@ -183,6 +186,7 @@ export const CATALOG = {
         'spacingBefore',
         'spacingAfter',
         'lineSpacing',
+        'lineSpacingRule',
         'keepWithNext',
         'keepTogether',
         'widowControl',
@@ -195,6 +199,8 @@ export const CATALOG = {
         'tabStops',
         'listKind',
         'listLevel',
+        'listContinue',
+        'listNumbering',
       ],
       comment: ['author', 'initials', 'date', 'text', 'anchoredText', 'resolved', 'replies'],
       contentControl: ['tag', 'title', 'lock', 'text'],
@@ -379,6 +385,7 @@ export const CATALOG = {
         'use_template_page',
         'replace_image',
         'set_table_data',
+        'set_table_cell_style',
         'fit_text',
         'add_chart',
         'set_chart_data',
@@ -475,6 +482,7 @@ export const CATALOG = {
         'bodyRowHeight',
         'columnWidths',
       ],
+      tableCell: ['fillColor', 'horizontalAlignment', 'verticalAlignment', 'fontName', 'fontSize', 'bold', 'italic', 'color'],
       template: ['tokens', 'strict'],
       authoring: [
         'shapeType',
@@ -607,4 +615,6 @@ export const CATALOG = {
 };
 
 export const BACKENDS = new Set(['microsoft-office-com', 'mixdog-ooxml', 'mixdog-tabular', 'mixdog-pdf']);
-export const VIRTUAL_OPERATIONS = new Set(['compose_document', 'compose_sheet', 'use_template_page']);
+// Operations the runtime turns into others before a backend sees them; a `format:operation` entry is virtual in that
+// format alone (a Word chart is drawn as a picture, while a sheet's or a slide's chart is the application's own).
+export const VIRTUAL_OPERATIONS = new Set(['compose_document', 'compose_sheet', 'use_template_page', 'docx:add_chart']);

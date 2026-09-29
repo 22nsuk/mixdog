@@ -16,6 +16,7 @@
 import { access, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { isPidAlive } from '../../../../../shared/pid-liveness.mjs';
 import { displayShellCommand } from '../../../../../shared/shell-display.mjs';
 
 // A record whose owner process is gone is garbage. Age alone never deletes a
@@ -35,16 +36,6 @@ function dataDir() {
 
 function jobsDir() {
   return join(dataDir(), 'shell-jobs');
-}
-
-export function pidAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error?.code === 'EPERM';
-  } // EPERM = alive, not ours
 }
 
 function validJobId(jobId) {
@@ -130,7 +121,7 @@ async function sweepOrphanRecords(dir) {
       await removeJobFiles(name, jobId);
       continue;
     }
-    if (pidAlive(ownerByJob.get(jobId) || 0)) continue;
+    if (isPidAlive(ownerByJob.get(jobId) || 0)) continue;
     // A brand-new record whose owner marker has not landed yet is not an
     // orphan; only settled-and-abandoned records are swept.
     if (mtimeMs >= cutoff) continue;

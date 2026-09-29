@@ -1,16 +1,28 @@
 // Symbol search / callers / callees / references / impact query layer over a
 // built graph. Pure over {graph,cwd,args}; owns no cache state.
 import { readFile } from 'node:fs/promises';
-import { existsSync, statSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { resolve as pathResolve, dirname as pathDirname, basename as pathBasename } from 'node:path';
 import { normalizeOutputPath } from '../builtin/path-utils.mjs';
 import { codeGraphSourceIoAdmission } from '../../../../shared/tool-workload-gates.mjs';
-import { _getSourceTextForNode, _getSourceLinesForNode, _getMaskedLinesForNode, _graphRel } from './source-access.mjs';
+import {
+  _getSourceTextForNode,
+  _getSourceLinesForNode,
+  _getMaskedLinesForNode,
+  _graphRel,
+  _isExistingFile,
+} from './source-access.mjs';
 import { _unicodeBoundaryPattern, _lookupCandidateNodes, _symbolLine } from './symbol-index.mjs';
 import { CODE_GRAPH_MAX_FILES } from './constants.mjs';
 import { _symbolPathForSymbol } from './text-columns.mjs';
 import { _keywordSymbolSortKey, _tokenizeKeyword, _keywordMatchesSymbolName } from './keyword-match.mjs';
-import { _astCalleeCallSites, _astCallDisplayCol, _astImportedRels, _astRelInScope } from './ast-calls.mjs';
+import {
+  _astCalleeCallSites,
+  _astCallDisplayCol,
+  _astImportedRels,
+  _astRelInScope,
+  _nodeInAstScope,
+} from './ast-calls.mjs';
 
 export {
   _formatRelated,
@@ -538,12 +550,6 @@ function _nativeSymbolHit(node, sym) {
   };
 }
 
-// A file/directory anchor is a SCOPE for every symbol mode, symbol_search
-// included — it used to scan the whole graph and ignore the anchor entirely.
-function _nodeInGraphScope(node, fileRel, scopeRelPrefix) {
-  return _astRelInScope(node?.rel, fileRel, scopeRelPrefix);
-}
-
 function _collectNativeKeywordSymbolEntries(
   graph,
   keyword,
@@ -555,7 +561,7 @@ function _collectNativeKeywordSymbolEntries(
   const byName = new Map();
   for (const node of graph?.nodes?.values?.() || []) {
     if (language && node.lang !== language) continue;
-    if (!_nodeInGraphScope(node, fileRel, scopeRelPrefix)) continue;
+    if (!_nodeInAstScope(node, fileRel, scopeRelPrefix)) continue;
     const symbols = Array.isArray(node?.symbols) ? node.symbols : [];
     if (!symbols.length) continue;
     for (const sym of symbols) {
@@ -654,14 +660,6 @@ function _specifierCandidates(abs) {
   ];
 }
 
-function _isExistingFile(abs) {
-  try {
-    return statSync(abs).isFile();
-  } catch {
-    return false;
-  }
-}
-
 // Relative specifiers only: a bare package name (or an unresolved TS path
 // alias) is not a file of this project, so there is nothing to point at.
 function _specifierTarget(graph, node, specifier) {
@@ -695,7 +693,7 @@ export function _declarationOutsideScope(
   let viaImport = null;
   let unresolvedSpecifier = '';
   for (const node of graph.nodes.values()) {
-    if (!_nodeInGraphScope(node, fileRel, scopeRelPrefix)) continue;
+    if (!_nodeInAstScope(node, fileRel, scopeRelPrefix)) continue;
     const specifier = _importedSpecifierForSymbol(graph, node, name);
     if (!specifier) continue;
     const target = _specifierTarget(graph, node, specifier);
@@ -721,7 +719,7 @@ export function _declarationOutsideScope(
     if (!viaImport) viaImport = { rel: target.rel, abs: target.abs, viaImport: true, line: 0, lang: '', facts: '' };
   }
   const outside = _findSymbolHits(graph, name, { language }).filter(
-    (hit) => hit.declarationLike && !_nodeInGraphScope({ rel: hit.rel }, fileRel, scopeRelPrefix)
+    (hit) => hit.declarationLike && !_nodeInAstScope({ rel: hit.rel }, fileRel, scopeRelPrefix)
   );
   if (outside.length) {
     const hit = outside[0];

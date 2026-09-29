@@ -244,6 +244,18 @@ function activityVerbPool(): string[] {
   return t('Thinking') === 'Thinking' ? (SPINNER_VERBS as string[]) : LOCALIZED_ACTIVITY_VERBS;
 }
 
+/** Does a running command (no turn) paint the activity band? A session
+ *  resume — including the quiet viewer-follow re-resume, which carries no
+ *  status — paints nothing (LiveActivity returns null for it), so the thread
+ *  must not reserve the band's 24px for it either: first entry into a stored
+ *  session flashed an empty band under the settled tail and bounced the whole
+ *  transcript 36px up and back (user: 세션 처음 들어갈 때 위아래로 떨린다). */
+export function commandShowsActivity(snapshot: Snapshot): boolean {
+  if (snapshot.spinner && snapshot.spinner.active !== false) return true;
+  const command = snapshot.commandStatus && snapshot.commandStatus.active !== false ? snapshot.commandStatus : null;
+  return Boolean(command) && String(command?.mode || '') !== 'resuming';
+}
+
 export function LiveActivity({
   snapshot,
   optimisticStartedAt = 0,

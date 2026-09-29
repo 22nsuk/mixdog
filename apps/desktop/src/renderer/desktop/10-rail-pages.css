@@ -23,87 +23,6 @@
   display: flex;
   flex-direction: column;
 }
-.sidebar-view-section[data-active="false"] {
-  display: none;
-}
-.sidebar-view-section[data-active="true"][data-sectioned="false"],
-.sidebar-view-section[data-active="true"][data-sectioned="false"] > .sidebar-view-section-body {
-  display: contents;
-}
-.session-sidebar-panels:has(.sidebar-view-section[data-active="true"][data-sectioned="true"]) {
-  overflow: hidden;
-  padding-block: 0;
-}
-.sidebar-view-section[data-active="true"][data-sectioned="true"] {
-  display: flex;
-  flex: 1 1 0;
-  min-height: 34px;
-  flex-direction: column;
-  overflow: hidden;
-  border-bottom: 1px solid var(--mx-border-muted);
-}
-.sidebar-view-section[data-active="true"][data-sectioned="true"]:last-of-type {
-  border-bottom: 0;
-}
-.sidebar-view-section[data-sectioned="true"][data-collapsed="true"] {
-  flex: 0 0 34px;
-}
-.sidebar-view-section-header {
-  min-width: 0;
-  height: 34px;
-  flex: 0 0 34px;
-  display: flex;
-  align-items: center;
-  padding: 0 2px;
-  color: var(--mx-text-soft);
-  background: var(--mx-window-band);
-}
-.sidebar-view-section[data-drop-over="true"] > .sidebar-view-section-header {
-  color: var(--mx-text);
-  box-shadow: inset 0 0 0 1px var(--mx-focus);
-}
-.sidebar-view-section-toggle {
-  min-width: 0;
-  flex: 1;
-  height: 100%;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 0 4px;
-  border: 0;
-  color: inherit;
-  background: transparent;
-  font: inherit;
-  font-size: var(--mx-font-item);
-  font-weight: var(--mx-weight-medium);
-  text-align: left;
-  cursor: pointer;
-}
-.sidebar-view-section-toggle > span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.sidebar-view-section-actions {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-}
-.sidebar-view-section-body {
-  position: relative;
-  min-height: 0;
-  flex: 1 1 auto;
-  overflow: auto;
-}
-.sidebar-view-section[data-collapsed="true"] > .sidebar-view-section-body {
-  display: none;
-}
-.sidebar-view-section-body > .stable-takeover-surface {
-  position: relative;
-  inset: auto;
-  min-height: 100%;
-}
 .session-sidebar-panels .stable-takeover-surface {
   width: 100%;
 }
@@ -136,7 +55,6 @@
 }
 /* Resource rows reserve one fixed leading column for a semantic icon or live
    status, so labels and trailing chevrons share the same axes across panels. */
-.session-sidebar-panels .projects-row-icon,
 .session-sidebar-panels .sidebar-resource-icon {
   width: 16px;
   height: 16px;
@@ -180,7 +98,7 @@
   cursor: grabbing;
 }
 .session-sidebar-panels .schedules-row[data-reordering="true"] {
-  opacity: 0.48;
+  opacity: var(--mx-op-dim);
 }
 .session-sidebar-panels .schedules-row[data-drop-position="before"] {
   box-shadow:
@@ -226,8 +144,9 @@
 /* Hover is a background wash only — bumping the inset ring to the -active
    tint made an outline flash in/out on every pass (user: 호버하면 불필요한
    윤곽선이 나왔다 사라짐). The -active ring is reserved for persistent
-   states (.selected) and real input focus. */
-.session-sidebar-panels .schedules-row:not(.workflows-model-row):hover {
+   states (.selected) and real input focus. The doubled class keeps the wash
+   one step above .selected, so a hovered selected card still shows it. */
+.session-sidebar-panels .schedules-row.schedules-row:hover {
   background: var(--mx-hover);
 }
 .session-sidebar-panels .schedules-row.selected {
@@ -442,6 +361,20 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* A group with work in progress shimmers its session name (user: 돌고있는거
+   강조애니 — 세션네임에) with the shared comet in 22-markdown.css. The
+   shimmer spans and the comet's overlay copy go block so a long name still
+   ellipsizes like the plain heading. */
+.utility-dock .agent-session-heading h2 [data-component="text-shimmer"],
+.utility-dock .agent-session-heading h2 [data-slot="text-shimmer-char"],
+.utility-dock .agent-session-heading h2 [data-slot="text-shimmer-char"]::after {
+  min-width: 0;
+  max-width: 100%;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .utility-dock .agent-session-chevron {
   width: 12px;
   height: 12px;
@@ -557,7 +490,7 @@
 /* The row keeps its click cursor — opening is still the primary gesture — and
    only fades while it is being dragged into the workspace. */
 .utility-dock .agent-activity-page .agent-pool-row[data-dragging="true"] {
-  opacity: 0.48;
+  opacity: var(--mx-op-dim);
 }
 .utility-dock .agent-activity-page .agent-pool-heading {
   display: flex;
@@ -665,7 +598,6 @@
   display: none;
 }
 .session-sidebar .task-link,
-.session-sidebar .projects-link,
 .session-sidebar .session-row {
   --session-row-action-surface: var(--mx-window-band);
   position: relative;
@@ -869,15 +801,13 @@
 .session-row.editing {
   padding: 0 var(--mx-rail-gutter) 0 0;
 }
-.session-sidebar .task-link,
-.session-sidebar .projects-link {
+.session-sidebar .task-link {
   font-size: var(--mx-font-item);
   font-weight: var(--mx-weight-regular);
   line-height: var(--mx-line-ui);
   cursor: pointer;
 }
 .session-sidebar .task-link:hover,
-.session-sidebar .projects-link:hover,
 .session-sidebar .session-row:hover {
   --session-row-action-surface: var(--mx-bg-layer-1);
   color: var(--mx-text);
@@ -889,28 +819,16 @@
   background: var(--mx-pressed);
   box-shadow: inset 0 0 0 0.5px var(--mx-rail-item-outline-active);
 }
-/* Primary-nav selection mirror: the surface that owns the screen renders its
-   nav button with the same selected tone as a chosen session row. */
-.session-sidebar .projects-link.selected {
-  --session-row-action-surface: var(--mx-bg-layer-2);
-  color: var(--mx-text);
-  background: var(--mx-pressed);
-}
 /* Light rows: translucent hover/pressed backgrounds under OPAQUE action
    gradients rendered a visible rectangle around the row actions. Use opaque
    tones (light interaction tokens) and keep the action surface identical to
    the row surface. */
 :root[data-mixdog-theme="light"] .session-sidebar .task-link:hover,
-:root[data-mixdog-theme="light"] .session-sidebar .projects-link:hover,
 :root[data-mixdog-theme="light"] .session-sidebar .session-row:hover {
   --session-row-action-surface: var(--mx-hover-opaque);
   background: var(--mx-hover-opaque);
 }
 :root[data-mixdog-theme="light"] .session-sidebar .session-row.selected {
-  --session-row-action-surface: var(--mx-pressed-opaque);
-  background: var(--mx-pressed-opaque);
-}
-:root[data-mixdog-theme="light"] .session-sidebar .projects-link.selected {
   --session-row-action-surface: var(--mx-pressed-opaque);
   background: var(--mx-pressed-opaque);
 }
@@ -1019,17 +937,6 @@
   font-weight: var(--mx-weight-regular);
   line-height: var(--mx-line-meta);
 }
-/* "Show more" is a tertiary pagination affordance, not a heading: it drops
-   OUT of the category tier entirely — item size, regular weight, muted ink —
-   so it recedes under the rows it extends (importance = ink + weight). */
-.sidebar-recent-heading.session-list-more {
-  color: var(--mx-text-muted);
-  font-size: var(--mx-font-ui);
-  font-weight: var(--mx-weight-regular);
-}
-.sidebar-recent-heading.session-list-more:hover {
-  color: var(--mx-text);
-}
 /* AFTER the base heading rules on purpose: the collapsible variant must win
    order-dependent overrides. Same CATEGORY tier as the base heading above. */
 .sidebar-recent-heading.sidebar-heading-toggle {
@@ -1092,70 +999,6 @@
   font-weight: var(--mx-weight-regular);
   line-height: var(--mx-line-ui);
 }
-.sidebar-section-heading {
-  min-width: 0;
-  height: 32px;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-}
-.sidebar-section-heading {
-  margin-top: 2px;
-}
-.sidebar-section-toggle,
-.sidebar-section-action {
-  border: 0;
-  color: var(--mx-text-faint);
-  background: transparent;
-}
-.sidebar-section-toggle {
-  min-width: 0;
-  flex: 1;
-  height: 32px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0;
-  border-radius: var(--mx-radius-md);
-  text-align: left;
-}
-/* Section heads are CATEGORY tier too: they used to render 13/400 muted —
-   smaller AND quieter than the rows underneath, the one inversion the rail
-   ladder forbids. */
-.sidebar-section-toggle {
-  color: var(--mx-text);
-}
-.sidebar-section-toggle > span {
-  font-size: var(--mx-font-category);
-  font-weight: var(--mx-weight-semibold);
-  line-height: var(--mx-line-ui);
-  letter-spacing: 0;
-}
-.sidebar-section-toggle:hover,
-.sidebar-section-action:hover,
-.sidebar-section-toggle:focus-visible,
-.sidebar-section-action:focus-visible {
-  color: var(--mx-icon);
-  background: var(--mx-hover);
-}
-.sidebar-section-action {
-  width: 28px;
-  height: 28px;
-  flex: 0 0 28px;
-  display: grid;
-  place-items: center;
-  border-radius: var(--mx-radius-md);
-}
-.sidebar-section-action {
-  opacity: 0;
-  pointer-events: none;
-}
-.sidebar-section-heading:hover .sidebar-section-action,
-.sidebar-section-heading:focus-within .sidebar-section-action,
-.sidebar-section-action:focus-visible {
-  opacity: 1;
-  pointer-events: auto;
-}
 .session-sidebar .recent-session-list {
   padding: 0;
 }
@@ -1175,10 +1018,4 @@
   font-size: var(--mx-font-ui);
   font-weight: var(--mx-weight-regular);
   line-height: var(--mx-line-ui);
-}
-.sidebar-section-loading {
-  height: 31px;
-  min-height: 31px;
-  padding-top: 5px;
-  padding-bottom: 6px;
 }

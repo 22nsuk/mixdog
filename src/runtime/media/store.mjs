@@ -423,19 +423,60 @@ function openWithOs(path, options) {
   return true;
 }
 
+function discardAssetFiles(entry) {
+  const path = storedAssetPath(entry.file);
+  try {
+    if (path) unlinkSync(path);
+  } catch {}
+  removeRenditions(renditionsDir(), entry.id);
+}
+
 export function deleteMediaAsset(id) {
   ensureDirs();
   let removed = false;
   mutateIndex((assets) => {
     const entry = assets.find((row) => row.id === id);
     if (!entry) return null;
-    const path = storedAssetPath(entry.file);
-    try {
-      if (path) unlinkSync(path);
-    } catch {}
-    removeRenditions(renditionsDir(), id);
+    discardAssetFiles(entry);
     removed = true;
     return assets.filter((row) => row.id !== id);
   });
   return { id, removed };
+}
+
+/**
+ * Bulk Studio cleanup. Filters AND together, and one selector (ids, before,
+ * missing, all) is required so an empty request can never wipe the gallery.
+ * `dryRun` answers the matching ids without deleting: the Studio confirms that
+ * exact list, then deletes it by id.
+ */
+export function deleteMediaAssets({ ids, kind = null, before, missing = false, all = false, dryRun = false } = {}) {
+  const idSet = Array.isArray(ids) ? new Set(ids.map(String)) : null;
+  const cutoff = Number(before);
+  const hasCutoff = Number.isFinite(cutoff) && cutoff > 0;
+  if (!idSet && !hasCutoff && !missing && !all) {
+    throw new Error('deleteMediaAssets needs ids, before, missing, or all');
+  }
+  ensureDirs();
+  const matches = (entry) => {
+    if (kind && entry.kind !== kind) return false;
+    if (idSet && !idSet.has(entry.id)) return false;
+    if (hasCutoff && !(Number(entry.createdAt || 0) < cutoff)) return false;
+    if (missing) {
+      const path = storedAssetPath(entry.file);
+      if (path && existsSync(path)) return false;
+    }
+    return true;
+  };
+  if (dryRun) return { ids: readIndex().filter(matches).map((entry) => entry.id) };
+  let removed = [];
+  mutateIndex((assets) => {
+    const doomed = assets.filter(matches);
+    if (!doomed.length) return null;
+    for (const entry of doomed) discardAssetFiles(entry);
+    removed = doomed.map((entry) => entry.id);
+    const gone = new Set(removed);
+    return assets.filter((entry) => !gone.has(entry.id));
+  });
+  return { ids: removed };
 }

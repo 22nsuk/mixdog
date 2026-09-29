@@ -1,19 +1,15 @@
 import { READ_LINE_NO_SEP } from '../../../../shared/read-row-numbers.mjs';
 import { mergeReadRanges } from './read-ranges.mjs';
-import { TOOL_OUTPUT_MAX_BYTES } from './tool-output-limit.mjs';
+import { TOOL_OUTPUT_MAX_BYTES, positiveEnvInt } from './tool-output-limit.mjs';
 
 // Smart-truncate cap: a no-window read returns the file until this cap, past
 // which head+tail are shown and the model pages the rest with offset (footer
 // says how). Byte budget is the shared TOOL_OUTPUT_MAX_BYTES; line/head/tail
 // stay read-specific. Env-overridable for bench: MIXDOG_READ_MAX_LINES/_HEAD/_TAIL.
-function _readEnvInt(name, fallback) {
-  const v = parseInt(process.env[name], 10);
-  return Number.isFinite(v) && v > 0 ? v : fallback;
-}
 export const SMART_READ_MAX_BYTES = TOOL_OUTPUT_MAX_BYTES;
-export const SMART_READ_MAX_LINES = _readEnvInt('MIXDOG_READ_MAX_LINES', 2000);
-export const SMART_READ_HEAD_LINES = _readEnvInt('MIXDOG_READ_HEAD_LINES', 1200);
-export const SMART_READ_TAIL_LINES = _readEnvInt('MIXDOG_READ_TAIL_LINES', 400);
+export const SMART_READ_MAX_LINES = positiveEnvInt('MIXDOG_READ_MAX_LINES', 2000);
+export const SMART_READ_HEAD_LINES = positiveEnvInt('MIXDOG_READ_HEAD_LINES', 1200);
+export const SMART_READ_TAIL_LINES = positiveEnvInt('MIXDOG_READ_TAIL_LINES', 400);
 const READ_MAX_RENDERED_LINE_CHARS = 2_000;
 // Internal read rows are `<n>→<content>`. The separator MUST be a
 // NON-WHITESPACE glyph so the read parsers never confuse it with the

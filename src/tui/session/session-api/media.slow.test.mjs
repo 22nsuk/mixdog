@@ -21,10 +21,7 @@ async function installVoiceRuntime(root) {
   const activeWhisper = `whisper-${manifest.version}-${variant.id}`;
   const activeFfmpeg = `ffmpeg-${manifest.ffmpeg.version}`;
   const whisperCmd = path.join(root, 'voice-runtime', activeWhisper, variant.executable);
-  const serverCmd = path.join(
-    path.dirname(whisperCmd),
-    `whisper-server${process.platform === 'win32' ? '.exe' : ''}`
-  );
+  const serverCmd = path.join(path.dirname(whisperCmd), `whisper-server${process.platform === 'win32' ? '.exe' : ''}`);
   const ffmpegPath = path.join(root, 'ffmpeg-runtime', activeFfmpeg, manifest.ffmpeg.platforms[key].executable);
   const modelPath = path.join(root, 'voice', 'models', manifest.models.standard.filename);
   for (const file of [whisperCmd, serverCmd, ffmpegPath, modelPath]) {

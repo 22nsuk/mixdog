@@ -82,7 +82,10 @@ fn ioctl(file: &File, request: libc::c_ulong, argument: libc::c_ulong) -> Result
     // or pointer-to-struct arguments of the documented layouts.
     let status = unsafe { libc::ioctl(file.as_raw_fd(), request as _, argument) };
     if status < 0 {
-        return Err(format!("input_unavailable: uinput setup failed: {}", std::io::Error::last_os_error()));
+        return Err(format!(
+            "input_unavailable: uinput setup failed: {}",
+            std::io::Error::last_os_error()
+        ));
     }
     Ok(())
 }
@@ -106,25 +109,60 @@ impl Device {
         }
         for (code, maximum) in [(ABS_X, bounds.2 - 1), (ABS_Y, bounds.3 - 1)] {
             ioctl(&file, UI_SET_ABSBIT, code as _)?;
-            let setup = AbsSetup { code, info: AbsInfo { value: 0, minimum: 0, maximum: maximum.max(1), fuzz: 0, flat: 0, resolution: 0 } };
+            let setup = AbsSetup {
+                code,
+                info: AbsInfo {
+                    value: 0,
+                    minimum: 0,
+                    maximum: maximum.max(1),
+                    fuzz: 0,
+                    flat: 0,
+                    resolution: 0,
+                },
+            };
             ioctl(&file, UI_ABS_SETUP, &setup as *const AbsSetup as _)?;
         }
         let mut name = [0u8; 80];
         let label = b"Mixdog Computer Use";
         name[..label.len()].copy_from_slice(label);
-        let setup = Setup { id: InputId { bustype: 0x06, vendor: 0x6d78, product: 0x0001, version: 1 }, name, ff_effects_max: 0 };
+        let setup = Setup {
+            id: InputId {
+                bustype: 0x06,
+                vendor: 0x6d78,
+                product: 0x0001,
+                version: 1,
+            },
+            name,
+            ff_effects_max: 0,
+        };
         ioctl(&file, UI_DEV_SETUP, &setup as *const Setup as _)?;
         ioctl(&file, UI_DEV_CREATE, 0)?;
         // The compositor needs a moment to open a new input device.
         std::thread::sleep(std::time::Duration::from_millis(400));
-        Ok(Device { file, origin: (bounds.0, bounds.1) })
+        Ok(Device {
+            file,
+            origin: (bounds.0, bounds.1),
+        })
     }
 
     fn emit(&self, kind: u16, code: u16, value: i32) -> Result<(), String> {
-        let event = InputEvent { seconds: 0, microseconds: 0, kind, code, value };
+        let event = InputEvent {
+            seconds: 0,
+            microseconds: 0,
+            kind,
+            code,
+            value,
+        };
         // SAFETY: InputEvent is plain data; its bytes are what the kernel reads.
-        let bytes = unsafe { std::slice::from_raw_parts(&event as *const InputEvent as *const u8, std::mem::size_of::<InputEvent>()) };
-        (&self.file).write_all(bytes).map_err(|error| format!("input_delivery_failed: {error}"))
+        let bytes = unsafe {
+            std::slice::from_raw_parts(
+                &event as *const InputEvent as *const u8,
+                std::mem::size_of::<InputEvent>(),
+            )
+        };
+        (&self.file)
+            .write_all(bytes)
+            .map_err(|error| format!("input_delivery_failed: {error}"))
     }
 
     fn sync(&self) -> Result<(), String> {
@@ -144,7 +182,11 @@ impl Device {
 
     pub fn wheel(&self, clicks: i32, horizontal: bool) -> Result<(), String> {
         // The kernel's wheel is positive upward and rightward.
-        let (code, value) = if horizontal { (REL_HWHEEL, clicks) } else { (REL_WHEEL, -clicks) };
+        let (code, value) = if horizontal {
+            (REL_HWHEEL, clicks)
+        } else {
+            (REL_WHEEL, -clicks)
+        };
         for _ in 0..clicks.unsigned_abs() {
             self.emit(EV_REL, code, value.signum())?;
             self.sync()?;
@@ -191,7 +233,12 @@ pub fn code(key: Key) -> Result<u16, String> {
             },
         },
         Key::Char(glyph) => {
-            const ROWS: [(&str, u16); 4] = [("1234567890-=", 2), ("qwertyuiop[]", 16), ("asdfghjkl;'`", 30), ("\\zxcvbnm,./", 43)];
+            const ROWS: [(&str, u16); 4] = [
+                ("1234567890-=", 2),
+                ("qwertyuiop[]", 16),
+                ("asdfghjkl;'`", 30),
+                ("\\zxcvbnm,./", 43),
+            ];
             if glyph == ' ' {
                 return Ok(57);
             }

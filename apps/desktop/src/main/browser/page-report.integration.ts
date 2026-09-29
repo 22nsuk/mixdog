@@ -81,6 +81,8 @@ export async function runBrowserPageReportScenarios(
     tab: 'console-cap',
   });
   assert.match(cappedErrors.text, /New console errors \(3 of 1[0-9]; call console for the rest\)/);
+  // Logging leaves the document alone, so the report arrives without a snapshot.
+  assert.match(cappedErrors.text, /no new snapshot was taken; refs from p\d+-s\d+ still apply/);
   await run({ action: 'close_tab', tab: 'console-cap' });
   progress('capped console report names its total complete');
 

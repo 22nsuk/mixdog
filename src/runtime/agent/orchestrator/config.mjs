@@ -87,9 +87,9 @@ export function buildDefaultConfig(options = {}) {
   // stored in mixdog-config.json — enabled at runtime from the presence of
   // Mixdog-owned credentials.
   providers['grok-oauth'] = oauthEntry('grok-oauth');
-  // Dev-only providers (Settings → Developer → Providers, or the
-  // MIXDOG_DEV_PROVIDERS env): omitted entirely from the default config while
-  // the option is off so they never surface in settings.
+  // Dev-only providers (Settings → Developer → Providers, one option each):
+  // omitted entirely from the default config while their option is off so
+  // they never surface in settings.
   // Experimental direct Cursor wire provider. It remains disabled unless a
   // Mixdog-owned login or CURSOR_ACCESS_TOKEN is present.
   if (isOAuthProviderAvailable('cursor-oauth')) providers['cursor-oauth'] = oauthEntry('cursor-oauth');

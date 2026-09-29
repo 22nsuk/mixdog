@@ -429,7 +429,7 @@
 }
 .workspace-tab-new-menu {
   position: fixed;
-  z-index: 10020;
+  z-index: calc(var(--mx-menu-z-index) + 10);
   width: 184px;
   padding: 5px;
   border: var(--mx-popup-border);

@@ -16,7 +16,7 @@ import { lstat, open, readdir, readFile, stat, unlink, writeFile } from 'node:fs
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { getPluginData } from '../config.mjs';
-import { normalizeOutputPath } from '../tools/builtin/path-utils.mjs';
+import { countSplitLines, normalizeOutputPath } from '../tools/builtin/path-utils.mjs';
 import { classifyResultKind } from './result-classification.mjs';
 import { registerSessionPurgeHook } from './store.mjs';
 
@@ -190,15 +190,6 @@ function buildPreview(text, maxChars = TOOL_RESULT_PREVIEW_CHARS) {
   };
 }
 
-function countLines(text) {
-  if (!text) return 0;
-  let lines = 1;
-  for (let i = 0; i < text.length; i += 1) {
-    if (text.charCodeAt(i) === 10) lines += 1;
-  }
-  return lines;
-}
-
 function artifactMeta(sessionId, toolCallId, channel, content) {
   if (!sessionId || !toolCallId || typeof content !== 'string') return null;
   const sha256 = createHash('sha256').update(content, 'utf8').digest('hex');
@@ -208,7 +199,7 @@ function artifactMeta(sessionId, toolCallId, channel, content) {
     path: join(dir, artifactIdentity(sha256)),
     bytes: Buffer.byteLength(content, 'utf8'),
     chars: content.length,
-    lines: countLines(content),
+    lines: countSplitLines(content),
     sha256,
   };
 }
@@ -559,7 +550,7 @@ export const _internals = {
   TOOL_RESULT_MESSAGE_MAX_CHARS,
   TOOL_RESULT_MIN_PART_OFFLOAD_CHARS,
   buildPreview,
-  countLines,
+  countLines: countSplitLines,
   inlineTextLength,
   offloadableTextLength,
 };

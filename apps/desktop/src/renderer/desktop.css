@@ -31,7 +31,8 @@
 @import "./desktop/19-studio.css";
 @import "./desktop/20-automation.css";
 /* Layer 21 is imported by the lazy OnboardingWizard module. Its selectors are
-   wizard-scoped, and Vite loads the chunk stylesheet before rendering it. */
+   wizard-scoped, and Vite loads the chunk stylesheet before rendering it. The
+   shell rules that used to trail it live in shell-overrides.css below. */
 @import "./desktop/22-markdown.css";
 @import "./desktop/23-route-editor.css";
 @import "./desktop/24-context-dock.css";
@@ -42,6 +43,9 @@
 @import "./desktop/30-dialogs.css";
 @import "./desktop/date-range-picker.css";
 @import "./desktop/error-notice.css";
+/* Narrow-window layout, phone composer lane and reduced-motion safety net:
+   eager, and last so they override every base layer above. */
+@import "./desktop/shell-overrides.css";
 /* Layer 31 (Extensions rail) is imported by ExtensionsView.tsx for the same
    reason as layer 21: the pane is a lazy chunk whose stylesheet Vite resolves
    before it renders, and it still lands after every layer listed here. */

@@ -855,7 +855,11 @@ test('views open on a byte-budgeted tail, page older history through the daemon,
       kind: 'assistant',
       text: 'row',
     }));
-    return { sessionId, revision: ++revision, full: { sessionId, items, queued: [], transcriptHasOlder: limit < 1000 } };
+    return {
+      sessionId,
+      revision: ++revision,
+      full: { sessionId, items, queued: [], transcriptHasOlder: limit < 1000 },
+    };
   };
   const window = ({ transcriptItemLimit, transcriptByteBudget, transcriptPageBase }) => [
     transcriptItemLimit,
@@ -908,7 +912,12 @@ test('views open on a byte-budgeted tail, page older history through the daemon,
     // byte budget for the rows revealed above the 32 this host holds.
     assert.equal(await host.prefetchSession('s1', 96), true);
     assert.deepEqual(calls.at(-1), ['read', 96, 1_000_000, 32]);
-    assert.deepEqual(latest().items.slice(0, 2).map((item) => item.id), ['i904', 'i905']);
+    assert.deepEqual(
+      latest()
+        .items.slice(0, 2)
+        .map((item) => item.id),
+      ['i904', 'i905']
+    );
     // An ordinary re-read (cold open, retry) keeps the grown window.
     assert.equal(await host.prefetchSession('s1'), true);
     assert.deepEqual(calls.at(-1), ['read', 96, 1_000_000, 32]);

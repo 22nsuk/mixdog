@@ -4,7 +4,7 @@
 // touched path; unknown paths still fall back to a full session clear.
 import { join, resolve as _pathResolve, isAbsolute as _pathIsAbs, normalize as _pathNorm } from 'node:path';
 import { _normalizeCacheKey } from './util.mjs';
-import { GREP_AUTO_CONTEXT_AFTER, GREP_AUTO_CONTEXT_BEFORE } from '../../tools/builtin/path-utils.mjs';
+import { GREP_AUTO_CONTEXT_AFTER, GREP_AUTO_CONTEXT_BEFORE, hasGlobMagic } from '../../tools/builtin/path-utils.mjs';
 import { registerCacheInvalidationListener } from '../../tools/builtin/cache-layers.mjs';
 import { setBoundedTextCacheEntry } from './text-cache-budget.mjs';
 
@@ -167,12 +167,8 @@ function _scopedKey(toolName, args, cwd) {
   return `${toolName}|cwd=${cwdPart}|${_canonicalArgs(_canonicalToolArgs(toolName, args))}`;
 }
 
-function _hasGlobMagic(value) {
-  return typeof value === 'string' && /[*?[{]/.test(value);
-}
-
 function _extractGlobRoot(value) {
-  if (!_hasGlobMagic(value)) return value;
+  if (!hasGlobMagic(value)) return value;
   const text = String(value);
   const slash = Math.max(text.lastIndexOf('/'), text.lastIndexOf('\\'));
   if (slash <= 0) return '.';
@@ -221,7 +217,7 @@ function _scopedDependencyRoots(toolName, args, cwd) {
       const patterns = [];
       _collectPathValues(canonicalArgs.pattern, patterns);
       for (const pattern of patterns) {
-        if (typeof pattern !== 'string' || !_hasGlobMagic(pattern)) continue;
+        if (typeof pattern !== 'string' || !hasGlobMagic(pattern)) continue;
         const patternRoot = _extractGlobRoot(pattern);
         if (_pathIsAbs(patternRoot)) {
           add(patternRoot);

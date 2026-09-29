@@ -32,15 +32,15 @@ void app
   .whenReady()
   .then(async () => {
     const initialWindow = nextWindow();
-    let resumed = 0;
-    let resumeReceived: (() => void) | undefined;
+    let stopped = 0;
+    let stopReceived: (() => void) | undefined;
     const overlay = createComputerUseOverlay(
       {
-        stop: async () => {},
-        resume: async (generation) => {
-          resumed++;
-          coordinator.resumeAfterUserTakeover(generation);
-          resumeReceived?.();
+        stop: async () => {
+          stopped++;
+          coordinator.cancelSession('renderer-hang-fixture');
+          coordinator.resumeAfterUserTakeover();
+          stopReceived?.();
         },
         pause: async () => {
           coordinator.pauseForUser('user_pause');
@@ -69,19 +69,20 @@ void app
       await shown(replacement);
       assert.equal(hung.isDestroyed(), true);
       assert.equal(coordinator.snapshot().userControlActive, true);
-      assert.equal(resumed, 0);
+      assert.equal(stopped, 0);
       assert.equal(replacement.isFocused(), false);
+      const visible = replacement.isVisible();
 
       const point = await replacement.webContents.executeJavaScript(`(() => {
-      const button = document.getElementById('toggle');
-      if (button.disabled || button.getAttribute('aria-label') !== '재개') throw new Error('replacement Resume unavailable');
+      const button = document.getElementById('stop');
+      if (button.disabled || button.getAttribute('aria-label') !== '중단') throw new Error('replacement Stop unavailable');
       const rect = button.getBoundingClientRect();
       return { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + 4) };
     })()`);
       const [x, y] = replacement.getPosition();
       const handle = replacement.getNativeWindowHandle();
       const acknowledged = new Promise<void>((resolve) => {
-        resumeReceived = resolve;
+        stopReceived = resolve;
       });
       const clickMode = await nativeOverlayClick(
         handle.length === 8 ? handle.readBigUInt64LE() : BigInt(handle.readUInt32LE()),
@@ -89,16 +90,15 @@ void app
       );
       await emit(process.stderr, `OVERLAY_CLICK_MODE ${clickMode}\n`);
       await acknowledged;
-      assert.equal(replacement.isVisible(), true);
       assert.equal(coordinator.snapshot().userControlActive, false);
-      assert.equal(resumed, 1);
+      assert.equal(stopped, 1);
       await emit(
         process.stdout,
         `OVERLAY_RESULT ${JSON.stringify({
           retired: hung.isDestroyed(),
-          visible: replacement.isVisible(),
+          visible,
           inputBlocked: coordinator.snapshot().userControlActive,
-          resumed,
+          stopped,
         })}\n`
       );
     } finally {

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, readlinkSync, rmSync } from 'node:fs';
-import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -228,6 +228,16 @@ if (typeof hardExitWatchdog.unref === 'function') hardExitWatchdog.unref();
 const isolatedHome = join(userData, 'mixdog-home');
 const isolatedRuntimeRoot = join(userData, 'mixdog-runtime');
 const captureId = randomUUID();
+// The isolated profile starts without a config, which the desktop's disk-first
+// onboarding probe (ipc-window-settings.ts) reads as a first run: the wizard
+// would open as a modal over every pass and own the keyboard. Captures measure
+// an onboarded desktop.
+await mkdir(join(isolatedHome, 'data'), { recursive: true });
+await writeFile(
+  join(isolatedHome, 'data', 'mixdog-config.json'),
+  `${JSON.stringify({ agent: { onboarding: { completed: true } } })}\n`,
+  'utf8'
+);
 
 await rm(windowOutput, { force: true });
 await rm(metadataOutput, { force: true });
@@ -351,7 +361,7 @@ try {
       const reentry = summary.coldReentry || {};
       const diag = summary.coldEntryDiag || {};
       assert.equal(diag.coldVisible, true, 'cold history session must be on screen.');
-      assert.ok(Number(diag.toolCards) > 0, 'cold history session must render tool cards.');
+      assert.ok(Number(diag.toolCards) > 0, 'cold history session must render its tool calls.');
       // Source-shaped fallback blocks stay visible while
       // async Markdown work is pending. They may appear during cold loading,
       // but must be fully promoted after the entry settles.
@@ -374,7 +384,7 @@ try {
       }
       const delayedReview = summary.delayedReview || {};
       assert.equal(delayedReview.appeared, true, 'the delayed review bar must appear during the probe.');
-      assert.equal(Number(delayedReview.height), 28, 'the collapsed review bar must retain its readable 28px row.');
+      assert.equal(Number(delayedReview.height), 32, 'the collapsed review bar must retain its readable 32px head row.');
       assert.equal(
         Number(delayedReview.maxOverlap),
         0,
@@ -641,9 +651,11 @@ try {
     );
     assert.deepEqual(metadata.outputDimensions, { width: 1113, height: 687 });
     assert.equal(metadata.resizeApplied, false);
-    assert.equal(metadata.sharedOptions.titleBarOverlay.color, '#151518');
+    // The caption overlay is transparent by design (window-options.ts): the DOM
+    // titlebar band shows through it, sized to DESKTOP_TITLEBAR_HEIGHT.
+    assert.equal(metadata.sharedOptions.titleBarOverlay.color, '#00000000');
     assert.equal(metadata.sharedOptions.titleBarOverlay.symbolColor, 'white');
-    assert.equal(metadata.sharedOptions.titleBarOverlay.height, 40);
+    assert.equal(metadata.sharedOptions.titleBarOverlay.height, 35);
     assert.equal(metadata.sharedOptions.backgroundColor, '#151518');
     assert.deepEqual(metadata.rendererValidation, {
       bridgePresent: true,
@@ -660,7 +672,7 @@ try {
     assert.deepEqual(metadata.liveAssertions.desktop.removedLabelMatches, []);
     assert.equal(metadata.liveAssertions.desktop.contextChipCount, 0);
     assert.equal(metadata.liveAssertions.desktop.controlsNonOverlapping, true);
-    assert.equal(metadata.liveAssertions.desktop.sidebarGap, 0);
+    assert.equal(metadata.liveAssertions.desktop.sidebarGap, 1);
     // Pane title and controls now share the group tab strip; both must remain
     // inside the focused pane and the control cluster owns its right edge.
     {
@@ -678,7 +690,7 @@ try {
     }
     assert.equal(metadata.liveAssertions.lightTheme.theme, 'light');
     assert.equal(metadata.liveAssertions.lightTheme.colorScheme, 'light');
-    assert.equal(metadata.liveAssertions.lightTheme.titlebarIconMatchesToken, true);
+    assert.equal(metadata.liveAssertions.lightTheme.railIconMatchesToken, true);
     assert.equal(metadata.liveAssertions.lightTheme.activeTabMatchesToken, true);
     assert.equal(metadata.liveAssertions.modalStack.toastParentIsBody, true);
     assert.equal(metadata.liveAssertions.modalStack.toastVisible, true);
@@ -695,13 +707,15 @@ try {
         sidebarGap: metadata.liveAssertions.desktop.sidebarGap,
         mainLeft: metadata.liveAssertions.desktop.rects.main.left,
       },
+      // 48px activity rail; 35px titlebar + the body's 1px top hairline; the
+      // 252px default side panel, whose 1px right border is the seam.
       {
-        sidebarLeft: 0,
-        sidebarTop: 41,
-        sidebarWidth: 260,
+        sidebarLeft: 48,
+        sidebarTop: 36,
+        sidebarWidth: 251,
         sidebarBottomInset: 0,
-        sidebarGap: 0,
-        mainLeft: 260,
+        sidebarGap: 1,
+        mainLeft: 300,
       }
     );
     assert.ok(metadata.liveAssertions.mobile.viewport.width <= 760);
@@ -718,9 +732,17 @@ try {
     assert.notEqual(metadata.liveAssertions.mobile.open.backdropStyle.visibility, 'hidden');
     assert.ok(metadata.liveAssertions.mobile.open.sidebarStyle.opacity > 0);
     assert.ok(metadata.liveAssertions.mobile.open.backdropStyle.opacity > 0);
+    // PC keeps the 48px Activity Rail docked in the narrow band; only the
+    // session sheet overlays, beside it.
+    assert.equal(metadata.liveAssertions.mobile.open.railDocked, true);
+    assert.equal(metadata.liveAssertions.mobile.open.railExposed, true);
+    assert.equal(metadata.liveAssertions.mobile.open.sidebarBesideRail, true);
+    assert.equal(metadata.liveAssertions.mobile.open.rail.width, 48);
     assert.equal(metadata.liveAssertions.mobile.closed.sidebarHidden, true);
     assert.equal(metadata.liveAssertions.mobile.closed.mainVisible, true);
-    assert.equal(metadata.liveAssertions.mobile.closed.mainMatchesViewport, true);
+    assert.equal(metadata.liveAssertions.mobile.closed.railDocked, true);
+    assert.equal(metadata.liveAssertions.mobile.closed.rail.width, 48);
+    assert.equal(metadata.liveAssertions.mobile.closed.mainFillsBesideRail, true);
     assert.equal(metadata.liveAssertions.mobile.closed.viewportEdgeTolerance, 1);
     assert.ok(
       Object.values(metadata.liveAssertions.mobile.closed.mainEdgeDeltas).every(
@@ -790,21 +812,21 @@ try {
       metadata.captureMethod === 'desktopCapturer' ? 'horizontal-pixel-scan' : 'dom-geometry-fallback'
     );
     assert.equal(metadata.imageMeasuredSidebar.scanlineY, 600);
-    assert.equal(metadata.imageMeasuredSidebar.left, 0);
-    assert.equal(metadata.imageMeasuredSidebar.right, 259);
-    assert.equal(metadata.imageMeasuredSidebar.width, 260);
-    assert.equal(metadata.imageMeasuredSidebar.leftInset, 0);
-    assert.deepEqual(metadata.imageMeasuredSidebar.rightGap, { left: 260, right: 259, width: 0 });
+    assert.equal(metadata.imageMeasuredSidebar.left, 48);
+    assert.equal(metadata.imageMeasuredSidebar.right, 298);
+    assert.equal(metadata.imageMeasuredSidebar.width, 251);
+    assert.equal(metadata.imageMeasuredSidebar.leftInset, 48);
+    assert.deepEqual(metadata.imageMeasuredSidebar.rightGap, { left: 299, right: 299, width: 1 });
     assert.deepEqual(metadata.imageMeasuredSidebar.sidebarExcludedRuns, { leftInset: true, rightGap: true });
     assert.deepEqual(metadata.domSidebarGeometry, {
-      left: 0,
-      top: 41,
-      right: 260,
+      left: 48,
+      top: 36,
+      right: 299,
       bottom: 687,
-      width: 260,
+      width: 251,
       bottomInset: 0,
-      mainLeft: 260,
-      gap: 0,
+      mainLeft: 300,
+      gap: 1,
     });
     assert.equal(metadata.imageMeasuredSidebar.left, metadata.domSidebarGeometry.left);
     assert.equal(metadata.imageMeasuredSidebar.right, metadata.domSidebarGeometry.right - 1);
@@ -847,13 +869,8 @@ try {
     assert.equal(metadata.pixelSamples.titlebar.color, '#151518');
     assert.equal(metadata.pixelSamples.base.color, '#1c1c1f');
     assert.equal(metadata.pixelSamples.sidebar.color, '#151518');
-    // Dictation E2E (stubbed setup + fake Chromium mic + stubbed transcription):
-    // the install consent must precede recording, then the transcript must land.
-    assert.equal(
-      metadata.dictationSmoke.installPromptShown,
-      true,
-      'dictation smoke must ask before installing the voice runtime'
-    );
+    // Dictation E2E (installed voice runtime + fake Chromium mic + stubbed
+    // transcription): the recorded take must land in the draft.
     assert.equal(
       metadata.dictationSmoke.transcriptApplied,
       true,
@@ -861,9 +878,10 @@ try {
     );
     assert.equal(metadata.dictationSmoke.micIdle, true, 'mic button must settle back to idle');
     assert.equal(metadata.dictationSmoke.notice, '', 'dictation smoke must not raise a composer notice');
-    // Tool presentation E2E: every card archetype renders through the real
-    // transcript renderer. Cards intentionally stay collapsed; live shell
-    // output and diff bodies must never auto-grow the transcript.
+    // Tool presentation E2E: the showcase renders through the real transcript
+    // renderer, where the calls on each side of the assistant prose fold into
+    // one activity group apiece. Groups stay collapsed; live shell output and
+    // diff bodies must never auto-grow the transcript.
     const toolsOutput = windowOutput.replace(/\.png$/i, '-tools.png');
     const toolsTopOutput = windowOutput.replace(/\.png$/i, '-tools-top.png');
     const [toolsPng, toolsStat, toolsTopPng, toolsTopStat] = await Promise.all([
@@ -884,28 +902,20 @@ try {
       'Tool showcase top capture mtime is outside the current run window.'
     );
     assert.deepEqual([...toolsTopPng.subarray(1, 4)], [0x50, 0x4e, 0x47], 'Tool showcase top capture is not a PNG.');
-    assert.equal(metadata.toolShowcase.toolCards, 4, 'tool showcase must render all four tool cards');
-    assert.equal(metadata.toolShowcase.collapsedCards, 4, 'tool cards must default to collapsed');
-    assert.equal(metadata.toolShowcase.detailRows, 0, 'collapsed tool cards must not mount detail rows');
-    assert.equal(metadata.toolShowcase.failedCards, 1, 'failed shell card must carry the failed state');
-    assert.equal(metadata.toolShowcase.settledCards, 3, 'completed cards must settle; the running card must not');
+    assert.equal(metadata.toolShowcase.activityGroups, 2, 'the calls around the prose must fold into two groups');
+    assert.equal(metadata.toolShowcase.collapsedGroups, 2, 'tool activity groups must default to collapsed');
+    assert.equal(metadata.toolShowcase.groupBodies, 0, 'collapsed groups must not mount their bodies');
+    assert.deepEqual(
+      metadata.toolShowcase.groupTitles,
+      ['Command execution 2 · File editing', 'Command execution'],
+      'group titles must summarize their calls by category'
+    );
+    assert.deepEqual(
+      metadata.toolShowcase.runningStatuses,
+      ['Running'],
+      'only the group with a pending call exposes a running status'
+    );
     assert.equal(metadata.toolShowcase.reviewBar, true, 'turn review bar must summarize the edit diff');
-    assert.equal(
-      metadata.toolShowcase.runningCommandVisible,
-      true,
-      'running shell card header must surface the bare command'
-    );
-    assert.equal(
-      metadata.toolShowcase.runningStatusVisible,
-      true,
-      'running shell card must expose an accessible running status'
-    );
-    assert.equal(metadata.toolShowcase.editInputBlocks, 0, 'collapsed edit cards must not mount a raw Input block');
-    assert.equal(
-      metadata.toolShowcase.legacyBodyBlocks,
-      0,
-      'collapsed cards must not mount legacy shell, diff, or live-output bodies'
-    );
     console.log(`CAPTURE_TOOLS_PNG=${toolsOutput}`);
     console.log(`CAPTURE_TOOLS_TOP_PNG=${toolsTopOutput}`);
     console.log(`CAPTURE_STARTUP_GEOMETRY=${JSON.stringify(metadata.startupGeometry?.deltas ?? null)}`);

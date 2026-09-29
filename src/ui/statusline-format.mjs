@@ -109,6 +109,13 @@ export function num(v) {
   return Number.isFinite(n) ? n : 0;
 }
 
+/** Epoch ms from a number or a date string; 0 when neither parses. */
+export function timeMs(value) {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value;
+  const n = Date.parse(String(value || ''));
+  return Number.isFinite(n) ? n : 0;
+}
+
 function clampPct(v) {
   const n = Number(v);
   if (!Number.isFinite(n)) return 0;

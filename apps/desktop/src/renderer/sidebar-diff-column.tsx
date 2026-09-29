@@ -14,6 +14,7 @@ import {
 } from './pane-side-dock';
 import { DeferredPersistentSurface } from './PaneSurfaceGate';
 import { DesktopLoadingSurface } from './RendererRecovery';
+import { NARROW_SHELL_QUERY } from './use-responsive-shell-bands';
 
 /** The LEFT sidebar's diff column keeps its own width preference; the right
  *  dock's pair column has a separate one. */
@@ -24,7 +25,7 @@ const SIDEBAR_DIFF_WIDTH_KEY = 'mixdog.desktop.sidebar-diff-width.v1';
 export function sidebarDiffColumnAvailable(): boolean {
   if (isMobileRemoteSurface()) return false;
   try {
-    return !window.matchMedia('(max-width: 760px)').matches;
+    return !window.matchMedia(NARROW_SHELL_QUERY).matches;
   } catch {
     return true;
   }

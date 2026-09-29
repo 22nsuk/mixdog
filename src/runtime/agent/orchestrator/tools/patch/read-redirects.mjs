@@ -1,10 +1,9 @@
 // Patch target redirection: a header path that no longer exists on disk is
-// re-pointed at the read-snapshot redirect or the unique relocated file, so a
-// patch written against a moved file still lands on it.
+// re-pointed at the unique relocated file, so a patch written against a moved
+// file still lands on it.
 import { existsSync, statSync } from 'node:fs';
 import { resolve as pathResolve, relative as pathRelative, isAbsolute } from 'node:path';
 import { findBySuffixStrip, findFileByBasename } from '../builtin/path-diagnostics.mjs';
-import { resolveReadPathRedirect } from '../builtin/snapshot-store.mjs';
 import { resolveEntryPath, resolveV4AEntryPath, classifyEntry, pathKey } from './paths.mjs';
 
 function uniqueExistingPatchTarget(basePath, requestedFullPath) {
@@ -28,11 +27,9 @@ function uniqueExistingPatchTarget(basePath, requestedFullPath) {
   return basenameHits.length === 1 ? asFile(basenameHits[0]) : null;
 }
 
-function redirectedPatchPath(requestedFullPath, readStateScope, basePath) {
-  // A newly-created exact requested path always wins over an older redirect.
+function redirectedPatchPath(requestedFullPath, basePath) {
+  // An existing requested path always wins over relocation.
   if (!requestedFullPath || existsSync(requestedFullPath)) return requestedFullPath;
-  const redirected = resolveReadPathRedirect(requestedFullPath, readStateScope);
-  if (redirected && existsSync(redirected)) return redirected;
   return uniqueExistingPatchTarget(basePath, requestedFullPath) || requestedFullPath;
 }
 
@@ -44,22 +41,22 @@ export function patchHeaderPathForResolved(basePath, fullPath) {
   return fullPath;
 }
 
-export function rewriteV4AReadRedirects(sections, basePath, readStateScope) {
+export function rewriteV4AReadRedirects(sections, basePath) {
   return (sections || []).map((section) => {
     if (!section || section.kind === 'add' || !section.path) return section;
     const requested = resolveV4AEntryPath(basePath, section.path);
-    const redirected = redirectedPatchPath(requested, readStateScope, basePath);
+    const redirected = redirectedPatchPath(requested, basePath);
     if (pathKey(redirected) === pathKey(requested)) return section;
     return { ...section, path: patchHeaderPathForResolved(basePath, redirected) };
   });
 }
 
-export function rewriteParsedReadRedirects(parsed, basePath, readStateScope) {
+export function rewriteParsedReadRedirects(parsed, basePath) {
   return (parsed || []).map((entry) => {
     const kind = classifyEntry(entry);
     if (kind === 'create' || !entry?.oldFileName) return entry;
     const requested = resolveEntryPath(basePath, entry.oldFileName);
-    const redirected = redirectedPatchPath(requested, readStateScope, basePath);
+    const redirected = redirectedPatchPath(requested, basePath);
     if (pathKey(redirected) === pathKey(requested)) return entry;
     const rewritten = {
       ...entry,

@@ -161,3 +161,59 @@ test('media assets are organized by kind, provider, model, and local date while 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('bulk media cleanup previews, then deletes by age, missing file, selection, and kind', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'mixdog-media-bulk-'));
+  const previousDataDir = process.env.MIXDOG_DATA_DIR;
+  process.env.MIXDOG_DATA_DIR = root;
+  const assetsDir = join(root, 'media', 'assets');
+  const day = 24 * 60 * 60 * 1_000;
+  const now = Date.now();
+  const row = (id, kind, age, present = true) => {
+    const file = `${id}.${kind === 'video' ? 'mp4' : 'png'}`;
+    if (present) writeFileSync(join(assetsDir, file), Buffer.from(id));
+    return {
+      id,
+      file,
+      kind,
+      lane: 'gemini',
+      model: 'm',
+      prompt: id,
+      mime: kind === 'video' ? 'video/mp4' : 'image/png',
+      bytes: 1,
+      createdAt: now - age * day,
+    };
+  };
+  mkdirSync(assetsDir, { recursive: true });
+  const assets = [
+    row('fresh', 'image', 1),
+    row('old', 'image', 40),
+    row('gone', 'image', 2, false),
+    row('picked', 'image', 3),
+    row('clip', 'video', 60),
+  ];
+  writeFileSync(join(root, 'media', 'index.json'), JSON.stringify({ version: 2, assets }));
+
+  try {
+    const store = await import(`./store.mjs?bulk=${Date.now()}`);
+    const ids = () => store.listMediaAssets({ limit: 50 }).assets.map((entry) => entry.id);
+    assert.throws(() => store.deleteMediaAssets({ kind: 'image' }), /needs ids, before, missing, or all/);
+
+    const preview = store.deleteMediaAssets({ kind: 'image', before: now - 30 * day, dryRun: true });
+    assert.deepEqual(preview.ids, ['old'], 'the age filter stays inside the requested kind');
+    assert.equal(ids().length, 5, 'a dry run deletes nothing');
+
+    assert.deepEqual(store.deleteMediaAssets({ ids: preview.ids }).ids, ['old']);
+    assert.equal(existsSync(join(assetsDir, 'old.png')), false);
+
+    assert.deepEqual(store.deleteMediaAssets({ kind: 'image', missing: true }).ids, ['gone']);
+    assert.deepEqual(store.deleteMediaAssets({ ids: ['picked', 'clip'], kind: 'image' }).ids, ['picked']);
+    assert.deepEqual(store.deleteMediaAssets({ kind: 'image', all: true }).ids, ['fresh']);
+    assert.deepEqual(ids(), ['clip'], 'other kinds survive a whole-tab delete');
+    assert.equal(existsSync(join(assetsDir, 'clip.mp4')), true);
+  } finally {
+    if (previousDataDir === undefined) delete process.env.MIXDOG_DATA_DIR;
+    else process.env.MIXDOG_DATA_DIR = previousDataDir;
+    rmSync(root, { recursive: true, force: true });
+  }
+});

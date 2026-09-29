@@ -295,16 +295,21 @@ function partFromTarget(directory, target) {
   return target.startsWith('/') ? target.slice(1) : posix.normalize(posix.join(directory, target));
 }
 
+// A source already written with its label ("자료: 운영관리시스템") keeps it: prefixed again it read "출처: 자료: …".
+const SOURCE_LABEL = /^(?:출처|자료|source)\s*[:：]/i;
+
+// Composed once here for both backends (the Office host writes the citation it is handed).
 export function provenanceCitation(source) {
   if (!source) return '';
   // The citation is read on the page, so its prefix follows the language the
   // source is named in (the structure audit accepts either form).
-  if (typeof source === 'string') return `${presetLabels(source).source}: ${source.trim()}`;
+  const labelled = (cited, sample) => (SOURCE_LABEL.test(cited) ? cited : `${presetLabels(sample).source}: ${cited}`);
+  if (typeof source === 'string') return source.trim() ? labelled(source.trim(), source) : '';
   if (typeof source !== 'object') return '';
   const document = String(source.document || source.label || '').trim();
   const target = String(source.target || '').trim();
   if (!document) return '';
-  return `${presetLabels([document, target, source.label]).source}: ${target ? `${document}#${target}` : document}`;
+  return labelled(target ? `${document}#${target}` : document, [document, target, source.label]);
 }
 
 function partNaming(path) {

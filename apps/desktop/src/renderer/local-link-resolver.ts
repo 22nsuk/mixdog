@@ -34,7 +34,9 @@ async function findInProject(project: string, path: string, search: boolean): Pr
     return [{ project, path }];
   }
   if (!search) return [];
-  const found = (await api?.searchProjectFiles?.(project, path, 50)) || [];
+  // Chat replies name deliverables and build outputs, which usually sit in
+  // gitignored folders the file picker leaves out.
+  const found = (await api?.searchProjectFiles?.(project, path, 50, true)) || [];
   return found.flatMap((candidate) => {
     const relative = projectRelativeFilePath(project, candidate);
     return relative &&
@@ -56,29 +58,56 @@ function uniqueTarget(matches: ResolvedLocalLink[], name: string): ResolvedLocal
   return null;
 }
 
-/** Search relative names only in registered Projects. Explicit absolute links
- * can use the same file-scoped access as the native file picker. */
+/** An absolute path opens wherever it is: through the deepest registered
+ *  Project that contains it, otherwise with a one-off file grant, the same
+ *  access the native file picker gives. */
+async function resolveAbsolute(target: string, path: string): Promise<ResolvedLocalLink> {
+  const resolvePaths = window.mixdogDesktop?.resolveLocalPaths;
+  if (!resolvePaths) throw new Error(t('Local file links can only be opened in the desktop app.'));
+  const [entry] = await resolvePaths([target]).catch((error: unknown) => {
+    if (missingFile(error)) return [];
+    throw error;
+  });
+  if (entry?.dir) return { project: entry.absolutePath, path: '.', directory: true };
+  if (!entry?.projectPath || !entry.relPath) {
+    throw new Error(t('File not found (it may have been deleted or moved): {{file}}', { file: path }));
+  }
+  return entry.accessToken
+    ? { project: entry.projectPath, path: entry.relPath, accessToken: entry.accessToken }
+    : { project: entry.projectPath, path: entry.relPath };
+}
+
+/** Relative names resolve in the conversation's folder, then by name in the
+ *  registered Projects. Absolute paths, `../` paths and files of a folder that
+ *  is not itself a registered Project open by their absolute location. */
 export async function resolveLocalLink(project: string, path: string): Promise<ResolvedLocalLink> {
   if (!isLocalMarkdownLink(path)) throw new Error(t("The file is outside the conversation's Project."));
   if (/^file:/i.test(path)) {
     const url = new URL(path);
-    if (url.hostname && url.hostname !== 'localhost') {
-      throw new Error(t("The file is outside the conversation's Project."));
-    }
-    path = url.href;
+    path = url.hostname && url.hostname !== 'localhost' ? `//${url.hostname}${url.pathname}` : url.href;
   }
-  if (/^\\\\/.test(path)) throw new Error(t("The file is outside the conversation's Project."));
-  const absolute = /^(?:[a-z]:[\\/]|[\\/]|file:)/i.test(path);
-  if (!project && !absolute) throw new Error(t("The conversation's Project is unavailable."));
+  if (/^(?:[a-z]:[\\/]|[\\/]|file:)/i.test(path)) return resolveAbsolute(localMarkdownPath(path), path);
+  if (!project) throw new Error(t("The conversation's Project is unavailable."));
   const relative = projectRelativeFilePath(project, path);
-  // A relative traversal is not an absolute cross-Project link.
-  if (!absolute && !relative) throw new Error(t("The file is outside the conversation's Project."));
-  const searchable = Boolean(relative && !absolute && localLinkKind(path) === 'file');
-  if (project && relative) {
-    const match = uniqueTarget(await findInProject(project, relative, searchable), path);
+  const searchable = Boolean(relative && localLinkKind(path) === 'file');
+  let found: ResolvedLocalLink[] | null = null;
+  if (relative) {
+    try {
+      found = await findInProject(project, relative, searchable);
+    } catch {
+      // The conversation may run in a folder that is not a registered Project.
+    }
+  }
+  if (found) {
+    const match = uniqueTarget(found, path);
     if (match) return match;
-    // An absolute path cannot be redirected to another file with the same name.
-    if (absolute) throw new Error(t('File not found in the Project: {{file}}', { file: path }));
+  } else {
+    const target = `${project.replace(/\\/g, '/').replace(/\/+$/, '')}/${localMarkdownPath(path)}`;
+    try {
+      return await resolveAbsolute(target, path);
+    } catch (error) {
+      if (!searchable) throw error;
+    }
   }
   const projects = (await window.mixdogDesktop?.listProjects?.()) || [];
   const others = [
@@ -88,36 +117,9 @@ export async function resolveLocalLink(project: string, path: string): Promise<R
         .map((entry) => [projectKey(entry.path), entry.path])
     ).values(),
   ];
-  if (absolute) {
-    const owners = others
-      .flatMap((root) => {
-        const rel = projectRelativeFilePath(root, path);
-        return rel ? [{ project: root, path: rel }] : [];
-      })
-      .sort((left, right) => right.project.length - left.project.length);
-    if (!owners.length) {
-      const target = localMarkdownPath(path);
-      if (target.startsWith('//') || !/^(?:[a-z]:\/|\/)/i.test(target)) {
-        throw new Error(t("The file is outside the conversation's Project."));
-      }
-      const resolvePaths = window.mixdogDesktop?.resolveLocalPaths;
-      if (!resolvePaths) throw new Error(t('Local file links can only be opened in the desktop app.'));
-      const [entry] = await resolvePaths([target]);
-      if (!entry) throw new Error(t('File not found in the Project: {{file}}', { file: path }));
-      if (entry.dir) return { project: entry.absolutePath, path: '.', directory: true };
-      if (!entry.projectPath || !entry.relPath) {
-        throw new Error(t('File not found in the Project: {{file}}', { file: path }));
-      }
-      return { project: entry.projectPath, path: entry.relPath, accessToken: entry.accessToken };
-    }
-    const owner = owners[0];
-    const match = uniqueTarget(await findInProject(owner.project, owner.path, false), path);
-    if (match) return match;
-  } else {
-    const matches = (await Promise.all(others.map((root) => findInProject(root, relative!, searchable)))).flat();
-    const match = uniqueTarget(matches, path);
-    if (match) return match;
-  }
+  const matches = (await Promise.all(others.map((root) => findInProject(root, relative!, searchable)))).flat();
+  const match = uniqueTarget(matches, path);
+  if (match) return match;
   throw new Error(t('File not found in the Project: {{file}}', { file: path }));
 }
 

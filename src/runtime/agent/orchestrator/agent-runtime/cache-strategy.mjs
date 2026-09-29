@@ -44,6 +44,7 @@
 import { createHash } from 'node:crypto';
 import { stableHashStringify } from '../stable-hash-stringify.mjs';
 import { getHiddenAgent } from '../internal-agents.mjs';
+import { cleanString } from '../../../shared/clean.mjs';
 import { nonNegativeInt, positiveInt } from '../../../shared/numbers.mjs';
 
 /**
@@ -204,10 +205,6 @@ export function resolveProviderCacheKey(opts, provider) {
 
 function shortHash(value, chars = 18) {
   return createHash('sha256').update(stableHashStringify(value)).digest('hex').slice(0, chars);
-}
-
-function cleanString(value) {
-  return typeof value === 'string' ? value.trim() : '';
 }
 
 function normalizePromptCacheNamespace(value) {

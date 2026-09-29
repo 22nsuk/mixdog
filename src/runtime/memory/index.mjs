@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { __mixdogMemoryLog } from './lib/memory-log.mjs';
+import { listenerLeakWarningLine } from '../shared/listener-leak-warning.mjs';
 
 // V8 compile cache: the memory runtime is a separate long-lived child in
 // product mode. The standalone MCP entry uses the same module directly.
@@ -98,8 +99,13 @@ import {
 } from './lib/memory-config-flags.mjs';
 const IS_MEMORY_ENTRY = !!process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
 if (IS_MEMORY_ENTRY) {
+  // Node's own warning printer stays off in this runtime, but a listener leak
+  // is still logged, with the stack that names its source.
   process.removeAllListeners('warning');
-  process.on('warning', () => {});
+  process.on('warning', (warning) => {
+    const line = listenerLeakWarningLine(warning);
+    if (line) __mixdogMemoryLog(`[memory-service] ${line}\n`);
+  });
   try {
     os.setPriority(os.constants.priority.PRIORITY_BELOW_NORMAL);
   } catch {}

@@ -134,6 +134,8 @@ const POLISH_GUIDANCE = Object.freeze({
     'Set a print area that contains the chart or picture (set_page_setup with fitToContent, or an explicit printArea); an export otherwise splits or drops it.',
   drawing_overlap:
     'Anchor the second chart or picture below or beside the first (its cell past the rows or columns the first one spans — a 230 pt chart covers about 15 rows); one drawing over another hides both.',
+  drawing_covers_cells:
+    'Move the chart or picture clear of the filled cells (set_drawing, or a cell past the rows it spans — a 230 pt chart covers about 15 rows), or move the cells; the page shows the drawing and hides what is under it.',
   label_truncated:
     'Widen the column (autofit_range) or shorten the label; the cell beside it has content, so the reader sees only part of the text.',
   protected_input_locked:
@@ -274,6 +276,7 @@ const POLISH_GUIDANCE = Object.freeze({
   peer_gap_uneven:
     'Place the row from one set of columns (the kit spans() result) so every gap is the same, or make the odd gap large enough to read as a break between groups.',
   text_spacing_tight: 'Raise the line spacing to at least 1.05× the size (the kit leading: dense 1.4, body 1.5).',
+  text_crosses_edge: 'Move the text clear of the surface edge it dips over, or set it wholly inside that surface.',
   dense_paragraph:
     'Split the paragraph, cut the copy, or give it a slide of its own as prose; a wall of text is not evidence.',
   heading_hierarchy_jump: 'Restore the skipped heading level so the outline reads in order.',

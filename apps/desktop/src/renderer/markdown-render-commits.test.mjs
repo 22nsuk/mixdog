@@ -24,7 +24,10 @@ async function withDom(run) {
     url: 'http://localhost/',
   });
   const previous = new Map(
-    ['window', 'document', 'IS_REACT_ACT_ENVIRONMENT'].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)])
+    ['window', 'document', 'IS_REACT_ACT_ENVIRONMENT'].map((key) => [
+      key,
+      Object.getOwnPropertyDescriptor(globalThis, key),
+    ])
   );
   Object.defineProperty(globalThis, 'window', { configurable: true, value: dom.window });
   Object.defineProperty(globalThis, 'document', { configurable: true, value: dom.window.document });
@@ -80,7 +83,9 @@ test('code cards, copy buttons and table wrappers survive a new parse', async ()
     assert.equal(counts.mounts, 1);
 
     await act(async () => {
-      root.render(React.createElement(MarkdownAstBody, { root: parseMarkdownToHast(second), copyControl: CopyControl }));
+      root.render(
+        React.createElement(MarkdownAstBody, { root: parseMarkdownToHast(second), copyControl: CopyControl })
+      );
     });
     assert.equal(host.querySelector('.markdown-code'), card);
     assert.equal(host.querySelector('.markdown-code-copy'), copy);

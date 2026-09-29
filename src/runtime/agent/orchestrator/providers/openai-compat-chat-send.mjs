@@ -110,6 +110,7 @@ export async function sendCompatChat(provider, messages, useModel, tools, opts) 
         {
           signal: totalSignal.signal,
           onRetry: compatStreamRetryReporter(provider.name, opts),
+          retry529: opts.retry529,
         }
       );
     } catch (streamErr) {

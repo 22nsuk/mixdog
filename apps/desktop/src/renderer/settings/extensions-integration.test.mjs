@@ -145,7 +145,7 @@ test('About keeps GitHub and issue links without a sponsorship option', async (t
   const buttons = [...panel.host.querySelectorAll('button')];
   assert.deepEqual(
     buttons.map((button) => button.textContent.trim()),
-    ['Star on GitHub ↗', 'Open ↗', 'Issues ↗']
+    ['Star on GitHub ↗', 'Open ↗', 'Issues ↗', 'Copy', 'Email ↗']
   );
   for (const button of buttons) {
     await act(async () => button.click());
@@ -154,6 +154,7 @@ test('About keeps GitHub and issue links without a sponsorship option', async (t
     'https://github.com/tribgames/mixdog',
     'https://github.com/tribgames/mixdog',
     'https://github.com/tribgames/mixdog/issues',
+    'mailto:support@tribgames.com',
   ]);
 });
 

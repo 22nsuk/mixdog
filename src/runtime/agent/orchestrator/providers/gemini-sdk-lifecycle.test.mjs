@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { GoogleGenerativeAIError, GoogleGenerativeAIFetchError } from '@google/generative-ai';
 import { consumeGeminiSdkStream } from './gemini-stream.mjs';
+import { streamGeminiSdkAttempt } from './gemini-sdk-request.mjs';
+import { classifyError, isConnectionFailure } from './retry-classifier.mjs';
 
 const chunk = {
   candidates: [{ content: { role: 'model', parts: [{ text: 'visible partial' }] } }],
@@ -152,6 +155,72 @@ for (const cleanup of ['ready', 'failed', 'pending']) {
     assert.equal(stopped, true);
   });
 }
+
+for (const [message, cutShort] of [
+  ['Error reading from the stream', (error) => error.truncatedStream === true && error.streamCorruption !== true],
+  ['Failed to parse stream', (error) => error.streamCorruption === true],
+]) {
+  test(`Gemini SDK "${message}" becomes a retryable cut-short stream`, async () => {
+    const sdkError = new GoogleGenerativeAIError(message);
+    const stream = {
+      [Symbol.asyncIterator]() {
+        return this;
+      },
+      async next() {
+        throw sdkError;
+      },
+      async return() {
+        return { done: true };
+      },
+    };
+    await assert.rejects(
+      bounded(
+        consumeGeminiSdkStream(
+          { stream, response: Promise.resolve({}) },
+          { label: 'fixture', cancellationGraceMs: 5, cancelGeneration() {} }
+        )
+      ),
+      (error) => {
+        assert.equal(error.cause, sdkError);
+        assert.equal(cutShort(error), true);
+        assert.equal(classifyError(error), 'transient');
+        return true;
+      }
+    );
+  });
+}
+
+test('Gemini SDK request failures keep their transport evidence and their HTTP status', async () => {
+  const url = 'https://generativelanguage.googleapis.com/v1beta/models/fixture:streamGenerateContent?alt=sse';
+  const lost = new GoogleGenerativeAIError(`Error fetching from ${url}: fetch failed`);
+  const refused = new GoogleGenerativeAIFetchError(
+    `Error fetching from ${url}: [400 Bad Request] Invalid JSON payload received`,
+    400,
+    'Bad Request'
+  );
+  const attempt = (error) =>
+    streamGeminiSdkAttempt(
+      {
+        generateContentStream: async () => {
+          throw error;
+        },
+      },
+      { contents: [], callbacks: {} },
+      null
+    );
+  await assert.rejects(attempt(lost), (error) => {
+    assert.equal(error.cause, lost);
+    assert.equal(error.message, 'fetch failed');
+    assert.equal(classifyError(error), 'transient');
+    assert.equal(isConnectionFailure(error), true);
+    return true;
+  });
+  await assert.rejects(attempt(refused), (error) => {
+    assert.equal(error, refused);
+    assert.equal(classifyError(error), 'permanent');
+    return true;
+  });
+});
 
 test('Gemini SDK cancellation interrupts a pending aggregate response', async () => {
   const controller = new AbortController();

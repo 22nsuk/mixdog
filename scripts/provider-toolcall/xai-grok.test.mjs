@@ -94,16 +94,29 @@ test('xAI keeps generate:false in the property guard and falls back to a full fr
   }
 });
 
-test('xai Responses cache defaults to automatic routing and preserves explicit session and prefix scopes', () => {
+test('xai Responses cache defaults to one stable key per session and preserves explicit none and prefix scopes', () => {
   const params = { messages: [{ role: 'system', content: 'stable system' }] };
   const first = xaiResponsesCacheRouting({ sessionId: 'session-a' }, params, [], 'grok-4.6');
   const same = xaiResponsesCacheRouting({ sessionId: 'session-a' }, params, [], 'grok-4.6');
   const other = xaiResponsesCacheRouting({ sessionId: 'session-b' }, params, [], 'grok-4.6');
-  assert.equal(first.mode, 'none');
-  assert.equal(first.key, null);
+  assert.equal(first.mode, 'session');
+  assert.ok(first.key);
   assert.equal(first.key, same.key);
-  assert.equal(other.key, null);
+  assert.notEqual(other.key, first.key);
   assert.equal(first.prefixHash, other.prefixHash);
+
+  // A session-less one-shot call has no conversation to pin.
+  const sessionless = xaiResponsesCacheRouting({}, params, [], 'grok-4.6');
+  assert.equal(sessionless.mode, 'none');
+  assert.equal(sessionless.key, null);
+  const optedOut = xaiResponsesCacheRouting(
+    { sessionId: 'session-a', xaiResponsesCacheScope: 'none' },
+    params,
+    [],
+    'grok-4.6'
+  );
+  assert.equal(optedOut.mode, 'none');
+  assert.equal(optedOut.key, null);
 
   const sessionA = xaiResponsesCacheRouting(
     { sessionId: 'session-a', xaiResponsesCacheScope: 'session' },

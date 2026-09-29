@@ -499,7 +499,15 @@ test('a session sends each slide structure once and afterwards only what a rende
   assert.equal(rendered.slides[0].charts, 0, 'the receipt handed in is not mutated');
 
   const plain = receiptForDelivery(
-    { slides: [{ slide: 9, presets: [], observe: { quadrantAir: [0.5, 0.5, 0.5, 0.5], contentAir: [0.5, 0.5, 0.5, 0.5], fills: [], fieldFill: [0.3] } }] },
+    {
+      slides: [
+        {
+          slide: 9,
+          presets: [],
+          observe: { quadrantAir: [0.5, 0.5, 0.5, 0.5], contentAir: [0.5, 0.5, 0.5, 0.5], fills: [], fieldFill: [0.3] },
+        },
+      ],
+    },
     {}
   );
   assert.deepEqual(plain.slides[0], { slide: 9, observe: { quadrantAir: [0.5, 0.5, 0.5, 0.5], fieldFill: [0.3] } });

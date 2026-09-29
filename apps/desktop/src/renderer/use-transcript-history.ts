@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useRef, type RefObject } from 'react';
-import { nextTranscriptHistoryLimit, nextTranscriptTailLimit, TRANSCRIPT_HISTORY_PAGE_ITEMS } from './transcript-history';
+import {
+  nextTranscriptHistoryLimit,
+  nextTranscriptTailLimit,
+  TRANSCRIPT_HISTORY_PAGE_ITEMS,
+} from './transcript-history';
 import { transcriptScrollExtent, transcriptScrollGeometryRegistered } from './use-transcript-follow';
 
 /** Read completion and transcript publication are separate transport events.

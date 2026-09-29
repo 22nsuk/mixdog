@@ -112,10 +112,15 @@ function matchScore(path: string, query: string): number | null {
   return fuzzy < 0 ? null : 1_000 + fuzzy + normalized.length;
 }
 
-async function collectProjectFiles(
-  root: string,
-  options: { maxScannedEntries?: number; yieldEvery?: number } = {}
-): Promise<string[]> {
+export interface ProjectFileSearchOptions {
+  maxScannedEntries?: number;
+  yieldEvery?: number;
+  /** Also list gitignored files (still pruning `.git` and `node_modules`):
+   *  chat links name build outputs and deliverables the picker leaves out. */
+  includeIgnored?: boolean;
+}
+
+async function collectProjectFiles(root: string, options: ProjectFileSearchOptions = {}): Promise<string[]> {
   const directories: Array<{ relative: string; rules: IgnoreRule[] }> = [{ relative: '', rules: [] }];
   const files: string[] = [];
   const maxScannedEntries = Math.max(
@@ -128,11 +133,13 @@ async function collectProjectFiles(
   while (directories.length && scanned < maxScannedEntries) {
     const { relative, rules: parentRules } = directories.shift()!;
     let rules = parentRules;
-    try {
-      const nested = ignoreRules(await readFile(join(root, relative, '.gitignore'), 'utf8'), relative);
-      if (nested.length) rules = [...parentRules, ...nested];
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    if (!options.includeIgnored) {
+      try {
+        const nested = ignoreRules(await readFile(join(root, relative, '.gitignore'), 'utf8'), relative);
+        if (nested.length) rules = [...parentRules, ...nested];
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
     }
 
     const directory = await opendir(join(root, relative));
@@ -156,14 +163,20 @@ async function collectProjectFiles(
   return files;
 }
 
-function buildProjectIndex(root: string): Promise<string[]> {
-  const inFlight = buildingIndexes.get(root);
+// The gitignore-blind list is a separate index of the same root.
+function indexKey(root: string, includeIgnored: boolean): string {
+  return includeIgnored ? `${root}\0ignored` : root;
+}
+
+function buildProjectIndex(root: string, includeIgnored: boolean): Promise<string[]> {
+  const key = indexKey(root, includeIgnored);
+  const inFlight = buildingIndexes.get(key);
   if (inFlight) return inFlight;
-  const build = collectProjectFiles(root)
+  const build = collectProjectFiles(root, { includeIgnored })
     .then(
       (files) => {
-        projectFileIndexes.delete(root);
-        projectFileIndexes.set(root, { files, builtAt: Date.now() });
+        projectFileIndexes.delete(key);
+        projectFileIndexes.set(key, { files, builtAt: Date.now() });
         while (projectFileIndexes.size > INDEX_CACHE_LIMIT) {
           const oldest = projectFileIndexes.keys().next().value;
           if (oldest === undefined) break;
@@ -174,24 +187,25 @@ function buildProjectIndex(root: string): Promise<string[]> {
       (error: unknown) => {
         // A root that can no longer be walked must not keep serving its old
         // list; the next search walks again and reports the failure.
-        projectFileIndexes.delete(root);
+        projectFileIndexes.delete(key);
         throw error;
       }
     )
     .finally(() => {
-      if (buildingIndexes.get(root) === build) buildingIndexes.delete(root);
+      if (buildingIndexes.get(key) === build) buildingIndexes.delete(key);
     });
-  buildingIndexes.set(root, build);
+  buildingIndexes.set(key, build);
   return build;
 }
 
-async function projectFilesFor(root: string): Promise<string[]> {
-  const cached = projectFileIndexes.get(root);
-  if (!cached) return buildProjectIndex(root);
+async function projectFilesFor(root: string, includeIgnored: boolean): Promise<string[]> {
+  const key = indexKey(root, includeIgnored);
+  const cached = projectFileIndexes.get(key);
+  if (!cached) return buildProjectIndex(root, includeIgnored);
   // LRU touch so hot roots survive the cache cap.
-  projectFileIndexes.delete(root);
-  projectFileIndexes.set(root, cached);
-  if (Date.now() - cached.builtAt > INDEX_TTL_MS) void buildProjectIndex(root).catch(() => undefined);
+  projectFileIndexes.delete(key);
+  projectFileIndexes.set(key, cached);
+  if (Date.now() - cached.builtAt > INDEX_TTL_MS) void buildProjectIndex(root, includeIgnored).catch(() => undefined);
   return cached.files;
 }
 
@@ -199,14 +213,16 @@ export async function searchProjectDirectory(
   root: string,
   query: string,
   limit: number,
-  options: { maxScannedEntries?: number; yieldEvery?: number } = {}
+  options: ProjectFileSearchOptions = {}
 ): Promise<string[]> {
   const normalizedQuery = query.trim().replace(/\\/g, '/').toLowerCase();
   // Explicit traversal options (tests, capped callers) bypass the cache so
   // scan-cap semantics stay exact; the interactive keystroke path shares the
   // TTL-cached index.
   const usesCache = options.maxScannedEntries === undefined && options.yieldEvery === undefined;
-  const files = usesCache ? await projectFilesFor(root) : await collectProjectFiles(root, options);
+  const files = usesCache
+    ? await projectFilesFor(root, Boolean(options.includeIgnored))
+    : await collectProjectFiles(root, options);
   const matches: Array<{ path: string; score: number }> = [];
   for (const path of files) {
     const score = matchScore(path, normalizedQuery);

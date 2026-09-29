@@ -59,6 +59,9 @@ function createTitleCompletion(deps = {}) {
         effort: String(route.effort || '').trim() || 'low',
         fast: route.fast === true,
         maxOutputTokens: 128,
+        // Background call: an overloaded provider is not retried (nobody is
+        // waiting on a title, and every retry adds load during a cascade).
+        retry529: false,
       }
     );
     return resultText(response).trim();

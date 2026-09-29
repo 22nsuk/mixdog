@@ -28,10 +28,11 @@ function tableWidths(columns, variant) {
   return null;
 }
 
-function pushTable(output, state, values, design, variant) {
+function pushTable(output, state, values, design, variant, widths = null) {
   const columns = Math.max(1, ...values.map((row) => row.length));
   state.table += 1;
   const table = state.table;
+  const columnWidths = widths || tableWidths(columns, variant);
   output.push({
     op: 'add_table',
     values,
@@ -42,7 +43,7 @@ function pushTable(output, state, values, design, variant) {
       fontSize: Math.max(9, design.format.body - 0.5),
       color: design.tokens.colors.ink,
       spacingAfter: 0,
-      ...(tableWidths(columns, variant) ? { columnWidths: tableWidths(columns, variant) } : {}),
+      ...(columnWidths ? { columnWidths } : {}),
       // The cells hold one exact line and no paragraph spacing, so the row's floor is the air around the centred
       // text: without it the header band and every row closed on the type's own height.
       rowHeights: values.map(() => Math.round(Math.max(9, design.format.body - 0.5) * 1.3 + 7)),
@@ -65,11 +66,19 @@ function pushTable(output, state, values, design, variant) {
       size: 1,
       color: design.tokens.colors.canvas,
       spacingBefore: 2,
-      spacingAfter: 2,
+      // A callout is a block of its own: at 2 pt the summary's box sat on the metric strip under it as one slab.
+      spacingAfter: variant === 'callout' ? 10 : 2,
       lineSpacing: 2,
     },
   });
   return { table, columns };
+}
+
+// The points a one-line label takes at its size: Hangul, kana, and Han a full em, the rest about half of one.
+function labelPoints(text, size) {
+  let ems = 0;
+  for (const char of String(text)) ems += /[\u1100-\u11FF\u3040-\u30FF\u3130-\u318F\u3400-\u9FFF\uAC00-\uD7AF]/.test(char) ? 1 : 0.55;
+  return ems * size;
 }
 
 // emphasis: 'inverse' (the dark field) · 'accent' · a state tone ('positive' | 'warning' | 'critical' | 'informative'):
@@ -92,7 +101,13 @@ export function addDocxDecisionCallout(
   const fallbackForeground = accentEmphasis ? colors.onAccent : colors.onInverse;
   const fillColor = tone ? colors[`${tone}Weak`] : fallbackFill;
   const foreground = tone ? colors[`${tone}Text`] : fallbackForeground;
-  const { table } = pushTable(output, state, caption ? [[caption], [String(text)]] : [[String(text)]], design, 'callout');
+  const { table } = pushTable(
+    output,
+    state,
+    caption ? [[caption], [String(text)]] : [[String(text)]],
+    design,
+    'callout'
+  );
   if (caption) {
     styleCell(output, table, 1, 1, {
       fillColor,
@@ -207,7 +222,13 @@ export function addDocxRoadmap(output, state, steps, design) {
     .filter((row) => row[1]);
   if (!parsed.length) return false;
   const colors = design.tokens.colors;
-  const { table } = pushTable(output, state, parsed, design, 'roadmap');
+  // The label column takes its longest label on one line (with the cell's padding), between the 86 pt the variant
+  // draws at and a third of the width: at a fixed 86 pt "야간 교대 추가" broke after 교대.
+  const labelWidth = Math.min(
+    170,
+    Math.max(86, Math.ceil(Math.max(...parsed.map(([label]) => labelPoints(label, 11.5))) + 16))
+  );
+  const { table } = pushTable(output, state, parsed, design, 'roadmap', [labelWidth, 480 - labelWidth]);
   parsed.forEach((_, index) => {
     const row = index + 1;
     styleCell(output, table, row, 1, {
@@ -282,7 +303,10 @@ export function addDocxSectionTable(output, state, values, design, variant = 'de
   // A column of figures is read down its right edge, its header over it (the docx skill's table anatomy); the
   // preset left 38, 21, 0 flush left under "대기 (분)".
   const figureColumn = Array.from({ length: columns }, (_, index) => {
-    const body = values.slice(1).map((row) => String(row?.[index] ?? '').trim()).filter(Boolean);
+    const body = values
+      .slice(1)
+      .map((row) => String(row?.[index] ?? '').trim())
+      .filter(Boolean);
     return index > 0 && body.length > 0 && body.every((cell) => FIGURE_CELL.test(cell));
   });
   const align = (column) => (figureColumn[column - 1] ? { horizontalAlignment: 'right' } : {});

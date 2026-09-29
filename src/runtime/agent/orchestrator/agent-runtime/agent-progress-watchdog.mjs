@@ -28,8 +28,7 @@ import {
 const PROVIDER_RECOVERY_FLOOR_MS =
   Math.max(PROVIDER_SEMANTIC_IDLE_TIMEOUT_MS, PROVIDER_WS_SEMANTIC_IDLE_TIMEOUT_MS) + STALL_TICK_MS;
 
-const WATCHDOG_ABORT_RE =
-  /^agent (?:first (?:transport|semantic response|response) stale|task stale)\s*\(/;
+const WATCHDOG_ABORT_RE = /^agent (?:first (?:transport|semantic response|response) stale|task stale)\s*\(/;
 
 /**
  * Typed abort error for the agent progress watchdog. Carrying a stable `name`

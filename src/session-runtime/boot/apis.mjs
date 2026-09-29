@@ -13,7 +13,7 @@ import {
   configureLocalProviderIdleTtl,
 } from '../../runtime/local-provider/managed-runtime.mjs';
 import { deferComputerSessionRelease, endComputerExecution } from '../../runtime/computer-bridge/client.mjs';
-import { developerOptionEnabled } from '../../runtime/shared/developer-options.mjs';
+import { developerOption, developerOptionEnabled } from '../../runtime/shared/developer-options.mjs';
 import { hasOwn } from '../session-text.mjs';
 import {
   normalizeSystemShellConfig,
@@ -112,17 +112,17 @@ function wireToolPolicyRefresh(boot) {
   boot.refreshEmptySessionToolPolicy = refreshEmptySessionToolPolicy;
 }
 
-// Built-in install adapters. Memory warms the embedding runtime so the model
-// download happens at install time instead of the first recall; git
-// verification is an instant probe; office provisions global Noto fonts and
-// verifies the bundled engine; tidy downloads its core managed engines.
+// Built-in install adapters. Memory downloads and loads the embedding model at
+// install time instead of the first recall, and a failed download fails the
+// install; office provisions global Noto fonts; tidy downloads its core managed
+// engines; the local provider downloads its runtime.
 function builtinFeatureAdapters(boot) {
   const { cfgMod, getMemoryModule } = boot;
   return {
     prepareBuiltinFeature: async (name) => {
       if (name === 'memory') {
-        const memory = await getMemoryModule().catch(() => null);
-        await memory?.warmup?.().catch?.(() => {});
+        const memory = await getMemoryModule();
+        await memory.warmupEmbedding();
       } else if (name === 'office') {
         const { prepareOfficeFonts } = await import('../../runtime/office/portable/font-provisioner.mjs');
         await prepareOfficeFonts?.().catch?.(() => {});
@@ -171,20 +171,20 @@ function localProviderAdapters(boot) {
   };
 }
 
-const DEV_ONLY_PROVIDER_IDS = Object.freeze(['cursor-oauth', 'antigravity-oauth']);
-
 function developerAdapters(boot) {
   const { reg, invalidateProviderCaches, ensureProvidersReady } = boot;
   return {
     // After setDeveloperOption: flush the pending save and reload so gates that
     // read the stored value (developerOptionEnabled) see it now, then apply
-    // live effects. Dev providers appear/disappear in the registry at once.
+    // live effects. A provider option's provider appears/disappears in the
+    // registry at once.
     syncDeveloperOption: async (id) => {
       const config = boot.reloadFullConfig();
-      if (id !== 'devProviders') return;
+      const provider = developerOption(id)?.provider;
+      if (!provider) return;
       invalidateProviderCaches();
-      if (!developerOptionEnabled('devProviders')) {
-        for (const provider of DEV_ONLY_PROVIDER_IDS) reg.disableProvider?.(provider);
+      if (!developerOptionEnabled(id)) {
+        reg.disableProvider?.(provider);
         return;
       }
       await ensureProvidersReady(config?.providers || {});

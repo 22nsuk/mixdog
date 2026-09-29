@@ -118,10 +118,11 @@ export async function sendProviderRequest(state, round) {
   const sendStartedAt = Date.now();
   const preSendMs = sendStartedAt - round.iterT0;
   const toolResumeMs = state.lastToolBatchEndedAt ? sendStartedAt - state.lastToolBatchEndedAt : null;
-  if (state.imageStripActive && !state.sendMessages) {
-    state.sendMessages = stripInlineImages(messages).messages;
-  }
-  const messageSource = state.sendMessages || messages;
+  // Every attempt is built from the live transcript, so a compaction between
+  // attempts reaches the provider; a pending image strip only filters it.
+  const messageSource = state.imageStrip
+    ? stripInlineImages(messages, { ids: state.imageStrip.ids }).messages
+    : messages;
   const { providerMessages, prefixGuardCandidate } = projectProviderRequest({
     messages: messageSource,
     sendTools: round.sendTools,
@@ -168,6 +169,15 @@ export async function sendProviderRequest(state, round) {
   };
 }
 
+// A replay may carry a runtime notice for the model (e.g. split an oversized
+// tool call). It joins the transcript the next send is built from once: a
+// repeated cut keeps the single notice already at the tail.
+function appendRecoveryNotice(state, notice) {
+  const { messages } = state;
+  if (messages[messages.length - 1]?.meta?.source === notice.meta?.source) return;
+  messages.push({ ...notice, meta: { ...notice.meta } });
+}
+
 /** Consume a recovery verdict; true when the loop must start the next round
  *  instead of processing a response. */
 export function applyRetryAction(state, result) {
@@ -181,6 +191,7 @@ export function applyRetryAction(state, result) {
     case 'retry_transport':
       state.transportRetriesUsed += 1;
       state.transportRetryMax = Number(result.transportRetryMax) || 0;
+      if (result.notice) appendRecoveryNotice(state, result.notice);
       return true;
     case 'retry_replay_repair':
       // The offending turn was repaired in the live transcript, so the replay
@@ -191,9 +202,7 @@ export function applyRetryAction(state, result) {
     case 'retry_image_strip':
       state.transportRetriesUsed += 1;
       state.imageStripUsed = true;
-      state.imageStripActive = true;
-      state.pendingImageStripPersistMessages = Array.isArray(result.persistMessages) ? result.persistMessages : null;
-      if (Array.isArray(result.messages)) state.sendMessages = result.messages;
+      state.imageStrip = { ids: new Set(result.imageIds), persist: result.persist === true };
       return true;
     default:
       return false;
@@ -202,13 +211,13 @@ export function applyRetryAction(state, result) {
 
 /** Fold a completed send into the state: prefix guard, image-strip
  *  rebaseline, per-request budgets, provider state, usage and diagnostics. */
-// An image-strip retry succeeded: persist the stripped transcript when the
-// recovery asked for it, otherwise drop the prefix guard so the next send
-// rebaselines against the unstripped history.
+// An image-strip retry succeeded: heal the stripped images out of the live
+// transcript when the recovery asked for it, otherwise drop the prefix guard
+// so the next send rebaselines against the unstripped history.
 function settleImageStrip(state, round, sent) {
-  const { sessionRef, sessionId, provider, model, messages } = state;
-  if (Array.isArray(state.pendingImageStripPersistMessages)) {
-    messages.splice(0, messages.length, ...state.pendingImageStripPersistMessages);
+  const { sessionRef, sessionId, provider, model, messages, imageStrip } = state;
+  if (imageStrip.persist) {
+    messages.splice(0, messages.length, ...stripInlineImages(messages, { ids: imageStrip.ids }).messages);
   } else {
     state.prefixGuardState = null;
     if (sessionRef) delete sessionRef._providerPrefixGuardState;
@@ -224,8 +233,7 @@ function settleImageStrip(state, round, sent) {
       nextCount: messages.length,
     });
   }
-  state.imageStripActive = false;
-  state.pendingImageStripPersistMessages = null;
+  state.imageStrip = null;
 }
 
 export function settleSendResult(state, round, sent) {
@@ -234,7 +242,7 @@ export function settleSendResult(state, round, sent) {
   state.response = response;
   state.prefixGuardState = sent.prefixGuardCandidate;
   if (sessionRef) sessionRef._providerPrefixGuardState = state.prefixGuardState;
-  if (state.imageStripActive) settleImageStrip(state, round, sent);
+  if (state.imageStrip) settleImageStrip(state, round, sent);
   opts.onToolCall = undefined;
   delete opts.cacheBreakIntent;
   state.contextOverflowRetryUsed = false;
@@ -244,7 +252,6 @@ export function settleSendResult(state, round, sent) {
   state.transportRetryMax = 0;
   delete opts._stallRetryBudget;
   state.imageStripUsed = false;
-  state.sendMessages = null;
   // Capture opaque state for the next turn only when the provider explicitly
   // returned the field. Absence means "no update"; an own property with
   // null/undefined means "clear".

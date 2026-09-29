@@ -17,6 +17,7 @@ import { envFlag, envPositiveInt } from '../../../../shared/env.mjs';
 import { positiveInt } from '../../../../shared/numbers.mjs';
 import { isAgentOwner } from '../../agent-owner.mjs';
 import { providerInputExcludesCache } from '../../providers/registry.mjs';
+import { contentMediaBytes } from '../../providers/media-normalization.mjs';
 
 // Unified context-share rule (compact/constants.mjs CONTEXT_SHARE_RATIO): the
 // post-compaction target is 25% of the boundary/context window. One
@@ -584,6 +585,23 @@ export function compactTargetBudget(policy) {
   const singleShot = policy?.singleShot === true || (rawTrigger > 0 && reserve >= rawTrigger);
   return compactTargetBudgetForTrigger(rawBoundary, rawTarget, reserve, rawTrigger, singleShot, policy?.force === true);
 }
+// Anthropic refuses a request body over 32 MB (HTTP 413) however few tokens it
+// holds, and inline media is what gets there: an image is priced at no more
+// than ~1.6k tokens yet carries up to 5 MB of base64. Tool-result media is the
+// part compaction drops, so it alone arms this trigger; attachments the user
+// sent survive compaction and would only make it repeat.
+const REQUEST_MEDIA_COMPACT_BYTES = 24_000_000;
+
+export function shouldCompactForRequestMedia(messages) {
+  let bytes = 0;
+  for (const message of messages) {
+    if (message?.role !== 'tool') continue;
+    bytes += contentMediaBytes(message.content);
+    if (bytes >= REQUEST_MEDIA_COMPACT_BYTES) return true;
+  }
+  return false;
+}
+
 export function shouldCompactForSession(
   messageTokensEst,
   policy,

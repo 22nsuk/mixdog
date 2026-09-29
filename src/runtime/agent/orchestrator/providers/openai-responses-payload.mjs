@@ -3,7 +3,7 @@ import { projectEffortConfiguration } from './effort-configuration.mjs';
 import { convertMessagesToResponsesInput } from './openai-responses-input.mjs';
 export { convertMessagesToResponsesInput } from './openai-responses-input.mjs';
 import { buildStableProviderPromptCacheKey, resolveProviderPromptCacheLane } from '../agent-runtime/cache-strategy.mjs';
-import { isResponsesFreeformTool, toResponsesCustomTool, responsesToolLoadingSurface } from './custom-tool-wire.mjs';
+import { isResponsesFreeformTool, toResponsesCustomTool } from './custom-tool-wire.mjs';
 import { _envFlag } from './openai-oauth-http-sse.mjs';
 import { findCachedCodexModel, codexModelSupportsServiceTier } from './openai-oauth-catalog.mjs';
 
@@ -109,7 +109,7 @@ function responsesInclude(opts) {
 // `nativeTools` are server-hosted Responses tools (for example web_search)
 // and must be passed through without wrapping them as function tools.
 function responsesToolsList(tools, opts) {
-  const functionTools = tools?.length ? responsesToolLoadingSurface(tools).map(toOpenAIResponsesTool) : [];
+  const functionTools = tools?.length ? tools.map(toOpenAIResponsesTool) : [];
   const nativeTools = Array.isArray(opts.nativeTools) ? opts.nativeTools.filter((t) => t && typeof t === 'object') : [];
   return functionTools.length || nativeTools.length ? [...nativeTools, ...functionTools] : null;
 }

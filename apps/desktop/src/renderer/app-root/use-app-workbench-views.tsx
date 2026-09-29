@@ -2,6 +2,7 @@ import type React from 'react';
 import type { DesktopWorkspaceFolder } from '../../shared/contract';
 import { SessionSidebar, type NavigationSelection } from '../navigation';
 import { paneActiveSelection, type PaneLeaf } from '../pane-layout';
+import { navigationKey } from '../text-format';
 import type { usePaneWorkspace } from '../pane-workspace-state';
 import { DEFAULT_SIDEBAR_VIEW_ORDER } from '../sidebar-view-layout';
 import type { SidebarPanelKey } from '../app-shell-components';
@@ -64,6 +65,7 @@ export interface UseAppWorkbenchViewsOptions {
   dockOpenPullRequest: PullRequestOpenHandler;
   dockOpenLeadSession: (sessionId: string) => void;
   dockOpenAgentSession: (sessionId: string, title: string, ownerSessionId: string) => void;
+  renameProjectEntry: (projectPath: string, relPath: string, newName: string) => Promise<void>;
 
   paneSideDocks: ReturnType<typeof useAppSideDocks>['paneSideDocks'];
   setSidebarDiff: ReturnType<typeof useAppSideDocks>['setSidebarDiff'];
@@ -118,6 +120,7 @@ export function useAppWorkbenchViews({
   dockOpenPullRequest,
   dockOpenLeadSession,
   dockOpenAgentSession,
+  renameProjectEntry,
   paneSideDocks,
   setSidebarDiff,
   registeredProjectPath,
@@ -202,6 +205,9 @@ export function useAppWorkbenchViews({
     // Session-owned surfaces render in the pane dock's persistent stack.
     if (id === 'browser' || id === 'terminal') return null;
     const tab = id as UtilityDockTab;
+    // Search's file tree reveals the editor of the pane this view serves.
+    const dockLeaf = paneWorkspace.leaves.find((leaf) => leaf.id === (pane?.leafId ?? paneWorkspace.focusedLeafId));
+    const dockSelection = dockLeaf ? paneActiveSelection(dockLeaf) : null;
     return (
       <SnapshotUtilityDock
         snapshotStore={snapshotStore}
@@ -225,6 +231,8 @@ export function useAppWorkbenchViews({
         contentReady
         onOpenFile={dockOpenFile}
         onOpenFileAt={dockOpenFileAt}
+        activeFileKey={dockSelection?.kind === 'file' ? navigationKey(dockSelection) : ''}
+        onRenameProjectEntry={renameProjectEntry}
         onOpenDiff={
           pane
             ? (project, rel, request) => {

@@ -12,23 +12,40 @@ export function conversationCoverIdentity(
   return { coverKey: nextId, promotingFromDraft: false };
 }
 
+/** Only a draft that submitted its first prompt is promoted into the session
+ *  it created. Opening an existing session from New Task is a plain session
+ *  entry: treated as a promotion, it skipped the cover and left the New Task
+ *  watermark on screen until the cold lane landed, then popped the rows in
+ *  (user: 세션 로딩할 때 투툭 튀고 이전 게 잔상으로 남는다). */
+export function conversationDraftPromotion(
+  draftSubmitted: boolean,
+  originSessionId: string,
+  sessionId: string
+): boolean {
+  const origin = String(originSessionId || '').trim();
+  return draftSubmitted && (!origin || origin === String(sessionId || '').trim());
+}
+
+/** The cover id a render judges against: a draft that did not promote enters
+ *  its session like any session-to-session switch. */
+export function conversationCoverBasis(coverId: string, sessionId: string, draftPromotion: boolean): string {
+  const previous = String(coverId || '').trim() || 'draft';
+  if (previous !== 'draft' || draftPromotion) return previous;
+  return String(sessionId || '').trim() || 'draft';
+}
+
 /** Keep the draft cover for the first promoted session, even after settle. */
 export function nextConversationCoverId(
   previousCoverId: string,
   sessionId: string,
   surfaceSettled: boolean,
-  originSessionId = ''
+  draftPromotion = false
 ): string {
   const nextId = String(sessionId || '').trim() || 'draft';
   const previous = String(previousCoverId || '').trim() || 'draft';
-  const origin = String(originSessionId || '').trim();
-  if (previous === 'draft') {
-    // First promotion keeps the draft cover after settle. A later switch to a
-    // different session leaves draft so session-to-session still covers.
-    if (nextId === 'draft') return 'draft';
-    if (!origin || origin === nextId) return 'draft';
-    return nextId;
-  }
+  // First promotion keeps the draft cover after settle. Any other entry from
+  // draft leaves it so the session still covers.
+  if (previous === 'draft') return draftPromotion ? 'draft' : nextId;
   if (nextId !== 'draft' && !surfaceSettled) return previous;
   return nextId;
 }
@@ -75,7 +92,7 @@ export function conversationSwitchPaintGate(
 ): { adoptNow: boolean; reveal: boolean } {
   const incoming = String(incomingId || '').trim() || 'draft';
   const held = String(heldId || '').trim() || 'draft';
-  if (hidden || promotingFromDraft || incoming === 'draft' || held === 'draft') {
+  if (hidden || promotingFromDraft || incoming === 'draft') {
     return { adoptNow: true, reveal: true };
   }
   // A lane fetched before navigation already has its final transcript tree.

@@ -76,6 +76,49 @@ test('setup uses the Desktop receipt rather than treating notification delivery 
   );
 });
 
+test('Git and Office installs run on a claiming Desktop; only an unclaimed request falls back to the runtime', async () => {
+  const installs = [];
+  let desktop = 'claims';
+  let executor;
+  executor = createSetupToolExecutor({
+    getApi: () => ({
+      async installBuiltinFeature(name) {
+        installs.push(name);
+        return { [name]: { installed: true, enabled: true } };
+      },
+    }),
+    getSessionId: () => 's',
+    notifySessionUi: (_session, _content, meta) => {
+      if (desktop === 'absent') return false;
+      queueMicrotask(() => {
+        const claim = executor.claimSetupRequest(meta.id, 'local-desktop');
+        executor.completeSetupRequest(
+          meta.id,
+          'local-desktop',
+          desktop === 'fails'
+            ? { error: 'winget could not install Git: exit code 1' }
+            : { result: { [claim.args.name]: { installed: true, enabled: true }, scope: 'desktop-host' } }
+        );
+      });
+      return true;
+    },
+  });
+
+  const onDesktop = JSON.parse(await executor.execute({ action: 'install_builtin', name: 'git' }));
+  assert.equal(onDesktop.scope, 'desktop-host');
+  assert.deepEqual(onDesktop.git, { installed: true, enabled: true });
+  assert.deepEqual(installs, []);
+
+  desktop = 'fails';
+  await assert.rejects(executor.execute({ action: 'install_builtin', name: 'git' }), /winget could not install Git/);
+  assert.deepEqual(installs, [], 'a Desktop failure is reported, never retried without the dependency');
+
+  desktop = 'absent';
+  const runtimeOnly = JSON.parse(await executor.execute({ action: 'install_builtin', name: 'office' }));
+  assert.deepEqual(runtimeOnly.office, { installed: true, enabled: true });
+  assert.deepEqual(installs, ['office']);
+});
+
 test('a claimed Desktop request loses mutation authority as soon as its turn is cancelled', async () => {
   let id;
   const controller = new AbortController();

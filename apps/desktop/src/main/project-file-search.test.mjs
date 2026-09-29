@@ -70,3 +70,16 @@ test('sixteen Project roots stay indexed together', async (t) => {
   // The first root was not evicted by the other fifteen: no re-walk yet.
   assert.deepEqual(await searchProjectDirectory(roots[0], 'index', 10), ['index.ts']);
 });
+
+test('gitignored files are found only when asked for, never inside node_modules', async (t) => {
+  const root = await tempRoot(t);
+  await writeFile(join(root, '.gitignore'), '/deliverables/\n');
+  await mkdir(join(root, 'deliverables', 'brand'), { recursive: true });
+  await mkdir(join(root, 'node_modules', 'pkg'), { recursive: true });
+  await writeFile(join(root, 'deliverables', 'brand', 'report.docx'), '');
+  await writeFile(join(root, 'node_modules', 'pkg', 'report.docx'), '');
+  assert.deepEqual(await searchProjectDirectory(root, 'report.docx', 10), []);
+  assert.deepEqual(await searchProjectDirectory(root, 'report.docx', 10, { includeIgnored: true }), [
+    'deliverables/brand/report.docx',
+  ]);
+});

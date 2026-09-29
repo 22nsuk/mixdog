@@ -34,6 +34,7 @@ export function turnReviewScope<
   startIndex: number;
   key: string;
   hasActivity: boolean;
+  truncated: boolean;
 };
 export function shouldShowFastControl(
   routeFastCapable: boolean,

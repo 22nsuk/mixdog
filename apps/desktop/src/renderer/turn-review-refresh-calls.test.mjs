@@ -6,13 +6,16 @@ import { JSDOM } from 'jsdom';
 import { TurnReviewBar } from './TurnReview';
 import { _runIdleReclaimForTest } from './idle-reclaim';
 
-function mount(t) {
+function mount(t, sessionId = 'sess-review-calls') {
   const dom = new JSDOM('<!doctype html><div id="root"></div>', {
     url: 'https://mixdog.test/',
     pretendToBeVisual: true,
   });
   const previous = new Map(
-    ['window', 'document', 'IS_REACT_ACT_ENVIRONMENT'].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)])
+    ['window', 'document', 'IS_REACT_ACT_ENVIRONMENT'].map((key) => [
+      key,
+      Object.getOwnPropertyDescriptor(globalThis, key),
+    ])
   );
   Object.defineProperty(globalThis, 'window', { configurable: true, value: dom.window });
   Object.defineProperty(globalThis, 'document', { configurable: true, value: dom.window.document });
@@ -36,7 +39,7 @@ function mount(t) {
   });
   const render = (items, busy) =>
     act(async () =>
-      root.render(React.createElement(TurnReviewBar, { items, sessionId: 'sess-review-calls', active: true, busy }))
+      root.render(React.createElement(TurnReviewBar, { items, sessionId, active: true, busy }))
     );
   const answer = (value = {}) =>
     act(async () =>
@@ -53,7 +56,8 @@ function mount(t) {
       })
     );
   const bar = () => dom.window.document.querySelector('.turn-review-bar');
-  return { render, answer, bar, pending, requests };
+  const entryPending = () => Boolean(dom.window.document.querySelector('[data-entry-pending]'));
+  return { render, answer, bar, entryPending, pending, requests };
 }
 
 const prompt = { kind: 'user', id: 'prompt', text: 'Change a file' };
@@ -106,6 +110,31 @@ test("a new prompt never shows the previous turn's review the runtime still answ
   await render([...earlier, edit('current')], true);
   await answer({ ...changed, checkpointId: 'turn-2' });
   assert.ok(bar(), "the current turn's own review shows");
+});
+
+test('entering an idle session shows no estimated bar before its first read answers', async (t) => {
+  const { render, answer, bar, entryPending, requests } = mount(t, 'sess-review-entry-empty');
+  await render([prompt, edit('outside-worktree')], false);
+  assert.equal(bar(), null, 'the transcript estimate is not painted on entry');
+  assert.ok(entryPending(), 'the entry marks itself undecided for the reveal gate');
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].args[0].refresh, false, 'the held snapshot is asked first');
+  await answer();
+  assert.equal(bar(), null, 'an empty authoritative review never shows the estimate');
+  assert.equal(entryPending(), false);
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].args[0].refresh, true, 'the fresh worktree read follows');
+  await answer();
+});
+
+test('an entered session with real changes shows its bar once the first read answers', async (t) => {
+  const { render, answer, bar, requests } = mount(t, 'sess-review-entry-changed');
+  await render([prompt, edit('first')], false);
+  assert.equal(bar(), null);
+  await answer({ files: [{ path: 'a.txt', status: 'M', additions: 2, deletions: 0 }] });
+  assert.ok(bar());
+  assert.equal(requests.length, 2);
+  await answer({ files: [{ path: 'a.txt', status: 'M', additions: 2, deletions: 0 }] });
 });
 
 test('a review tag is only sent while the review it names is still cached', async (t) => {

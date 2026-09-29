@@ -112,7 +112,7 @@ export const sessionCommands = {
       store.pushNotice('wait for the current command to finish before /doctor', 'warn');
       return false;
     }
-    void Promise.resolve(deps.runDoctor?.()).catch((e) =>
+    void Promise.resolve(deps.runDoctor?.({ notice: true })).catch((e) =>
       store.pushNotice(`doctor failed: ${e?.message || e}`, 'error')
     );
     return true;

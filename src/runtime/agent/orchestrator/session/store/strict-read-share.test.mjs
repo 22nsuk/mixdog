@@ -250,7 +250,11 @@ test('a live session released from the document budget is reloaded without a rea
     again.every((session, index) => session === sessions[index]),
     'the same owned objects come back'
   );
-  assert.deepEqual(held.map(reads), held.map(() => 1), 'no whole-file read during activity');
+  assert.deepEqual(
+    held.map(reads),
+    held.map(() => 1),
+    'no whole-file read during activity'
+  );
   // A closed/unloaded session is forgotten: its next load reads the file.
   forgetSessionLoadCache(held[0]);
   assert.equal(loadSession(held[0]).id, held[0]);

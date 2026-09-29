@@ -354,6 +354,19 @@ function deferredToolSnapshot(base, session, discovered) {
   return result;
 }
 
+// Anthropic renders tool-search mode into the cached prefix as soon as a
+// request carries its first defer_loading tool (measured: the whole prompt
+// cache rebuilds on that request; later deferred additions keep it). One
+// stable built-in deferred definition keeps every request of a native
+// session in that mode from the first send. MCP schemas stay selection-only.
+function deferredModeAnchor(session, activeNames) {
+  for (const tool of entriesOf(session?.deferredToolCatalog)) {
+    const name = typeof tool?.name === 'string' ? clean(tool.name) : '';
+    if (name && !name.startsWith('mcp__') && !activeNames.has(name)) return name;
+  }
+  return null;
+}
+
 // Tool array → last snapshot built from it. Producers replace descriptors
 // (MCP reload, policy refresh, catalog rebuild) and grow/shrink the arrays in
 // place, so a stage is reused while every input list holds the same entries.
@@ -394,6 +407,8 @@ export function snapshotProviderRequestTools(options = {}) {
   for (const name of syncDiscoveredReferences(base.discovery, normalizedProvider, messages).keys()) {
     discovered.add(name);
   }
+  const anchor = deferredModeAnchor(session, base.names);
+  if (anchor) discovered.add(anchor);
   if (discovered.size === 0) return base.result;
   return deferredToolSnapshot(base, session, discovered);
 }

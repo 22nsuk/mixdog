@@ -3,7 +3,7 @@
 
 #![allow(dead_code)]
 
-use super::{AppEntry, Background, Button, Desktop, Launched, WinState, WindowInfo, Wid};
+use super::{AppEntry, Background, Button, Desktop, Launched, Wid, WinState, WindowInfo};
 use crate::a11y::Accessibility;
 use crate::keys::Key;
 use serde_json::{json, Value};
@@ -14,7 +14,9 @@ pub struct Unsupported {
 
 impl Unsupported {
     pub fn new(reason: impl Into<String>) -> Unsupported {
-        Unsupported { reason: reason.into() }
+        Unsupported {
+            reason: reason.into(),
+        }
     }
 }
 
@@ -49,7 +51,14 @@ impl Desktop for Unsupported {
     fn is_owned_by(&self, _candidate: Wid, _owner: Wid) -> bool {
         false
     }
-    fn move_window(&self, _handle: Wid, _x: i32, _y: i32, _width: i32, _height: i32) -> Result<(), String> {
+    fn move_window(
+        &self,
+        _handle: Wid,
+        _x: i32,
+        _y: i32,
+        _width: i32,
+        _height: i32,
+    ) -> Result<(), String> {
         self.fail()
     }
     fn set_window_state(&self, _handle: Wid, _state: WinState) -> Result<(), String> {
@@ -67,7 +76,14 @@ impl Desktop for Unsupported {
     fn move_pointer(&self, _x: i32, _y: i32) -> Result<(), String> {
         self.fail()
     }
-    fn button(&self, _button: Button, _down: bool, _x: i32, _y: i32, _clicks: u32) -> Result<(), String> {
+    fn button(
+        &self,
+        _button: Button,
+        _down: bool,
+        _x: i32,
+        _y: i32,
+        _clicks: u32,
+    ) -> Result<(), String> {
         self.fail()
     }
     fn drag_move(&self, _x: i32, _y: i32) -> Result<(), String> {

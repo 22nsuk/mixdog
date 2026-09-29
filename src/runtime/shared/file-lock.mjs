@@ -125,7 +125,9 @@ async function runAsync(steps) {
 
 function* readLockOwner(lockPath) {
   try {
-    const parts = String(yield ['read', lockPath]).trim().split(/\s+/);
+    const parts = String(yield ['read', lockPath])
+      .trim()
+      .split(/\s+/);
     const pid = Number.parseInt(parts[0], 10);
     return {
       pid: Number.isFinite(pid) && pid > 0 ? pid : null,

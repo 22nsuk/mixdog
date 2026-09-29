@@ -12,5 +12,16 @@ test('figure columns set right, including currency, units and percentage points'
   ];
   assert.deepEqual(figureColumnAlignments(rows, 6), ['left', 'right', 'right', 'right', 'right', 'left']);
   // A row label with a digit in it stays left; a declared alignment is kept.
-  assert.deepEqual(figureColumnAlignments([['호', 'n'], ['1호', '3'], ['2호', '4']], 2, ['center']), ['center', 'right']);
+  assert.deepEqual(
+    figureColumnAlignments(
+      [
+        ['호', 'n'],
+        ['1호', '3'],
+        ['2호', '4'],
+      ],
+      2,
+      ['center']
+    ),
+    ['center', 'right']
+  );
 });

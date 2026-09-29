@@ -672,6 +672,38 @@ test('seven-day and custom controls submit explicit date bounds without paginati
   assert.deepEqual(calls.at(-1), { view: 'custom', startDay: '2026-08-31', endDay: '2026-09-06' });
 });
 
+test('clock menus portaled out of the custom editor keep it open for Escape and picks', async (context) => {
+  const render = harness(context);
+  const calls = [];
+  const request = async (_capability, [options]) => {
+    calls.push(options);
+    return snapshot(options.view, 1200, options.anchor, {
+      startDay: options.startDay,
+      endDay: options.endDay,
+      startTime: options.startTime,
+    });
+  };
+  await render({ data: { getUsageStats: snapshot() }, request });
+  await act(async () => button('Custom').click());
+  const hour = document.querySelector('.mx-daterange-clock [role="combobox"]');
+  const menu = () => document.getElementById(hour.getAttribute('aria-controls'));
+  // The first Escape closes the open menu, not the editor around it.
+  await act(async () => hour.click());
+  await act(async () => menu().dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+  assert.equal(menu(), null);
+  assert.ok(document.querySelector('.stats-custom-range'), 'Escape in a clock menu keeps the editor open');
+  // A real pointer presses before it clicks, on an option rendered in a body portal.
+  await act(async () => hour.click());
+  const option = [...menu().querySelectorAll('[role="option"]')].find((node) => node.textContent === '09');
+  await act(async () => option.dispatchEvent(new window.MouseEvent('pointerdown', { bubbles: true })));
+  await act(async () => option.click());
+  assert.ok(document.querySelector('.stats-custom-range'), 'picking a clock time keeps the editor open');
+  assert.equal(button('Custom').getAttribute('aria-pressed'), 'true');
+  assert.equal(hour.querySelector('.mx-select-value').textContent, '09');
+  await act(async () => button('Apply').click());
+  assert.deepEqual(calls.at(-1), { view: 'custom', startDay: '2026-09-12', endDay: '2026-09-13', startTime: '09:00' });
+});
+
 test('custom ranges pick the finest calendar unit that keeps the chart within thirty bars', async (context) => {
   assert.deepEqual(resolveUsageTrendGrouping('2026-09-01', '2026-09-30').grain, 'day');
   assert.deepEqual(resolveUsageTrendGrouping('2026-08-01', '2026-09-30').grain, 'week');

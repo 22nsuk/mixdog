@@ -17,7 +17,9 @@ mkdirSync(join(root, 'sessions'));
 
 const { readSessionLifecycleStateFromDisk } = await import('../store.mjs');
 const { _shouldDrop } = await import('./write-admission.mjs');
-const { connectOwnCommitPeer, stampSessionScratch, lifecycleOfSessionDocument } = await import('./canonical-reader.mjs');
+const { connectOwnCommitPeer, stampSessionScratch, lifecycleOfSessionDocument } = await import(
+  './canonical-reader.mjs'
+);
 
 const channel = new MessageChannel();
 connectOwnCommitPeer(channel.port1);
@@ -30,7 +32,12 @@ test.after(() => {
 });
 
 const fileOf = (id) => join(root, 'sessions', `${id}.json`);
-const doc = (id, generation) => ({ id, closed: false, generation, messages: [{ role: 'user', content: 'x'.repeat(2048) }] });
+const doc = (id, generation) => ({
+  id,
+  closed: false,
+  generation,
+  messages: [{ role: 'user', content: 'x'.repeat(2048) }],
+});
 const place = (id, value) => {
   writeFileSync(`${fileOf(id)}.first`, JSON.stringify(value));
   renameSync(`${fileOf(id)}.first`, fileOf(id));

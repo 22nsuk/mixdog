@@ -545,40 +545,40 @@ function ProviderStep({
                 provider.usable === true ||
                 (provider.usable == null && Boolean(provider.authenticated) && !provider.reauthRequired);
               return (
-              <div className="onboarding-provider-row" key={String(provider.id)}>
-                <div>
-                  <b>{providerTitle(provider)}</b>
-                  <small className={`onboarding-provider-state${connected ? ' connected' : ''}`}>
-                    {t(providerStatusText(provider))}
-                  </small>
-                </div>
-                {/* A working login needs no Connect; Forget stays for switching. */}
-                {!connected && (
-                  <span className="onboarding-provider-action">
-                    <OAuthControl
-                      api={api}
-                      provider={{ ...provider, label: providerTitle(provider) }}
+                <div className="onboarding-provider-row" key={String(provider.id)}>
+                  <div>
+                    <b>{providerTitle(provider)}</b>
+                    <small className={`onboarding-provider-state${connected ? ' connected' : ''}`}>
+                      {t(providerStatusText(provider))}
+                    </small>
+                  </div>
+                  {/* A working login needs no Connect; Forget stays for switching. */}
+                  {!connected && (
+                    <span className="onboarding-provider-action">
+                      <OAuthControl
+                        api={api}
+                        provider={{ ...provider, label: providerTitle(provider) }}
+                        disabled={Boolean(pending)}
+                        run={run}
+                        onComplete={onReload}
+                      />
+                    </span>
+                  )}
+                  {Boolean(provider.authenticated || provider.reauthRequired) && (
+                    <button
+                      type="button"
+                      className="ghost"
                       disabled={Boolean(pending)}
-                      run={run}
-                      onComplete={onReload}
-                    />
-                  </span>
-                )}
-                {Boolean(provider.authenticated || provider.reauthRequired) && (
-                  <button
-                    type="button"
-                    className="ghost"
-                    disabled={Boolean(pending)}
-                    onClick={() => {
-                      void run('forgetProviderAuth', [provider.id], `forget-${provider.id}`).then((result) => {
-                        if (result !== undefined) onReload();
-                      });
-                    }}
-                  >
-                    {t('Forget')}
-                  </button>
-                )}
-              </div>
+                      onClick={() => {
+                        void run('forgetProviderAuth', [provider.id], `forget-${provider.id}`).then((result) => {
+                          if (result !== undefined) onReload();
+                        });
+                      }}
+                    >
+                      {t('Forget')}
+                    </button>
+                  )}
+                </div>
               );
             })}
           </div>
@@ -1026,12 +1026,7 @@ function StarStep({ api }: { api: DesktopApi }) {
           <ExternalLink size={14} /> {t('Open on GitHub')}
         </button>
         {/* Star sits at the card's bottom-right — the easiest spot to hit. */}
-        <button
-          type="button"
-          className={starred ? 'starred' : undefined}
-          disabled={busy || starred}
-          onClick={star}
-        >
+        <button type="button" className={starred ? 'starred' : undefined} disabled={busy || starred} onClick={star}>
           <Star size={14} fill={starred ? 'currentColor' : 'none'} />
           {starLabel(starred, busy)}
         </button>

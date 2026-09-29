@@ -56,7 +56,10 @@ export function readRosterStamp(payload: unknown): [string, number] | null {
   const stamp = payload && typeof payload === 'object' ? (payload as { __roster?: unknown }).__roster : undefined;
   if (!Array.isArray(stamp) || stamp.length !== 2) return null;
   const [epoch, version] = stamp as unknown[];
-  return typeof epoch === 'string' && EPOCH_PATTERN.test(epoch) && Number.isSafeInteger(version) && (version as number) >= 0
+  return typeof epoch === 'string' &&
+    EPOCH_PATTERN.test(epoch) &&
+    Number.isSafeInteger(version) &&
+    (version as number) >= 0
     ? [epoch, version as number]
     : null;
 }

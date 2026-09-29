@@ -57,7 +57,7 @@ test('input paths, lookup, pending, failed and executable outputs never become r
   );
 });
 
-test('collapsed activity exposes image, playable video and a document that opens in its conversation Project', async () => {
+test('collapsed activity exposes image, playable video, a document that opens in its conversation Project, and a deleted one as deleted', async () => {
   const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'http://localhost/' });
   const previous = new Map(
     ['window', 'document', 'navigator', 'IS_REACT_ACT_ENVIRONMENT'].map((key) => [
@@ -78,6 +78,14 @@ test('collapsed activity exposes image, playable video and a document that opens
     openLocalFileLink: async (...args) => {
       opened.push(args);
     },
+    statProjectFile: async (_project, path) => {
+      if (/gone/.test(path)) throw Object.assign(new Error('ENOENT: no such file'), { code: 'ENOENT' });
+      return { mtimeMs: 0, size: 1 };
+    },
+    resolveLocalPaths: async ([absolutePath]) => {
+      if (/gone/.test(absolutePath)) throw Object.assign(new Error('ENOENT: no such file'), { code: 'ENOENT' });
+      return [{ absolutePath, dir: false, projectPath: 'C:/work', relPath: absolutePath.slice('C:/work/'.length) }];
+    },
   };
   const root = createRoot(dom.window.document.getElementById('root'));
   try {
@@ -91,11 +99,17 @@ test('collapsed activity exposes image, playable video and a document that opens
               media({ ok: true, assetId: 'a', output: 'C:/work/a.png' }),
               media({ ok: true, assetId: 'b', output: 'C:/work/b.mp4' }, { action: 'generate', kind: 'video' }),
               office('C:/work/report #1.docx'),
+              office('C:/work/gone.xlsx'),
             ],
           })
         )
       )
     );
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+    const gone = dom.window.document.querySelector('.transcript-artifact-file[aria-disabled="true"]');
+    assert.equal(gone.tagName, 'SPAN');
+    assert.equal(gone.querySelector('span').textContent, 'gone.xlsx');
+    assert.equal(gone.querySelector('small').textContent, 'Deleted');
     assert.equal(dom.window.document.querySelector('.tool-activity-header').getAttribute('aria-expanded'), 'false');
     assert.ok(dom.window.document.querySelector('.transcript-artifacts img'));
     const video = dom.window.document.querySelector('video');

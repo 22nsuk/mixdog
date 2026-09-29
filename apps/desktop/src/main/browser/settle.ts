@@ -102,6 +102,10 @@ async function waitForNetworkQuiet(host: BrowserSettleHost, guest: WebContents, 
   }
 }
 
+/** How CDP reports that the document a checkpoint was awaiting in went away:
+ *  the gesture itself navigated (Enter in a search box, a submit button). */
+const DOCUMENT_REPLACED = /Inspected target navigated or closed|Execution context was destroyed/;
+
 /** Let input handlers and their rendering work run without waiting for
  * unrelated DOM mutations. The next gesture still owns its target's
  * actionability checks; the final reply waits for pending load/network work.
@@ -118,6 +122,10 @@ async function stepSettleResult(
       await host.renderCheckpoint(guest, background, signal);
     } catch (error) {
       if (signal?.aborted) throw signal.reason || error;
+      // The old document has nothing left to render; the navigation the input
+      // started is what the caller's load settle and reply observe next.
+      const replaced = !guest.isDestroyed() && DOCUMENT_REPLACED.test(error instanceof Error ? error.message : String(error));
+      if (replaced) return { outcome: 'completed', text: '' };
       return {
         outcome: 'inconclusive',
         // The page itself is loaded and the gesture landed; only this reading

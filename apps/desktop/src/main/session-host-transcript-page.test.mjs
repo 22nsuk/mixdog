@@ -102,10 +102,14 @@ test('an older page crosses the daemon hop as the revealed rows only, and the ho
     assert.ok(reply.result.page, 'the daemon answered with a page');
     assert.equal(reply.result.page.items.length, 64);
     assert.ok(reply.bytes < Buffer.byteLength(JSON.stringify(snapshot)) * 0.8);
-    assert.deepEqual(ids(snapshot.items), Array.from({ length: 96 }, (_, index) => `c${204 + index}`));
+    assert.deepEqual(
+      ids(snapshot.items),
+      Array.from({ length: 96 }, (_, index) => `c${204 + index}`)
+    );
     assert.equal(snapshot.transcriptHasOlder, true);
     const projection = f.publication.projections.get(f.id);
-    for (let index = 0; index < held.length; index += 1) assert.equal(projection.snapshot.items[64 + index], held[index]);
+    for (let index = 0; index < held.length; index += 1)
+      assert.equal(projection.snapshot.items[64 + index], held[index]);
     assert.equal(projection.cold, true);
     assert.equal(projection.projectionStamp, reply.result.projectionStamp);
     assert.equal(f.reads.length, 1, 'one round trip');
@@ -152,7 +156,10 @@ test('held rows that move while the page is in flight fall back to a full read',
     assert.equal(f.reads[1].args.transcriptHeld, undefined);
     assert.equal(f.reads[1].args.baseRevision, null);
     assert.ok(f.reads[1].result.full);
-    assert.deepEqual(ids(snapshot.items), Array.from({ length: 96 }, (_, index) => `c${204 + index}`));
+    assert.deepEqual(
+      ids(snapshot.items),
+      Array.from({ length: 96 }, (_, index) => `c${204 + index}`)
+    );
   } finally {
     await f.service.stop('test complete');
   }

@@ -114,7 +114,7 @@ test('a window is kept only when its own lag crosses a threshold', async (t) => 
   assert.deepEqual(profileFiles(dataDir), []);
   assert.deepEqual(
     inspector.sessions[0].calls.slice(3).map(([method]) => method),
-    ['Profiler.stop', 'Profiler.start'],
+    ['Profiler.stop', 'Profiler.start']
   );
 
   assert.equal(await profiler.tick({ p99Ms: 1000, maxMs: 1200, busySessions: 30 }), 'saved');
@@ -210,7 +210,7 @@ test('script URLs shorten relative to src/ or node_modules/', () => {
   assert.equal(shortenScriptUrl(pathToFileURL(path.join(SRC, 'standalone', 'd.mjs')).href, SRC), 'standalone/d.mjs');
   assert.equal(
     shortenScriptUrl(path.join(tmpdir(), 'x', 'node_modules', 'a', 'node_modules', 'b', 'i.js'), SRC),
-    'b/i.js',
+    'b/i.js'
   );
   assert.equal(shortenScriptUrl('node:internal/timers', SRC), 'node:internal/timers');
 });
@@ -238,7 +238,10 @@ test('the flag file switches profiling on and off without a restart', async (t) 
   assert.equal(await profiler.tick({ p99Ms: 5000 }), 'disabled');
   assert.equal(profiler.active, false);
   const first = inspector.sessions[0];
-  assert.deepEqual(first.calls.slice(-2).map(([method]) => method), ['Profiler.stop', 'Profiler.disable']);
+  assert.deepEqual(
+    first.calls.slice(-2).map(([method]) => method),
+    ['Profiler.stop', 'Profiler.disable']
+  );
   assert.equal(first.disconnected, true);
   assert.deepEqual(profileFiles(dataDir), []);
   assert.deepEqual(lines, [`lag-profile enabled dir=${path.join(dataDir, 'profiles')}`, 'lag-profile disabled']);
@@ -261,7 +264,10 @@ test('profiler failures are caught, logged once, and never reject the tick', asy
   assert.equal(await profiler.tick(), 'failed');
   assert.equal(await profiler.tick(), 'failed');
   assert.deepEqual(lines, ['lag-profile failed profiler: Profiler.enable boom']);
-  assert.equal(inspector.sessions.every((session) => session.disconnected), true);
+  assert.equal(
+    inspector.sessions.every((session) => session.disconnected),
+    true
+  );
   assert.equal(profiler.active, false);
 });
 
@@ -285,6 +291,6 @@ test('the real node:inspector session produces a DevTools .cpuprofile for a lag 
   assert.ok(Array.isArray(profile.timeDeltas));
   assert.match(
     lines.find((line) => line.startsWith('lag-profile saved')),
-    /^lag-profile saved file=daemon-lag-\S+\.cpuprofile p99=1200ms max=2500ms busySessions=30 top=\S/,
+    /^lag-profile saved file=daemon-lag-\S+\.cpuprofile p99=1200ms max=2500ms busySessions=30 top=\S/
   );
 });

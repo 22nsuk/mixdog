@@ -97,9 +97,14 @@ await pres.writeFile({fileName:OUTPUT});`;
   const charts = await Promise.all(zip.file(/^ppt\/charts\/chart\d+\.xml$/).map((file) => file.async('string')));
   const minOf = (xml) => Number(/<c:valAx>[\s\S]*?<c:min val="([\d.]+)"\/>/.exec(xml)?.[1] ?? 0);
   const mins = charts.map(minOf).sort((a, b) => a - b);
-  assert.deepEqual(mins, [0, 2600], 'the small bridge floors at 2,600; the one that falls to 2,680 of 4,580 keeps its zero axis');
+  assert.deepEqual(
+    mins,
+    [0, 2600],
+    'the small bridge floors at 2,600; the one that falls to 2,680 of 4,580 keeps its zero axis'
+  );
   const table = await zip.file('ppt/slides/slide3.xml').async('string');
-  const cell = (text) => new RegExp(`<a:pPr[^>]*algn="(\\w+)"[^>]*>(?:(?!</a:p>)[\\s\\S])*?<a:t>${text}</a:t>`).exec(table)?.[1] ?? 'l';
+  const cell = (text) =>
+    new RegExp(`<a:pPr[^>]*algn="(\\w+)"[^>]*>(?:(?!</a:p>)[\\s\\S])*?<a:t>${text}</a:t>`).exec(table)?.[1] ?? 'l';
   assert.equal(cell('1.6시간'), 'r');
   assert.equal(cell('2,840원'), 'r');
   assert.equal(cell('1분기'), 'l', 'a period is a label');
@@ -120,8 +125,14 @@ await pres.writeFile({fileName:OUTPUT});`;
   const lanesSlide = await zip.file('ppt/slides/slide1.xml').async('string');
   const shapes = [...lanesSlide.matchAll(/<p:sp>[\s\S]*?<\/p:sp>/g)].map((m) => m[0]);
   const leftOf = (text) => Number(/<a:off x="(\d+)"/.exec(shapes.find((sp) => sp.includes(`<a:t>${text}</a:t>`)))[1]);
-  assert.ok(leftOf('접수') < leftOf('검증') && leftOf('검증') < leftOf('확정'), 'three units in order across the track');
-  assert.ok(shapes.some((sp) => sp.includes('<a:t>주문</a:t>')), 'a lane named with label is labelled');
+  assert.ok(
+    leftOf('접수') < leftOf('검증') && leftOf('검증') < leftOf('확정'),
+    'three units in order across the track'
+  );
+  assert.ok(
+    shapes.some((sp) => sp.includes('<a:t>주문</a:t>')),
+    'a lane named with label is labelled'
+  );
   const hubSlide = await zip.file('ppt/slides/slide2.xml').async('string');
   const support = [...hubSlide.matchAll(/<p:sp>[\s\S]*?<\/p:sp>/g)].map((m) => m[0]).find((sp) => sp.includes('고객'));
   assert.doesNotMatch(support, /<a:br\b/, 'the two-word label sits on one line in its disc');
@@ -138,7 +149,8 @@ await pres.writeFile({fileName:OUTPUT});`;
   assert.equal(written.ok, true, JSON.stringify(written));
   const slide = await (await JSZip.loadAsync(await readFile(path))).file('ppt/slides/slide1.xml').async('string');
   const shapes = [...slide.matchAll(/<p:sp>[\s\S]*?<\/p:sp>/g)].map((m) => m[0]);
-  const top = (text) => Number(/<a:off x="\d+" y="(\d+)"/.exec(shapes.find((sp) => sp.includes(`<a:t>${text}</a:t>`)) || '')?.[1]);
+  const top = (text) =>
+    Number(/<a:off x="\d+" y="(\d+)"/.exec(shapes.find((sp) => sp.includes(`<a:t>${text}</a:t>`)) || '')?.[1]);
   const row = top('쉬움');
   assert.ok(Number.isFinite(row) && Number.isFinite(top('야간 인력 증원')));
   assert.ok(Math.abs(top('야간 인력 증원') - row) > 0.3 * 914400 * 0.5, 'the label is not on the axis-name row');
@@ -159,7 +171,11 @@ await pres.writeFile({fileName:OUTPUT});`;
     const sp = shapes.find((s) => s.includes(`<a:t>${text}</a:t>`));
     return { y: Number(/<a:off x="\d+" y="(\d+)"/.exec(sp)[1]), h: Number(/<a:ext cx="\d+" cy="(\d+)"/.exec(sp)[1]) };
   };
-  assert.deepEqual(frame('+4.3'), frame('38.1'), 'both figures share one box height, so their bottom-anchored baselines meet');
+  assert.deepEqual(
+    frame('+4.3'),
+    frame('38.1'),
+    'both figures share one box height, so their bottom-anchored baselines meet'
+  );
 });
 
 test('a waterfall names its three bars and prints each figure over its bar', async (t) => {
@@ -173,9 +189,30 @@ await pres.writeFile({fileName:OUTPUT});`;
   assert.equal(written.ok, true, JSON.stringify(written));
   const zip = await JSZip.loadAsync(await readFile(path));
   const slide = await zip.file('ppt/slides/slide1.xml').async('string');
-  for (const words of ['합계', '증가', '감소', '4,200', '+380', '\u2212120', '4,460']) assert.ok(slide.includes(`>${words}<`), `${words} is on the page`);
+  for (const words of ['합계', '증가', '감소', '4,200', '+380', '\u2212120', '4,460'])
+    assert.ok(slide.includes(`>${words}<`), `${words} is on the page`);
   const chart = await zip.file(/^ppt\/charts\/chart\d+\.xml$/)[0].async('string');
   assert.match(chart, /<c:max val="\d+(\.\d+)?"\/>/, 'the plot is pinned to the scale the figures are placed on');
+});
+
+// A unit-cost walk only falls: its legend still named a rise ("증가") beside the total and the drops, a swatch for a
+// bar the chart does not have, and the empty series stayed in the chart.
+test('a waterfall names only the kinds of bar it draws', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'pptx-kit-waterfall-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const script = `deck({ style: 'soft-rounded', hue: 43, mode: 'balanced', script: 'ko' });
+waterfall(light(), 1, 1.8, 7, 4.5, [{ label: '이용료', value: 90 }, { label: '세척', value: -32 }, { label: '물류', value: -28 }, { label: '공헌이익', total: true }]);
+await pres.writeFile({fileName:OUTPUT});`;
+  const path = join(root, 'costs.pptx');
+  const written = await runPptxAuthoringScript(script, path);
+  assert.equal(written.ok, true, JSON.stringify(written));
+  const zip = await JSZip.loadAsync(await readFile(path));
+  const slide = await zip.file('ppt/slides/slide1.xml').async('string');
+  for (const words of ['합계', '감소', '90', '\u221232', '30']) assert.ok(slide.includes(`>${words}<`), `${words} is on the page`);
+  assert.ok(!slide.includes('>증가<'), 'no rise, so no rise in the legend');
+  const chart = await zip.file(/^ppt\/charts\/chart\d+\.xml$/)[0].async('string');
+  assert.equal((chart.match(/<c:ser>/g) || []).length, 3, 'the base, the totals, and the drops');
+  assert.doesNotMatch(chart, /증가/);
 });
 
 test('a dark deck lifts its accent mark off the page and a line chart accents its latest series', async (t) => {
@@ -195,10 +232,19 @@ await pres.writeFile({fileName:OUTPUT});`;
   assert.equal(written.ok, true, JSON.stringify(written));
   const zip = await JSZip.loadAsync(await readFile(path));
   const chart = await zip.file(/^ppt\/charts\/chart\d+\.xml$/)[0].async('string');
-  const colors = [...chart.matchAll(/<c:ser>[\s\S]*?<a:srgbClr val="([0-9A-F]{6})"/gi)].map((match) => match[1].toUpperCase());
+  const colors = [...chart.matchAll(/<c:ser>[\s\S]*?<a:srgbClr val="([0-9A-F]{6})"/gi)].map((match) =>
+    match[1].toUpperCase()
+  );
   assert.equal(colors.length, 2, chart.slice(0, 400));
-  const slides = await Promise.all(Object.keys(zip.files).filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name)).map((name) => zip.file(name).async('string')));
-  const accent = slides.map((xml) => /accent:([0-9A-F]{6})/i.exec(xml)?.[1]).find(Boolean)?.toUpperCase();
+  const slides = await Promise.all(
+    Object.keys(zip.files)
+      .filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name))
+      .map((name) => zip.file(name).async('string'))
+  );
+  const accent = slides
+    .map((xml) => /accent:([0-9A-F]{6})/i.exec(xml)?.[1])
+    .find(Boolean)
+    ?.toUpperCase();
   const series = [...chart.matchAll(/<c:ser>[\s\S]*?<\/c:ser>/g)].map((match) => match[0]);
   assert.ok(series[1].includes('올해'), 'the latest series is written second');
   assert.equal(colors[1], accent, 'the latest series takes the accent');
@@ -221,11 +267,15 @@ await pres.writeFile({fileName:OUTPUT});`;
   const note = await zip.file('ppt/slides/slide3.xml').async('string');
   const accent = /accent:([0-9A-F]{6})/i.exec(note)[1].toUpperCase();
   const onDark = /ondark:([0-9A-F]{6})/i.exec(note)[1].toUpperCase();
-  const colors = [...chart.matchAll(/<c:ser>[\s\S]*?<a:srgbClr val="([0-9A-F]{6})"/gi)].map((match) => match[1].toUpperCase());
+  const colors = [...chart.matchAll(/<c:ser>[\s\S]*?<a:srgbClr val="([0-9A-F]{6})"/gi)].map((match) =>
+    match[1].toUpperCase()
+  );
   assert.equal(colors[0], accent, 'the pilot series, named by accent: 0, takes the accent');
   assert.notEqual(colors[1], accent);
   const cover = await zip.file('ppt/slides/slide2.xml').async('string');
-  const headline = [...cover.matchAll(/<p:sp>[\s\S]*?<\/p:sp>/g)].map((m) => m[0]).find((sp) => sp.includes('When the night changed'));
+  const headline = [...cover.matchAll(/<p:sp>[\s\S]*?<\/p:sp>/g)]
+    .map((m) => m[0])
+    .find((sp) => sp.includes('When the night changed'));
   assert.ok(headline.includes(`val="${onDark}"`), 'the headline on the quiet page is set in the on-dark colour');
 });
 
@@ -243,7 +293,11 @@ await pres.writeFile({fileName:OUTPUT});`;
   const slide = await (await JSZip.loadAsync(await readFile(path))).file('ppt/slides/slide1.xml').async('string');
   const shapes = [...slide.matchAll(/<p:sp>[\s\S]*?<\/p:sp>/g)].map((m) => m[0]);
   const headline = shapes.find((sp) => sp.includes('夜が変わると'));
-  assert.match(headline, /夜が変わると、<\/a:t><\/a:r><a:br\b[\s\S]*?昼の道路が空いた/, 'the break sits before the phrase');
+  assert.match(
+    headline,
+    /夜が変わると、<\/a:t><\/a:r><a:br\b[\s\S]*?昼の道路が空いた/,
+    'the break sits before the phrase'
+  );
   const top = (sp) => Number(/<a:off x="\d+" y="(\d+)"/.exec(sp)[1]);
   const mark = shapes.find((sp) => sp.includes('都市物流レポート'));
   const meta = shapes.find((sp) => sp.includes('2026年9月'));
@@ -261,7 +315,10 @@ await pres.writeFile({fileName:OUTPUT});`;
   const written = await runPptxAuthoringScript(script, path);
   assert.equal(written.ok, true, JSON.stringify(written));
   const zip = await JSZip.loadAsync(await readFile(path));
-  const shapes = async (n) => [...(await zip.file(`ppt/slides/slide${n}.xml`).async('string')).matchAll(/<p:sp>[\s\S]*?<\/p:sp>/g)].map((m) => m[0]);
+  const shapes = async (n) =>
+    [...(await zip.file(`ppt/slides/slide${n}.xml`).async('string')).matchAll(/<p:sp>[\s\S]*?<\/p:sp>/g)].map(
+      (m) => m[0]
+    );
   const headline = (await shapes(1)).find((sp) => sp.includes('요세미티'));
   const width = Number(/<a:ext cx="(\d+)"/.exec(headline)[1]) / 12700;
   const size = Number(/sz="(\d+)"/.exec(headline)[1]) / 100;

@@ -1,19 +1,30 @@
 /**
- * doctor.mjs — /doctor installation health report builder.
+ * doctor.mjs — /doctor health checks shared by the TUI and the desktop.
  *
  * Read-only diagnostics against current runtime status contracts. Missing
- * status is WARN, not a healthy default; a failed check cannot abort the
- * remaining checks. Report only names, counts and flags, never credentials
- * or raw errors. The update check uses the existing best-effort npm checker.
+ * status is WARN, not a healthy default; a failed or stalled check cannot
+ * abort the others — every check runs concurrently under one per-check
+ * deadline. Report only names, counts and flags, never credentials or raw
+ * errors. The update check uses the existing best-effort npm checker.
  * Configuration status does not prove service/database health.
+ *
+ * runDoctorChecks returns structured rows ({ id, label, level, detail, fix })
+ * for the desktop dialog; formatDoctorReport renders the same rows as the
+ * TUI text report.
  */
 import { compareSemver } from '../../runtime/shared/update-checker.mjs';
+import { resolvePluginData } from '../../runtime/shared/plugin-paths.mjs';
 import { providerRowUsable } from './provider-usable.mjs';
-import { readFileSync } from 'node:fs';
+import { constants as fsConstants, readFileSync } from 'node:fs';
+import { access, readdir, readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const GLYPH = { ok: '✓', warn: '⚠', fail: '✗' };
+export const DOCTOR_CHECK_TIMEOUT_MS = 8000;
+// Per-process log siblings are pruned by the channel worker; far above its
+// cap means pruning is not running.
+export const DOCTOR_LOG_FILE_WARN = 300;
 
 // Only the stable ^major.minor.patch and >=major.minor.patch alternatives
 // used by our Node engine contract are supported. Fail open to "unverified",
@@ -40,23 +51,42 @@ function readPackageJson() {
   }
 }
 
-// One report row per check: the status reader's result goes to the reporter,
-// which emits its verdict through `row`. Any thrown error becomes a redacted
-// failure row — errors can contain request URLs, headers or credentials.
-async function doctorCheck(rows, label, readStatus, report) {
-  const row = (level, detail) => {
-    rows.push(`${GLYPH[level] || GLYPH.warn} ${label}: ${detail}`);
+const TIMED_OUT = Symbol('timed out');
+
+// One row per check: the status reader's result goes to the reporter, which
+// emits its verdict (and an optional fix) through `row`. Any thrown error
+// becomes a redacted failure row — errors can contain request URLs, headers
+// or credentials. A check that outlives the deadline is reported as such and
+// its late verdict is discarded.
+async function doctorCheck({ id, label, readStatus, report, timeoutMs }) {
+  const result = { id, label, level: 'warn', detail: 'status unavailable' };
+  let settled = false;
+  const row = (level, detail, fix) => {
+    if (settled) return;
+    result.level = level;
+    result.detail = detail;
+    if (fix) result.fix = fix;
   };
-  try {
+  let timer;
+  const deadline = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(TIMED_OUT), timeoutMs);
+  });
+  const work = (async () => {
     const status = await readStatus();
-    if (!status || typeof status !== 'object' || Array.isArray(status)) {
-      row('warn', 'status unavailable');
-      return;
-    }
+    if (!status || typeof status !== 'object' || Array.isArray(status)) return;
     await report(status, row);
+  })();
+  try {
+    if ((await Promise.race([work, deadline])) === TIMED_OUT) {
+      row('warn', `no response within ${Math.round(timeoutMs / 1000)}s`);
+    }
   } catch {
     row('fail', 'check failed (error details omitted)');
+  } finally {
+    settled = true;
+    clearTimeout(timer);
   }
+  return result;
 }
 
 function reportUpdate(pkg) {
@@ -67,7 +97,7 @@ function reportUpdate(pkg) {
       row('warn', `v${current} · update check skipped (registry unreachable)`);
       return;
     }
-    if (upd.updateAvailable) row('warn', `v${current} · update available → v${latest}`);
+    if (upd.updateAvailable) row('warn', `v${current} · update available → v${latest}`, { command: '/update' });
     else row('ok', `v${current} · up to date`);
   };
 }
@@ -78,7 +108,8 @@ function reportNode({ version, engines }, row) {
     row('warn', `v${version} · engine requirement ${engines ? `"${engines}" unverified` : 'unavailable'}`);
     return;
   }
-  row(supported ? 'ok' : 'fail', `v${version} · requires node ${engines}`);
+  if (supported) row('ok', `v${version} · requires node ${engines}`);
+  else row('fail', `v${version} · requires node ${engines}`, { hint: `install Node.js ${engines}` });
 }
 
 function providerUnusableReason(entry) {
@@ -103,15 +134,17 @@ function reportProviders(getState) {
     const lists = [...setup.api, ...setup.oauth, ...setup.local];
     const ready = lists.filter(providerRowUsable);
     const activeEntry = active ? lists.find((p) => p.id === active) : null;
+    const fix = { command: '/providers' };
     if (activeEntry && !providerRowUsable(activeEntry)) {
-      row('fail', `route ${active} ${providerUnusableReason(activeEntry)} · ${ready.length} ready · check /providers`);
+      row('fail', `route ${active} ${providerUnusableReason(activeEntry)} · ${ready.length} ready`, fix);
       return;
     }
     if (active && !activeEntry) {
-      row('warn', `${ready.length} ready · route ${active} (not listed)`);
+      row('warn', `${ready.length} ready · route ${active} (not listed)`, fix);
       return;
     }
-    row(active ? 'ok' : 'warn', `${ready.length} ready · route ${active || 'unknown'}`);
+    if (active) row('ok', `${ready.length} ready · route ${active}`);
+    else row('warn', `${ready.length} ready · route unknown`, fix);
   };
 }
 
@@ -145,7 +178,8 @@ function reportMcp(status, row) {
   let detail = `${connected.length}/${active.length} connected${scopeDetail}`;
   if (failed.length) detail += ` · failed: ${failed.map((s) => s.name).join(', ')}`;
   if (pending.length) detail += ` · disconnected: ${pending.map((s) => s.name).join(', ')}`;
-  row(failed.length || pending.length ? 'warn' : 'ok', detail);
+  if (failed.length || pending.length) row('warn', detail, { command: '/mcp' });
+  else row('ok', detail);
 }
 
 function reportMemory(runtime) {
@@ -200,8 +234,12 @@ function reportRegistry(label) {
       (entry) => entry.broken || entry.error || entry.invalid || entry.dependencyIssues?.length
     );
     let detail = `${active.length}/${entries.length} active${scopeDetail}`;
-    if (broken.length) detail += ` · issues: ${broken.map((entry) => entry.name || entry.id).join(', ')}`;
-    row(broken.length ? 'warn' : 'ok', detail);
+    if (!broken.length) {
+      row('ok', detail);
+      return;
+    }
+    detail += ` · issues: ${broken.map((entry) => entry.name || entry.id).join(', ')}`;
+    row('warn', detail, { command: `/${label}` });
   };
 }
 
@@ -220,24 +258,100 @@ function reportHooks(hooks, row) {
   row(errors ? 'warn' : 'ok', detail);
 }
 
-export async function buildDoctorReport(runtime = {}, getState = () => ({})) {
-  const rows = [];
-  const check = (label, readStatus, report) => doctorCheck(rows, label, readStatus, report);
-  const pkg = readPackageJson();
-
-  await check('mixdog', () => runtime.checkForUpdate?.({}), reportUpdate(pkg));
-  await check('node', () => ({ version: process.versions.node, engines: pkg?.engines?.node }), reportNode);
-  await check('providers', () => runtime.getProviderSetup?.(), reportProviders(getState));
-  await check('mcp', () => runtime.mcpStatus?.(), reportMcp);
-  await check('memory', async () => (await runtime.getToolModuleSettings?.())?.memory, reportMemory(runtime));
-  await check('channels', () => runtime.getChannelSettings?.({ includeStatus: true }), reportChannels(runtime));
-  for (const [label, method] of [
-    ['skills', 'skillsStatus'],
-    ['plugins', 'pluginsStatus'],
-  ]) {
-    await check(label, () => runtime[method]?.(), reportRegistry(label));
+// Local installation state: the data folder every runtime store writes to,
+// the unified config file inside it, and log accumulation there.
+async function readDataFolder(dataDir) {
+  try {
+    await access(dataDir, fsConstants.W_OK);
+    return { dataDir, writable: true };
+  } catch (error) {
+    return { dataDir, writable: false, missing: error?.code === 'ENOENT' };
   }
-  await check('hooks', () => runtime.hooksStatus?.(), reportHooks);
+}
 
-  return ['mixdog doctor — installation health', ...rows].join('\n');
+function reportDataFolder({ dataDir, writable, missing }, row) {
+  if (writable) row('ok', `writable · ${dataDir}`);
+  else if (missing) row('fail', `not found · ${dataDir}`, { hint: 'create the folder or point MIXDOG_DATA_DIR at an existing one' });
+  else row('fail', `not writable · ${dataDir}`, { hint: 'check the folder permissions' });
+}
+
+async function readConfigFile(dataDir) {
+  let raw;
+  try {
+    raw = await readFile(join(dataDir, 'mixdog-config.json'), 'utf8');
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { exists: false };
+    throw error;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    return { exists: true, valid: !!parsed && typeof parsed === 'object' && !Array.isArray(parsed) };
+  } catch {
+    return { exists: true, valid: false };
+  }
+}
+
+function reportConfigFile({ exists, valid }, row) {
+  if (!exists) row('ok', 'mixdog-config.json not created yet · defaults in use');
+  else if (valid) row('ok', 'mixdog-config.json is valid');
+  else row('fail', 'mixdog-config.json is not a valid JSON object', { hint: 'fix the JSON syntax in the config file' });
+}
+
+async function readLogFiles(dataDir) {
+  const entries = await readdir(dataDir, { withFileTypes: true });
+  return { count: entries.filter((entry) => entry.isFile() && entry.name.endsWith('.log')).length };
+}
+
+function reportLogFiles({ count }, row) {
+  const detail = `${count} log files in the data folder`;
+  if (count > DOCTOR_LOG_FILE_WARN) {
+    row('warn', `${detail} (over ${DOCTOR_LOG_FILE_WARN})`, { hint: 'old per-process logs are not being pruned' });
+  } else row('ok', detail);
+}
+
+export async function runDoctorChecks(runtime = {}, getState = () => ({}), options = {}) {
+  const timeoutMs = options.timeoutMs ?? DOCTOR_CHECK_TIMEOUT_MS;
+  const dataDir = options.dataDir ?? resolvePluginData();
+  const pkg = readPackageJson();
+  const checks = [
+    ['mixdog', 'mixdog', () => runtime.checkForUpdate?.({}), reportUpdate(pkg)],
+    ['node', 'node', () => ({ version: process.versions.node, engines: pkg?.engines?.node }), reportNode],
+    ['providers', 'providers', () => runtime.getProviderSetup?.(), reportProviders(getState)],
+    ['mcp', 'mcp', () => runtime.mcpStatus?.(), reportMcp],
+    ['memory', 'memory', async () => (await runtime.getToolModuleSettings?.())?.memory, reportMemory(runtime)],
+    [
+      'channels',
+      'channels',
+      () => runtime.getChannelSettings?.({ includeStatus: true }),
+      reportChannels(runtime),
+    ],
+    ['skills', 'skills', () => runtime.skillsStatus?.(), reportRegistry('skills')],
+    ['plugins', 'plugins', () => runtime.pluginsStatus?.(), reportRegistry('plugins')],
+    ['hooks', 'hooks', () => runtime.hooksStatus?.(), reportHooks],
+    ['data', 'data folder', () => readDataFolder(dataDir), reportDataFolder],
+    ['config', 'config', () => readConfigFile(dataDir), reportConfigFile],
+    ['logs', 'logs', () => readLogFiles(dataDir), reportLogFiles],
+  ];
+  const rows = await Promise.all(
+    checks.map(([id, label, readStatus, report]) => doctorCheck({ id, label, readStatus, report, timeoutMs }))
+  );
+  const summary = { ok: 0, warn: 0, fail: 0 };
+  for (const row of rows) summary[row.level] += 1;
+  return { checkedAt: Date.now(), summary, checks: rows };
+}
+
+export function formatDoctorReport(result) {
+  const lines = ['mixdog doctor — installation health'];
+  for (const check of result.checks) {
+    lines.push(`${GLYPH[check.level] || GLYPH.warn} ${check.label}: ${check.detail}`);
+    if (check.fix?.command) lines.push(`    → run ${check.fix.command}`);
+    else if (check.fix?.hint) lines.push(`    → ${check.fix.hint}`);
+  }
+  const { ok, warn, fail } = result.summary;
+  lines.push(`${ok} ok · ${warn} warnings · ${fail} failed`);
+  return lines.join('\n');
+}
+
+export async function buildDoctorReport(runtime = {}, getState = () => ({}), options = {}) {
+  return formatDoctorReport(await runDoctorChecks(runtime, getState, options));
 }

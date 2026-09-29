@@ -28,8 +28,8 @@
   /* Chat-appropriate floor (the composer needs more than a 220x70 floor).
      Height floor is 1.5x the width floor (user: 200px panes were too short
      to read a conversation). */
-  min-width: min(var(--pane-min-width, 320px), 100%);
-  min-height: min(var(--pane-min-height, 480px), 100%);
+  min-width: min(320px, 100%);
+  min-height: min(480px, 100%);
   /* The floor is the ONLY intrinsic size: without size containment the
      composer's content min-width bubbled up and overflowed the window even
      when the floors fit (user report). */
@@ -1112,7 +1112,7 @@ html[data-mixdog-mobile-tabs] .sidebar-diff-column {
 /* Foreign-strip insertion caret (tabs-drop index feedback). */
 .pane-drop-overlay.pane-drop-insert {
   background: var(--mx-focus);
-  border-radius: 1px;
+  border-radius: var(--mx-radius-hair);
 }
 
 /* Per-pane tab strips (editor groups): each pane cell stacks its own
@@ -1132,10 +1132,9 @@ html[data-mixdog-mobile-tabs] .sidebar-diff-column {
 .main-panel[data-bottom-panel] > .pane-split,
 .main-panel[data-bottom-panel] > .pane-leaf,
 .main-panel[data-bottom-panel] > .pane-cell {
-  min-height: var(--pane-min-height, 480px);
+  min-height: 480px;
 }
-.pane-cell > .workspace-tabs-shell,
-.pane-strip-row > .workspace-tabs-shell {
+.pane-cell > .workspace-tabs-shell {
   /* The shell's titlebar-era flex would grow it along the cell column. */
   flex: 0 0 auto;
   align-self: stretch;
@@ -1146,14 +1145,6 @@ html[data-mixdog-mobile-tabs] .sidebar-diff-column {
      surface below — the editor-group look. */
   background: var(--mx-window-band);
   border-bottom: 1px solid var(--mx-border);
-}
-.pane-strip-row {
-  display: flex;
-  flex: 0 0 auto;
-  min-width: 0;
-}
-.pane-strip-row > .workspace-tabs-shell {
-  flex: 1 1 auto;
 }
 /* Workspace scrollbars follow the shell-wide square grammar (desktop.css). */
 

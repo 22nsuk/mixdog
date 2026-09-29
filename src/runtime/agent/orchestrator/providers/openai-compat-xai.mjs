@@ -58,24 +58,24 @@ export function xaiCacheRouting(opts, params, rawTools, model) {
 }
 
 export function xaiResponsesCacheRouting(opts, params, rawTools, model) {
-  // xAI documents prompt_cache_key as the Responses equivalent of a
-  // conversation id. The default omits it, matching Grok Build's literal
-  // request body: a per-session key split the service cache into lanes and
-  // measured worse (2026-09-17, 2+2 runs of one 3-round task through
-  // grok-oauth: 'none' $0.036/run with one cold round and a cross-session
-  // prefix hit, 'session' $0.052/run with two cold rounds). 'session'
-  // remains selectable, and 'prefix' stays an opt-in for controlled
+  // xAI documents prompt_cache_key as the Responses equivalent of
+  // x-grok-conv-id: cache entries live per server, and a stable
+  // per-conversation key routes every turn to the server holding its prefix.
+  // Grok Build keys each session by its session id (its Responses mapping
+  // fills prompt_cache_key from x_grok_conv_id). Default 'session' does the
+  // same; production ledger under the former 'none' default showed 3.4%
+  // warm in-session misses that read no cache at all. A session-less
+  // one-shot call has no conversation to pin, so it keeps automatic routing.
+  // 'none' stays an explicit opt-out and 'prefix' an opt-in for controlled
   // cross-session probes.
-  const scope = String(opts?.xaiResponsesCacheScope || process.env.MIXDOG_XAI_RESPONSES_CACHE_SCOPE || 'none')
+  const scope = String(opts?.xaiResponsesCacheScope || process.env.MIXDOG_XAI_RESPONSES_CACHE_SCOPE || 'session')
     .trim()
     .toLowerCase();
-  // 'none' omits prompt_cache_key entirely, matching xAI's own reference
-  // sampler (prompt_cache_key: None) and other xAI clients
-  // (supports_prompt_cache_key() == false): the service falls back to
+  const sessionId = String(opts?.sessionId || opts?.session?.id || '').trim();
+  // 'none' omits prompt_cache_key entirely: the service falls back to
   // automatic prompt-prefix caching with no client-supplied lane. Callers
   // must treat a null key as "do not send the field".
-  if (scope === 'none' || scope === 'off' || scope === 'omit') {
-    const sessionId = String(opts?.sessionId || opts?.session?.id || '').trim();
+  if (scope === 'none' || scope === 'off' || scope === 'omit' || (scope === 'session' && !sessionId)) {
     const prefixHash = traceHash(xaiPrefixSeed({ opts, params, rawTools, model }));
     return {
       key: null,
@@ -88,7 +88,6 @@ export function xaiResponsesCacheRouting(opts, params, rawTools, model) {
   if (scope !== 'prefix') {
     return xaiCacheRouting(opts, params, rawTools, model);
   }
-  const sessionId = String(opts?.sessionId || opts?.session?.id || '').trim();
   const providerKey = resolveProviderCacheKey(opts, 'xai');
   const prefixSeed = xaiPrefixSeed({ opts, params, rawTools, model });
   const prefixHash = traceHash(prefixSeed);

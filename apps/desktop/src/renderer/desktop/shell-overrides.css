@@ -1,0 +1,246 @@
+/* Desktop late layer — shell overrides that must load eagerly and last.
+   The narrow-window layout (≤760px / ≤640px), the phone composer lane and the
+   reduced-motion safety net used to ride at the tail of layer 21, which only
+   loads with the lazy onboarding wizard: a session that never opened
+   onboarding kept the wide layout in a 400-760px window (inline sidebar, no
+   drawer, no outside-click catcher) and lost the reduced-motion net. Imported
+   after every base layer, they override exactly as they did whenever that
+   chunk landed last. */
+@media (max-width: 760px) {
+  .desktop-body {
+    padding-inline: 0;
+  }
+  .workspace {
+    border-radius: 0;
+  }
+  /* Phones only: their tab strip is hidden, so Studio's header row carries
+     the drawer reopen control. A PC window keeps the Activity Rail instead. */
+  html[data-mixdog-mobile-tabs] .studio-header {
+    display: flex;
+  }
+  .session-header-menu {
+    display: grid;
+    place-items: center;
+    margin: 0 2px 0 -6px;
+  }
+  /* Narrow layouts retain the same desktop chrome and only fold panels. */
+  .main-panel {
+    flex-direction: column;
+  }
+  /* PC keeps the Activity Rail docked in this band too (user: 좁아져도 사이드
+     탭은 없애지 말 것): only the side panel leaves the row and floats beside
+     the rail as an overlay sheet, so the thread keeps its width. Like every
+     desktop side panel it toggles in one frame — a slide would pass over the
+     rail. The frame stays layout-transparent on PC (05-shell.css); phones
+     promote it to one sheet with the rail inside (07-mobile-chrome.css). */
+  :root:not([data-mixdog-mobile-tabs]) .sidebar-drawer-frame > .workbench-side-panel {
+    position: fixed;
+    z-index: 40;
+    top: calc(var(--titlebar-height) + env(safe-area-inset-top, 0px));
+    bottom: 0;
+    left: 48px;
+    width: min(232px, calc(100vw - 80px));
+    min-width: 0;
+    max-width: none;
+    height: auto;
+    border: 1px solid var(--mx-border-muted);
+    border-left: 0;
+    border-radius: 0 var(--mx-radius-sheet) var(--mx-radius-sheet) 0;
+    box-shadow: 24px 0 24px var(--mx-alpha-dark-24);
+  }
+  /* The sheet width is fixed here; a drag would only rewrite the stored
+     wide-band width out of sight. */
+  .sidebar-drawer-frame > .workbench-side-panel > .workbench-side-panel-resize {
+    display: none;
+  }
+  /* Phone sheet open slide. The PC frame has no box, so these stay inert
+     there. */
+  html.mx-open-sidebar .sidebar-drawer-frame[data-state="open"] {
+    animation: sidebar-slide-in var(--mx-sheet-motion);
+  }
+  html.mx-open-sidebar .sidebar-drawer-frame[data-motion="instant"] {
+    animation: none;
+  }
+  /* The sheet titles itself: the header's full-bleed hairline read as chrome
+     band residue on the floating card, so the title row sits clean. */
+  .sidebar.session-sidebar > .session-panel-header::after {
+    display: none;
+  }
+  .sidebar-backdrop {
+    display: block;
+    position: fixed;
+    /* Invisible outside-click catcher below the tab zone and right of the
+       docked rail, so a rail click still lands. Side sheets do not dim the
+       working surface (user decision). Phones cover the whole screen
+       (07-mobile-chrome.css). */
+    inset: calc(var(--titlebar-height) + env(safe-area-inset-top, 0px)) 0 0 48px;
+    z-index: 39;
+    border: 0;
+    padding: 0;
+    background: transparent;
+    /* Mounted at all times: the scrim fades WITH the drawer slide instead of
+       disappearing on the first frame of the close. */
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition:
+      opacity var(--mx-sheet-motion),
+      visibility var(--mx-sheet-motion);
+  }
+  .sidebar-backdrop[data-state="open"] {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+  }
+  .session-sidebar-resize {
+    display: none;
+  }
+  .studio-topbar {
+    gap: 8px;
+  }
+  .studio-topbar-tools {
+    grid-column: auto;
+  }
+  /* A taller field gives the thumb a real target (user: too small to tap).
+     The type size stays the body size: the iOS zoom-on-focus floor lives in
+     mobile-web-runtime.css under the iOS marker only, so a narrow desktop
+     window or an Android phone no longer jumps the composer to 16px. */
+  .composer {
+    min-height: 108px;
+  }
+  .composer textarea {
+    min-height: 72px;
+    padding: 14px 16px 10px;
+  }
+  .composer-footer {
+    height: 48px;
+  }
+  .studio-composer {
+    min-height: 108px;
+  }
+  .studio-composer textarea {
+    min-height: 72px;
+    padding: 14px 16px 10px;
+  }
+  .studio-composer-bar {
+    height: 48px;
+  }
+  /* The closed trigger follows its label instead of painting the footer's
+     entire remaining lane. Opening still supplies the sheet width inline. */
+  .route-editor {
+    width: max-content;
+    min-width: 0;
+    max-width: 100%;
+    flex: 0 1 auto;
+  }
+  .model-trigger {
+    width: max-content;
+    min-width: 0;
+    max-width: 100%;
+    flex: 0 1 auto;
+  }
+  .model-trigger > span {
+    min-width: 0;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: nowrap;
+  }
+  /* Model / effort / fast stay LEFT-PACKED as one cluster. The Fast control
+     is already a fixed glyph, so only the text-bearing controls may shrink.
+     No lane-filling growth: the context gauge hugs the model label here too. */
+  .route-controls {
+    max-width: none;
+    flex: 0 1 auto;
+    justify-content: flex-start;
+  }
+  .effort-control .mx-select-root {
+    min-width: 0;
+  }
+  .effort-control .mx-select-trigger {
+    min-width: 0;
+  }
+}
+
+/* Remote/PWA phones project a canonical desktop viewport, so width media
+   queries alone cannot identify them. The mobile marker guarantees the model
+   lane uses all space left by the fixed composer actions. */
+html[data-mixdog-mobile-tabs] .route-editor {
+  width: max-content;
+  min-width: 0;
+  max-width: 100%;
+  flex: 0 1 auto;
+}
+html[data-mixdog-mobile-tabs] .model-trigger {
+  width: max-content;
+  max-width: 100%;
+  flex: 0 1 auto;
+}
+
+@media (max-width: 640px) {
+  .mixdog-settings__body {
+    padding: 32px 20px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mx-menu,
+  .mx-toast,
+  .slash-palette,
+  .route-sheet,
+  .route-sheet-flyout,
+  .live-activity span {
+    animation: none;
+  }
+  .message-actions {
+    transition: none;
+  }
+  /* Loading glyphs rest like every other spinner under reduced motion
+     (desktop-loading-spinner, sidebar-update-loader); an indeterminate bar
+     rests as a static partial fill. `:root` outranks the lazily loaded
+     browser-pane and extension layers that land after this one. */
+  .spin,
+  :root .is-spinning,
+  .workspace-tab-main .workspace-tab-status,
+  .schedules-row-spinner,
+  .dock-source-control .spin,
+  .editor-pane-spinner,
+  .sidebar-dialog-loading > svg,
+  :root .built-in-feature-progress-bar.is-indeterminate > span {
+    animation: none;
+  }
+}
+
+/* Windows High Contrast (forced colors): the system palette strips fills and
+   shadows, and the shell draws its focus rings, switches and selected states
+   with exactly those. Each gets a system-colored edge so none of them
+   vanishes. */
+@media (forced-colors: active) {
+  :root :focus-visible {
+    outline: 2px solid Highlight !important;
+    outline-offset: -2px !important;
+  }
+  :is([aria-selected="true"], [aria-current="page"], [aria-current="true"], [aria-pressed="true"], .workspace-tab.active) {
+    outline: 1px solid Highlight;
+    outline-offset: -1px;
+  }
+  .mixdog-settings__switch span {
+    outline: 1px solid CanvasText;
+    outline-offset: -1px;
+  }
+  .mixdog-settings__switch input:focus-visible + span {
+    outline: 2px solid Highlight;
+    outline-offset: 1px;
+  }
+  .mixdog-settings__switch span::after {
+    forced-color-adjust: none;
+    background: CanvasText;
+  }
+  .mixdog-settings__switch input:checked + span {
+    forced-color-adjust: none;
+    outline-color: Highlight;
+    background: Highlight;
+  }
+  .mixdog-settings__switch input:checked + span::after {
+    background: HighlightText;
+  }
+}

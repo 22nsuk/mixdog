@@ -6,13 +6,19 @@ import {
   loadSidebarPanelModule,
   type SidebarPanelKey,
 } from './app-shell-components';
-import { preloadUtilityDock, prewarmUtilityDockGitState, requestSessionRead } from './app-snapshot-views';
+import {
+  preloadSessionGoalIsland,
+  preloadUtilityDock,
+  prewarmUtilityDockGitState,
+  requestSessionRead,
+} from './app-snapshot-views';
 import { armBootWarmup, BOOT_WARMUP, BOOT_WARMUP_ARM_DELAY_MS, scheduleBootWarmup } from './boot-warmup';
 import { loadCommandSurfaceModule } from './command-surface-loader';
 import { desktopFeatureEnabled, desktopSidebarDestinationEnabled } from './desktop-feature-config';
 import { applyDesktopThemePreference, getDesktopThemePreference } from './desktop-theme';
 import type { RecordValue } from './desktop-types';
 import { prefetchSurfaceForSelection } from './lazy-widgets';
+import { prefetchQuotaUsage } from './quota-usage-cache';
 import { isMobileRemoteSurface } from './MobileTabOverview';
 import { connectionQuality } from './network-conditions';
 import { paneActiveSessionIds } from './pane-layout';
@@ -22,6 +28,7 @@ import { DEFAULT_SIDEBAR_VIEW_ORDER } from './sidebar-view-layout';
 import { loadStudioViewModule } from './studio-loader';
 import { asRecord, navigationKey } from './text-format';
 import type { useAppShellPanels } from './use-app-shell-panels';
+import { loadSidebarUsageModule } from './use-usage-rail-pin';
 
 type ShellPanels = ReturnType<typeof useAppShellPanels>;
 type SidebarModuleTracker = ShellPanels['trackSidebarPanelModule'];
@@ -63,7 +70,24 @@ export function useAppModuleWarmup(startupSettled: boolean, trackSidebarPanelMod
         priority: BOOT_WARMUP.commandSurfaceModule,
         run: () => loadCommandSurfaceModule().catch(() => {}),
       }),
+      scheduleBootWarmup({
+        id: 'module:session-goal',
+        priority: BOOT_WARMUP.sessionGoalModule,
+        run: () => preloadSessionGoalIsland().catch(() => {}),
+      }),
     ];
+    // The subscription usage that dialog opens on: its first open after boot
+    // waited on a cold ledger read (user: 처음에 유즈에이지 창 눌러서 진입할 때
+    // 바로 안 나오네). A remote client reads it when the dialog opens instead.
+    if (desktopFeatureEnabled('usage') && !remoteSurface()) {
+      cancels.push(
+        scheduleBootWarmup({
+          id: 'data:quota-usage',
+          priority: BOOT_WARMUP.quotaUsage,
+          run: () => prefetchQuotaUsage(window.mixdogDesktop),
+        })
+      );
+    }
     if (!nativeWindow) {
       if (connectionQuality() === 'normal') {
         cancels.push(
@@ -298,6 +322,15 @@ export function useAppWorkspaceWarmup({
         run: () => preloadUtilityDock().catch(() => {}),
       }),
     ];
+    if (desktopFeatureEnabled('usage')) {
+      cancels.push(
+        scheduleBootWarmup({
+          id: 'module:usage-flyout',
+          priority: BOOT_WARMUP.usageFlyoutModule,
+          run: () => loadSidebarUsageModule().catch(() => {}),
+        })
+      );
+    }
     const panels: SidebarPanelKey[] = ['schedules', 'webhooks', 'projects', 'extensions'];
     panels.forEach((panel, index) => {
       if (!desktopSidebarDestinationEnabled(panel)) return;

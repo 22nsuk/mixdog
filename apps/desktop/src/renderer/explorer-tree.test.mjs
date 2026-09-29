@@ -267,7 +267,11 @@ test('the multi-select delete menu item resolves through the translation catalog
 });
 
 test('a right-click on empty tree space or on the root header opens the project-root menu', async (t) => {
-  const view = fixture(t, { listings: { '': [{ name: 'a.txt', dir: false }] } });
+  const revealed = [];
+  const view = fixture(t, {
+    listings: { '': [{ name: 'a.txt', dir: false }] },
+    api: { openProjectInExplorer: async (project) => revealed.push(project) },
+  });
   await view.render({ showRootHeader: true });
   const contextMenu = (element) =>
     act(async () => element.dispatchEvent(new window.MouseEvent('contextmenu', { bubbles: true, cancelable: true })));
@@ -284,6 +288,14 @@ test('a right-click on empty tree space or on the root header opens the project-
 
   await contextMenu(document.querySelector('.workbench-explorer-root'));
   assert.deepEqual(menuLabels(), rootMenu);
+
+  // The root has no project-relative path: revealing it opens the project
+  // folder instead of sending an empty path the main process rejects.
+  const reveal = [...document.querySelectorAll('.dock-file-menu [role="menuitem"]')].find(
+    (item) => item.textContent === 'Reveal in Explorer'
+  );
+  await click(reveal);
+  assert.deepEqual(revealed, ['C:/demo']);
 });
 
 test('a nested new name creates the entry, expands each folder it introduced and opens the file', async (t) => {

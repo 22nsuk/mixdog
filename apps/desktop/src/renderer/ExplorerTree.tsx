@@ -167,7 +167,7 @@ function explorerContextMenu({
           {sep('bg-clipboard')}
           {item('Paste', () => void pasteClipboard(''), { hint: 'Ctrl+V', disabled: !clipboard })}
           {sep('bg-path')}
-          {item('Reveal in Explorer', () => void api?.revealFile?.(projectPath, ''))}
+          {item('Reveal in Explorer', () => void api?.openProjectInExplorer(projectPath))}
           {item('Copy path', () => void copyTextToClipboard(projectPath))}
         </>
       ) : (
@@ -320,6 +320,7 @@ export const FilesRootPane = memo(function FilesRootPane({
   readinessKey,
   onReadyChange,
   onOpenFile,
+  onRenameEntry,
   showRootHeader = false,
   rootLabel,
   headerSlot,
@@ -332,6 +333,9 @@ export const FilesRootPane = memo(function FilesRootPane({
   readinessKey: string;
   onReadyChange(key: string, ready: boolean): void;
   onOpenFile?(project: string, rel: string, mode?: 'preview' | 'pinned'): void;
+  /** Workspace-aware rename: open tabs follow the entry to its new name.
+   *  Without it the pane renames on disk only. */
+  onRenameEntry?(projectPath: string, relPath: string, newName: string): Promise<void>;
   showRootHeader?: boolean;
   rootLabel?: string;
   headerSlot?: HTMLElement | null;
@@ -538,9 +542,11 @@ export const FilesRootPane = memo(function FilesRootPane({
     setMutationError('');
     if (edit.mode === 'rename') {
       if (value === edit.initial) return;
-      void api
-        ?.renameProjectEntry?.(projectPath, edit.rel, value)
-        .then(() => selectOnly(edit.parentRel ? `${edit.parentRel}/${value}` : value))
+      const renamed = onRenameEntry
+        ? onRenameEntry(projectPath, edit.rel, value)
+        : api?.renameProjectEntry?.(projectPath, edit.rel, value);
+      void renamed
+        ?.then(() => selectOnly(edit.parentRel ? `${edit.parentRel}/${value}` : value))
         .catch((reason) => setMutationError(explorerErrorText(reason)))
         .finally(() => refreshDir(edit.parentRel));
       return;

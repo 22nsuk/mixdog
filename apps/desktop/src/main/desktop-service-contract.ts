@@ -63,7 +63,12 @@ export interface DesktopService {
   /** `legacyTranscript`: the source cannot page transcript history (an old
    *  phone build) and keeps receiving the 512-item page. */
   setVisibleSessionsForSource?(sourceId: string, sessionIds: string[], legacyTranscript?: boolean): Promise<boolean>;
-  searchProjectFiles(projectIdOrWorkspaceId: string, query: string, limit?: number): Promise<string[]>;
+  searchProjectFiles(
+    projectIdOrWorkspaceId: string,
+    query: string,
+    limit?: number,
+    includeIgnored?: boolean
+  ): Promise<string[]>;
   submitNewTask(
     prompt: DesktopPromptContent,
     options?: DesktopSubmitOptions,

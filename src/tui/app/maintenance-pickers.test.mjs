@@ -13,6 +13,7 @@ function createHarness(storeOverrides = {}) {
   let live = null;
   const notices = [];
   const prompts = [];
+  const cleared = [];
   const surface = createPanelSurface({
     setPicker: (next) => {
       const previous = live;
@@ -30,10 +31,11 @@ function createHarness(storeOverrides = {}) {
     setProviderPrompt: () => {},
     setSettingsPrompt: (prompt) => prompts.push(prompt),
     closeUsagePanel: () => {},
+    clearModelCaches: (scope) => cleared.push(scope),
   });
   const current = () => live;
   const row = (value) => current().items.find((item) => item.value === value);
-  return { ...pickers, current, row, notices, prompts };
+  return { ...pickers, current, row, notices, prompts, cleared };
 }
 
 test('Update panel: versions from the daemon, auto-update toggle writes then repaints', async () => {
@@ -209,27 +211,36 @@ test('Profile with no experience level starts cycling from the first/last entry'
   assert.deepEqual(writes.at(-1), { experienceLevel: 'beginner' });
 });
 
+const OAUTH_RISK_WARNING =
+  'Using this provider through OAuth carries a high risk of penalties such as account restrictions.';
+
 function developerStore() {
-  const values = { devProviders: false, traceWire: false };
+  const values = { antigravityOAuth: false, cursorOAuth: false, traceWire: false, verbose: true };
   const writes = [];
-  const option = (id, label, env, envForced = false) => ({
+  const option = (id, label, extra = {}) => ({
     id,
     label,
     description: `${label} description.`,
-    env,
-    enabled: envForced || values[id],
-    envForced,
+    ...extra,
+    enabled: values[id],
   });
   const view = () => ({
     sections: [
-      { id: 'providers', label: 'Providers', options: [option('devProviders', 'Dev providers', 'MIXDOG_DEV_PROVIDERS')] },
+      {
+        id: 'providers',
+        label: 'Providers',
+        options: [
+          option('antigravityOAuth', 'Gemini (Antigravity)', {
+            warning: OAUTH_RISK_WARNING,
+            provider: 'antigravity-oauth',
+          }),
+          option('cursorOAuth', 'Cursor', { warning: OAUTH_RISK_WARNING, provider: 'cursor-oauth' }),
+        ],
+      },
       {
         id: 'diagnostics',
         label: 'Diagnostics',
-        options: [
-          option('traceWire', 'Trace wire', 'MIXDOG_TRACE_WIRE'),
-          option('forced', 'Forced', 'MIXDOG_FORCED', true),
-        ],
+        options: [option('traceWire', 'Trace wire'), option('verbose', 'Verbose')],
       },
     ],
   });
@@ -268,7 +279,7 @@ test('Developer: sections render from the data, Enter opens a section, Esc walks
     h.current().items.map((item) => [item.value, item.meta]),
     [
       ['traceWire', 'Off'],
-      ['forced', 'On (env)'],
+      ['verbose', 'On'],
     ]
   );
 
@@ -281,40 +292,87 @@ test('Developer: sections render from the data, Enter opens a section, Esc walks
   assert.deepEqual(returned, ['settings']);
 });
 
-test('Developer: ←/→ set and Enter flips an option; env-forced options are not toggled', async () => {
+test('Developer: ←/→ set and Enter flips an option', async () => {
+  const { store, writes } = developerStore();
+  const h = createHarness(store);
+  await h.openDeveloperPicker({});
+  await flush();
+  h.current().onSelect('diagnostics', h.row('diagnostics'));
+  await flush();
+  assert.equal(h.current().title, 'Developer · Diagnostics');
+  assert.equal(h.row('traceWire').meta, 'Off');
+
+  h.current().onRight(h.row('traceWire'));
+  await flush();
+  assert.deepEqual(writes, [['traceWire', true]]);
+  assert.deepEqual(h.notices.at(-1), ['Trace wire on', 'info']);
+  assert.equal(h.row('traceWire').meta, 'On');
+
+  h.current().onSelect('traceWire', h.row('traceWire'));
+  await flush();
+  assert.deepEqual(writes.at(-1), ['traceWire', false]);
+  assert.deepEqual(h.notices.at(-1), ['Trace wire off', 'info']);
+  assert.equal(h.row('traceWire').meta, 'Off');
+
+  h.current().onLeft(h.row('traceWire'));
+  await flush();
+  assert.equal(writes.length, 2, 'setting the current value writes nothing');
+  assert.deepEqual(h.cleared, [], 'an option without a provider leaves the model catalog alone');
+});
+
+test('Developer: an option with a warning turns on only after its confirmation; off needs none', async () => {
   const { store, writes } = developerStore();
   const h = createHarness(store);
   await h.openDeveloperPicker({});
   await flush();
   h.current().onSelect('providers', h.row('providers'));
   await flush();
+  assert.deepEqual(
+    h.current().items.map((item) => [item.label, item.meta]),
+    [
+      ['Gemini (Antigravity)', 'Off'],
+      ['Cursor', 'Off'],
+    ]
+  );
+
+  h.current().onRight(h.row('cursorOAuth'));
+  await flush();
+  assert.equal(h.current().title, 'Turn on Cursor');
+  assert.deepEqual(
+    h.current().items.map((item) => item.value),
+    ['cancel', 'accept']
+  );
+  const lines = h.current().footer.map((line) => line.text);
+  assert.ok(lines.length > 1 && lines.every((line) => line.length <= 60), 'the warning is wrapped, not truncated');
+  assert.equal(lines.join(' '), OAUTH_RISK_WARNING);
+  assert.deepEqual(writes, [], 'the warning asks before writing');
+
+  h.current().onSelect('cancel', h.row('cancel'));
+  await flush();
   assert.equal(h.current().title, 'Developer · Providers');
-  assert.equal(h.row('devProviders').meta, 'Off');
-
-  h.current().onRight(h.row('devProviders'));
+  h.current().onSelect('cursorOAuth', h.row('cursorOAuth'));
   await flush();
-  assert.deepEqual(writes, [['devProviders', true]]);
-  assert.deepEqual(h.notices.at(-1), ['Dev providers on', 'info']);
-  assert.equal(h.row('devProviders').meta, 'On');
-
-  h.current().onSelect('devProviders', h.row('devProviders'));
-  await flush();
-  assert.deepEqual(writes.at(-1), ['devProviders', false]);
-  assert.deepEqual(h.notices.at(-1), ['Dev providers off', 'info']);
-  assert.equal(h.row('devProviders').meta, 'Off');
-
-  h.current().onLeft(h.row('devProviders'));
-  await flush();
-  assert.equal(writes.length, 2, 'setting the current value writes nothing');
-
   h.current().onCancel();
   await flush();
-  h.current().onSelect('diagnostics', h.row('diagnostics'));
+  assert.equal(h.current().title, 'Developer · Providers');
+  assert.equal(h.row('cursorOAuth').meta, 'Off');
+  assert.deepEqual(writes, [], 'Cancel and Esc write nothing');
+  assert.deepEqual(h.cleared, []);
+
+  h.current().onRight(h.row('cursorOAuth'));
   await flush();
-  h.current().onSelect('forced', h.row('forced'));
-  h.current().onLeft(h.row('forced'));
+  h.current().onSelect('accept', h.row('accept'));
   await flush();
-  assert.equal(writes.length, 2);
-  assert.deepEqual(h.notices.at(-1), ['Forced is forced on by MIXDOG_FORCED', 'warn']);
-  assert.equal(h.row('forced').meta, 'On (env)');
+  assert.deepEqual(writes, [['cursorOAuth', true]]);
+  assert.deepEqual(h.notices.at(-1), ['Cursor on', 'info']);
+  assert.equal(h.current().title, 'Developer · Providers');
+  assert.equal(h.row('cursorOAuth').meta, 'On');
+  assert.equal(h.row('antigravityOAuth').meta, 'Off', 'each provider has its own toggle');
+  assert.deepEqual(h.cleared, ['all'], 'turning a provider on drops the cached model list');
+
+  h.current().onLeft(h.row('cursorOAuth'));
+  await flush();
+  assert.deepEqual(writes.at(-1), ['cursorOAuth', false]);
+  assert.equal(h.row('cursorOAuth').meta, 'Off');
+  assert.deepEqual(h.cleared, ['all', 'all'], 'turning it off drops the cached model list too');
 });

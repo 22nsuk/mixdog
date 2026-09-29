@@ -130,6 +130,61 @@ test('the review slot takes no space until the review bar actually renders, incl
   }
 });
 
+test('a transcript tail without its prompt row keeps the turn review of that turn', async (t) => {
+  const { root, document, window } = mount(t);
+  await import('./TurnReview');
+  const pending = [];
+  window.mixdogDesktop.invokeCapability = () => new Promise((resolve) => pending.push(resolve));
+  const sessionId = 'review-truncated';
+  // An earlier read under the shared `none` scope left an unrelated review.
+  rememberAgentReviews(`${sessionId}:none`, [], '', [{ path: 'stale.ts', additions: 900, deletions: 40 }], 'worktree', 'old');
+  const edit = (id) => ({ kind: 'tool', id, name: 'apply_patch', args: {}, result: `Updated ${id}` });
+  const render = (reviewItems) =>
+    act(async () =>
+      root.render(
+        React.createElement(ComposerDock, {
+          goalSubmissionId: '',
+          showProjectSelector: false,
+          softCollapseContextBar: { current: false },
+          reviewActive: true,
+          reviewBusy: false,
+          reviewSessionId: sessionId,
+          reviewCwd: 'C:/work',
+          reviewItems,
+          children: React.createElement('textarea'),
+        })
+      )
+    );
+  const answer = (checkpointId, path) =>
+    act(async () => {
+      for (const resolve of pending.splice(0)) {
+        resolve({
+          value: {
+            supported: true,
+            authoritative: true,
+            snapshotKind: checkpointId === 'prompt' ? 'worktree' : 'scoped',
+            checkpointId,
+            patch: '',
+            files: [{ path, status: 'M', additions: 1, deletions: 1 }],
+            agents: [],
+          },
+        });
+      }
+    });
+  const barText = () => document.querySelector('.turn-review-bar')?.textContent || '';
+  await render([{ kind: 'user', id: 'prompt', text: 'Change a file' }, edit('edit-1')]);
+  await answer('prompt', 'demo.ts');
+  assert.match(barText(), /demo\.ts/);
+  // The daemon re-cut its tail: the prompt row is gone, the turn goes on.
+  await render([edit('edit-1'), edit('edit-2')]);
+  assert.match(barText(), /demo\.ts/);
+  assert.doesNotMatch(barText(), /stale\.ts/);
+  // A previous turn's recorded review still fails the checkpoint check.
+  await answer('old', 'stale.ts');
+  assert.match(barText(), /demo\.ts/);
+  assert.doesNotMatch(barText(), /stale\.ts/);
+});
+
 test('media preview frames survive decoding, metadata and fallback failures', async (t) => {
   const { root, document, window } = mount(t);
   window.mixdogDesktop.mediaUrl = (id, variant) => `https://mixdog.test/media/${id}/${variant}`;

@@ -16,8 +16,11 @@ import {
   COMPACT_TARGET_MIN_TOKENS,
 } from '../compact.mjs';
 
-// Conversation summarization triggers independently of the post-compact target.
+// Conversation summarization triggers independently of the post-compact target:
+// at 5% of the window, capped so a large window does not carry tens of
+// thousands of tokens of verbatim dialogue through every Compact.
 const CONVERSATION_COMPACT_TRIGGER_RATIO = 0.05;
+const CONVERSATION_COMPACT_TRIGGER_MAX_TOKENS = 20_000;
 
 // Select an explicitly configured, enabled maintenance route only. An absent
 // or disabled maintenance role falls back to the conversation's own model,
@@ -155,7 +158,7 @@ function freshContextBudget({ compactPolicy, sessionRef, provider, compactBudget
     positiveInt(sessionRef?.compaction?.conversationThresholdTokens) ||
     Math.max(
       Math.min(contextWindow, COMPACT_TARGET_MIN_TOKENS),
-      Math.ceil(contextWindow * CONVERSATION_COMPACT_TRIGGER_RATIO)
+      Math.min(Math.ceil(contextWindow * CONVERSATION_COMPACT_TRIGGER_RATIO), CONVERSATION_COMPACT_TRIGGER_MAX_TOKENS)
     );
   return { contextWindow, hardBudget, conversationInput, conversationTokens, conversationThresholdTokens };
 }

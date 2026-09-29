@@ -226,6 +226,10 @@ export async function sendViaHttpSse({
     await foldFrames(`${buffer}\n\n`);
     state.flushLeak();
   } catch (err) {
+    // A connection that dropped mid-body carries what the stream completed,
+    // so the loop can continue from finished tool calls. A cancelled or
+    // watchdog-stopped stream keeps its own error unchanged.
+    if (!totalTimeout.signal?.aborted) state.attachStreamPartial(err);
     throw state.stampStreamError(err);
   } finally {
     watchdogs.dispose();

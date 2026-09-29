@@ -38,7 +38,7 @@ export function createTurnOutcome({ turn, blocks, state }) {
   // Preserve partial state for the agent loop's recovery decision and
   // interrupted-turn persistence. Partial final text alone is not success;
   // completed tool calls and incomplete input have distinct recovery rules.
-  const attachStallPartial = (err) => {
+  const attachPartial = (err, outcomeHints) => {
     try {
       // `toolInputInFlight()` is the single authority for "arguments never
       // finished streaming": a client tool_use OR an Anthropic NATIVE
@@ -63,13 +63,17 @@ export function createTurnOutcome({ turn, blocks, state }) {
         ...exposure(),
         toolCallsStarted: state?.partialToolCall === true,
         pendingToolInput: blocks.toolInputInFlight(),
-        stallObserved: true,
+        ...outcomeHints,
       });
     } catch {
       /* stamping is best-effort */
     }
     return err;
   };
+  const attachStallPartial = (err) => attachPartial(err, { stallObserved: true });
+  // A connection that dropped mid-body (not a watchdog stall) carries the
+  // same partial, so completed tool calls survive the disconnect.
+  const attachTransportPartial = (err) => attachPartial(err, {});
 
   // Truncated-stream guard: the reader loop exited (EOF or break) after
   // message_start but without seeing message_stop / a tool_use stop_reason,
@@ -152,5 +156,5 @@ export function createTurnOutcome({ turn, blocks, state }) {
     };
   };
 
-  return { attachStallPartial, truncatedError, result };
+  return { attachStallPartial, attachTransportPartial, truncatedError, result };
 }

@@ -62,12 +62,54 @@ pub fn keycode(key: Key) -> Result<u16, String> {
             Named::Apps => return Err("invalid_keys: the context-menu key has no macOS key".into()),
         },
         Key::Char(glyph) => match glyph {
-            'a' => 0x00, 's' => 0x01, 'd' => 0x02, 'f' => 0x03, 'h' => 0x04, 'g' => 0x05, 'z' => 0x06, 'x' => 0x07,
-            'c' => 0x08, 'v' => 0x09, 'b' => 0x0B, 'q' => 0x0C, 'w' => 0x0D, 'e' => 0x0E, 'r' => 0x0F, 'y' => 0x10,
-            't' => 0x11, '1' => 0x12, '2' => 0x13, '3' => 0x14, '4' => 0x15, '6' => 0x16, '5' => 0x17, '=' => 0x18,
-            '9' => 0x19, '7' => 0x1A, '-' => 0x1B, '8' => 0x1C, '0' => 0x1D, ']' => 0x1E, 'o' => 0x1F, 'u' => 0x20,
-            '[' => 0x21, 'i' => 0x22, 'p' => 0x23, 'l' => 0x25, 'j' => 0x26, '\'' => 0x27, 'k' => 0x28, ';' => 0x29,
-            '\\' => 0x2A, ',' => 0x2B, '/' => 0x2C, 'n' => 0x2D, 'm' => 0x2E, '.' => 0x2F, '`' => 0x32, ' ' => 0x31,
+            'a' => 0x00,
+            's' => 0x01,
+            'd' => 0x02,
+            'f' => 0x03,
+            'h' => 0x04,
+            'g' => 0x05,
+            'z' => 0x06,
+            'x' => 0x07,
+            'c' => 0x08,
+            'v' => 0x09,
+            'b' => 0x0B,
+            'q' => 0x0C,
+            'w' => 0x0D,
+            'e' => 0x0E,
+            'r' => 0x0F,
+            'y' => 0x10,
+            't' => 0x11,
+            '1' => 0x12,
+            '2' => 0x13,
+            '3' => 0x14,
+            '4' => 0x15,
+            '6' => 0x16,
+            '5' => 0x17,
+            '=' => 0x18,
+            '9' => 0x19,
+            '7' => 0x1A,
+            '-' => 0x1B,
+            '8' => 0x1C,
+            '0' => 0x1D,
+            ']' => 0x1E,
+            'o' => 0x1F,
+            'u' => 0x20,
+            '[' => 0x21,
+            'i' => 0x22,
+            'p' => 0x23,
+            'l' => 0x25,
+            'j' => 0x26,
+            '\'' => 0x27,
+            'k' => 0x28,
+            ';' => 0x29,
+            '\\' => 0x2A,
+            ',' => 0x2B,
+            '/' => 0x2C,
+            'n' => 0x2D,
+            'm' => 0x2E,
+            '.' => 0x2F,
+            '`' => 0x32,
+            ' ' => 0x31,
             other => return Err(format!("invalid_keys: '{other}' has no macOS key")),
         },
     };
@@ -84,7 +126,9 @@ pub fn flag(modifier: Mod) -> u64 {
 }
 
 pub fn flags_of(modifiers: &[Mod]) -> u64 {
-    modifiers.iter().fold(0, |mask, modifier| mask | flag(*modifier))
+    modifiers
+        .iter()
+        .fold(0, |mask, modifier| mask | flag(*modifier))
 }
 
 /// Where an event goes: the system input stream, or one process.
@@ -101,7 +145,10 @@ pub struct Poster {
 
 impl Poster {
     pub fn new(marker: i64) -> Poster {
-        Poster { marker, flags: Cell::new(0) }
+        Poster {
+            marker,
+            flags: Cell::new(0),
+        }
     }
 
     /// Stamps, posts and releases one event.
@@ -122,16 +169,36 @@ impl Poster {
         Ok(())
     }
 
-    pub fn mouse(&self, kind: u32, x: f64, y: f64, button: u32, clicks: u32, route: Route, window: u32, flags: u64) -> Result<(), String> {
+    pub fn mouse(
+        &self,
+        kind: u32,
+        x: f64,
+        y: f64,
+        button: u32,
+        clicks: u32,
+        route: Route,
+        window: u32,
+        flags: u64,
+    ) -> Result<(), String> {
         // SAFETY: creates a +1 mouse event that `post` releases.
-        let event = unsafe { CGEventCreateMouseEvent(std::ptr::null_mut(), kind, CGPoint { x, y }, button) };
+        let event = unsafe {
+            CGEventCreateMouseEvent(std::ptr::null_mut(), kind, CGPoint { x, y }, button)
+        };
         if !event.is_null() {
             // SAFETY: event is live.
             unsafe {
                 CGEventSetIntegerValueField(event, kCGMouseEventClickState, clicks.max(1) as i64);
                 if window != 0 {
-                    CGEventSetIntegerValueField(event, kCGMouseEventWindowUnderMousePointer, window as i64);
-                    CGEventSetIntegerValueField(event, kCGMouseEventWindowUnderMousePointerThatCanHandleThisEvent, window as i64);
+                    CGEventSetIntegerValueField(
+                        event,
+                        kCGMouseEventWindowUnderMousePointer,
+                        window as i64,
+                    );
+                    CGEventSetIntegerValueField(
+                        event,
+                        kCGMouseEventWindowUnderMousePointerThatCanHandleThisEvent,
+                        window as i64,
+                    );
                 }
             }
         }
@@ -161,10 +228,17 @@ impl Poster {
                     let encoded = c.encode_utf16(&mut units);
                     for down in [true, false] {
                         // SAFETY: a +1 keyboard event carrying the character; `post` releases it.
-                        let event = unsafe { CGEventCreateKeyboardEvent(std::ptr::null_mut(), 0, down) };
+                        let event =
+                            unsafe { CGEventCreateKeyboardEvent(std::ptr::null_mut(), 0, down) };
                         if !event.is_null() {
                             // SAFETY: event is live and units outlive the call.
-                            unsafe { CGEventKeyboardSetUnicodeString(event, encoded.len() as _, encoded.as_ptr()) };
+                            unsafe {
+                                CGEventKeyboardSetUnicodeString(
+                                    event,
+                                    encoded.len() as _,
+                                    encoded.as_ptr(),
+                                )
+                            };
                         }
                         self.post(event, route, 0)?;
                     }
@@ -175,12 +249,29 @@ impl Poster {
         Ok(())
     }
 
-    pub fn wheel(&self, x: f64, y: f64, clicks: i32, horizontal: bool, route: Route, flags: u64) -> Result<(), String> {
+    pub fn wheel(
+        &self,
+        x: f64,
+        y: f64,
+        clicks: i32,
+        horizontal: bool,
+        route: Route,
+        flags: u64,
+    ) -> Result<(), String> {
         // Three lines per wheel notch; positive clicks move content down/right.
         let lines = -clicks * 3;
         let (vertical, sideways) = if horizontal { (0, lines) } else { (lines, 0) };
         // SAFETY: creates a +1 scroll event that `post` releases.
-        let event = unsafe { CGEventCreateScrollWheelEvent2(std::ptr::null_mut(), kCGScrollEventUnitLine, 2, vertical, sideways, 0) };
+        let event = unsafe {
+            CGEventCreateScrollWheelEvent2(
+                std::ptr::null_mut(),
+                kCGScrollEventUnitLine,
+                2,
+                vertical,
+                sideways,
+                0,
+            )
+        };
         if !event.is_null() {
             // SAFETY: event is live.
             unsafe { CGEventSetLocation(event, CGPoint { x, y }) };
@@ -191,9 +282,21 @@ impl Poster {
 
 pub fn button_events(button: Button) -> (u32, u32, u32) {
     match button {
-        Button::Left => (kCGEventLeftMouseDown, kCGEventLeftMouseUp, kCGMouseButtonLeft),
-        Button::Right => (kCGEventRightMouseDown, kCGEventRightMouseUp, kCGMouseButtonRight),
-        Button::Middle => (kCGEventOtherMouseDown, kCGEventOtherMouseUp, kCGMouseButtonCenter),
+        Button::Left => (
+            kCGEventLeftMouseDown,
+            kCGEventLeftMouseUp,
+            kCGMouseButtonLeft,
+        ),
+        Button::Right => (
+            kCGEventRightMouseDown,
+            kCGEventRightMouseUp,
+            kCGMouseButtonRight,
+        ),
+        Button::Middle => (
+            kCGEventOtherMouseDown,
+            kCGEventOtherMouseUp,
+            kCGMouseButtonCenter,
+        ),
     }
 }
 
@@ -222,13 +325,15 @@ impl KeySink for ProcessKeys<'_> {
         if let Key::Mod(modifier) = key {
             self.flags |= flag(modifier);
         }
-        self.poster.key(keycode(key)?, true, Route::Process(self.pid), self.flags)
+        self.poster
+            .key(keycode(key)?, true, Route::Process(self.pid), self.flags)
     }
     fn up(&mut self, key: Key) -> Result<(), String> {
         if let Key::Mod(modifier) = key {
             self.flags &= !flag(modifier);
         }
-        self.poster.key(keycode(key)?, false, Route::Process(self.pid), self.flags)
+        self.poster
+            .key(keycode(key)?, false, Route::Process(self.pid), self.flags)
     }
     fn text(&mut self, text: &str) -> Result<(), String> {
         self.poster.text(text, Route::Process(self.pid))
@@ -241,7 +346,8 @@ pub fn input_held() -> bool {
     // SAFETY: plain HID state queries.
     unsafe {
         (0u16..128).any(|code| CGEventSourceKeyState(kCGEventSourceStateHIDSystemState, code))
-            || (0u32..3).any(|button| CGEventSourceButtonState(kCGEventSourceStateHIDSystemState, button))
+            || (0u32..3)
+                .any(|button| CGEventSourceButtonState(kCGEventSourceStateHIDSystemState, button))
     }
 }
 

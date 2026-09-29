@@ -119,7 +119,7 @@ const installer = `(() => {
             h: Math.round(rect.height),
           };
         });
-      const cards = [...view.querySelectorAll('.tool-card')]
+      const cards = [...view.querySelectorAll('.tool-card, .tool-activity')]
         .filter((card) => {
           const rect = card.getBoundingClientRect();
           return rect.bottom > found.rect.top && rect.top < found.rect.bottom;
@@ -171,7 +171,7 @@ if (mode === 'now') {
       frames: state?.frames.length ?? 0,
       shifts: state?.shifts.length ?? 0,
       streaming: document.querySelectorAll('.message.streaming').length,
-      toolCards: document.querySelectorAll('.tool-card').length,
+      toolCards: document.querySelectorAll('.tool-card, .tool-activity').length,
     };
   })()`),
       null,

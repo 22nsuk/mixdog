@@ -404,6 +404,107 @@ async function attachSvgIcons(zip, slidePart, xml) {
   return { xml: output, attached };
 }
 
+// One id per drawing object on a slide. pptxgenjs numbers a table's frame by its own rule (the table's ordinal times
+// the slide number, plus one) while every other shape takes the next id, so the first table on slide 5 was id 6
+// beside a text box also id 6: a shape named by id in a later batch was ambiguous, and the schema asks for one id
+// each. Every later holder of a taken id gets the next free one; nothing in an authored slide refers to ids.
+export function uniqueShapeIds(xml) {
+  const source = String(xml || '');
+  const ids = [...source.matchAll(/<p:cNvPr\b[^>]*\bid="(\d+)"/g)].map((match) => Number(match[1]));
+  if (new Set(ids).size === ids.length) return { xml: source, changed: 0 };
+  let next = Math.max(0, ...ids);
+  const seen = new Set();
+  let changed = 0;
+  const output = source.replace(/(<p:cNvPr\b[^>]*\bid=")(\d+)(")/g, (whole, open, id, close) => {
+    if (!seen.has(id)) {
+      seen.add(id);
+      return whole;
+    }
+    next += 1;
+    changed += 1;
+    seen.add(String(next));
+    return `${open}${next}${close}`;
+  });
+  return { xml: output, changed };
+}
+
+// The schema's child order for the chart elements pptxgenjs and the accent merge write out of sequence
+// (tickLblSkip after the axis tail, dPt after dLbls, varyColors and marker misplaced). PowerPoint forgives
+// it; Keynote, Google Slides and strict validators read the element as malformed.
+const CHART_CHILD_ORDER = {
+  'c:catAx': ['axId', 'scaling', 'delete', 'axPos', 'majorGridlines', 'minorGridlines', 'title', 'numFmt', 'majorTickMark', 'minorTickMark', 'tickLblPos', 'spPr', 'txPr', 'crossAx', 'crosses', 'crossesAt', 'auto', 'lblAlgn', 'lblOffset', 'tickLblSkip', 'tickMarkSkip', 'noMultiLvlLbl', 'extLst'],
+  'c:dateAx': ['axId', 'scaling', 'delete', 'axPos', 'majorGridlines', 'minorGridlines', 'title', 'numFmt', 'majorTickMark', 'minorTickMark', 'tickLblPos', 'spPr', 'txPr', 'crossAx', 'crosses', 'crossesAt', 'auto', 'lblOffset', 'baseTimeUnit', 'majorUnit', 'majorTimeUnit', 'minorUnit', 'minorTimeUnit', 'extLst'],
+  'c:valAx': ['axId', 'scaling', 'delete', 'axPos', 'majorGridlines', 'minorGridlines', 'title', 'numFmt', 'majorTickMark', 'minorTickMark', 'tickLblPos', 'spPr', 'txPr', 'crossAx', 'crosses', 'crossesAt', 'crossBetween', 'majorUnit', 'minorUnit', 'dispUnits', 'extLst'],
+  'c:barChart': ['barDir', 'grouping', 'varyColors', 'ser', 'dLbls', 'gapWidth', 'overlap', 'serLines', 'axId', 'extLst'],
+  'c:lineChart': ['grouping', 'varyColors', 'ser', 'dLbls', 'dropLines', 'hiLowLines', 'upDownBars', 'marker', 'smooth', 'axId', 'extLst'],
+  'c:areaChart': ['grouping', 'varyColors', 'ser', 'dLbls', 'dropLines', 'axId', 'extLst'],
+  'c:pieChart': ['varyColors', 'ser', 'dLbls', 'firstSliceAng', 'extLst'],
+  'c:doughnutChart': ['varyColors', 'ser', 'dLbls', 'firstSliceAng', 'holeSize', 'extLst'],
+};
+const SERIES_CHILD_ORDER = {
+  'c:barChart': ['idx', 'order', 'tx', 'spPr', 'invertIfNegative', 'pictureOptions', 'dPt', 'dLbls', 'trendline', 'errBars', 'cat', 'val', 'shape', 'extLst'],
+  'c:lineChart': ['idx', 'order', 'tx', 'spPr', 'marker', 'dPt', 'dLbls', 'trendline', 'errBars', 'cat', 'val', 'smooth', 'extLst'],
+  'c:areaChart': ['idx', 'order', 'tx', 'spPr', 'pictureOptions', 'dPt', 'dLbls', 'trendline', 'errBars', 'cat', 'val', 'extLst'],
+  'c:pieChart': ['idx', 'order', 'tx', 'spPr', 'explosion', 'dPt', 'dLbls', 'cat', 'val', 'extLst'],
+  'c:doughnutChart': ['idx', 'order', 'tx', 'spPr', 'explosion', 'dPt', 'dLbls', 'cat', 'val', 'extLst'],
+};
+
+// An element's direct children, whole, in document order.
+function directChildren(inner) {
+  const out = [];
+  const tag = /<(\/?)([\w:]+)[^>]*?(\/?)>/g;
+  let depth = 0;
+  let start = -1;
+  let name = '';
+  for (let m = tag.exec(inner); m; m = tag.exec(inner)) {
+    const [whole, closing, tagName, selfClosing] = m;
+    if (whole.startsWith('<?') || whole.startsWith('<!')) continue;
+    if (!closing && depth === 0) {
+      start = m.index;
+      name = tagName;
+    }
+    if (closing) depth -= 1;
+    else if (!selfClosing) depth += 1;
+    if (depth === 0 && start >= 0) {
+      out.push({ name: name.replace(/^\w+:/, ''), xml: inner.slice(start, m.index + whole.length) });
+      start = -1;
+    }
+  }
+  return out;
+}
+
+function sortedChildren(inner, order) {
+  const children = directChildren(inner);
+  const rank = (child) => {
+    const at = order.indexOf(child.name);
+    return at < 0 ? order.length - 1.5 : at;
+  };
+  return children
+    .map((child, index) => ({ child, index }))
+    .sort((a, b) => rank(a.child) - rank(b.child) || a.index - b.index)
+    .map(({ child }) => child.xml)
+    .join('');
+}
+
+export function orderChartChildren(xml) {
+  let changed = false;
+  let output = String(xml);
+  for (const [element, order] of Object.entries(CHART_CHILD_ORDER)) {
+    const pattern = new RegExp(`<${element}>([\\s\\S]*?)</${element}>`, 'g');
+    output = output.replace(pattern, (whole, inner) => {
+      // A line chart's grouping is required, and pptxgenjs leaves it out.
+      const filled = element === 'c:lineChart' && !/<c:grouping\b/.test(inner) ? `<c:grouping val="standard"/>${inner}` : inner;
+      let body = sortedChildren(filled, order);
+      const seriesOrder = SERIES_CHILD_ORDER[element];
+      if (seriesOrder) body = body.replace(/<c:ser>([\s\S]*?)<\/c:ser>/g, (_, series) => `<c:ser>${sortedChildren(series, seriesOrder)}</c:ser>`);
+      const next = `<${element}>${body}</${element}>`;
+      if (next !== whole) changed = true;
+      return next;
+    });
+  }
+  return { xml: output, changed };
+}
+
 export async function normalizeAuthoredPptx(path) {
   const zip = await loadPackage(path);
   const parts = Object.keys(zip.files).filter((name) => TEXT_PARTS.test(name) || CHART_PARTS.test(name));
@@ -427,12 +528,16 @@ export async function normalizeAuthoredPptx(path) {
       if (fonts.changed) result = { ...result, xml: fonts.xml, changed: true };
       const axes = pruneUndeclaredAxisIds(result.xml);
       if (axes.changed) result = { ...result, xml: axes.xml, changed: true };
+      const ordered = orderChartChildren(result.xml);
+      if (ordered.changed) result = { ...result, xml: ordered.xml, changed: true };
     } else {
       const native = nativeGradients(result.xml);
       if (native.changed) {
         result = { ...result, xml: native.xml, changed: true };
         gradients += native.changed;
       }
+      const identified = uniqueShapeIds(result.xml);
+      if (identified.changed) result = { ...result, xml: identified.xml, changed: true };
       const icons = await attachSvgIcons(zip, part, result.xml);
       if (icons.attached) {
         result = { ...result, xml: icons.xml, changed: true };

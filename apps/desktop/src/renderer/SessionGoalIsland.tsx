@@ -14,6 +14,7 @@ import {
   type GoalDisplayStatus,
 } from './session-goal-presentation';
 import { ComposerGoalDialog } from './ComposerGoalDialog';
+import { useClock } from './use-clock';
 
 export {
   formatGoalDuration,
@@ -21,17 +22,6 @@ export {
   goalElapsedLabel,
   goalTimeLabel,
 } from './session-goal-presentation';
-
-function useGoalClock(active: boolean): number {
-  const [clock, setClock] = useState(() => Date.now());
-  useEffect(() => {
-    if (!active) return undefined;
-    setClock(Date.now());
-    const timer = window.setInterval(() => setClock(Date.now()), 1_000);
-    return () => window.clearInterval(timer);
-  }, [active]);
-  return clock;
-}
 
 // No strokeWidth override: the global pixel-snapped icon rule
 // (`svg.lucide { stroke-width: 1px }`, 02-base.css) outranks presentation
@@ -68,7 +58,7 @@ function GoalTaskGlyph({ status }: { status?: GoalTask['status'] }) {
 export function SessionGoalIsland({ snapshot }: { snapshot: Snapshot }) {
   const goal = useGoalAfterSubmission(snapshot.goal || null, String(snapshot.sessionId || ''));
   const active = goal?.status === 'active';
-  const clock = useGoalClock(active);
+  const clock = useClock(active);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<GoalSnapshot | null>(null);
   const [confirmStop, setConfirmStop] = useState(false);

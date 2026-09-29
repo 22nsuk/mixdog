@@ -72,9 +72,12 @@ export function explorerChildRel(parentRel: string, name: string): string {
   return parentRel ? `${parentRel}/${name}` : name;
 }
 
-/** Absolute path of a rel entry (Copy path / Shift+Alt+C). */
+/** Absolute path of a rel entry (Copy path / Shift+Alt+C, the tab's Copy
+ *  Path) in the project path's own separator style: a Windows project never
+ *  yields a mixed `C:\project/src/app.ts`. */
 export function explorerAbsolutePath(projectPath: string, rel: string): string {
-  return `${projectPath.replace(/[\\/]+$/, '')}/${rel}`;
+  const separator = projectPath.includes('\\') ? '\\' : '/';
+  return `${projectPath.replace(/[\\/]+$/, '')}${separator}${rel.replace(/[\\/]+/g, separator)}`;
 }
 
 /** Merge a partial state into one directory; unseen directories start collapsed. */

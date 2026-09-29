@@ -72,6 +72,16 @@ const DEFAULT_RESTART_STABLE_MS = 30_000;
 const DEFAULT_FAILURE_NOTICE_DELAY_MS = 10_000;
 const PROCESS_FAILURE_TOAST_ID = 'service-connection-stopped';
 
+/** The daemon lane carries arguments as JSON, which turns an omitted trailing
+ *  argument (`undefined`) into `null`. Receivers validate optional parameters
+ *  against `undefined` (a save's encoding, a workspace file), so a trailing
+ *  gap is dropped instead of arriving as an invalid `null`. */
+function wireArgs(args: unknown[]): unknown[] {
+  let end = args.length;
+  while (end > 0 && args[end - 1] === undefined) end -= 1;
+  return end === args.length ? args : args.slice(0, end);
+}
+
 function displayExitCode(code: number): string {
   if (process.platform === 'win32' && Number.isSafeInteger(code) && code >= 0x80000000 && code <= 0xffffffff) {
     return `0x${code.toString(16).padStart(8, '0').toUpperCase()}`;
@@ -583,7 +593,7 @@ export class DesktopServiceClient implements DesktopService {
         timer,
       });
       try {
-        transport.postMessage({ kind: 'request', id, method, args });
+        transport.postMessage({ kind: 'request', id, method, args: wireArgs(args) });
       } catch (error) {
         clearTimeout(timer);
         this.pending.delete(id);
@@ -700,8 +710,13 @@ export class DesktopServiceClient implements DesktopService {
     );
     return this.invokeRead('setVisibleSessions', [this.visibleSessionIds, ++this.visibleSessionVersion]);
   }
-  searchProjectFiles(projectIdOrWorkspaceId: string, query: string, limit = 50): Promise<string[]> {
-    return this.invokeRead('searchProjectFiles', [projectIdOrWorkspaceId, query, limit]);
+  searchProjectFiles(
+    projectIdOrWorkspaceId: string,
+    query: string,
+    limit = 50,
+    includeIgnored = false
+  ): Promise<string[]> {
+    return this.invokeRead('searchProjectFiles', [projectIdOrWorkspaceId, query, limit, includeIgnored]);
   }
   submitNewTask(
     prompt: DesktopPromptContent,
@@ -749,7 +764,7 @@ export class DesktopServiceClient implements DesktopService {
     return this.invokeRead('readCapabilities', [requests]);
   }
   invokeDesktopOperation(method: string, args: unknown[] = []): Promise<unknown> {
-    return this.invoke('invokeDesktopOperation', [method, args]);
+    return this.invoke('invokeDesktopOperation', [method, wireArgs(args)], longRunningRequestTimeout(method, args));
   }
   /** Fire-and-forget service call. Terminal keystrokes/resizes used to open a
    *  pending request (with its 120s timer) per keypress and wait for a reply
@@ -759,13 +774,13 @@ export class DesktopServiceClient implements DesktopService {
     if (!transport) {
       // Pre-ready (or mid-restart): fall back to the request lane, which waits
       // for the transport instead of dropping the input.
-      void this.invoke('invokeDesktopOperation', [method, args]).catch(() => {
+      void this.invoke('invokeDesktopOperation', [method, wireArgs(args)]).catch(() => {
         /* input lost */
       });
       return;
     }
     try {
-      transport.postMessage({ kind: 'notify', method: 'invokeDesktopOperation', args: [method, args] });
+      transport.postMessage({ kind: 'notify', method: 'invokeDesktopOperation', args: [method, wireArgs(args)] });
     } catch {
       /* the next keystroke re-syncs */
     }

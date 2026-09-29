@@ -4,7 +4,11 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runFreshContextCompact } from './loop/fresh-context.mjs';
-import { currentContextEstimateTokens, resolveWorkerCompactPolicy } from './loop/compact-policy.mjs';
+import {
+  currentContextEstimateTokens,
+  resolveWorkerCompactPolicy,
+  shouldCompactForRequestMedia,
+} from './loop/compact-policy.mjs';
 import { estimateMessagesTokens } from './context-utils.mjs';
 import { runPreSendCompactPass } from './pre-send-compact.mjs';
 import { runSessionCompaction } from './manager/compaction-runner.mjs';
@@ -95,13 +99,14 @@ test('ordinary Compact preserves all dialogue without resolving or calling an AI
   assert.deepEqual(repeat.messages, result.messages);
 });
 
-test('conversation summary uses 5% with the existing minimum without changing compact triggers or targets', async () => {
+test('conversation summary uses 5% capped at 20k without changing compact triggers or targets', async () => {
   for (const [contextWindow, thresholdTokens] of [
     [20_000, 4_000],
     [40_000, 4_000],
     [200_000, 10_000],
-    [500_000, 25_000],
-    [1_000_000, 50_000],
+    [400_000, 20_000],
+    [500_000, 20_000],
+    [1_000_000, 20_000],
   ]) {
     const session = { ...fixture(), contextWindow };
     const result = await compact(session);
@@ -212,6 +217,37 @@ test('tool pressure alone uses rules and preserves an exact recoverable archive,
     result.messages.filter((m) => m.role === 'tool').map((m) => m.toolCallId),
     result.messages.flatMap((m) => (m.toolCalls || []).map((call) => call.id))
   );
+});
+
+test('tool media at the request byte cap compacts before send even when tokens are low', async (t) => {
+  const previous = process.env.MIXDOG_DATA_DIR;
+  const root = mkdtempSync(join(tmpdir(), 'mixdog-media-compact-'));
+  process.env.MIXDOG_DATA_DIR = root;
+  t.after(() => {
+    if (previous === undefined) delete process.env.MIXDOG_DATA_DIR;
+    else process.env.MIXDOG_DATA_DIR = previous;
+    rmSync(root, { recursive: true, force: true });
+  });
+  const session = { ...fixture(), contextWindow: 200_000 };
+  const screenshot = { type: 'image', data: 'A'.repeat(1_000_000), mimeType: 'image/png' };
+  for (let index = 0; index < 24; index += 1) {
+    session.messages.push(
+      { role: 'assistant', content: '', toolCalls: [{ id: `shot-${index}`, name: 'browser', arguments: '{}' }] },
+      { role: 'tool', toolCallId: `shot-${index}`, content: [{ type: 'text', text: 'shot' }, screenshot] }
+    );
+  }
+  const policy = resolveWorkerCompactPolicy(session, []);
+  assert.ok(currentContextEstimateTokens(estimateMessagesTokens(session.messages), policy) < policy.triggerTokens);
+  assert.equal(shouldCompactForRequestMedia(session.messages), true);
+  const result = await runPreSendCompactPass({
+    sessionRef: session,
+    sessionId: 'media-compact',
+    messages: session.messages,
+    requestTools: [],
+    opts: {},
+  });
+  assert.equal(result.compactChanged, true);
+  assert.equal(shouldCompactForRequestMedia(session.messages), false);
 });
 
 test('a previous summary is retained verbatim on rule-only passes', async () => {

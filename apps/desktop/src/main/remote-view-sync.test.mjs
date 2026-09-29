@@ -395,6 +395,9 @@ test('a phone without a resume request keeps the full-baseline recovery and answ
   const reconnect = await again.sync();
   assert.equal(reconnect.value, true);
   assert.equal(reconnect.frames.filter((frame) => frame.event === 'viewBaseline').length, 5);
-  assert.ok(reconnect.frames.every((frame) => !Object.hasOwn(frame.payload, 'frame')), 'unchanged keys still reuse');
+  assert.ok(
+    reconnect.frames.every((frame) => !Object.hasOwn(frame.payload, 'frame')),
+    'unchanged keys still reuse'
+  );
   h.assertSynchronized(phone);
 });

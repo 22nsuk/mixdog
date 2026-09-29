@@ -17,9 +17,7 @@ process.env.MIXDOG_SESSION_SAVE_FAULT_HOOKS = '1';
 mkdirSync(join(root, 'sessions'));
 
 const { saveSessionAsync, bumpSessionGeneration } = await import('../store.mjs');
-const { _saveWorkerForTest, _setSaveWorkerIdleMsForTest, _detachSaveWorkerForTest } = await import(
-  './save-worker.mjs'
-);
+const { _saveWorkerForTest, _setSaveWorkerIdleMsForTest, _detachSaveWorkerForTest } = await import('./save-worker.mjs');
 const { _sessionWriteAuthorityRefusal } = await import('./write-admission.mjs');
 const { getFailedSaveSnapshot, getSessionSaveError } = await import('./live-state.mjs');
 const { settleSessionSummaryIndex } = await import('./listing.mjs');

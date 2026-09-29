@@ -333,8 +333,12 @@ test('stored paging windows report older history, replace each other and are for
   const dataDir = mkdtempSync(join(tmpdir(), 'mixdog-transcript-window-'));
   const previous = process.env.MIXDOG_DATA_DIR;
   process.env.MIXDOG_DATA_DIR = dataDir;
-  const { readStoredSessionTranscript, clearStoredTranscriptCache, forgetStoredSessionTranscript, storedTranscriptCacheStats } =
-    await import('./store-summary-reader.mjs');
+  const {
+    readStoredSessionTranscript,
+    clearStoredTranscriptCache,
+    forgetStoredSessionTranscript,
+    storedTranscriptCacheStats,
+  } = await import('./store-summary-reader.mjs');
   t.after(() => {
     clearStoredTranscriptCache();
     if (previous === undefined) delete process.env.MIXDOG_DATA_DIR;

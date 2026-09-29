@@ -83,19 +83,19 @@ export function flushLeak(state) {
   relayGuarded(state, state.leakGuard.flush());
 }
 
-function pendingToolUse(state) {
-  return state.toolAcc.byKey.size > 0 || state.leakedCalls.length > 0;
-}
-
 export function toolWorkStarted(state) {
   return state.streamEmitState.emittedToolCall || state.toolAcc.byKey.size > 0;
 }
 
-/** Keep exposed partial output on the error for upstream salvage. */
+/** Keep the partial output on the error for upstream salvage: the text, the
+ *  recovered leaked calls already dispatched (native calls only dispatch once
+ *  the stream finishes) and whether a native call's arguments were still
+ *  streaming. */
 export function attachPartial(state, err) {
   try {
     err.partialContent = state.content;
-    err.pendingToolUse = pendingToolUse(state);
+    err.partialToolCalls = state.leakedCalls.length ? state.leakedCalls.slice() : undefined;
+    err.pendingToolUse = state.toolAcc.byKey.size > 0;
     err.partialModel = state.model || undefined;
   } catch {
     /* best-effort */

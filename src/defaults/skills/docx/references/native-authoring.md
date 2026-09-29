@@ -27,10 +27,21 @@ file is a Word document.
 - Sections: `insert_break kind:'section_next'` closes the current section and
   starts the next one on a new page (`'section_continuous'` on the same page),
   so a wide table can take `set_page properties:{ orientation:'landscape' }`
-  while the prose before and after stays portrait. Running headers and page
-  numbers carry across the break; `kind:'page'` is an ordinary page break.
+  while the prose before and after stays portrait. Break before the heading that
+  introduces the table, so the heading, its lead-in, and the table share the
+  landscape page: broken after the lead-in, the portrait page held a heading and one
+  paragraph above an empty page, and the table stood on the next page without its
+  heading. Running headers and page numbers carry across the break; `kind:'page'`
+  is an ordinary page break.
 - Paragraph: `append_text text style properties`. Use `Title`, `Heading 1`,
   `Heading 2` or `Normal` for the actual role. Each call creates one paragraph.
+- Lists: `properties:{ listKind:'bullet'|'number', listLevel }`. A numbered list
+  starts again at 1 after a heading, a body paragraph, a callout, or a table; the
+  step that carries a procedure on past a note between its steps takes
+  `listContinue:true`, or it reads 1 again. Its levels count the global
+  1. a. i., and a list that opens on Korean text counts 1. 가. 1), the Korean
+  document convention; `listNumbering:'global'|'korean'` names it for the list an
+  item opens, and an item that continues a list keeps the list's own.
 - Type: `properties:{ name, nameEastAsia, size, bold, italic, color }`. Hangul, kana, and Han have no italic (Word
   and LibreOffice slant them synthetically): a Korean pull quote or caption is set apart by colour, weight, a rule, or
   an indent instead.
@@ -40,7 +51,9 @@ file is a Word document.
   keepWithNext, keepTogether, widowControl, pageBreakBefore }`.
   Spacing is in points. Keep headings with their next content, not every body
   paragraph with the next paragraph. Let body paragraphs flow before adding
-  intentional breaks based on the render.
+  intentional breaks based on the render. A clause that carries its own mark in
+  the text ("①", "가.") hangs it: `text:'①\t…'` with `indentLeft:18,
+  indentFirstLine:-18`, so a wrapped line starts under the words, not under the mark.
 - Tab stops: a contents line, a signature line, or a label with its figure at
   the right margin is one paragraph with `\t` in `text` and
   `properties:{ tabStops:[{ position:<pt from the left margin>, alignment:'right',
@@ -57,7 +70,8 @@ file is a Word document.
   default fall back per cell, and a Korean label lands on a different baseline
   from the figure beside it. Emphasis inside one cell stays with
   `set_table_cell_style`. The first row is the header and repeats on every
-  continuation page; `repeatHeader:false` says the row is data.
+  continuation page; `repeatHeader:false` says the row is data, and
+  `headerRows:<n>` makes a header of several rows (see "Table anatomy").
   `alignment` places the whole table on the page (`left`, `center`, `right`);
   column alignment and the default anatomy are in `SKILL.md` §4 and "Table
   anatomy" below. Bullets, Korean word wrapping, and that anatomy read the same
@@ -84,9 +98,13 @@ for an existing paragraph). Use a carrier when the content has that job, never a
   9 pt muted (`color:'6B7280'`). One Latin face and one East Asian face for the whole document
   (`name` + `nameEastAsia` on a paragraph, `fontName` + `fontNameEastAsia` on `add_table` — the table names its
   own type and refuses the paragraph's field names); an essay takes a serif pairing
-  (Cambria + 바탕/Noto Serif KR), a brief a sans one (Calibri + 맑은 고딕/Noto Sans KR).
+  (Cambria + 바탕/Noto Serif KR), a brief sets both faces in the Korean sans (`name` and `nameEastAsia` both
+  Malgun Gothic, or both Noto Sans KR): beside Calibri figures the Hangul prints larger and heavier, and
+  "184,200건" reads as two sizes.
 - **Cover group**: eyebrow (`size:9.5, bold:true, color:<accent>, spacingAfter:4`) → `Title` with
-  `alignment:'left'` (Word's own Title style centers it and the portable file does not; say which) → subtitle
+  `alignment:'left'` (Word's own Title style centers it and the portable file does not; say which) and
+  `lineSpacing:<1.25 × its size>, lineSpacingRule:'exact'` (30 for 24 pt) — a minimum can only widen a line, and on
+  Malgun Gothic's own line the two lines of one wrapped title stood nearly twice the size apart → subtitle
   (`size:13, color:'374151', spacingAfter:8`) → meta lines (`size:9.5, color:'6B7280'`) → a rule: an empty
   paragraph with `border:{ side:'bottom', size:8, color:<accent> }, spacingAfter:24`. The summary follows on
   the same page; `insert_break kind:'page'` only when the document is long enough to earn a cover page.
@@ -102,15 +120,25 @@ for an existing paragraph). Use a carrier when the content has that job, never a
   size:12, color:<accent> }, indentLeft:12, indentRight:12, spacingBefore:6, spacingAfter:12`; a label
   paragraph above it in the same field (`bold:true, size:8.5, color:<accent>, spacingAfter:2, shading, indentLeft`)
   when the field needs a name. Every paragraph of one callout carries the same `shading` and indents so the
-  field reads as one.
+  field reads as one. Points inside it (a warning's items) are list items with those same properties plus
+  `listKind`: on a list item `indentLeft` places the mark and the text hangs 18 pt after it, inside the field.
 - **Quote**: `indentLeft:16, border:{ side:'left', size:16, color:<accent> }, size:12.5, lineSpacing:20,
-  color:'1F2937', keepTogether:true, keepWithNext:true`; the attribution a caption under it (`size:9, color:'6B7280',
-  indentLeft:16`) beginning "— ". The two keeps hold the quote whole and on the page of its attribution — without them
-  a two-line quote ending a page left one line behind and carried the other over with its speaker.
+  color:'1F2937', spacingBefore:10, keepTogether:true, keepWithNext:true`; the attribution a caption under it
+  (`size:9, color:'6B7280', indentLeft:16, spacingAfter:12`) beginning "— ". The two keeps hold the quote whole and on
+  the page of its attribution — without them a two-line quote ending a page left one line behind and carried the other
+  over with its speaker. The space above sets it apart from what it follows: without it a quote under a list sat as
+  close to the last item as the items to each other and read as one more of them.
 - **Stat strip** (two to four figures with one cause): `add_table` with one row of values and one row of labels,
   `properties:{ borders:{ top:{ enabled:false }, left:{ enabled:false }, right:{ enabled:false }, insideV:{ enabled:false },
   insideH:{ enabled:false }, bottom:{ style:'single', size:4, color:'C9CED6' } }, fontSize:22, color:<accent>,
   columnAlignments:['left', …] }` and `set_table_cell_style` on the label row (`fontSize:9, color:'6B7280'`).
+- **Chart**: `add_chart categories:[…] values:[…] chartType:'bar'|'column' unit highlight forecast accent` — one series
+  drawn as a picture in the document's accent (`accent:'1F5E4B'`, the hex the document's headings and callouts use;
+  without it the writer's teal), every bar carrying its value and no grid; `bar` for a ranking (names on the
+  left), `column` for periods, `highlight` the bar the paragraph is about, `forecast` the bars that are projections
+  (a plan, an estimate: drawn pale in a dashed outline, never as counted figures). It lands like `add_image` (`width`,
+  `properties:{ alignment:'center' }`) with a caption under it; its altText names each figure. The bars cannot be
+  edited in Word — a chart the reader will edit belongs in a workbook.
 - **Caption**: the paragraph under a table or picture, `size:9, color:'6B7280', spacingBefore:4,
   spacingAfter:14`: what it shows and its source. The table above it takes `properties.keepWithNext:true`
   so the caption never starts the next page alone; a picture (`add_image`) keeps with its caption on its own,
@@ -127,6 +155,13 @@ for an existing paragraph). Use a carrier when the content has that job, never a
   row's baseline) is the anatomy; `shading` on the header only when the document's fields use the same tint. A
   figure column names its unit in the header ("처리량 (건)"), not in every cell. `set_table_cell_style`
   patches one cell (`fillColor`, `fontSize`, `bold`, `color`, `verticalAlignment`) and keeps the rest.
+  `insert_table_row` copies the row it goes before, so a data row inserted above a total takes the total's shading
+  and weight: give its cells the data rows' look back (`fillColor:null` takes the shading away, `bold:false` on the
+  figures). A two-level
+  header — a group label over the columns it spans ("3분기 처리량" over 7월 · 8월 · 9월) — is `properties.headerRows:2`
+  with the group merged across its columns and the single labels down both rows (`merge_table_cells`, right to
+  left): every header row is set bold on its bottom edge and repeats on a continuation page. Left at one header
+  row, the months under the group are set as data, plain and on their top edge.
 
 ## Optional preset
 

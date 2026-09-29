@@ -118,46 +118,11 @@
     opacity: var(--mx-op-secondary);
   }
 }
+/* The verb's sweep is the shared comet in 22-markdown.css. */
 .live-activity [data-component="text-shimmer"] {
-  /* TUI contract (src/tui/index.mjs, GLIMMER_SPEED_MS/GLIMMER_TRAIL): the head
-     advances ONE cell per 120ms and the cycle spans `cells + 6`, so any phrase
-     gets exactly one pass and then a short rest. TextShimmer reports the cell
-     count (CJK counted as 2, like a terminal column), so `ch` lines up with
-     the rendered width in either script. */
-  --live-shimmer-span: calc((var(--text-shimmer-cells, 12) + 6) * 1ch);
-  /* Cell-proportional, but clamped: the verb pool runs 4-7 Hangul syllables
-     (8-14 terminal cells), and without the floor/ceiling a short verb sprinted
-     while a long one crawled — the sweep speed itself read as a glitch every
-     time the phrase changed. */
-  --text-shimmer-duration: clamp(1700ms, calc((var(--text-shimmer-cells, 12) + 6) * 120ms), 2600ms);
   min-width: 0;
   max-width: 100%;
   font-weight: var(--mx-weight-medium);
-}
-/* One-sided comet, verbatim from renderShimmerText: the cell AT the head is
-   brightest and the 6 cells BEHIND it decay back to base, with nothing ahead
-   of it. The old gradient was a symmetric glow on a fixed 24ch tile — it read
-   as a lamp sliding under the text, never rested on a short verb, and showed
-   two glints at once on a long one. */
-.live-activity [data-component="text-shimmer"][data-active="true"] [data-slot="text-shimmer-char"] {
-  background-image: linear-gradient(
-    90deg,
-    var(--mx-text) 0,
-    var(--mx-text) 3ch,
-    var(--live-status-color) 6ch,
-    var(--mx-text) calc(6ch + 1px),
-    var(--mx-text) 100%
-  );
-  background-size: var(--live-shimmer-span) 100%;
-  background-repeat: repeat;
-  background-clip: text;
-  -webkit-background-clip: text;
-  animation: live-activity-sweep var(--text-shimmer-duration) linear infinite;
-}
-@keyframes live-activity-sweep {
-  to {
-    background-position: var(--live-shimmer-span) 0;
-  }
 }
 .live-activity [data-slot="text-shimmer-char"] {
   font-variant-numeric: tabular-nums;
@@ -353,39 +318,6 @@
   margin-right: 7px;
   color: var(--mx-text-faint);
 }
-/* Recovery owns a fixed final column so long failure text wraps without
-   pushing the action out of the pane. */
-.turn-retry {
-  min-height: 20px;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  white-space: nowrap;
-  margin-left: 2px;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  color: var(--mx-accent);
-  background: transparent;
-  font-size: var(--mx-font-ui);
-  font-weight: var(--mx-weight-semibold);
-  line-height: var(--mx-line-ui);
-  cursor: pointer;
-}
-.turn-retry:hover:not(:disabled),
-.turn-retry:focus-visible {
-  color: color-mix(in srgb, var(--mx-accent) 72%, var(--mx-text));
-  background: transparent;
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-.turn-retry svg {
-  color: var(--mx-accent);
-}
-.turn-retry:disabled {
-  opacity: var(--mx-op-disabled);
-  cursor: default;
-}
 .compaction-divider {
   min-height: 28px;
   display: flex;
@@ -492,8 +424,7 @@
   [data-animate="true"] .turn-status-icon,
   [data-animate="true"] .compaction-icon,
   .live-activity-glyph-spin,
-  .live-activity-glyph-core,
-  .live-activity [data-slot="text-shimmer-char"] {
+  .live-activity-glyph-core {
     animation: none;
   }
 }

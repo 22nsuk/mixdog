@@ -1,6 +1,6 @@
 /**
  * src/tui/session/labels.mjs - spinner verbs, elapsed formatting, and compact
- * event label/detail helpers.
+ * event detail helpers.
  */
 import { SPINNER_VERBS } from '../spinner-verbs.mjs';
 
@@ -18,15 +18,6 @@ function formatElapsedSeconds(ms) {
   const value = Math.max(0, Number(ms) || 0);
   if (value <= 0) return '0s';
   return `${Math.max(1, Math.ceil(value / 1000))}s`;
-}
-
-export function compactEventLabel(event = {}) {
-  const status = String(event.status || '').toLowerCase();
-  const reactive = String(event.trigger || '').toLowerCase() === 'reactive';
-  if (status === 'failed') return reactive ? 'Compact failed (overflow retry)' : 'Compact failed';
-  if (status === 'skipped') return 'Compact skipped';
-  if (status === 'no_change') return 'Compact checked';
-  return reactive ? 'Compact complete (overflow recovery)' : 'Compact complete';
 }
 
 export function compactEventDetail(event = {}) {

@@ -158,7 +158,11 @@ function createVoiceWavCache() {
 function resolveVoiceTranscriptionRuntime(config, dataDir) {
   const runtime = resolveVoiceRuntime(dataDir, { modelId: selectVoiceModelId(config.voice) });
   if (!runtime?.installed) {
-    const missing = [runtime?.binary ? null : 'binary', runtime?.model ? null : 'model', runtime?.ffmpeg ? null : 'ffmpeg']
+    const missing = [
+      runtime?.binary ? null : 'binary',
+      runtime?.model ? null : 'model',
+      runtime?.ffmpeg ? null : 'ffmpeg',
+    ]
       .filter(Boolean)
       .join(' + ');
     return {

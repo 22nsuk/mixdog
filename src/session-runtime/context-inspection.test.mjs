@@ -535,4 +535,16 @@ test('attachments and named prompt blocks get their own rows instead of hiding i
     result.estimatedTokens
   );
   assert.equal(result.estimatedTokens, estimateMessagesTokens(messages) + 8);
+  // A provider reading corrects the text estimator, not pixel pricing: the
+  // image keeps its allowance whether it sits inside or after the covered
+  // prefix, and the text rows absorb the rest of the measurement.
+  const measured = Math.round((result.estimatedTokens - attachment.tokens) * 1.4) + attachment.tokens;
+  const covered = inspectContext(fixture({ messages, tools: [], coverage: { count: 2, tokens: measured } }));
+  assert.equal(covered.calibration.source, 'provider');
+  assert.equal(covered.entries.find((entry) => entry.category === 'attachments').tokens, attachment.tokens);
+  assert.equal(covered.estimatedTokens, measured);
+  const prefixMeasured = Math.round((result.estimatedTokens - attachment.tokens - question.tokens) * 1.4);
+  const tail = inspectContext(fixture({ messages, tools: [], coverage: { count: 1, tokens: prefixMeasured } }));
+  assert.equal(tail.calibration.source, 'provider');
+  assert.equal(tail.entries.find((entry) => entry.category === 'attachments').tokens, attachment.tokens);
 });

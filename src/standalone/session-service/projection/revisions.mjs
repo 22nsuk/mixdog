@@ -64,7 +64,14 @@ export function createRevisionSteps({ revisionEpoch, index, updateEntryBusy }) {
    *  current, or null when its baseline is not one this daemon issued. */
   function unchangedProjectionResult(sessionId, projectionStamp, baseRevision) {
     if (!projectionStamp || !issuedRevision(baseRevision)) return null;
-    return { sessionId, reservedOnly: false, projection: true, revision: baseRevision, projectionStamp, unchanged: true };
+    return {
+      sessionId,
+      reservedOnly: false,
+      projection: true,
+      revision: baseRevision,
+      projectionStamp,
+      unchanged: true,
+    };
   }
 
   function projectionResult(
@@ -104,7 +111,14 @@ export function createRevisionSteps({ revisionEpoch, index, updateEntryBusy }) {
     const previous = entry.publishedSnapshot;
     const previousRevision = entry.revision || 0;
     if (snapshot === previous) {
-      return { changed: false, snapshot, revision: previousRevision, previousRevision, patch: null, prependPatch: null };
+      return {
+        changed: false,
+        snapshot,
+        revision: previousRevision,
+        previousRevision,
+        patch: null,
+        prependPatch: null,
+      };
     }
     entry.publishedSnapshot = snapshot;
     entry.revision = nextRevision();

@@ -7,6 +7,7 @@ import test from 'node:test';
 import { createBridgeServer } from './bridge-server.ts';
 import { createUserWaitService } from './user-wait-service.ts';
 import { computerUseCoordinator as coordinator } from '../session/coordinator.ts';
+import { computerUseOverlayPresentation } from '../overlay/model.ts';
 
 test('user wait bypasses execution queues, permits concurrent discovery and releases on resume', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'mixdog-user-wait-bridge-'));
@@ -92,6 +93,68 @@ test('user wait bypasses execution queues, permits concurrent discovery and rele
     clearTimeout(deadline);
     watcher?.close();
     service.dispose();
+    enabled = false;
+    await server.stopBridge();
+    coordinator.reset();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('a cancelled turn that held a pause ends it, so nothing is left on screen', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'mixdog-abort-pause-bridge-'));
+  let enabled = true,
+    aborts = 0;
+  let watcher;
+  let deadline;
+  const discovery = new Promise((resolve, reject) => {
+    deadline = setTimeout(() => reject(new Error('discovery timeout')), 5000);
+    watcher = watch(directory, async () => {
+      try {
+        const value = JSON.parse(await readFile(join(directory, 'computer-bridge.json'), 'utf8'));
+        if (!value.port) return;
+        clearTimeout(deadline);
+        watcher.close();
+        resolve(value);
+      } catch {
+        /* discovery is atomically published */
+      }
+    });
+  });
+  const server = createBridgeServer({
+    dataDirectory: () => directory,
+    isBridgeWanted: () => enabled,
+    isDisposed: () => false,
+    diagnose() {},
+    powerShellBySession: new Map(),
+    elevatedSessionIds: () => [],
+    callPowerShell: async () => ({ ok: true }),
+    reapIdleSessionWorkers() {},
+    abortComputerSession: async () => {
+      aborts++;
+      return { text: 'computer session aborted' };
+    },
+    executeSerialized: async () => ({ text: '{"ok":true}' }),
+  });
+  try {
+    coordinator.beginCommand({ sessionId: 'cancelled', action: 'click', mode: 'foreground' });
+    coordinator.finishCommand('cancelled');
+    coordinator.pauseForUser('user_pause');
+    server.startBridge();
+    const record = await discovery;
+    // A cancelled turn sends session_abort and never execution_end.
+    const reply = await fetch(`http://127.0.0.1:${record.port}/command`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${record.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'session_abort', session_id: 'cancelled' }),
+    }).then((response) => response.json());
+    assert.equal(reply.ok, true);
+    assert.equal(aborts, 1);
+    const snapshot = coordinator.snapshot();
+    assert.equal(snapshot.userControlActive, false);
+    assert.equal(computerUseOverlayPresentation(snapshot, 'ko').visible, false);
+  } finally {
+    clearTimeout(deadline);
+    watcher?.close();
     enabled = false;
     await server.stopBridge();
     coordinator.reset();

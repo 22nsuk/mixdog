@@ -95,6 +95,26 @@ test('verification dedupes concurrent and repeated checks; missing results expir
   assert.ok(calls.length > retried);
 });
 
+test('a conversation folder that is not a registered Project opens its files by absolute path', async (t) => {
+  const calls = installApi(t, {});
+  const resolved = [];
+  Object.assign(calls.window.mixdogDesktop, {
+    statProjectFile: async () => {
+      throw new Error('Project is not available.');
+    },
+    resolveLocalPaths: async ([absolutePath]) => {
+      resolved.push(absolutePath);
+      return [
+        { absolutePath, name: 'deck.pptx', dir: false, size: 1, projectPath: 'C:/Project/mixdog', relPath: 'out/A/deck.pptx' },
+      ];
+    },
+  });
+  const expected = { project: 'C:/Project/mixdog', path: 'out/A/deck.pptx' };
+  assert.deepEqual(await resolveLocalLink('C:\\Project\\mixdog\\out\\A', 'deck.pptx'), expected);
+  assert.deepEqual(await resolveLocalLink('C:\\Project\\mixdog\\out\\A', 'C:\\Project\\mixdog\\out\\A\\deck.pptx'), expected);
+  assert.deepEqual(resolved, ['C:/Project/mixdog/out/A/deck.pptx', 'C:/Project/mixdog/out/A/deck.pptx']);
+});
+
 test('each desktop API instance keeps its own verification results', async (t) => {
   const first = installApi(t, { [PROJECT]: ['src/app.ts'] });
   await verifyLocalLink(PROJECT, 'src/app.ts');

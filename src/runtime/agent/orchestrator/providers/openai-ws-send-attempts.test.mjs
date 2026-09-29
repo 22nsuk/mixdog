@@ -136,6 +136,29 @@ test('streamFailed: an abnormal close before any output releases the socket and 
   assert.equal(h.sleeps.length, 1);
 });
 
+test('streamFailed: a cut while a tool input streams surfaces instead of re-sending the request', async () => {
+  const h = harness();
+  const err = Object.assign(new Error('gone'), { wsCloseCode: 1006, pendingToolUse: true });
+  await assert.rejects(
+    () => h.attempts.streamFailed(err, { attemptIndex: 0, entry: fakeEntry(), midState: midState() }),
+    (e) => e === err
+  );
+  assert.deepEqual(h.progress, []);
+  assert.equal(h.sleeps.length, 0);
+});
+
+test('streamFailed: a rate-limited response.failed waits the server-advised time', async () => {
+  const h = harness();
+  const err = Object.assign(new Error('rate limited'), {
+    responseFailed: {
+      response: { error: { code: 'rate_limit_exceeded', message: 'Rate limit reached. Please try again in 1.5s.' } },
+    },
+  });
+  assert.equal(await h.attempts.streamFailed(err, { attemptIndex: 0, entry: fakeEntry(), midState: midState() }), true);
+  assert.equal(err.midstreamClassifier, 'response_failed_rate_limited');
+  assert.deepEqual(h.sleeps, [1500]);
+});
+
 test('streamFailed: relayed text latches the no-replay marker and surfaces the error', async () => {
   const h = harness();
   const err = Object.assign(new Error('gone'), { wsCloseCode: 1006 });

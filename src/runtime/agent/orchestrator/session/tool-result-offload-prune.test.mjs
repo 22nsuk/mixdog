@@ -85,7 +85,13 @@ function scenario() {
     missing: random() % 9 === 0,
   }));
   const mentions = files.map(() => random() % 6);
-  return { files, mentions, missingMention: random() % 12 === 0, unserializable: random() % 20 === 0, stray: random() % 4 === 0 };
+  return {
+    files,
+    mentions,
+    missingMention: random() % 12 === 0,
+    unserializable: random() % 20 === 0,
+    stray: random() % 4 === 0,
+  };
 }
 
 function build(spec, sessionId) {
@@ -95,7 +101,11 @@ function build(spec, sessionId) {
   spec.files.forEach((file, index) => {
     const refs = file.refs.map((target) => {
       const artifact = artifacts[target];
-      return file.refStyle === 0 ? artifact.path : file.refStyle === 1 ? normalizeOutputPath(artifact.path) : artifact.path.split(/[\\/]/).pop();
+      return file.refStyle === 0
+        ? artifact.path
+        : file.refStyle === 1
+          ? normalizeOutputPath(artifact.path)
+          : artifact.path.split(/[\\/]/).pop();
     });
     if (file.missing) refs.push(MISSING);
     const content = refs.length ? JSON.stringify({ archive: index, refs }) : `evidence ${index}`;
@@ -115,7 +125,10 @@ function build(spec, sessionId) {
     else if (mention === 3) content.push(`see ${path.split(/[\\/]/).pop()}`);
   });
   if (spec.missingMention) content.push(MISSING);
-  const messages = [{ role: 'user', content: content.join('\n') }, { role: 'assistant', content: 'ok' }];
+  const messages = [
+    { role: 'user', content: content.join('\n') },
+    { role: 'assistant', content: 'ok' },
+  ];
   if (spec.unserializable) messages.push({ role: 'tool', content: 10n });
   return { dir, getMessages: () => [messages, [], []] };
 }

@@ -42,13 +42,15 @@ type WireLane = [number, string];
 /** Object keys sorted at every depth: both ends must hash the same JSON even
  * where a decoder merged fields into a different key order. */
 export function canonicalJson(value: unknown): string {
-  return JSON.stringify(value, (_key, entry: unknown) => {
-    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry;
-    const record = entry as Record<string, unknown>;
-    const sorted: Record<string, unknown> = {};
-    for (const key of Object.keys(record).sort()) sorted[key] = record[key];
-    return sorted;
-  }) ?? 'null';
+  return (
+    JSON.stringify(value, (_key, entry: unknown) => {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry;
+      const record = entry as Record<string, unknown>;
+      const sorted: Record<string, unknown> = {};
+      for (const key of Object.keys(record).sort()) sorted[key] = record[key];
+      return sorted;
+    }) ?? 'null'
+  );
 }
 
 export async function viewResumeDigest(held: unknown): Promise<string> {
@@ -68,9 +70,7 @@ export async function viewResumeLaneMatches(
   point: ViewResumePoint | null,
   lane: ViewResumeLane | null | undefined
 ): Promise<boolean> {
-  return (
-    !!point && !!lane && point.revision === lane.revision && (await viewResumeDigest(point.held)) === lane.digest
-  );
+  return !!point && !!lane && point.revision === lane.revision && (await viewResumeDigest(point.held)) === lane.digest;
 }
 
 /** The phone's request. Without a token it only announces that it can resume

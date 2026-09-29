@@ -202,7 +202,19 @@ function pptxShapeSnapshot(shape, shapeIndex, slideIndex, chartParts) {
     ...(/<c:chart\b/i.test(shape.xml)
       ? { chart: { path: `${shapePath}/chart`, ...(chartParts.get(shapeIndex) || {}) } }
       : {}),
-    ...(tableRows ? { table: { rows: tableRows, columns: tableColumns } } : {}),
+    // Each cell's text, row by row, as PowerPoint reports a table: without it the cells a set_table_data edit would
+    // replace could only be read run together in `text`.
+    ...(tableRows
+      ? {
+          table: {
+            rows: tableRows,
+            columns: tableColumns,
+            values: [...shape.xml.matchAll(/<a:tr\b[^>]*>([\s\S]*?)<\/a:tr>/g)].map((row) =>
+              [...row[1].matchAll(/<a:tc\b[^>]*?(?:\/>|>([\s\S]*?)<\/a:tc>)/g)].map((cell) => blockText(cell[1] || '', 'a:t'))
+            ),
+          },
+        }
+      : {}),
     ...fontFacts(fontSizes, bold, fonts, runColor(shape.xml)),
     ...(fonts.length ? { fonts } : {}),
     ...(colors.length ? { colors } : {}),

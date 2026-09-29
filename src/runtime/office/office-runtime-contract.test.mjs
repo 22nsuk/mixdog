@@ -370,7 +370,12 @@ test('an operation error suggests a field only when it reads as a typo', async (
     assertOfficeOperationContracts({ format: 'pptx', backend: 'mixdog-ooxml', operations: [box] })
   );
   assert.throws(
-    () => assertOfficeOperationContracts({ format: 'pptx', backend: 'mixdog-ooxml', operations: [{ op: 'add_textbox', slide: 1 }] }),
+    () =>
+      assertOfficeOperationContracts({
+        format: 'pptx',
+        backend: 'mixdog-ooxml',
+        operations: [{ op: 'add_textbox', slide: 1 }],
+      }),
     /requires one of: text or paragraphs/
   );
   // A property the writer would drop is rejected rather than silently ignored:
@@ -519,7 +524,13 @@ test('an operation error suggests a field only when it reads as a typo', async (
   // row:1 read as "one frozen row" freezes nothing; the refusal says which row keeps the header in view.
   const cwd = await workspace(t);
   const frozen = await executeOfficeTool(
-    { action: 'create', path: 'freeze.xlsx', format: 'xlsx', mode: 'portable', operations: [{ op: 'freeze_panes', row: 1 }] },
+    {
+      action: 'create',
+      path: 'freeze.xlsx',
+      format: 'xlsx',
+      mode: 'portable',
+      operations: [{ op: 'freeze_panes', row: 1 }],
+    },
     { cwd }
   );
   assert.equal(frozen.isError, true);
@@ -834,17 +845,38 @@ test('CSV and TSV sessions preserve delimiters, transactions, and formula-like v
   const fresh = async (name, values) => {
     const created = value(
       await executeOfficeTool(
-        { action: 'create', path: join(cwd, name), format: 'csv', operations: [{ op: 'set_range', range: 'A1:B2', values }] },
+        {
+          action: 'create',
+          path: join(cwd, name),
+          format: 'csv',
+          operations: [{ op: 'set_range', range: 'A1:B2', values }],
+        },
         { cwd }
       )
     );
     return { text: await readFile(join(cwd, name), 'utf8'), session: created.session };
   };
-  const korean = await fresh('new-ko.csv', [['허브', '처리량'], ['대전', 128400]]);
+  const korean = await fresh('new-ko.csv', [
+    ['허브', '처리량'],
+    ['대전', 128400],
+  ]);
   assert.ok(korean.text.startsWith('\uFEFF'), 'a new Hangul list carries the mark');
-  assert.equal((await fresh('new-en.csv', [['hub', 'volume'], ['Daejeon', 128400]])).text.startsWith('\uFEFF'), false);
-  const cells = value(await executeOfficeTool({ action: 'snapshot', session: korean.session }, { cwd })).document.sheets[0].cells;
-  assert.equal(cells.some((cell) => 'formula' in cell), false, 'a plain value carries no empty formula field');
+  assert.equal(
+    (
+      await fresh('new-en.csv', [
+        ['hub', 'volume'],
+        ['Daejeon', 128400],
+      ])
+    ).text.startsWith('\uFEFF'),
+    false
+  );
+  const cells = value(await executeOfficeTool({ action: 'snapshot', session: korean.session }, { cwd })).document
+    .sheets[0].cells;
+  assert.equal(
+    cells.some((cell) => 'formula' in cell),
+    false,
+    'a plain value carries no empty formula field'
+  );
 });
 
 test('snapshot pagination uses opaque cursors and rejects stale continuations', async (t) => {

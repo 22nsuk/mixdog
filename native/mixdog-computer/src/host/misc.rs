@@ -12,10 +12,22 @@ use serde_json::{json, Value};
 /// name belongs to the system opener.
 fn names_catalogue_entry(target: &str) -> bool {
     let lower = target.to_lowercase();
-    let scheme = target
-        .split_once(':')
-        .is_some_and(|(scheme, _)| !scheme.is_empty() && scheme.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) && scheme.chars().all(|c| c.is_ascii_alphanumeric() || "+.-".contains(c)));
-    !(target.contains('/') || target.contains('\\') || scheme || [".app", ".desktop", ".sh", ".exe", ".bin"].iter().any(|ext| lower.ends_with(ext)))
+    let scheme = target.split_once(':').is_some_and(|(scheme, _)| {
+        !scheme.is_empty()
+            && scheme
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic())
+            && scheme
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "+.-".contains(c))
+    });
+    !(target.contains('/')
+        || target.contains('\\')
+        || scheme
+        || [".app", ".desktop", ".sh", ".exe", ".bin"]
+            .iter()
+            .any(|ext| lower.ends_with(ext)))
 }
 
 fn matches_like(value: &str, query: &str) -> bool {
@@ -35,7 +47,10 @@ impl Host {
         let image = base64::engine::general_purpose::STANDARD
             .decode(encoded.trim())
             .map_err(|error| format!("ocr_image: image_base64 is not valid base64 ({error})"))?;
-        match self.desktop.ocr(&image, req.text("ocr_language").trim(), maximum as usize)? {
+        match self
+            .desktop
+            .ocr(&image, req.text("ocr_language").trim(), maximum as usize)?
+        {
             Value::Object(result) => Ok(result),
             _ => Err("ocr_image: recognizer returned no result".into()),
         }
@@ -63,8 +78,21 @@ impl Host {
         self.authorize_current(0)?;
         let text = req.text("text");
         let verified = self.desktop.clipboard_write(&text)?;
-        let message = if text.is_empty() { "cleared clipboard".to_string() } else { format!("clipboard set: {} chars", text.chars().count()) };
-        Ok(self.action_result("clipboard_write", "clipboard", effect(verified), verified, &message, None, "background", None))
+        let message = if text.is_empty() {
+            "cleared clipboard".to_string()
+        } else {
+            format!("clipboard set: {} chars", text.chars().count())
+        };
+        Ok(self.action_result(
+            "clipboard_write",
+            "clipboard",
+            effect(verified),
+            verified,
+            &message,
+            None,
+            "background",
+            None,
+        ))
     }
 
     fn find_installed_app(&self, target: &str) -> Res<Option<AppEntry>> {
@@ -74,10 +102,16 @@ impl Host {
         let installed = self.desktop.installed_apps().unwrap_or_default();
         let mut found: Vec<&AppEntry> = installed.iter().filter(|app| app.name == target).collect();
         if found.is_empty() {
-            found = installed.iter().filter(|app| app.name.eq_ignore_ascii_case(target)).collect();
+            found = installed
+                .iter()
+                .filter(|app| app.name.eq_ignore_ascii_case(target))
+                .collect();
         }
         if found.is_empty() {
-            found = installed.iter().filter(|app| matches_like(&app.name, target) || matches_like(&app.app_id, target)).collect();
+            found = installed
+                .iter()
+                .filter(|app| matches_like(&app.name, target) || matches_like(&app.app_id, target))
+                .collect();
         }
         match found.len() {
             0 => Ok(None),
@@ -97,7 +131,16 @@ impl Host {
         self.authorize_current(0)?;
         let app = self.find_installed_app(&target)?;
         let launched = self.desktop.launch(&target, app.as_ref())?;
-        let mut result = self.action_result("launch", launched.route, "unverifiable", false, &format!("launched {target}"), None, "background", None);
+        let mut result = self.action_result(
+            "launch",
+            launched.route,
+            "unverifiable",
+            false,
+            &format!("launched {target}"),
+            None,
+            "background",
+            None,
+        );
         if !launched.app_id.is_empty() {
             result.insert("app_id".into(), json!(launched.app_id));
         }
@@ -119,10 +162,15 @@ impl Host {
         let total = apps.len();
         let rows: Vec<Value> = apps
             .iter()
-            .filter(|app| query.trim().is_empty() || matches_like(&app.name, &query) || matches_like(&app.app_id, &query))
+            .filter(|app| {
+                query.trim().is_empty()
+                    || matches_like(&app.name, &query)
+                    || matches_like(&app.app_id, &query)
+            })
             .map(|app| json!({ "name": app.name, "app_id": app.app_id, "packaged": false }))
             .collect();
-        let mut payload = json!({ "installed": rows, "matched": rows.len(), "catalogue_total": total });
+        let mut payload =
+            json!({ "installed": rows, "matched": rows.len(), "catalogue_total": total });
         if let Some(error) = &error {
             payload["catalogue_error"] = json!(error);
         }

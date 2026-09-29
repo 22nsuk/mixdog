@@ -46,13 +46,11 @@ export function createKnowledgeToolHandlers({
     image_fetch: webSearch,
     recall: memory,
     memory,
-    search_memories: memory,
     code_graph: async (args, { name, callerCwd }) => {
       const codeGraphMod = await getCodeGraphModule();
       if (!codeGraphMod?.executeCodeGraphTool) throw new Error('code_graph runtime is not available');
       return await codeGraphMod.executeCodeGraphTool(name, args || {}, args?.cwd || callerCwd);
     },
-    tool_search: toolSearch,
     load_tool: toolSearch,
     Skill: (args) => skillToolContent(args?.name, activeToolSurface(), rt.mode),
   };

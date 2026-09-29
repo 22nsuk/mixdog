@@ -5,7 +5,7 @@ import { overlayHtml, overlayScript, OVERLAY_WIDTH, OVERLAY_HEIGHT } from '../co
 import { computerUseOverlayPresentation } from '../model';
 import { createComputerOverlayController } from '../controls';
 import { bindComputerOverlayControls } from '../ipc-controls';
-import { checkOverlayOutline, emulateMotionPreference } from './outline-check';
+import { checkOverlayPulse, emulateMotionPreference } from './pill-motion';
 import { nativeOverlayClick } from './native-click';
 
 app.disableHardwareAcceleration();
@@ -56,22 +56,17 @@ void app
       // Windows Server (the CI runner) turns system animations off, which Chromium reads as reduced
       // motion. The checks read the stylesheet's own motion states, so pin the media feature.
       window.webContents.debugger.attach('1.3');
-      let resumed = 0,
-        paused = 0,
+      let paused = 0,
         stopped = 0,
         seconds = 5;
-      let pauseReceived: (() => void) | undefined;
+      let stopReceived: (() => void) | undefined;
       const controls = {
-        async resume(generation: number) {
-          if (generation !== 7) throw new Error('computer_resume_stale');
-          resumed++;
-        },
         async pause() {
           paused++;
-          pauseReceived?.();
         },
         async stop() {
           stopped++;
+          stopReceived?.();
         },
         configureIdleResume(value: number) {
           seconds = value;
@@ -87,12 +82,42 @@ void app
       await window.loadURL(`data:text/html;base64,${Buffer.from(overlayHtml('ko')).toString('base64')}`);
       await emulateMotionPreference(window.webContents, 'no-preference');
       await window.webContents.executeJavaScript(overlayScript('ko'));
-      const click = async (isPaused: boolean, revision: number) =>
+      // Every word the pill can show must come from its own face: with two
+      // unrelated fallbacks behind it, any glyph the face lacks changes the width.
+      const words = [
+        '컴퓨터 사용 중',
+        '일시정지',
+        '확인 필요',
+        '중단 중',
+        '실패',
+        'Computer in use',
+        'Paused',
+        'Check',
+        'Stopping',
+        'Failed',
+      ].join(' ');
+      const font = await window.webContents.executeJavaScript(`
+      document.fonts.load('500 14px "Mixdog Overlay"', ${JSON.stringify(words)}).then((faces) => {
+        const context = document.createElement('canvas').getContext('2d');
+        const width = (fallback) => {
+          context.font = '500 14px "Mixdog Overlay", ' + fallback;
+          return context.measureText(${JSON.stringify(words)}).width;
+        };
+        return {
+          faces: faces.length,
+          covered: Math.abs(width('serif') - width('monospace')) < 0.01,
+          title: getComputedStyle(document.getElementById('title')).fontFamily,
+        };
+      })`);
+      assert.equal(font.faces, 1, 'the pill face must load');
+      assert.equal(font.covered, true, 'a pill word fell back to another face');
+      assert.match(font.title, /^"Mixdog Overlay"/);
+      const clickStop = async (revision: number) =>
         window.webContents.executeJavaScript(`
-      window.mixdogComputerOverlay({paused:${isPaused},canResume:true,generation:7,renderRevision:${revision}});
+      window.mixdogComputerOverlay({paused:false,generation:7,renderRevision:${revision}});
       new Promise((resolve,reject) => {
         const timeout=setTimeout(()=>reject(new Error('control acknowledgement missing')),3000);
-        const button=document.getElementById('toggle');
+        const button=document.getElementById('stop');
         const observer=new MutationObserver(()=>{
           if(button.getAttribute('aria-busy')==='false'){
             clearTimeout(timeout);observer.disconnect();resolve(true);
@@ -102,15 +127,16 @@ void app
         button.click();
       });
     `);
-      await click(true, 1);
-      assert.equal(resumed, 1);
-      // Running and paused states share one stable control.
+      await clickStop(1);
+      assert.equal(stopped, 1);
+      // Stop is the only control: an icon whose name is spoken, never shown.
       const running = await window.webContents.executeJavaScript(`
-      window.mixdogComputerOverlay({paused:false,canResume:false,generation:7,renderRevision:2});
-      ({ label: document.getElementById('toggle').getAttribute('aria-label'),
-         buttons: [...document.querySelectorAll('button')].filter((b) => !b.hidden).length })`);
-      assert.deepEqual(running, { label: '중단', buttons: 2 });
-      await checkOverlayOutline(window.webContents);
+      window.mixdogComputerOverlay({paused:false,generation:7,renderRevision:2});
+      ({ label: document.getElementById('stop').getAttribute('aria-label'),
+         text: document.getElementById('stop').textContent,
+         buttons: document.querySelectorAll('button').length })`);
+      assert.deepEqual(running, { label: '중단', text: '', buttons: 1 });
+      await checkOverlayPulse(window.webContents);
       // Unlike button.click(), native hit-testing exercises a non-activating
       // transparent window and mouse down/up while takeover changes its layout.
       const workArea = screen.getPrimaryDisplay().workArea;
@@ -118,10 +144,10 @@ void app
       window.showInactive();
       const point = await window.webContents.executeJavaScript(`
       new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => {
-        const button = document.getElementById('toggle');
+        const button = document.getElementById('stop');
         button.addEventListener('pointerdown', () => {
           window.mixdogComputerOverlay({
-            paused:true,canResume:false,generation:7,renderRevision:3,
+            paused:true,generation:7,renderRevision:3,
             title:'일시정지'
           });
           button.getBoundingClientRect();
@@ -134,8 +160,8 @@ void app
       const handle = window.getNativeWindowHandle();
       let nativeDeadline: NodeJS.Timeout | undefined;
       const nativeAck = new Promise<void>((resolve, reject) => {
-        pauseReceived = resolve;
-        nativeDeadline = setTimeout(() => reject(new Error('native Pause acknowledgement missing')), 10_000);
+        stopReceived = resolve;
+        nativeDeadline = setTimeout(() => reject(new Error('native Stop acknowledgement missing')), 10_000);
       });
       try {
         const [clickMode] = await Promise.all([
@@ -148,12 +174,11 @@ void app
         await emit(process.stderr, `OVERLAY_CLICK_MODE ${clickMode}\n`);
       } finally {
         clearTimeout(nativeDeadline);
-        pauseReceived = undefined;
+        stopReceived = undefined;
       }
-      assert.equal(paused, 1, 'native Pause click must survive the takeover state change');
-      assert.equal(resumed, 1, 'a Pause click must never turn into Resume mid-gesture');
-      assert.equal(stopped, 0, 'Pause must not end the task');
-      assert.equal(window.isFocused(), false, 'the toggle must not activate its window');
+      assert.equal(stopped, 2, 'native Stop click must survive the takeover state change');
+      assert.equal(paused, 0, 'the overlay never pauses');
+      assert.equal(window.isFocused(), false, 'Stop must not activate its window');
       window.hide();
       const layout = [];
       let revision = 4;
@@ -161,7 +186,7 @@ void app
         await window.loadURL(`data:text/html;base64,${Buffer.from(overlayHtml(locale)).toString('base64')}`);
         await emulateMotionPreference(window.webContents, 'no-preference');
         await window.webContents.executeJavaScript(overlayScript(locale));
-        let toggleBounds: unknown;
+        let stopBounds: unknown;
         for (const reason of ['', 'user_input_active', 'user_stop', 'input_cleanup_unconfirmed', 'turn_stop']) {
           const presentation = computerUseOverlayPresentation(
             {
@@ -184,41 +209,36 @@ void app
           ({
             title:document.getElementById('title').textContent,
             pillWidth:document.getElementById('pill').getBoundingClientRect().width,
-            toggleBounds:(() => { const r=document.getElementById('toggle').getBoundingClientRect();
+            stopBounds:(() => { const r=document.getElementById('stop').getBoundingClientRect();
               return {x:r.x,y:r.y,width:r.width,height:r.height}; })(),
-            buttons:[...document.querySelectorAll('button')].filter(button=>!button.hidden).length,
-            label:document.getElementById('toggle').getAttribute('aria-label'),
-            disabled:document.getElementById('toggle').disabled,
-            text:document.body.innerText.trim(),
-            moving:document.getElementById('outline').getAnimations({subtree:true})
+            buttons:document.querySelectorAll('button').length,
+            label:document.getElementById('stop').getAttribute('aria-label'),
+            disabled:document.getElementById('stop').disabled,
+            text:document.body.textContent.replace(/\\s+/g,' ').trim(),
+            moving:document.getElementById('mark').getAnimations({subtree:true})
               .some(animation=>animation.playState==='running'),
-            fits:[...document.querySelectorAll('#pill,#status,#title,button')].filter(element=>!element.hidden).every(element=>{
+            fits:[...document.querySelectorAll('#pill,#status,#title,button')].every(element=>{
               const rect=element.getBoundingClientRect();
               return element.scrollWidth<=element.clientWidth && element.scrollHeight<=element.clientHeight
                 && rect.left>=0 && rect.right<=innerWidth && rect.top>=0 && rect.bottom<=innerHeight;
             })
           })
         `);
+          const label = locale === 'ko' ? '중단' : 'Stop';
           assert.equal(observed.title, presentation.title);
           assert.equal(observed.text, presentation.title);
           assert.equal(observed.moving, !presentation.paused);
           assert.equal(observed.fits, true, `${locale}/${reason} overflows`);
           assert.equal(observed.pillWidth, OVERLAY_WIDTH - 20, `${locale}/${reason} must keep the same compact width`);
-          // Both controls stay visible in every state: the toggle carries the
-          // state in its wording, and Stop is always one click away.
-          assert.equal(observed.buttons, 2);
-          const labels = locale === 'ko' ? { resume: '재개', pause: '중단' } : { resume: 'Resume', pause: 'Pause' };
-          assert.equal(observed.label, presentation.paused ? labels.resume : labels.pause);
+          // Stop is the only control, in every state and in the same place.
+          assert.equal(observed.buttons, 1);
+          assert.equal(observed.label, label);
           assert.equal(observed.disabled, false);
-          toggleBounds ??= observed.toggleBounds;
-          assert.deepEqual(observed.toggleBounds, toggleBounds, `${locale}/${reason} moved the toggle hit target`);
+          stopBounds ??= observed.stopBounds;
+          assert.deepEqual(observed.stopBounds, stopBounds, `${locale}/${reason} moved the Stop hit target`);
           layout.push({ locale, reason, ...observed });
         }
       }
-      const stale = await window.webContents.executeJavaScript(
-        `window.mixdogComputerControl({action:'resume',generation:6})`
-      );
-      assert.equal(stale.error, 'stale');
       await window.webContents.executeJavaScript(`window.mixdogComputerControl({action:'configure',seconds:10})`);
       assert.equal(seconds, 10);
       assert.equal(
@@ -227,7 +247,7 @@ void app
         ),
         true
       );
-      for (const action of ['cancel', 'dismiss']) {
+      for (const action of ['resume', 'pause', 'cancel', 'dismiss']) {
         assert.equal(
           await window.webContents.executeJavaScript(
             `window.mixdogComputerControl({action:${JSON.stringify(action)},generation:7}).then(()=>false,()=>true)`
@@ -235,15 +255,13 @@ void app
           true
         );
       }
-      await click(false, revision++);
-      await click(true, revision++);
-      assert.equal(paused, 2);
-      assert.equal(resumed, 2);
-      assert.equal(stopped, 0);
+      await clickStop(revision++);
+      assert.equal(paused, 0);
+      assert.equal(stopped, 3);
       assert.equal(window.isVisible(), false);
       await emit(
         process.stdout,
-        `OVERLAY_RESULT ${JSON.stringify({ resumed, paused, stopped, seconds, layout, visible: false })}\n`
+        `OVERLAY_RESULT ${JSON.stringify({ stopped, paused, seconds, font, layout, visible: false })}\n`
       );
     } finally {
       window.destroy();

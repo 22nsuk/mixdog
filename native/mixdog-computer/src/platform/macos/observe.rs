@@ -13,7 +13,12 @@ struct TapContext {
     tap: std::sync::atomic::AtomicPtr<c_void>,
 }
 
-extern "C" fn on_event(_proxy: *mut c_void, kind: u32, event: CGEventRef, user_info: *mut c_void) -> CGEventRef {
+extern "C" fn on_event(
+    _proxy: *mut c_void,
+    kind: u32,
+    event: CGEventRef,
+    user_info: *mut c_void,
+) -> CGEventRef {
     // SAFETY: user_info is the leaked TapContext this tap was created with.
     let context = unsafe { &*(user_info as *const TapContext) };
     if kind == kCGEventTapDisabledByTimeout || kind == kCGEventTapDisabledByUserInput {
@@ -55,10 +60,21 @@ pub fn start(shared: Arc<Shared>, marker: i64) {
     std::thread::Builder::new()
         .name("mixdog input observation".into())
         .spawn(move || {
-            let context = Box::into_raw(Box::new(TapContext { shared: shared.clone(), marker, tap: Default::default() }));
+            let context = Box::into_raw(Box::new(TapContext {
+                shared: shared.clone(),
+                marker,
+                tap: Default::default(),
+            }));
             // SAFETY: the callback and its leaked context live for the process.
             let tap = unsafe {
-                CGEventTapCreate(kCGSessionEventTap, kCGHeadInsertEventTap, kCGEventTapOptionListenOnly, mask(), on_event, context as *mut c_void)
+                CGEventTapCreate(
+                    kCGSessionEventTap,
+                    kCGHeadInsertEventTap,
+                    kCGEventTapOptionListenOnly,
+                    mask(),
+                    on_event,
+                    context as *mut c_void,
+                )
             };
             if tap.is_null() {
                 poll_idle(shared);
@@ -66,7 +82,9 @@ pub fn start(shared: Arc<Shared>, marker: i64) {
             }
             // SAFETY: context outlives the tap; the run loop owns the source.
             unsafe {
-                (*context).tap.store(tap, std::sync::atomic::Ordering::SeqCst);
+                (*context)
+                    .tap
+                    .store(tap, std::sync::atomic::Ordering::SeqCst);
                 let source = CFMachPortCreateRunLoopSource(std::ptr::null(), tap, 0);
                 CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopCommonModes);
                 CGEventTapEnable(tap, true);
@@ -86,7 +104,12 @@ fn poll_idle(shared: Arc<Shared>) {
     shared.set_ready(true);
     loop {
         // SAFETY: plain HID idle query.
-        let idle = unsafe { CGEventSourceSecondsSinceLastEventType(kCGEventSourceStateHIDSystemState, kCGAnyInputEventType) };
+        let idle = unsafe {
+            CGEventSourceSecondsSinceLastEventType(
+                kCGEventSourceStateHIDSystemState,
+                kCGAnyInputEventType,
+            )
+        };
         let now = now_ms();
         let at = now.saturating_sub((idle.max(0.0) * 1000.0) as u64);
         if at > last_seen + 5 {

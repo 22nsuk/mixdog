@@ -64,8 +64,19 @@ test('the worker rollup is identical to the in-thread rollup for every query sha
     {},
     { fromDay: usageRollupDayKey(now - 6 * DAY), toDay: today },
     { fromDay: usageRollupDayKey(now - 40 * DAY), toDay: usageRollupDayKey(now - 10 * DAY) },
-    { hourlyDay: usageRollupDayKey(now - DAY), fromMs: now - DAY, toMs: now, fromDay: usageRollupDayKey(now - DAY), toDay: today },
-    { fromMs: now - 3 * DAY - 5 * HOUR, toMs: now - DAY + HOUR, fromDay: usageRollupDayKey(now - 3 * DAY), toDay: usageRollupDayKey(now - DAY) },
+    {
+      hourlyDay: usageRollupDayKey(now - DAY),
+      fromMs: now - DAY,
+      toMs: now,
+      fromDay: usageRollupDayKey(now - DAY),
+      toDay: today,
+    },
+    {
+      fromMs: now - 3 * DAY - 5 * HOUR,
+      toMs: now - DAY + HOUR,
+      fromDay: usageRollupDayKey(now - 3 * DAY),
+      toDay: usageRollupDayKey(now - DAY),
+    },
   ];
   for (const query of queries) {
     assert.deepEqual(await ledger.rollupAsync(query), rollupUsage(ledger.db, query), JSON.stringify(query));
@@ -122,11 +133,21 @@ test('an unchanged ledger answers from cache; any commit refreshes through the w
   const first = await ledger.rollupAsync();
   assert.equal(await ledger.rollupAsync(), first, 'unchanged ledger must reuse the cached rollup');
   assert.equal(ledger.rollup(), first, 'sync and async rollups share one cache');
-  const [a, b] = await Promise.all([ledger.rollupAsync({ fromDay: '2026-01-01' }), ledger.rollupAsync({ fromDay: '2026-01-01' })]);
+  const [a, b] = await Promise.all([
+    ledger.rollupAsync({ fromDay: '2026-01-01' }),
+    ledger.rollupAsync({ fromDay: '2026-01-01' }),
+  ]);
   assert.equal(a, b, 'concurrent identical queries share one worker request');
 
   ledger.record([
-    makeUsageRecord({ ts: now, provider: 'openai', model: 'fresh', inputTokens: 7, outputTokens: 1, responseId: 'fresh' }),
+    makeUsageRecord({
+      ts: now,
+      provider: 'openai',
+      model: 'fresh',
+      inputTokens: 7,
+      outputTokens: 1,
+      responseId: 'fresh',
+    }),
   ]);
   const refreshed = await ledger.rollupAsync();
   assert.notEqual(refreshed, first);
@@ -135,7 +156,14 @@ test('an unchanged ledger answers from cache; any commit refreshes through the w
   // A commit from another connection is seen as well.
   const other = new UsageLedger(ledger.path);
   other.record([
-    makeUsageRecord({ ts: now, provider: 'openai', model: 'other', inputTokens: 9, outputTokens: 1, responseId: 'other' }),
+    makeUsageRecord({
+      ts: now,
+      provider: 'openai',
+      model: 'other',
+      inputTokens: 9,
+      outputTokens: 1,
+      responseId: 'other',
+    }),
   ]);
   other.close();
   assert.deepEqual(await ledger.rollupAsync(), rollupUsage(ledger.db, {}));

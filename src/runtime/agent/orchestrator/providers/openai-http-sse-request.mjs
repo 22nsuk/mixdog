@@ -9,7 +9,7 @@
 import zlib from 'node:zlib';
 import { traceAgentFetch } from '../agent-trace.mjs';
 import { PROVIDER_HTTP_RESPONSE_TIMEOUT_MS, createTimeoutSignal } from '../stall-policy.mjs';
-import { classifyError, jitterDelayMs, sleepWithAbort } from './retry-classifier.mjs';
+import { classifyError, jitterDelayMs, retryAfterMsFromError, sleepWithAbort } from './retry-classifier.mjs';
 import { readStreamOutcome } from './lib/stream-outcome.mjs';
 import { getLlmDispatcher, recycleLlmDispatcher } from '../../../shared/llm/http-agent.mjs';
 import { CODEX_RESPONSES_URL } from './openai-codex-endpoints.mjs';
@@ -148,9 +148,10 @@ async function postWithRetries({
       // A non-success response has not exposed any streamed output. Drain
       // its body before reissuing so the dispatcher can reuse the socket.
       if (response) await response.arrayBuffer().catch(() => {});
+      // Server advice (Retry-After / Retry-After-Ms) replaces the local curve.
       const raw = CODEX_REQUEST_BACKOFF_MS[attempt];
       await sleepWithAbort(
-        jitterDelayMs(raw, CODEX_RETRY_JITTER_RATIO),
+        retryAfterMsFromError(attemptFailure) ?? jitterDelayMs(raw, CODEX_RETRY_JITTER_RATIO),
         externalSignal,
         _sleepFn,
         'OpenAI OAuth HTTP request retry backoff aborted'

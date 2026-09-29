@@ -36,7 +36,7 @@ test('the composer offers only frequent commands and preserves direct command ex
   const { createRoot } = await import('react-dom/client');
   const { Composer } = await import('./Composer.tsx');
   const { desktopComposerSlashCommands, resolveDesktopSlashCommand } = await import('./slash-commands.ts');
-  const expected = ['/new', '/model', '/compact', '/context', '/goal', '/inherit', '/fast'];
+  const expected = ['/new', '/model', '/compact', '/context', '/goal', '/inherit', '/doctor', '/fast'];
   const calls = [];
   window.mixdogDesktop = {
     invokeCapability: async (request) => {
@@ -176,6 +176,11 @@ test('the composer offers only frequent commands and preserves direct command ex
     });
     assert.deepEqual(calls.pop(), ['surface', 'inherit']);
     assert.equal(document.activeElement, input);
+
+    await type('/doc');
+    assert.deepEqual(usages(), ['/doctor']);
+    await key('Enter');
+    assert.deepEqual(calls.pop(), ['surface', 'doctor']);
 
     await type('/new');
     await key('Enter', { isComposing: true, keyCode: 229 });

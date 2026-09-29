@@ -254,6 +254,11 @@ function diagnosticsLines(diagnostics: SnapshotDiagnosticsView | undefined, extr
   return lines;
 }
 
+/** The page report a snapshot carries, alone, for a reply that takes none. */
+export function formatPageReport(diagnostics?: SnapshotDiagnosticsView, extras: SnapshotExtras = {}): string {
+  return diagnosticsLines(diagnostics, extras).join('\n').trim();
+}
+
 function visibleTextLines(payload: BrowserSnapshotPayload, brief: boolean): string[] {
   if (!payload.text) return [];
   const text = redactBrowserText(payload.text);

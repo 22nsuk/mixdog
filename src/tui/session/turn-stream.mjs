@@ -4,6 +4,7 @@
 // `createTurnStream` returns one explicit state object (deps + mutable
 // scalars); every function here takes it as its first argument.
 import { TUI_FRAME_MS, yieldToRenderer } from './render-timing.mjs';
+import { retryStatusLine } from '../../runtime/shared/err-text.mjs';
 
 // Share Ink's exact 120fps cadence with the frame-batched store. A separate
 // 16ms timer left every other terminal frame idle, so completed script lines
@@ -49,6 +50,8 @@ export function createTurnStream(deps) {
     // locally and publish only on a visible transition, a completed line,
     // tool/usage updates, or finalization.
     publishedThinkingActive: false,
+    // Live countdown of a reconnect wait (see startReconnectCountdown).
+    reconnectTimer: null,
   };
 }
 
@@ -360,6 +363,45 @@ export function closeThinkingForToolBatch(stream, spinnerMode) {
   }
 }
 
+// A reconnect wait that names its next attempt (`retryAt` + `reason`) shows the
+// remaining time and counts it down, instead of freezing on the first
+// "in 15s" for the whole wait. Whole seconds, never below 1s while waiting.
+function reconnectVerb(detail, now = Date.now()) {
+  const retryAt = Number(detail?.retryAt) || 0;
+  if (!(retryAt > 0) || typeof detail?.reason !== 'string' || !detail.reason) {
+    return String(detail?.message || 'Reconnecting');
+  }
+  const remaining = retryAt - now;
+  return retryStatusLine({
+    reason: detail.reason,
+    attempt: detail.attempt,
+    maxAttempts: detail.max,
+    delayMs: remaining > 0 ? Math.max(1_000, Math.round(remaining / 1_000) * 1_000) : 0,
+  });
+}
+
+function stopReconnectCountdown(stream) {
+  if (!stream.reconnectTimer) return;
+  clearInterval(stream.reconnectTimer);
+  stream.reconnectTimer = null;
+}
+
+// Re-renders the reconnect verb once a second until the wait ends, the stage
+// moves on, or the turn is gone. The desktop reads the same spinner state.
+function startReconnectCountdown(stream, detail) {
+  const retryAt = Number(detail?.retryAt) || 0;
+  if (!(retryAt > Date.now()) || !detail?.reason) return;
+  stream.reconnectTimer = setInterval(() => {
+    const spinner = stream.getState().spinner;
+    if (!stream.isCurrentTurn() || spinner?.mode !== 'reconnecting' || Date.now() >= retryAt) {
+      stopReconnectCountdown(stream);
+      return;
+    }
+    stream.set({ spinner: { ...spinner, verb: reconnectVerb(detail) } });
+  }, 1_000);
+  stream.reconnectTimer.unref?.();
+}
+
 export async function applyStageChange(stream, stage, detail = null) {
   const { getState, set } = stream;
   if (stage === 'account-changed') {
@@ -367,6 +409,7 @@ export async function applyStageChange(stream, stage, detail = null) {
     set({ providerAccountChange: detail });
     return;
   }
+  stopReconnectCountdown(stream);
   if (!getState().spinner) return;
   const value = String(stage || '');
   if (value === 'compacting') {
@@ -390,7 +433,8 @@ export async function applyStageChange(stream, stage, detail = null) {
   }
   if (value === 'reconnecting') {
     stream.compactingActive = false;
-    set({ spinner: { ...getState().spinner, mode: 'reconnecting', verb: String(detail?.message || 'Reconnecting') } });
+    set({ spinner: { ...getState().spinner, mode: 'reconnecting', verb: reconnectVerb(detail) } });
+    startReconnectCountdown(stream, detail);
     await yieldToRenderer();
     return;
   }

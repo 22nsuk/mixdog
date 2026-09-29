@@ -82,10 +82,10 @@ function parsedEntryUnit(entry, basePath) {
 // Parse the patch body into V4A-style sections (V4A envelope, bare-@@ hunks,
 // or counted-unified salvaged as V4A), or into parsed unified entries for a
 // plain unified diff.
-function parsePatchSections(patchStr, requestedFormat, basePath, { readStateScope, coalesceByFile }) {
+function parsePatchSections(patchStr, requestedFormat, basePath, { coalesceByFile }) {
   if (isV4APatchInput(patchStr, requestedFormat)) {
     try {
-      const parsedSections = rewriteV4AReadRedirects(parseV4APatch(patchStr), basePath, readStateScope);
+      const parsedSections = rewriteV4AReadRedirects(parseV4APatch(patchStr), basePath);
       return { sections: coalesceByFile ? coalesceCompatibleV4ASections(parsedSections, basePath) : parsedSections };
     } catch (err) {
       throw new Error(`apply_patch: V4A parse failed — ${err?.message || String(err)}`);
@@ -96,7 +96,7 @@ function parsePatchSections(patchStr, requestedFormat, basePath, { readStateScop
     // section's conversion into its own unit (ordered-stop preserved) rather
     // than converting the whole patch up front.
     try {
-      return { sections: rewriteV4AReadRedirects(parseUnifiedBareV4APatch(patchStr), basePath, readStateScope) };
+      return { sections: rewriteV4AReadRedirects(parseUnifiedBareV4APatch(patchStr), basePath) };
     } catch (err) {
       throw new Error(`apply_patch: bare @@ parse failed — ${err?.message || String(err)}`);
     }
@@ -114,14 +114,14 @@ function parsePatchSections(patchStr, requestedFormat, basePath, { readStateScop
     // V4A-style sections and defer per-section conversion — same ordered-stop
     // guarantee as the V4A path (no whole-patch up-front convert).
     try {
-      return { sections: rewriteV4AReadRedirects(parseUnifiedCountedAsV4APatch(patchStr), basePath, readStateScope) };
+      return { sections: rewriteV4AReadRedirects(parseUnifiedCountedAsV4APatch(patchStr), basePath) };
     } catch (fallbackErr) {
       throw new Error(
         `apply_patch: parse failed — ${err?.message || String(err)}; V4A fallback failed — ${fallbackErr?.message || String(fallbackErr)}`
       );
     }
   }
-  return { parsed: rewriteParsedReadRedirects(parsed, basePath, readStateScope) };
+  return { parsed: rewriteParsedReadRedirects(parsed, basePath) };
 }
 
 export function buildPatchUnits(patchStr, requestedFormat, basePath, ctx) {

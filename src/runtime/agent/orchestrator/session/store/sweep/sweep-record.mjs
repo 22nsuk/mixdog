@@ -3,6 +3,9 @@
 // with: the fingerprint-cached lifecycle record, the linked-agent retention
 // rule, and the idle / retention / blank-scratch thresholds.
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { writeJsonAtomicSync } from '../../../../../shared/atomic-file.mjs';
+import { getPluginData } from '../../../config.mjs';
 import { isAgentOwner } from '../../../agent-owner.mjs';
 import { readTopLevelLifecycleRecord, isLifecycleUnreadable } from '../../lifecycle-scan.mjs';
 import { sessionPath } from '../paths-heartbeat.mjs';
@@ -35,10 +38,52 @@ export const BLANK_SCRATCH_MAX_AGE_MS = 60 * 60 * 1000; // 1h
 // The sweep decides from top-level fields only (owner/status/timestamps plus
 // the conversation count), yet it used to read and strictly parse EVERY
 // session transcript on each 5-minute pass — measured at 1,198 files / 758MB
-// per pass on one store. A file whose mtime and size are unchanged yields the
-// same verdict, so only changed files are parsed; only the decision fields
-// are kept in the cached record (see the summary-repair path, which re-reads).
+// per pass on one store. A file whose mtime, change time and size are
+// unchanged yields the same verdict, so only changed files are parsed; only
+// the decision fields are kept in the cached record (see the summary-repair
+// path, which re-reads).
+//
+// The records are persisted beside the summary index as well. Held only in
+// memory they died with every process, so the first pass after each start
+// (five minutes after boot) re-read and parsed the whole store again —
+// measured at 2,704 files / 2.4GB: 16.5s of parsing and a 200-470MB
+// transient heap spike on every daemon restart. A persisted record is trusted
+// under the same fingerprint, so a file that changed while no process was
+// running is still parsed again.
 const sweepRecordCache = new Map();
+const SWEEP_RECORD_CACHE_FILE = 'session-sweep-records.json';
+const SWEEP_RECORD_CACHE_VERSION = 1;
+let sweepRecordCacheDataDir = null;
+let sweepRecordCacheDirty = false;
+let sweepRecordParses = 0;
+
+// The current data dir's persisted records, loaded once per data dir (a switch
+// starts over). An absent, unreadable or older-format file is simply rebuilt.
+function syncSweepRecordCache() {
+  const dataDir = getPluginData();
+  if (sweepRecordCacheDataDir === dataDir) return;
+  sweepRecordCacheDataDir = dataDir;
+  sweepRecordCache.clear();
+  sweepRecordCacheDirty = false;
+  let persisted = null;
+  try {
+    persisted = JSON.parse(readFileSync(join(dataDir, SWEEP_RECORD_CACHE_FILE), 'utf-8'));
+  } catch {
+    return;
+  }
+  if (persisted?.version !== SWEEP_RECORD_CACHE_VERSION) return;
+  for (const [id, entry] of Object.entries(persisted.entries || {})) {
+    if (
+      Number.isFinite(entry?.mtimeMs) &&
+      Number.isFinite(entry.ctimeMs) &&
+      Number.isFinite(entry.size) &&
+      typeof entry.record?.doc === 'object' &&
+      entry.record.doc !== null
+    ) {
+      sweepRecordCache.set(id, entry);
+    }
+  }
+}
 
 // The only document fields sweep-row reads (effectiveFields, the closed
 // check and retainedLinkedAgent). Caching the whole top-level document kept
@@ -68,14 +113,17 @@ function conversationCountOf(doc) {
 /** `null` when the file could not be read; otherwise the lifecycle record
  * (possibly LIFECYCLE_SCAN_CONFLICT, which is never cached). */
 export function readSweepRecord(id, jsonPath, probe) {
+  syncSweepRecordCache();
   const cached = sweepRecordCache.get(id);
-  if (cached && cached.mtimeMs === probe.mtimeMs && cached.size === probe.size) return cached.record;
+  if (cached && cached.mtimeMs === probe.mtimeMs && cached.ctimeMs === probe.ctimeMs && cached.size === probe.size)
+    return cached.record;
   let raw = null;
   try {
     raw = readFileSync(jsonPath, 'utf-8');
   } catch {
     return null;
   }
+  sweepRecordParses++;
   const full = readTopLevelLifecycleRecord(raw);
   if (isLifecycleUnreadable(full)) return full;
   const doc = {};
@@ -89,14 +137,40 @@ export function readSweepRecord(id, jsonPath, probe) {
     doc,
     conversationCount: conversationCountOf(full.doc),
   };
-  sweepRecordCache.set(id, { mtimeMs: probe.mtimeMs, size: probe.size, record });
+  sweepRecordCache.set(id, { mtimeMs: probe.mtimeMs, ctimeMs: probe.ctimeMs, size: probe.size, record });
+  sweepRecordCacheDirty = true;
   return record;
 }
 
 export function pruneSweepRecordCache(liveIds) {
+  syncSweepRecordCache();
   for (const id of sweepRecordCache.keys()) {
-    if (!liveIds.has(id)) sweepRecordCache.delete(id);
+    if (liveIds.has(id)) continue;
+    sweepRecordCache.delete(id);
+    sweepRecordCacheDirty = true;
   }
+}
+
+/** Writes the records back once a pass has changed them. Best effort: a failed
+ *  write only costs the next process start the full read it paid before. */
+export function persistSweepRecordCache() {
+  if (!sweepRecordCacheDirty) return;
+  try {
+    writeJsonAtomicSync(
+      join(sweepRecordCacheDataDir, SWEEP_RECORD_CACHE_FILE),
+      { version: SWEEP_RECORD_CACHE_VERSION, entries: Object.fromEntries(sweepRecordCache) },
+      { compact: true, fsync: false }
+    );
+    sweepRecordCacheDirty = false;
+  } catch {
+    /* the next pass writes again */
+  }
+}
+
+/** Test/diagnostic seam: cached records and the files this process parsed. */
+export function sweepRecordCacheStats() {
+  syncSweepRecordCache();
+  return { entries: sweepRecordCache.size, parses: sweepRecordParses };
 }
 
 /** Child-agent transcripts share their visible parent's retention boundary.

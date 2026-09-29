@@ -1,6 +1,6 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { getAgentApiKey } from '../../../shared/provider-api-key.mjs';
-import { canFallbackNonStreaming, withRetry } from './retry-classifier.mjs';
+import { canFallbackNonStreaming, emitProviderRetryStage, withRetry } from './retry-classifier.mjs';
 import { appendAgentTrace } from '../agent-trace.mjs';
 import {
   PROVIDER_CACHE_CREATE_TIMEOUT_MS,
@@ -108,8 +108,8 @@ function signalRequesting(opts) {
 }
 
 function geminiRetryLogger(opts, tag) {
-  return ({ attempt, lastErr }) => {
-    signalRequesting(opts);
+  return ({ attempt, maxAttempts, lastErr, delayMs }) => {
+    emitProviderRetryStage(opts.onStageChange, { attempt: attempt + 1, maxAttempts, lastErr, delayMs });
     process.stderr.write(
       `${tag} retry attempt ${attempt + 1} after ${lastErr?.message || lastErr?.code || 'transient error'}\n`
     );

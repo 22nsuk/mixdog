@@ -1,10 +1,9 @@
 /* Desktop layer 11 — Usage flyout, provider quota meters.
    Loaded in fixed order from ../desktop.css; the cascade depends on that
    order, so rules must never move between layers or be re-sorted. */
-/* Rail usage popup: the subscription meters float from the rail foot as a
-   account-style flyout. It mirrors the usage-detail chrome and sits
-   just under the per-provider detail popover (z 1100), which anchors beside
-   the selected row inside this panel. */
+/* Rail usage popup: the subscription meters float from the rail foot as an
+   account-style flyout. It mirrors the usage-detail chrome and sits above
+   toasts; the provider account picker it opens rides the menu layer above it. */
 .rail-usage-popup {
   position: fixed;
   z-index: 1090;
@@ -12,7 +11,7 @@
   bottom: var(--rail-usage-popup-bottom, 48px);
   /* ActivityRail supplies the popup width inline (sidebar default + 88),
      so PC and phone open the same widened flyout with room for the meter. */
-  max-height: calc(100vh - var(--rail-usage-popup-bottom, 48px) - 52px);
+  max-height: min(560px, calc(100vh - var(--rail-usage-popup-bottom, 48px) - 52px));
   overflow-y: auto;
   overscroll-behavior: contain;
   /* ONE frame (user: 사용량프레임도 원프레임으로): the popup's own border is
@@ -252,12 +251,20 @@
 .sidebar-usage-meter-empty > small {
   color: var(--mx-text-faint);
 }
-.sidebar-usage-error {
-  margin: 0;
-  padding: 0 12px 8px;
-  color: var(--mx-danger);
-  font-size: var(--mx-font-meta);
-  line-height: var(--mx-line-micro);
+/* A provider name or meter opens that subscription's usage over time. */
+.sidebar-usage-line > b[role="button"],
+.sidebar-usage-meter[role="button"] {
+  cursor: pointer;
+}
+.sidebar-usage-line > b[role="button"]:hover,
+.sidebar-usage-meter[role="button"]:hover > :is(small, em) {
+  color: var(--mx-text);
+}
+.sidebar-usage-line > b[role="button"]:focus-visible,
+.sidebar-usage-meter[role="button"]:focus-visible {
+  outline: 2px solid var(--mx-focus);
+  outline-offset: 2px;
+  border-radius: var(--mx-radius-md);
 }
 /* Reset credits keep their individual expiry and action visible. */
 .sidebar-usage-reset-credit {
@@ -394,18 +401,6 @@
   margin: 0;
   border-radius: 50%;
   background: var(--mx-accent);
-}
-.session-group {
-  gap: 2px;
-}
-.session-group h2 {
-  height: 28px;
-  padding: 0;
-  color: var(--mx-text);
-  font-size: var(--mx-font-category);
-  font-weight: var(--mx-weight-semibold);
-  line-height: var(--mx-line-ui);
-  letter-spacing: 0;
 }
 .session-list {
   gap: 1px;

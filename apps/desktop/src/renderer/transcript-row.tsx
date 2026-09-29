@@ -60,11 +60,7 @@ const MarkdownResponse = memo(function MarkdownResponse({ text, streaming }: { t
       </Suspense>
     );
   }
-  return (
-    <div className={`markdown ${streaming ? 'streaming' : ''}`}>
-      {renderedChunks}
-    </div>
-  );
+  return <div className={`markdown ${streaming ? 'streaming' : ''}`}>{renderedChunks}</div>;
 });
 
 export function transcriptItemsEqual(previous: TranscriptItem | undefined, next: TranscriptItem | undefined): boolean {

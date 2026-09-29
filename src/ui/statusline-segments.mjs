@@ -14,6 +14,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { formatElapsed } from './statusline-format.mjs';
 import { positiveInt } from '../runtime/shared/numbers.mjs';
+import { isPidAlive } from '../runtime/shared/pid-liveness.mjs';
 
 const DEFAULT_MIXDOG_HOME = process.env.MIXDOG_HOME || join(homedir(), '.mixdog');
 const DEFAULT_STANDALONE_DATA_DIR = join(DEFAULT_MIXDOG_HOME, 'data');
@@ -100,7 +101,7 @@ async function refreshMemoryCycleStatus() {
       // markCycleRunning) — if that pid is gone, the run died with it, so
       // drop the spinner immediately instead of waiting out the 10-minute
       // window. Pid-less markers (older daemons) keep the time-based guard.
-      const ownerAlive = !Number(running?.pid) || pidAlive(Number(running.pid));
+      const ownerAlive = !Number(running?.pid) || isPidAlive(Number(running.pid));
       if (fresh && ownerAlive && running?.cycle && Number(running.started_at) > 0) {
         value = { kind: 'running', startedAt: Number(running.started_at) };
       } else if (fresh) {
@@ -112,16 +113,6 @@ async function refreshMemoryCycleStatus() {
     value = null;
   }
   _memoryCycleSegmentCache = { at: Date.now(), value };
-}
-
-function pidAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error?.code === 'EPERM';
-  } // EPERM = alive, no permission
 }
 
 async function refreshShellJobsStatus(ownerPid) {

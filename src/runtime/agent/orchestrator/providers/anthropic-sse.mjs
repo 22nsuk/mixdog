@@ -225,7 +225,11 @@ export async function parseSSEStream(
       try {
         chunk = await watchdogs.read();
       } catch (err) {
-        throw watchdogs.readFailure() ?? (signal?.aborted ? abortedError() : err);
+        const stopped = watchdogs.readFailure() ?? (signal?.aborted ? abortedError() : null);
+        if (stopped) throw stopped;
+        // The connection dropped mid-body: carry what this turn completed so
+        // the loop can continue from finished tool calls instead of failing.
+        throw state?.sawMessageStart ? turn.attachTransportPartial(err) : err;
       }
       const { done, value } = chunk;
       if (done) break;

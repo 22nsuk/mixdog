@@ -6,19 +6,23 @@
 import { appendAgentTrace } from '../agent-trace.mjs';
 import {
   classifyError,
-  isConnectionFailure,
+  isConnectFailure,
   isContextOverflowError,
   isCursorTransientTransportError,
-  isNonTerminalStreamClose,
   isRetryableWireErrorEvent,
   isRetryableStreamErrorEvent,
   isProviderRecoveryExhausted,
+  isServerUnavailable,
+  isStreamCut,
+  isToolInputCut,
+  emitProviderRetryStage,
   jitterDelayMs,
   resetStallRetryBudget,
   resolveStallRetryBudget,
+  retryAfterMsFromError,
 } from '../providers/retry-classifier.mjs';
 import {
-  persistenceMessagesForConfirmedImageRejection,
+  persistsConfirmedImageRejection,
   promptHasInlineImages,
   shouldStripImagesForRetry,
   stripInlineImagesFromLatestTurn,
@@ -36,7 +40,6 @@ import { agentContextOverflowError } from './loop/context-overflow.mjs';
 import { estimateMessagesTokensSafe } from './loop/compact-debug.mjs';
 import { isOutputLimitStopReason } from './loop/termination.mjs';
 import { isVisibleStreamProgress } from '../../../shared/stream-progress.mjs';
-import { providerRetryStatusText } from '../../../shared/err-text.mjs';
 
 function normalizedIncompleteUsage(raw) {
   if (!raw || typeof raw !== 'object') return undefined;
@@ -68,7 +71,8 @@ function normalizedIncompleteUsage(raw) {
 // providerRecoveryExhausted when that ladder is spent; those failures surface
 // immediately instead of multiplying the provider budget here. This ladder is
 // retained for one-shot transports that expose no output and have no provider
-// recovery owner.
+// recovery owner — and for a connect failure, which only proves the network is
+// still down (see CONNECTION_RETRY_BACKOFF_MS).
 // Env-overridable (comma-separated ms) so tests can drive the ladder without
 // real waits and an operator can widen the window for a flaky uplink; the
 // LENGTH of the list is the retry budget, like a conventional
@@ -90,13 +94,17 @@ function retryLadderFromEnv(envName, fallback) {
 const TRANSPORT_RETRY_BACKOFF_MS = retryLadderFromEnv('MIXDOG_TRANSPORT_RETRY_BACKOFF_MS', [5_000, 15_000, 30_000]);
 export const TRANSPORT_RETRY_MAX = TRANSPORT_RETRY_BACKOFF_MS.length;
 
-// A lost NETWORK is not a provider fault, so it gets its own far longer
-// ladder: exponential to a one-minute ceiling, ~10 minutes of total cover.
-// Failing the turn after ~50s discarded real work for an outage the user
-// often never noticed (a lift, a sleeping laptop, a router reboot), while the
-// identical request succeeds the moment the link returns. Comparable runtimes
-// retry this class until the network comes back; the cap is what keeps a
-// parked background session from waiting forever with nobody watching.
+// An unreachable NETWORK (the connection cannot be established) is not a
+// provider fault, so it gets its own far longer ladder: exponential to a
+// one-minute ceiling, ~10 minutes of total cover. Failing the turn early
+// discarded real work for an outage the user often never noticed (a lift, a
+// sleeping laptop, a router reboot), while the identical request succeeds the
+// moment the link returns. Comparable runtimes retry this class until the
+// network comes back, so it also outlives a provider's own spent ladder; the
+// cap is what keeps a parked background session from waiting forever with
+// nobody watching. A stream that dropped MID-RESPONSE keeps the ordinary
+// ladder: each replay regenerates the whole response, and a path that cuts
+// long responses would cut every replay the same way.
 const CONNECTION_RETRY_BACKOFF_MS = retryLadderFromEnv('MIXDOG_CONNECTION_RETRY_BACKOFF_MS', [
   5_000,
   10_000,
@@ -105,21 +113,55 @@ const CONNECTION_RETRY_BACKOFF_MS = retryLadderFromEnv('MIXDOG_CONNECTION_RETRY_
   ...Array(9).fill(60_000),
 ]);
 
+// After a provider has spent its own ladder on a server that is temporarily
+// unavailable (5xx, overload, a response that never came), the turn is not
+// ended while nothing has reached the user: it parks on these bounded recovery
+// cycles, and each cycle re-enters the provider's ordinary retries (reference:
+// bounded post-exhaustion auto-recovery on a jittered 15/30/60/60/60 s
+// schedule).
+const RECOVERY_RETRY_BACKOFF_MS = retryLadderFromEnv('MIXDOG_RECOVERY_RETRY_BACKOFF_MS', [
+  15_000,
+  30_000,
+  60_000,
+  60_000,
+  60_000,
+]);
+
+// A server-advised wait (Retry-After) replaces the ladder step: a provider that
+// names its own cooldown knows better, within reason — one loop-level wait
+// never parks longer than this.
+const LOOP_RETRY_AFTER_CAP_MS = 120_000;
+
 // Jittering every backoff by 0.9–1.1 keeps parallel workers that lose the
 // same uplink do not resume in lockstep; our provider layers already jitter
 // (10% WS / 20% shared), this brings the loop ladder in line.
 const TRANSPORT_RETRY_JITTER_RATIO = 0.1;
 
-/** The ladder this failure class is entitled to: lost uplink vs ordinary fault. */
+/** The ladder this failure class is entitled to: an unreachable network, a
+ *  provider still unavailable after its own retries, or an ordinary fault. */
 function retryLadderFor(error) {
-  return isConnectionFailure(error) ? CONNECTION_RETRY_BACKOFF_MS : TRANSPORT_RETRY_BACKOFF_MS;
+  if (isConnectFailure(error)) return CONNECTION_RETRY_BACKOFF_MS;
+  if (isProviderRecoveryExhausted(error) && isServerUnavailable(error)) return RECOVERY_RETRY_BACKOFF_MS;
+  return TRANSPORT_RETRY_BACKOFF_MS;
 }
 
 function retryBudgetFor(error) {
   return retryLadderFor(error).length;
 }
 
+// A provider ladder spent on a connect failure has only shown that the network
+// is still down (outage ladder); one spent on a server that is temporarily
+// unavailable parks on the recovery cycles, but only while nothing has reached
+// the user — a replay would otherwise re-show output or re-run a tool. Every
+// other exhausted failure surfaces as-is.
+function providerRecoveryEnded(error, outcome) {
+  if (!isProviderRecoveryExhausted(error) || isConnectFailure(error)) return false;
+  return !(outcome.replaySafe === true && isServerUnavailable(error));
+}
+
 function transportRetryWaitMs(attemptIndex, error) {
+  const advisedMs = retryAfterMsFromError(error);
+  if (advisedMs != null) return Math.min(advisedMs, LOOP_RETRY_AFTER_CAP_MS);
   const ladder = retryLadderFor(error);
   const base = ladder[Math.min(Math.max(attemptIndex, 0), ladder.length - 1)];
   return jitterDelayMs(base, TRANSPORT_RETRY_JITTER_RATIO);
@@ -127,9 +169,26 @@ function transportRetryWaitMs(attemptIndex, error) {
 
 // Every loop-level replay is a NEW request, so it opens a new stall window.
 // Inheriting the spent one aborted healthy replacement responses mid-flight.
-function beginFreshTransportAttempt(opts, retryMax) {
+// A replay may carry a runtime notice the loop adds to the next request.
+function beginFreshTransportAttempt(opts, retryMax, notice = null) {
   resetStallRetryBudget(opts);
-  return { action: 'retry_transport', transportRetryMax: retryMax };
+  return { action: 'retry_transport', transportRetryMax: retryMax, ...(notice ? { notice } : {}) };
+}
+
+// Runtime notice for the model after a stream was cut while a tool call's
+// arguments were still streaming: that call never ran, and the same large
+// arguments would likely be cut again (reference: a chunked-retry nudge
+// instead of repeating the identical call). The [mixdog-runtime] prefix keeps
+// it out of the transcript view.
+const TOOL_INPUT_CUT_NOTICE =
+  "[mixdog-runtime] The previous response was cut off in transit while a tool call's arguments were still " +
+  'streaming, so that call never ran. This was a network interruption, not a tool failure; tools remain ' +
+  'available. Do not resend the same large arguments in one call: split the content across several smaller ' +
+  'tool calls (for example, write the first part, then append or patch the rest), keeping each call well ' +
+  'under about 8K tokens of arguments.';
+
+function toolInputCutNotice() {
+  return { role: 'user', content: TOOL_INPUT_CUT_NOTICE, meta: { source: 'stream-cut-recovery' } };
 }
 
 export async function sendWithRecovery(ctx) {
@@ -278,6 +337,7 @@ function instrumentSendCallbacks(opts, { model, retryAttemptNumber, retryMaxForD
   const install = (target) => {
     if (witness.onTextDelta) target.onTextDelta = witness.onTextDelta;
     if (witness.onToolCall) target.onToolCall = witness.onToolCall;
+    if (witness.onTextReset) target.onTextReset = witness.onTextReset;
     if (retry.onStageChange) target.onStageChange = retry.onStageChange;
     if (retry.onStreamDelta) target.onStreamDelta = retry.onStreamDelta;
   };
@@ -291,25 +351,52 @@ function instrumentSendCallbacks(opts, { model, retryAttemptNumber, retryMaxForD
   };
 }
 
-// Wraps opts.onTextDelta / opts.onToolCall so the witness records what this
-// send actually relayed; null wrappers where the caller subscribed to nothing.
+// Wraps opts.onTextDelta / opts.onToolCall / opts.onTextReset so the witness
+// records what this send actually put on screen and dispatched: the relayed
+// text net of acknowledged retractions (a provider's own non-streaming
+// fallback retracts through the same callback), and the ids of dispatched
+// calls. Null wrappers where the caller subscribed to nothing.
 function relayWitnessWrappers(opts) {
-  const relayWitness = { textEmitted: false, toolCallsDispatched: 0 };
+  const relayWitness = { textEmitted: false, text: '', toolCallsDispatched: 0, dispatchedToolCallIds: new Set() };
   const prevOnTextDelta = typeof opts?.onTextDelta === 'function' ? opts.onTextDelta : null;
   const prevOnToolCall = typeof opts?.onToolCall === 'function' ? opts.onToolCall : null;
+  const prevOnTextReset = typeof opts?.onTextReset === 'function' ? opts.onTextReset : null;
   const onTextDelta = prevOnTextDelta
     ? (...args) => {
-        if (typeof args[0] === 'string' && args[0].length > 0) relayWitness.textEmitted = true;
+        if (typeof args[0] === 'string' && args[0].length > 0) {
+          relayWitness.textEmitted = true;
+          relayWitness.text += args[0];
+        }
         return prevOnTextDelta(...args);
       }
     : null;
   const onToolCall = prevOnToolCall
     ? (...args) => {
         relayWitness.toolCallsDispatched += 1;
+        if (args[0]?.id) relayWitness.dispatchedToolCallIds.add(String(args[0].id));
         return prevOnToolCall(...args);
       }
     : null;
-  return { relayWitness, onTextDelta, onToolCall, prevOnTextDelta, prevOnToolCall };
+  const onTextReset = prevOnTextReset
+    ? async (...args) => {
+        const acked = await prevOnTextReset(...args);
+        if (acked === true) {
+          const kept = relayWitness.text.length - Math.max(0, Number(args[0]?.chars) || 0);
+          relayWitness.text = relayWitness.text.slice(0, Math.max(0, kept));
+          if (!relayWitness.text) relayWitness.textEmitted = false;
+        }
+        return acked;
+      }
+    : null;
+  return {
+    relayWitness,
+    onTextDelta,
+    onToolCall,
+    onTextReset,
+    prevOnTextDelta,
+    prevOnToolCall,
+    prevOnTextReset,
+  };
 }
 
 // Conditional restore: only unwind our own wrappers. An intentional
@@ -318,6 +405,7 @@ function restoreSendCallbacks(opts, timedOpts, witness, retry) {
   if (opts) {
     if (witness.onTextDelta && opts.onTextDelta === witness.onTextDelta) opts.onTextDelta = witness.prevOnTextDelta;
     if (witness.onToolCall && opts.onToolCall === witness.onToolCall) opts.onToolCall = witness.prevOnToolCall;
+    if (witness.onTextReset && opts.onTextReset === witness.onTextReset) opts.onTextReset = witness.prevOnTextReset;
     if (retry.onStageChange && opts.onStageChange === retry.onStageChange) {
       opts.onStageChange = retry.prevOnStageChange;
     }
@@ -361,19 +449,17 @@ function traceLoop({ sessionId, nextIteration }, kind, fields) {
 // change surfaces "Reconnecting... n/max" instead of leaving the user
 // staring at a stalled stream.
 function emitLoopReconnectProgress(opts, { attempt, maxAttempts, waitMs, classifier, error }) {
-  try {
-    opts?.onStageChange?.('reconnecting', {
-      attempt,
-      max: maxAttempts,
-      classifier: classifier || null,
-      waitMs,
+  emitProviderRetryStage(opts?.onStageChange, {
+    attempt,
+    maxAttempts,
+    lastErr: error,
+    delayMs: waitMs,
+    classifier,
+    extra: {
       wsCloseCode: error?.wsCloseCode ?? null,
       httpStatus: error?.httpStatus ?? error?.status ?? null,
-      message: providerRetryStatusText(error, { attempt, maxAttempts, delayMs: waitMs }),
-    });
-  } catch {
-    /* progress reporting must never break recovery */
-  }
+    },
+  });
 }
 
 // Text-only exposure retraction (cross-provider): a stream that died after
@@ -386,16 +472,18 @@ function emitLoopReconnectProgress(opts, { attempt, maxAttempts, waitMs, classif
 // the provider's in-place recovery. Observed live: make-mips-interpreter
 // died with 31 exposed chars + a pending never-dispatched tool input and
 // burned the whole trial.
-async function retractExposedTextForReplay({ outcome, sendErr, opts, relayWitness }) {
+async function retractExposedTextForReplay({ outcome, opts, relayWitness }) {
   if (outcome.terminalObserved === true) return false;
   if (outcome.sideEffectDispatched === true) return false;
   if (outcome.dispatchAmbiguous === true) return false;
   if (Number(outcome.toolCallsDispatched) > 0) return false;
   if (Number(outcome.toolCallsComplete) > 0) return false;
   if (relayWitness.toolCallsDispatched > 0) return false;
-  const chars =
-    Math.max(0, Number(outcome.textObservedChars) || 0) ||
-    (typeof sendErr.partialContent === 'string' ? sendErr.partialContent.length : 0);
+  // Exactly what THIS send put on screen. A provider's own count can miss it
+  // (a socket error that carries no partial) or overshoot it (text buffered
+  // but never relayed); retracting the wrong length would leave stale text or
+  // cut into earlier output.
+  const chars = relayWitness.text.length;
   const reasoningOnly = outcome.reasoningEmitted === true && chars <= 0;
   if (chars <= 0 && !reasoningOnly) return false;
   if (typeof opts?.onTextReset === 'function') {
@@ -436,21 +524,28 @@ async function recoverFromSendError(sendErr, state) {
     relayWitness,
   } = state;
   const outcome = readStreamOutcome(sendErr, relayWitness);
-  const retract = () => retractExposedTextForReplay({ outcome, sendErr, opts, relayWitness });
+  const retract = () => retractExposedTextForReplay({ outcome, opts, relayWitness });
   if (isPromotableIncomplete(sendErr, outcome)) {
     return { action: 'proceed', response: promotedIncompleteResponse(sendErr, model, opts) };
   }
+  const recoverableCalls = recoverableToolCalls(sendErr, outcome, relayWitness);
+  if (isCompleteToolCallStall(sendErr, recoverableCalls)) {
+    return recoverPartialToolCalls(sendErr, state, recoverableCalls, outcome);
+  }
+  if (isToolInputCut(sendErr)) {
+    return recoverToolInputCut(sendErr, outcome, state, retract);
+  }
+  if (isUnretractableTextCut(sendErr, outcome, opts, relayWitness)) {
+    return continueFromShownText(sendErr, state, relayWitness);
+  }
   if (isExposedNoToolStall(sendErr, outcome)) {
     return recoverExposedStall(sendErr, outcome, state, retract);
-  }
-  if (isCompleteToolCallStall(sendErr, outcome)) {
-    return recoverPartialToolCalls(sendErr, state);
   }
   // Clean transient transport failure with zero exposure: replay the send
   // after a bounded wait instead of failing the turn.
   if (
     transportRetriesUsed < retryBudgetFor(sendErr) &&
-    !isProviderRecoveryExhausted(sendErr) &&
+    !providerRecoveryEnded(sendErr, outcome) &&
     (await transportReplayPermitted(sendErr, outcome, retract))
   ) {
     return retryTransport(sendErr, state);
@@ -577,7 +672,7 @@ async function recoverExposedStall(sendErr, outcome, state, retract) {
 
 // Loop-level replay after a bounded wait: the stderr note, the trace entry,
 // the caller-visible "Reconnecting... n/max" stage, then a fresh attempt.
-async function scheduleTransportReplay(sendErr, state, { budget, note, trace, classifier }) {
+async function scheduleTransportReplay(sendErr, state, { budget, note, trace, classifier, notice = null }) {
   const { opts, signal, transportRetriesUsed = 0 } = state;
   const attempt = transportRetriesUsed + 1;
   const waitMs = transportRetryWaitMs(transportRetriesUsed, sendErr);
@@ -586,7 +681,62 @@ async function scheduleTransportReplay(sendErr, state, { budget, note, trace, cl
   traceLoop(state, kind, { attempt, waitMs, ...fields });
   emitLoopReconnectProgress(opts, { attempt, maxAttempts: budget, waitMs, classifier, error: sendErr });
   await sleepMs(waitMs, undefined, signal ? { signal } : undefined);
-  return beginFreshTransportAttempt(opts, budget);
+  return beginFreshTransportAttempt(opts, budget, notice);
+}
+
+// Text already on screen that the owner offers no way to withdraw (no
+// retraction channel) is kept rather than lost with a failed turn: the cut
+// response becomes a truncated turn that the output-limit ladder resumes with
+// a network-cut notice (reference: a partial stream is resumed where it died).
+// Tool work of any kind has its own paths above and stays out of this one.
+function isUnretractableTextCut(sendErr, outcome, opts, relayWitness) {
+  return (
+    typeof opts?.onTextReset !== 'function' &&
+    relayWitness.text.trim().length > 0 &&
+    isStreamCut(sendErr) &&
+    outcome.toolCallsStarted !== true &&
+    outcome.sideEffectDispatched !== true &&
+    Number(outcome.toolCallsComplete) === 0
+  );
+}
+
+function continueFromShownText(sendErr, state, relayWitness) {
+  const shown = relayWitness.text;
+  logLoop(
+    `[loop] stream cut after ${shown.length} visible chars with no retraction channel (${loopTag(state)}); continuing from the shown text`
+  );
+  traceLoop(state, 'stream_cut_continuation', { shownLen: shown.length });
+  return {
+    action: 'proceed',
+    response: {
+      content: shown,
+      model: sendErr.partialModel || state.model,
+      usage: sendErr.partialUsage || undefined,
+      truncated: true,
+      streamCut: true,
+      providerState: state.opts?.providerState,
+    },
+  };
+}
+
+// A cut while a tool call's arguments were still streaming (isToolInputCut):
+// replay with the split-call notice, retracting exposed text first. The notice
+// changes the request, so this is not the same attempt repeated and a
+// provider that already spent its ladder does not end it; the loop's own
+// budget still bounds it.
+async function recoverToolInputCut(sendErr, outcome, state, retract) {
+  const { transportRetriesUsed = 0 } = state;
+  const budget = retryBudgetFor(sendErr);
+  if (transportRetriesUsed < budget && (outcome.replaySafe === true || (await retract()))) {
+    return scheduleTransportReplay(sendErr, state, {
+      budget,
+      note: `[loop] stream cut while tool arguments were streaming (${loopTag(state)}); replaying with a split-call notice`,
+      trace: { kind: 'tool_input_cut_retry' },
+      classifier: 'tool_input_cut',
+      notice: toolInputCutNotice(),
+    });
+  }
+  throw sendErr;
 }
 
 // Partial tool-call recovery (agent-hang fix): a stream that ends AFTER
@@ -596,23 +746,30 @@ async function scheduleTransportReplay(sendErr, state, { budget, note, trace, cl
 // ALREADY completed via eager dispatch. ANY non-terminal end qualifies, not
 // just a watchdog stall: continuing is not replaying — the parsed calls
 // resolve from the pending map without re-running, their results commit to
-// history, and the NEXT request carries them forward. pendingToolInput stays
-// the hard guard: half-streamed arguments are not a tool call. Named
+// history, and the NEXT request carries them forward. Half-streamed
+// arguments are never a tool call: see recoverableToolCalls. Named
 // TRANSPORT symptoms only: a typed refusal (context overflow, policy, quota)
 // also arrives without a terminal frame, but nothing was generated there and
 // continuing would paper over the refusal.
-function isCompleteToolCallStall(sendErr, outcome) {
-  return (
-    outcome.terminalObserved !== true &&
-    (outcome.stallObserved === true ||
-      outcome.truncatedStream === true ||
-      isNonTerminalStreamClose(sendErr) ||
-      isConnectionFailure(sendErr)) &&
-    outcome.pendingToolInput !== true &&
-    outcome.toolCallsComplete > 0 &&
-    Array.isArray(sendErr.partialToolCalls) &&
-    sendErr.partialToolCalls.length > 0
-  );
+function isCompleteToolCallStall(sendErr, recoverableCalls) {
+  return isStreamCut(sendErr) && recoverableCalls.length > 0;
+}
+
+// The calls a cut-off turn may continue with. An unresolved placeholder
+// (`_pendingItemId`: its call id/name never arrived) is never one of them.
+// When a tool input was still streaming at the cut, the turn continues only if
+// every complete call was dispatched by this send: no transport dispatches
+// half-streamed arguments, so the in-flight call is simply dropped unrun (the
+// model can reissue it), and nothing committed references an undispatched
+// call. The reference client likewise keeps finished items and drops the
+// in-flight one when it retries a dropped stream.
+function recoverableToolCalls(sendErr, outcome, relayWitness) {
+  const calls = Array.isArray(sendErr.partialToolCalls)
+    ? sendErr.partialToolCalls.filter((call) => call && !call._pendingItemId)
+    : [];
+  if (outcome.pendingToolInput !== true) return calls;
+  const dispatched = calls.filter((call) => call.id && relayWitness.dispatchedToolCallIds.has(String(call.id)));
+  return dispatched.length === calls.length ? dispatched : [];
 }
 
 // The recovered partial as a normal tool-call turn: eager-dispatched
@@ -620,12 +777,15 @@ function isCompleteToolCallStall(sendErr, outcome) {
 // side-effecting calls were never started during streaming and execute
 // exactly once. providerState stays undefined so the next iteration resends
 // a full frame on a fresh stream.
-function recoveredToolCallResponse(sendErr, model) {
+function recoveredToolCallResponse(sendErr, model, toolCalls, outcome) {
   const partialProviderReplay = cloneProviderReplay(sendErr.partialProviderReplay);
   return {
+    // A dropped in-flight call earns the same split-call notice, delivered
+    // after this turn's tool results.
+    ...(outcome.pendingToolInput === true ? { recoveryNotice: toolInputCutNotice() } : {}),
     content: typeof sendErr.partialContent === 'string' ? sendErr.partialContent : '',
     model: sendErr.partialModel || model,
-    toolCalls: sendErr.partialToolCalls.slice(),
+    toolCalls: toolCalls.slice(),
     usage: sendErr.partialUsage || undefined,
     stopReason: 'tool_use',
     hasThinkingContent: sendErr.partialHasThinking === true,
@@ -650,16 +810,18 @@ function recoveredToolCallResponse(sendErr, model) {
   };
 }
 
-function recoverPartialToolCalls(sendErr, state) {
-  const toolCalls = sendErr.partialToolCalls.length;
+function recoverPartialToolCalls(sendErr, state, toolCalls, outcome) {
+  const droppedInput = outcome.pendingToolInput === true;
   logLoop(
-    `[loop] stream ended after ${toolCalls} complete tool call(s) (${loopTag(state)}); recovering as tool-call turn instead of failing`
+    `[loop] stream ended after ${toolCalls.length} complete tool call(s) (${loopTag(state)}` +
+      `${droppedInput ? '; incomplete tool input dropped' : ''}); recovering as tool-call turn instead of failing`
   );
   traceLoop(state, 'partial_tool_recovery', {
-    toolCalls,
+    toolCalls: toolCalls.length,
+    droppedIncompleteInput: droppedInput,
     partialContentLen: typeof sendErr.partialContent === 'string' ? sendErr.partialContent.length : 0,
   });
-  return { action: 'proceed', response: recoveredToolCallResponse(sendErr, state.model) };
+  return { action: 'proceed', response: recoveredToolCallResponse(sendErr, state.model, toolCalls, outcome) };
 }
 
 // Zero-exposure transient failures replay outright. classifyError reports
@@ -670,17 +832,16 @@ function recoverPartialToolCalls(sendErr, state) {
 // stream error events (response.failed server_error & co.), Cursor
 // continuation streams that carry a typed transport code even when
 // reasoning/text exposure makes classifyError() intentionally permanent,
-// non-terminal close — then retract the exposed text and replay.
+// non-terminal close, or a dropped connection (undici `terminated`, socket
+// reset) — then retract the exposed text and replay.
 async function transportReplayPermitted(sendErr, outcome, retract) {
   if (outcome.replaySafe === true && classifyError(sendErr) === 'transient') return true;
   const transportSymptom =
     classifyError(sendErr) === 'transient' ||
-    outcome.stallObserved === true ||
-    outcome.truncatedStream === true ||
+    isStreamCut(sendErr) ||
     isRetryableWireErrorEvent(sendErr) ||
     isRetryableStreamErrorEvent(sendErr) ||
-    isCursorTransientTransportError(sendErr) ||
-    isNonTerminalStreamClose(sendErr);
+    isCursorTransientTransportError(sendErr);
   return transportSymptom && (await retract());
 }
 
@@ -749,8 +910,8 @@ function retryWithImageStrip(sendErr, recoveryMessages, state) {
   });
   return {
     action: 'retry_image_strip',
-    messages: stripped.messages,
-    persistMessages: persistenceMessagesForConfirmedImageRejection(sendErr, recoveryMessages),
+    imageIds: stripped.imageIds,
+    persist: persistsConfirmedImageRejection(sendErr, stripped),
   };
 }
 

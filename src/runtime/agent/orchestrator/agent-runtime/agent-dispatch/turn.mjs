@@ -7,6 +7,7 @@ import {
   watchdogPartialHandoffFromError,
 } from '../agent-progress-watchdog.mjs';
 import { buildAgentDispatchAskSessionArgs } from './ask-args.mjs';
+import { compactEventLabel } from '../../../../shared/compact-event-label.mjs';
 
 // Cap agent role synthesis to ~3000 tokens (~12 KB at the 4 B/tok
 // working average). Pool B recall/search answers occasionally land
@@ -43,15 +44,6 @@ function salvagePartialRequested(error, signal) {
   return !!(reason && typeof reason === 'object' && reason.salvagePartial === true);
 }
 
-function agentCompactEventLabel(event = {}) {
-  const status = String(event.status || '').toLowerCase();
-  const reactive = String(event.trigger || '').toLowerCase() === 'reactive';
-  if (status === 'failed') return reactive ? 'Compact failed (overflow retry)' : 'Compact failed';
-  if (status === 'skipped') return 'Compact skipped';
-  if (status === 'no_change') return 'Compact checked';
-  return reactive ? 'Compact complete (overflow recovery)' : 'Compact complete';
-}
-
 function agentCompactEventDetail(event = {}) {
   const parts = [];
   const elapsed = formatCompactElapsedSeconds(Number(event.durationMs ?? event.elapsedMs ?? 0));
@@ -70,7 +62,7 @@ function agentCompactEventDetail(event = {}) {
 function compactEventLogger(agent, sessionId) {
   return (event) => {
     try {
-      const label = agentCompactEventLabel(event);
+      const label = compactEventLabel(event);
       const detail = agentCompactEventDetail(event);
       const suffix = detail ? ` (${detail})` : '';
       process.stderr.write(`[agent-dispatch] agent=${agent} session=${sessionId} compact: ${label}${suffix}\n`);

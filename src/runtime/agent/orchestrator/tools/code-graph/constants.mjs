@@ -69,34 +69,11 @@ export const CODE_GRAPH_MEMORY_MAX_BYTES = Math.max(
 export const SYMBOL_SCHEMA_VERSION = 'sym-record-v2-unified-kinds';
 
 // ── unified symbol-kind vocabulary (native record v2) ──────────────────────
-// The Rust extractor maps every per-language kind onto exactly one of these
-// (`--langs` publishes the per-language `kinds:{old:new}` table). This is the
-// ONLY kind vocabulary the JS side knows: no legacy tokens (object, record,
-// contract, union, mixin, binding, arrow, generator, local-function, …) and no
+// The Rust extractor maps every per-language kind onto one unified vocabulary
+// (`--langs` publishes the per-language `kinds:{old:new}` table). The JS side
+// knows only that vocabulary: no legacy tokens (object, record, contract,
+// union, mixin, binding, arrow, generator, local-function, …) and no
 // language-specific special cases.
-export const SYMBOL_KINDS = new Set([
-  'module',
-  'namespace',
-  'package',
-  'class',
-  'struct',
-  'interface',
-  'trait',
-  'enum',
-  'enumMember',
-  'type',
-  'function',
-  'method',
-  'constructor',
-  'field',
-  'property',
-  'variable',
-  'constant',
-  'macro',
-  'event',
-  'protocol',
-  'impl',
-]);
 
 // Kinds whose outline children are MEMBERS of the symbol: `callees` of a type
 // reports what its methods call, and the outline nests those children under it.

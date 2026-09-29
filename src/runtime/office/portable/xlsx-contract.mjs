@@ -355,7 +355,16 @@ function chartSourceAreas(range) {
 // in five colours over a single label, with no legend to say which year is which. That shape is refused with the
 // reading it wanted named, before either backend draws it.
 function assertChartReadsItsData(operation, areas) {
-  if (String(operation.plotBy || '').toLowerCase() === 'rows') return;
+  if (String(operation.plotBy || '').toLowerCase() === 'rows') {
+    // plotBy:'rows' turns one block a quarter: its first row the categories, its first column the series names.
+    // Given two areas joined by a comma, Excel drew a chart with no series while the portable writer refused them.
+    if (areas.length !== 1 || areas[0].rows < 2 || areas[0].columns < 2) {
+      throw new Error(
+        `XLSX add_chart ${operation.range}: plotBy:'rows' requires one bounded range whose first row holds the categories and whose first column names each series`
+      );
+    }
+    return;
+  }
   const rows = Math.max(...areas.map((part) => part.rows));
   const columns = areas.reduce((total, part) => total + part.columns, 0);
   if (rows === 2 && columns - 1 >= 3) {

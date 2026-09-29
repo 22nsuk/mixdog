@@ -98,8 +98,7 @@ export function createOverlayWindows(host: OverlayWindowsHost) {
       // Release its creation slot even if loadURL/executeJavaScript never settles.
       creatingWindows.delete(display.id);
       next.destroy();
-      const presentation = host.presentation();
-      void host.controller.invoke('pause', presentation.generation, presentation.sessionIds);
+      void host.controller.invoke('pause', host.presentation().sessionIds);
     };
     next.on('unresponsive', retireUnavailableWindow);
     next.webContents.on('render-process-gone', retireUnavailableWindow);

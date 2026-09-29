@@ -18,6 +18,7 @@ test('AppShellOverlays renders tab switcher, unsaved dialog, and update dialog u
     'Event',
     'CustomEvent',
     'KeyboardEvent',
+    'MutationObserver',
   ]) {
     Object.defineProperty(globalThis, key, { configurable: true, value: dom.window[key] });
   }

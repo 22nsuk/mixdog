@@ -131,6 +131,7 @@ export function createSessionMediaApi(bag) {
     startMediaJob: (input) => runtime.startMediaJob(input),
     cancelMediaJob: (id) => runtime.cancelMediaJob?.(id),
     deleteMediaAsset: (id) => runtime.deleteMediaAsset?.(id),
+    deleteMediaAssets: (filter) => runtime.deleteMediaAssets?.(filter),
     openMediaAsset: (id) => runtime.openMediaAsset?.(id),
     openMediaFolder: (id) => runtime.openMediaFolder?.(id),
   };

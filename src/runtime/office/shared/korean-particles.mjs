@@ -23,6 +23,13 @@ function finalConsonant(value) {
   return (code - 0xac00) % 28;
 }
 
+// The particle form after a word whose final consonant index is `jong` (0 = none).
+// 으로 takes 로 after a vowel and after ㄹ (final index 8): 서울로, 부산으로.
+function particleAfter(jong, withFinal, withoutFinal) {
+  if (withFinal === '으로') return jong === 0 || jong === 8 ? withoutFinal : withFinal;
+  return jong ? withFinal : withoutFinal;
+}
+
 export function koreanParticleReplacements(tokens) {
   const replacements = [];
   for (const [key, raw] of Object.entries(tokens && typeof tokens === 'object' ? tokens : {})) {
@@ -30,8 +37,7 @@ export function koreanParticleReplacements(tokens) {
     const jong = finalConsonant(value);
     if (jong === null) continue;
     for (const [withFinal, withoutFinal] of PAIRS) {
-      // 으로 takes 로 after a vowel and after ㄹ (final index 8): 서울로, 부산으로.
-      const right = withFinal === '으로' ? (jong === 0 || jong === 8 ? withoutFinal : withFinal) : jong ? withFinal : withoutFinal;
+      const right = particleAfter(jong, withFinal, withoutFinal);
       for (const authored of [withFinal, withoutFinal]) {
         for (const boundary of BOUNDARIES) {
           replacements.push({ key, find: `{{${key}}}${authored}${boundary}`, replace: `${value}${right}${boundary}` });

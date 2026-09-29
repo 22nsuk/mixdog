@@ -140,7 +140,7 @@ export async function applyXlsx(zip, operations) {
     if (op.op === 'rename_sheet' || op.op === 'delete_sheet') {
       const changed =
         op.op === 'rename_sheet'
-          ? await renameWorksheet(zip, sheet, op.name)
+          ? await renameWorksheet(zip, sheet, op.name, sheets)
           : await deleteWorksheet(zip, sheets, sheet);
       sheets = await workbookSheets(zip);
       results.push({ op: op.op, changed: true, ...changed });

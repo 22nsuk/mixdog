@@ -1,54 +1,45 @@
 export const overlayStyles = `
-:root { --accent:#58a6ff;color-scheme:dark;font-family:"Segoe UI",system-ui,sans-serif; }
+:root { --accent:#58a6ff;color-scheme:dark;font-family:"Mixdog Overlay","Malgun Gothic","Segoe UI",sans-serif; }
 * { box-sizing:border-box; }
 html,body { width:100%;height:100%;margin:0;overflow:hidden;background:transparent; }
 body { display:flex;align-items:flex-start;justify-content:flex-end;padding:10px; }
-/* The right padding reserves both control slots at all times, so no state
-   change ever resizes the pill under a press. */
-#pill { position:relative;display:flex;align-items:center;justify-content:center;gap:8px;padding:11px 80px 11px 44px;border-radius:24px;
-background:rgba(15,18,24,.96);box-shadow:0 6px 16px #0005;color:#f4f7fb;width:100%;max-width:100%;
+/* A black island: the Mixdog mark on the left, the words centred, Stop on the
+   right. Stop keeps its own slot at the end of the row, so no state change
+   ever moves the control or resizes the pill under a press. */
+#pill { display:flex;align-items:center;width:100%;max-width:100%;height:38px;padding:0 5px 0 10px;
+border-radius:19px;background:#060608;box-shadow:inset 0 0 0 1px #ffffff17,0 4px 12px -2px #0008;color:#f5f5f7;
 transition:opacity 180ms ease,transform 180ms ease; }
 body.hiding #pill { opacity:0;transform:translateY(-4px); }
-#outline { position:absolute;inset:0;width:100%;height:100%;overflow:visible;pointer-events:none; }
-#outline rect { x:1.5px;y:1.5px;width:calc(100% - 3px);height:calc(100% - 3px);rx:22px;fill:none; }
-#outline .track { stroke:color-mix(in srgb, var(--accent) 55%, transparent);stroke-width:1; }
-#outline .highlight { stroke:color-mix(in srgb, var(--accent) 35%, white);stroke-width:2.5;
-stroke-linecap:round;stroke-dasharray:18 82;filter:drop-shadow(0 0 4px var(--accent));
-animation:outline-loop 2.8s linear infinite; }
-#status { min-width:0; }
-/* The wording itself carries the "still working" pulse, slow enough to read as
-   breathing rather than blinking. */
-#title { font-size:17px;line-height:24px;font-weight:650;white-space:nowrap;text-align:center;
-animation:title-breathe 3.6s ease-in-out infinite; }
-/* Reversed so the toggle keeps the outer fixed hit target and Stop sits at its
-   left, in the same place in every state. */
-#controls { position:absolute;right:10px;top:50%;transform:translateY(-50%);
-display:flex;flex-direction:row-reverse;align-items:center;gap:6px; }
-button { border:1px solid #ffffff33;border-radius:14px;background:#ffffff18;color:inherit;
-width:30px;height:30px;padding:5px;cursor:pointer;flex-shrink:0;display:grid;place-items:center; }
-button:hover { background:#ffffff30; }
-/* A press answers immediately, before the host does. Without it, a control
-   the host later drops is indistinguishable from a press that never reached
-   this window at all. */
-button:active { background:#ffffff55;transform:scale(.92); }
-button[aria-busy="true"] { opacity:.6; }
-button:focus-visible { outline:2px solid var(--accent);outline-offset:2px; }
-button svg { width:18px;height:18px;fill:currentColor; }
-/* The check state asks for a decision, so the frame carries the warning and
-   the wording stays plain instead of turning amber on a dark pill. */
-#stop { border-color:#f0883e73;background:#f0883e2b; }
-#stop:hover { background:#f0883e45; }
-body[data-error="true"] #pill { background:rgba(28,20,13,.97);
-box-shadow:0 6px 16px #0006,inset 0 0 0 1.5px #f0883e66; }
-body[data-error="true"] #outline .track { stroke:#f0883e99;stroke-width:1.5; }
-body[data-error="true"] #title { color:#f7f2ec; }
-body[data-paused="true"] #outline .highlight { display:none; }
-body[data-paused="true"] #outline .highlight,body.hiding #outline .highlight { animation-play-state:paused; }
-body[data-paused="true"] #title,body[data-error="true"] #title { animation:none;opacity:1; }
-@keyframes title-breathe { 0%,100% { opacity:.7; } 50% { opacity:1; } }
-@keyframes outline-loop { to { stroke-dashoffset:-100; } }
+/* The one sign of work in progress: the mark's arcs turn in the session's
+   accent around a star that holds still. */
+#mark { flex-shrink:0;width:20px;height:20px; }
+#arcs { stroke:var(--accent);transform-origin:128px 128px;animation:arcs-turn 2.6s linear infinite; }
+#star { fill:#fff; }
+#status { flex:1;min-width:0;padding:0 6px;text-align:center; }
+#title { font-size:14px;line-height:20px;font-weight:500;letter-spacing:-.02em;white-space:nowrap; }
+/* The only control, pinned to the right end in every state: quiet at rest,
+   solid red only under the pointer that is about to end the task. */
+#stop { flex-shrink:0;display:grid;place-items:center;width:28px;height:28px;padding:0;border:0;border-radius:50%;
+background:#2c2c30;color:#f5f5f7;cursor:pointer;
+transition:background 140ms ease,color 140ms ease,transform 120ms ease; }
+#stop:hover { background:#ff453a;color:#fff; }
+/* A press answers immediately, before the host does. Without it, a press the
+   host later rejects is indistinguishable from one that never reached this
+   window at all. */
+#stop:active { transform:scale(.9); }
+#stop[aria-busy="true"] { opacity:.6; }
+#stop:focus-visible { outline:2px solid var(--accent);outline-offset:2px; }
+#stop svg { width:16px;height:16px;fill:currentColor; }
+/* Paused: the arcs stop where they are, grey out, and the words say why. */
+body[data-paused="true"] #arcs { animation-play-state:paused;stroke:#6e6e73; }
+body[data-paused="true"] #star { fill:#8e8e93; }
+/* The check state asks for a decision: an amber edge and a still, amber mark,
+   while the wording stays plain. */
+body[data-error="true"] #pill { box-shadow:inset 0 0 0 1px #ff9f0a80,0 4px 12px -2px #0008; }
+body[data-error="true"] #arcs { animation:none;stroke:#ff9f0a; }
+body[data-error="true"] #star { fill:#fff; }
+@keyframes arcs-turn { to { transform:rotate(360deg); } }
 @media (prefers-reduced-motion:reduce) {
-  #title { animation:none; }
-  #outline .highlight { animation:none;stroke-dasharray:none; }
+  #arcs { animation:none; }
 }
 `;

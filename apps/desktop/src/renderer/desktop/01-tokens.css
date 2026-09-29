@@ -48,9 +48,6 @@
   --mx-alpha-dark-30: #0000004d;
   --mx-alpha-dark-40: #00000066;
   --mx-alpha-dark-45: #00000073;
-  --mx-blue-400: #a2bcff;
-  --mx-blue-500: #7698fd;
-  --mx-blue-600: #3b5cf6;
   --mx-red-500: #f17471;
   --mx-red-1200: #461516;
   --mx-yellow-500: #f2cf76;
@@ -63,28 +60,7 @@
   --mx-green-500: #6bd586;
   --mx-green-900: #1d783c;
   --mx-green-1200: #14361d;
-  --mx-avatar-gloss: #ffffff29;
   --mx-avatar-shadow: #00000066;
-  /* Project-avatar palette (dark set: muted fill, vivid border). */
-  --mx-avatar-fg: #ffffff;
-  --mx-avatar-bg-orange: #6b4331;
-  --mx-avatar-border-orange: #ff8648;
-  --mx-avatar-bg-yellow: #625338;
-  --mx-avatar-border-yellow: #e7af36;
-  --mx-avatar-bg-cyan: #005a6e;
-  --mx-avatar-border-cyan: #0096b8;
-  --mx-avatar-bg-green: #196130;
-  --mx-avatar-border-green: #49c970;
-  --mx-avatar-bg-red: #7a1f23;
-  --mx-avatar-border-red: #d92e3c;
-  --mx-avatar-bg-pink: #8c2d61;
-  --mx-avatar-border-pink: #e4429e;
-  --mx-avatar-bg-blue: #263fa9;
-  --mx-avatar-border-blue: #7698fd;
-  --mx-avatar-bg-purple: #361f83;
-  --mx-avatar-border-purple: #7152f4;
-  --mx-avatar-bg-gray: #5c5c5c;
-  --mx-avatar-border-gray: #aeaeae;
 
   /* ── 2. Surfaces (back → front) ──
      ONE dark ramp — the ORIGINAL Mixdog grey ramp, restored as THE default
@@ -199,15 +175,17 @@
   /* Brand accent = Google's own blue (user: 구글색이 낫다). The Material 3
      indigo tones this replaces sat near hue 275 and read pale violet rather
      than the Google indigo they were meant to echo: #8ab4f8 is the accent
-     Google draws on its dark UI, #1a73e8 the link/button blue it uses on
-     paper. It lives on the THEME, not on a surface attribute, so the web
-     shell paints the same accent as the desktop window. */
+     Google draws on its dark UI, and paper takes its 700 rung #1967d2 (the
+     #1a73e8 link blue fell under 4.5:1 on every paper plate except white).
+     It lives on the THEME, not on a surface attribute, so the web shell
+     paints the same accent as the desktop window. */
   --mx-text-accent: #8ab4f8;
   --mx-accent: var(--mx-text-accent);
   /* Markdown inline-code ink stays a SEPARATE token from the brand accent.
      Both are blue now, but code ink answers to "reads as code/reference"
-     (GitHub #79b8ff on dark, #0969da on paper) while the accent answers to
-     the brand, so a future accent move must not drag inline code with it. */
+     (GitHub #79b8ff on dark; on paper one rung under GitHub's #0969da) while
+     the accent answers to the brand, so a future accent move must not drag
+     inline code with it. */
   --mx-md-code: #79b8ff;
   /* Neutral glyphs share the same ink ramp as their companion labels so
      chrome icons never drift darker or pick up a separate color cast. */
@@ -222,11 +200,10 @@
 
   /* ── 4. Interaction ── */
   /* Focus ring tracks the brand accent: Google's dark-UI blue here, and the
-     light block overrides to blue-600 so the ring stays legible on paper. */
+     light block's paper accent so the ring stays legible on paper. */
   --mx-focus: #8ab4f8;
   --mx-hover: rgba(255, 255, 255, 0.06);
   --mx-pressed: rgba(255, 255, 255, 0.1);
-  --mx-selected: var(--mx-pressed);
   /* Opaque hover/pressed equivalents for rows that stack OPAQUE action
      gradients on top (a translucent wash under them renders a visible
      rectangle around the actions). */
@@ -254,7 +231,6 @@
   --mx-contrast-hover: var(--mx-alpha-dark-24);
   /* Flat action washes: ONE overlay over the family's own plate, composed
      once here so no state rule re-spells the gradient stack. */
-  --mx-flat-hover: linear-gradient(var(--mx-hover), var(--mx-hover)), var(--mx-bg-base);
   --mx-flat-press: linear-gradient(var(--mx-pressed), var(--mx-pressed)), var(--mx-bg-base);
   --mx-flat-press-danger: linear-gradient(var(--mx-pressed), var(--mx-pressed)), var(--mx-danger-bg);
   --mx-flat-hover-contrast: linear-gradient(var(--mx-contrast-hover), var(--mx-contrast-hover)), var(--mx-bg-contrast);
@@ -272,7 +248,8 @@
   --mx-success-bg: var(--mx-green-1200);
   --mx-success: var(--mx-green-500);
   --mx-success-border: var(--mx-green-900);
-  --mx-merged: #a371f7;
+  /* One rung above GitHub's #a371f7, which read 3.8:1 on the raised plates. */
+  --mx-merged: #b287f8;
 
   /* ── 6. Elevation (dark values) ── */
   --mx-switch-off: inset 0 -0.5px 0 var(--mx-alpha-light-10), inset 0 0 0 0.5px var(--mx-alpha-light-16);
@@ -317,7 +294,14 @@
   --mx-popup-radius-card: var(--mx-radius-xl);
   --mx-menu-inset: 6px;
   --mx-menu-row-height: 32px;
+  /* Body-level stacking scale (fixed or portaled layers): modal scrims sit
+     under toasts, every transient menu, picker and sheet rides the menu layer
+     above both, and tooltips top it so a control inside a menu still shows
+     its label. Stacking inside one component keeps small local values. */
+  --mx-dialog-z-index: 940;
+  --mx-toast-z-index: 1000;
   --mx-menu-z-index: 10010;
+  --mx-tooltip-z-index: calc(var(--mx-menu-z-index) + 100);
   --mx-dialog-inset: 20px;
   --mx-list-focus-ring: inset 0 0 0 1px var(--mx-border-strong);
   /* Quiet pressable plate inside a popup (the context card's Compact button):
@@ -463,10 +447,11 @@
   --mx-text: #242529;
   --mx-text-muted: #5c5c60;
   --mx-text-faint: #6a6a6e; /* ≥4.5:1 on the band; #8a8f95 sat at 3.1 and read washed under its own rows */
-  --mx-text-accent: #1a73e8;
+  --mx-text-accent: #1967d2;
   --mx-accent: var(--mx-text-accent);
-  /* Paper needs the darker rung of the same blue: #79b8ff sits ~2:1 on white. */
-  --mx-md-code: #0969da;
+  /* Paper needs a darker rung of the same blue: #79b8ff sits ~2:1 on white,
+     and GitHub's #0969da stayed under 4.5:1 on the raised plates. */
+  --mx-md-code: #0860ca;
   --mx-icon: var(--mx-text);
   --mx-icon-muted: var(--mx-text-muted);
   /* Neutral hairlines: the warm alpha set pulled every seam brown. */
@@ -476,9 +461,9 @@
   --mx-border-strong: rgba(23, 24, 26, 0.26);
 
   /* ── 4. Interaction ── */
-  /* blue-500 sat ~2:1 against the paper surfaces (user-flagged as washed
-     out); blue-600 keeps the same hue with a legible ring. */
-  --mx-focus: #1a73e8;
+  /* Tracks the paper accent. The old blue-500 ring sat ~2:1 against the
+     paper surfaces (user-flagged as washed out). */
+  --mx-focus: #1967d2;
   --mx-hover: rgba(0, 0, 0, 0.05);
   --mx-pressed: rgba(0, 0, 0, 0.09);
   /* Opaque sidebar-row tones (hover/selected under opaque action gradients). */
@@ -492,38 +477,20 @@
   --mx-accent-bg: #1967d2;
   --mx-contrast-hover: rgba(255, 255, 255, 0.122);
   --mx-approval-ring: color-mix(in srgb, var(--mx-amber-600) 45%, transparent);
-  /* Project-avatar palette (light set: vivid fill, darker border). */
-  --mx-avatar-fg: #ffffff;
-  --mx-avatar-bg-orange: #ee7330;
-  --mx-avatar-border-orange: #d16427;
-  --mx-avatar-bg-yellow: #e7af36;
-  --mx-avatar-border-yellow: #cb9f34;
-  --mx-avatar-bg-cyan: #0096b8;
-  --mx-avatar-border-cyan: #007d9b;
-  --mx-avatar-bg-green: #2eaf5a;
-  --mx-avatar-border-green: #198b43;
-  --mx-avatar-bg-red: #d92e3c;
-  --mx-avatar-border-red: #b82d35;
-  --mx-avatar-bg-pink: #e4429e;
-  --mx-avatar-border-pink: #c83d8b;
-  --mx-avatar-bg-blue: #3250df;
-  --mx-avatar-border-blue: #2c47c8;
-  --mx-avatar-bg-purple: #623be2;
-  --mx-avatar-border-purple: #5230c2;
-  --mx-avatar-bg-gray: #5c5c5c;
-  --mx-avatar-border-gray: #3a3a3a;
 
   /* ── 5. Status ── */
   --mx-danger-bg: #fceceb;
   --mx-danger: #b82d35;
   --mx-warning-bg: #fefaec;
-  /* #cb9f34 washed out for modified-file names on the white sheet (~2.5:1);
-     GitHub-light attention gold keeps the warm hue at ≥4:1. */
-  --mx-warning: #9a6700;
+  /* #cb9f34 washed out for modified-file names on the white sheet (~2.5:1),
+     and GitHub-light attention gold #9a6700 still fell under 4.5:1 on the
+     band and raised plates; one rung deeper keeps the warm hue legible. */
+  --mx-warning: #8f6000;
   --mx-success-bg: #e7f9ea;
-  --mx-success: #198b43;
+  /* Google Green 800: #198b43 read 3.7-4.4:1 on the paper plates. */
+  --mx-success: #137333;
   --mx-success-border: #b8e9c1;
-  --mx-merged: #8250df;
+  --mx-merged: #7a48d8;
 
   /* ── 6. Elevation (light values) ── */
   --mx-switch-off:

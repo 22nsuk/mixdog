@@ -71,10 +71,15 @@ export function useAppEditorState({
     [pinPaneTabByKey]
   );
 
-  const registerEditorSaveHandle = useCallback((key: string, save: EditorSaveHandle | null) => {
-    if (save) editorSaveHandles.current.set(key, save);
-    else editorSaveHandles.current.delete(key);
-  }, []);
+  const registerEditorSaveHandle = useCallback(
+    (key: string, save: EditorSaveHandle | null, released?: EditorSaveHandle) => {
+      if (save) editorSaveHandles.current.set(key, save);
+      // A pane releases only the handle it registered: the same file may
+      // already be owned by another pane or a newer mount of this one.
+      else if (!released || editorSaveHandles.current.get(key) === released) editorSaveHandles.current.delete(key);
+    },
+    []
+  );
 
   return {
     editorCommandCapabilities,

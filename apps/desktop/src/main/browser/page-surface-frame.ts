@@ -232,7 +232,26 @@ export function createPageSurfaceFrame(host: BrowserPageSurfaceHost, state: Page
     }
   }
 
-  return async function frame(
+  /** A natively presented page draws itself; its pane still needs the same
+   *  native page facts for chrome and prompts, with no pixels or page read. */
+  async function metadata(sessionId: string): Promise<DesktopBrowserPageFrame> {
+    const guest = await host.ensureGuest(sessionId, { reveal: false });
+    const viewport = host.viewport(guest);
+    const token = documentId(guest);
+    return {
+      ...frameBase(sessionId, guest, token, viewport),
+      frameId: `native_${token}`,
+      width: viewport.width,
+      height: viewport.height,
+      viewportWidth: viewport.width,
+      viewportHeight: viewport.height,
+      fault: host.state.for(guest).fault || undefined,
+    };
+  }
+
+  return Object.assign(frame, { metadata });
+
+  async function frame(
     sessionId: string,
     previousId = '',
     signal?: AbortSignal,
@@ -253,5 +272,5 @@ export function createPageSurfaceFrame(host: BrowserPageSurfaceHost, state: Page
       return blockedDialogFrame(sessionId, guest, previousId, previousFrames, useTexture, signal);
     }
     return liveFrame(sessionId, guest, previousId, previousFrames, useTexture, signal);
-  };
+  }
 }

@@ -5,6 +5,120 @@ the Unreleased section is empty, and stamps it with the released version.
 
 ## Unreleased
 
+- The usage dialog now answers a second question: how a subscription's quota
+  was used up. Next to token usage, a Subscription usage tab follows each
+  provider's own limit windows — Codex, Claude, Grok, Cursor, Antigravity and
+  OpenCode Go — as they rise and reset, with the models that moved the meter
+  and the history of earlier windows. Mixdog records every quota reading it
+  measures; a rise with no Mixdog request behind it shows as use from outside
+  Mixdog, such as the provider's web app. A provider meter in the usage
+  flyout opens its own subscription directly.
+
+- `/doctor` works in the desktop app too, as a dialog (also under Settings →
+  System → Doctor). It runs the same read-only health checks as the TUI, all
+  at once with a deadline per check so one stalled check cannot hide the
+  others, and every warning or failure says how to fix it.
+
+- New PowerPoint decks are designed in HTML. The model lays each slide out in
+  HTML and CSS, a local Chrome or Edge renders it, and `author` turns what the
+  browser drew into native, editable PowerPoint objects: text boxes that keep
+  the browser's line breaks, shapes, lines, tables, charts and pictures.
+  Korean text breaks where a reader expects, a geometry check refuses slides
+  whose declared alignments the browser cannot confirm, and `render` shows
+  each HTML page beside its PowerPoint render. The script route stays for
+  decks that want the kit's measured devices, or when no local browser exists.
+
+- Inserting or deleting rows and columns in a workbook without Excel now
+  rewrites everything that names those cells, the way Excel does: formulas on
+  every sheet, defined names and print areas, conditional formats,
+  validations, chart series, pivot sources, filters, links, merges, tables and
+  drawings. The cells used to move while their references stayed put, so a
+  report total kept summing the old range and read 72,200 where Excel read
+  74,700. An edit whose references cannot be rewritten is refused, with the
+  list, before anything changes.
+
+- PDFs and composed spreadsheet bands keep Korean dates, times, fractions and
+  amounts on one line. "10월 14일", "14시 30분", "3분의 1", "12만 6천 원" and
+  "24억 원" no longer break in the middle, which had split a decision date or
+  a saving across two lines.
+
+- Office files come out the same whether Microsoft Office or the built-in
+  portable writer produced them. A long side-by-side comparison of both
+  aligned Word spacing, compatibility mode and tables; Excel autofit, indents,
+  borders, print setup and preset charts; PowerPoint Korean wrapping, East
+  Asian fonts, footers, cover crops, shadows and transparency; and PDF
+  alignment and table widths. Review checks report the same issues on both
+  backends, Excel charts can read another sheet's range, and `set_chart_data`
+  keeps a chart's links and series names.
+
+- Computer Use runs on macOS and Linux. Desktop builds for those systems
+  bundle a native backend that speaks the Windows host's protocol and enforces
+  the same action lists and limits. A sequence can now also act on several
+  elements of one observation: each later step re-proves its element against
+  the live accessibility tree, and the chain stops at a window switch, a
+  failure, or a disabled or off-screen element.
+
+- The phone app opens and reconnects faster and moves far less data. The
+  transcript shows right after the first sync, short reconnects resume as
+  deltas instead of a full resync, the phone mirrors only the tab it shows,
+  the collapsed turn review reads file names and counts without patch text,
+  and slow project searches no longer hold up other calls. A phone app kept
+  open checks for a new deploy when it comes back to the foreground, and
+  adopts one off screen even mid-turn.
+
+- The daemon uses less memory and stalls less: sessions save only what
+  changed, the usage ledger works off the main thread, file locks and git
+  calls no longer block it, and long transcripts page in 1 MB steps. Desktop
+  and phone render streaming Markdown and touch scrolling with fewer layouts,
+  and the web app's transcript no longer jitters while rows are measured.
+
+- Voice input shows that it is preparing until capture really starts, warms
+  up transcription while you speak, and transcribes faster without blocking
+  the app.
+
+- Tool results cost the model fewer tokens. `read` returns its rows without
+  line numbers — the TUI and desktop still draw the gutter — for about 16%
+  fewer tokens on recorded sessions; shell and task notices are shorter; and
+  edits report paths relative to the working directory.
+
+- Compaction carries less stale material in large context windows. The
+  verbatim conversation and the recent tool history kept through a Compact are
+  capped at 20,000 tokens instead of growing with the window. A browser
+  snapshot or desktop observation that a later one of the same page or window
+  replaced keeps only its outcome and a pointer to the archived original, and
+  older replies drop their opaque provider replay while keeping their tool
+  calls and results.
+
+- A provider that is briefly unavailable no longer ends the turn the moment
+  its own retries run out. While nothing has reached the screen, the turn
+  waits through a few more recovery cycles, from 15 seconds up to a minute,
+  and follows a server's own Retry-After. When a stream is cut while a tool
+  call's arguments are still arriving, that call is not run, and the model is
+  told to split the content across smaller calls instead of resending it
+  whole.
+
+- Cursor and Antigravity (Gemini) OAuth are separate switches under Settings →
+  Developer, and each turns on only after you confirm the risk of account
+  restrictions that comes with using that provider through OAuth. The
+  `MIXDOG_DEV_PROVIDERS` environment variable no longer turns them on.
+
+- The conversation no longer jumps when the bars above the composer open or
+  close: they slide over the motion instead of shifting the transcript by
+  their full height at once, and opening a session no longer flashes a turn
+  review count that disappears a moment later.
+
+- Renaming a file or folder in the explorer keeps its open editor tabs on the
+  new path. A file with unsaved edits is refused until it is saved, since its
+  buffer belongs to the old path.
+
+- Studio cleans up in bulk: the selected items, everything before a date,
+  entries whose files are gone, or all of one kind. Settings → About lists a
+  support address with Copy and Email buttons, and the built-in browser's
+  Clear browsing data dialog has been removed.
+
+- An automatic goal turn that calls no tool now waits instead of prompting
+  again.
+
 ## v0.9.173 - 2026-09-22
 
 - A restored queued message keeps the text the daemon confirmed. Restoring one

@@ -1104,7 +1104,9 @@ function Invoke-SessionAction($state, $payload) {
                 switch ($format) {
                     'docx' { $null = Reopen-BackgroundWordSession $state }
                     'xlsx' { $null = Reopen-BackgroundExcelSession $state }
-                    'pptx' { $null = Reopen-BackgroundPowerPointSession $state }
+                    # The saved deck is read back from disk in the running PowerPoint, as re-authoring reloads it: a
+                    # new PowerPoint process proved nothing more about the file and cost seconds on every finalize.
+                    'pptx' { $null = Reload-SessionDocument $state '' }
                 }
                 $document = $state.Document
                 $reopened = $true
@@ -1113,23 +1115,28 @@ function Invoke-SessionAction($state, $payload) {
                 Save-Document $document $format
             }
             $wasSaved = [bool]$document.Saved
-            $snapshot = Snapshot-SessionDocument $document $format ([ordered]@{})
+            # The reopened workbook's reading travels with the result: a caller checks a persisted freeze or print
+            # setup against it. A deck's or a document's is read by nothing after this, and the issue read below
+            # already walks the reopened file — a 12-slide deck's snapshot added five seconds to every finalize.
+            # Finalize drops the workbook's reading from its answer and does not ask for it (includeSnapshot false).
+            $snapshot = if ($format -eq 'xlsx' -and $payload.includeSnapshot -ne $false) { Snapshot-SessionDocument $document $format ([ordered]@{}) } else { $null }
             $inspection = Issues-SessionDocument $document $format ([ordered]@{})
             if ($wasSaved -and -not [bool]$document.Saved) { $document.Saved = $true }
-            return Session-Response $state ([ordered]@{
-                    value = [ordered]@{
-                        ok                  = [bool]$inspection.ok
-                        opened              = $true
-                        reopened            = $reopened
-                        persisted           = $reopened
-                        excelDpiRepairs     = $(if ($format -eq 'xlsx') { [int]$state.ExcelDpiRepairs } else { 0 })
-                        issueCount          = [int]$inspection.issueCount
-                        issues              = @($inspection.issues)
-                        snapshot            = $snapshot
-                        snapshotFingerprint = Snapshot-Fingerprint $snapshot
-                        documentSaved       = [bool]$document.Saved
-                    }
-                })
+            $value = [ordered]@{
+                ok              = [bool]$inspection.ok
+                opened          = $true
+                reopened        = $reopened
+                persisted       = $reopened
+                excelDpiRepairs = $(if ($format -eq 'xlsx') { [int]$state.ExcelDpiRepairs } else { 0 })
+                issueCount      = [int]$inspection.issueCount
+                issues          = @($inspection.issues)
+                documentSaved   = [bool]$document.Saved
+            }
+            if ($null -ne $snapshot) {
+                $value.snapshot = $snapshot
+                $value.snapshotFingerprint = Snapshot-Fingerprint $snapshot
+            }
+            return Session-Response $state ([ordered]@{ value = $value })
         }
         'render' {
             $output = [System.IO.Path]::GetFullPath([string]$payload.output)

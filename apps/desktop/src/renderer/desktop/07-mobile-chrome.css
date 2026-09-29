@@ -230,7 +230,9 @@ html[data-mixdog-mobile-tabs] .studio-generate {
 /* During dictation the send action stays disabled, but dimming the whole
    button made its equal 36dp disc look smaller beside the recording disc.
    Disabled color still mutes the glyph; the plate keeps its full frame. */
-html[data-mixdog-mobile-tabs] .composer:has(.composer-mic:is(.is-preparing, .is-recording, .is-transcribing)) .send-button:disabled {
+html[data-mixdog-mobile-tabs]
+  .composer:has(.composer-mic:is(.is-preparing, .is-recording, .is-transcribing))
+  .send-button:disabled {
   opacity: 1;
 }
 /* Both stop squares take the desktop 12/28 measure — the same 3:4 against the
@@ -354,7 +356,6 @@ html[data-mixdog-mobile-tabs] .composer-model-aside .session-context-popover {
   max-width: calc(100vw - 2 * var(--mx-mobile-edge-main));
 }
 html[data-mixdog-mobile-tabs] .dock-scm-commit-back,
-html[data-mixdog-mobile-tabs] .mixdog-settings__back,
 html[data-mixdog-mobile-tabs] .mixdog-settings__close,
 html[data-mixdog-mobile-tabs] .schedules-dialog > header button:not(.extensions-action),
 html[data-mixdog-mobile-tabs] .settings-confirm-dialog > header > button,
@@ -365,7 +366,6 @@ html[data-mixdog-mobile-tabs] .mx-dialog > header > button {
   min-width: 44px;
   flex-basis: 44px;
 }
-html[data-mixdog-mobile-tabs] .mixdog-settings__back svg,
 html[data-mixdog-mobile-tabs] .mixdog-settings__close svg {
   width: 22px;
   height: 22px;
@@ -790,7 +790,6 @@ html[data-mixdog-mobile-tabs]
   .dock-scm-scroll,
   .dock-scm-history,
   .dock-files,
-  .dock-task-list,
   .workbench-side-section-body,
   .session-sidebar-scroll
 ) {
@@ -810,7 +809,6 @@ html[data-mixdog-mobile-tabs]
     .dock-scm-scroll,
     .dock-scm-history,
     .dock-files,
-    .dock-task-list,
     .workbench-side-section-body,
     .session-sidebar-scroll
   )::-webkit-scrollbar {
@@ -1012,13 +1010,13 @@ html[data-mixdog-mobile-tabs] .jump-to-latest {
 }
 /* Code/table surfaces keep vertical momentum while horizontal touch traverses
    pane tabs. Hide tracks that otherwise flash over the final line of content. */
-html[data-mixdog-mobile-tabs] :is(.markdown-code > pre, .markdown-table, .detail-block pre) {
+html[data-mixdog-mobile-tabs] :is(.markdown-code > pre, .markdown-table) {
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-inline: contain;
   scrollbar-width: none;
   touch-action: pan-y;
 }
-html[data-mixdog-mobile-tabs] :is(.markdown-code > pre, .markdown-table, .detail-block pre)::-webkit-scrollbar {
+html[data-mixdog-mobile-tabs] :is(.markdown-code > pre, .markdown-table)::-webkit-scrollbar {
   display: none;
 }
 html[data-mixdog-mobile-tabs] .mobile-tab-overview-grid {
@@ -1093,8 +1091,6 @@ html[data-mixdog-mobile-tabs]
    `hover: none` fallback in the stylesheet, so it has to be complete: every
    action the desktop reveals under the pointer rests visible here. */
 html[data-mixdog-mobile-tabs] .message .message-actions,
-html[data-mixdog-mobile-tabs] .tool-output-copy,
-html[data-mixdog-mobile-tabs] .sidebar-section-action,
 html[data-mixdog-mobile-tabs] .dock-pr-row-actions {
   opacity: 1;
   visibility: visible;
@@ -1129,13 +1125,6 @@ html[data-mixdog-mobile-tabs] .mx-select-root.route-select .mx-select-trigger {
 html[data-mixdog-mobile-tabs] .effort-control select {
   line-height: var(--mx-touch-main);
 }
-html[data-mixdog-mobile-tabs] .fast-control,
-html[data-mixdog-mobile-tabs] .route-controls > .fast-control {
-  width: var(--mx-touch-main);
-  min-width: var(--mx-touch-main);
-  height: var(--mx-touch-main);
-  flex-basis: var(--mx-touch-main);
-}
 html[data-mixdog-mobile-tabs] .composer-attachments > div:not(.image) {
   height: calc(36px * var(--mx-device-scale, 2.5));
 }
@@ -1161,7 +1150,6 @@ html[data-mixdog-mobile-tabs] .composer-banner-close {
    메세지 아래 복사 버튼도 커져버림). Their glyphs keep the designed 14px —
    the box grows for the finger, the mark stays a mark. */
 html[data-mixdog-mobile-tabs] .message .message-actions,
-html[data-mixdog-mobile-tabs] .tool-output-copy,
 html[data-mixdog-mobile-tabs] .tool-detail-copy,
 html[data-mixdog-mobile-tabs] .markdown-code-copy,
 html[data-mixdog-mobile-tabs] .live-work-stop,
@@ -1184,8 +1172,7 @@ html[data-mixdog-mobile-tabs] .turn-review-action-slot {
 /* ── 4. Session drawer ─────────────────────────────────────────────────────
    Primary links keep the full touch tier; session rows use the compact row
    tier so more conversations fit without shrinking their controls. */
-html[data-mixdog-mobile-tabs] .session-sidebar .task-link,
-html[data-mixdog-mobile-tabs] .session-sidebar .projects-link {
+html[data-mixdog-mobile-tabs] .session-sidebar .task-link {
   height: var(--mx-touch);
   min-height: var(--mx-touch);
 }
@@ -1231,57 +1218,17 @@ html[data-mixdog-mobile-tabs] .session-sidebar .sidebar-category-header > .row-o
 html[data-mixdog-mobile-tabs] .session-sidebar-panels .schedules-row .row-overflow-trigger {
   margin-right: calc(var(--mx-rail-trailing-center, 20px) - var(--mx-rail-gutter, 12px) - 18px);
 }
-html[data-mixdog-mobile-tabs] .sidebar-section-heading,
-html[data-mixdog-mobile-tabs] .sidebar-section-toggle {
-  height: var(--mx-touch);
-  min-height: var(--mx-touch);
-}
 html[data-mixdog-mobile-tabs] .sidebar-usage-heading {
   min-height: var(--mx-touch);
-}
-/* Section "+" actions answer to the tier-2 action + above, not to the row. */
-html[data-mixdog-mobile-tabs] .sidebar-section-action {
-  width: var(--mx-touch);
-  height: var(--mx-touch);
-  flex-basis: var(--mx-touch);
-}
-/* Grouped rail destinations own a real divider/header row. Their primary +
-   must use the same mobile action tier without overflowing a desktop 34px
-   row, and its center resolves against the divider's own 2px inner padding. */
-html[data-mixdog-mobile-tabs] .session-sidebar .sidebar-view-section[data-active="true"][data-sectioned="true"] {
-  min-height: var(--mx-touch);
-}
-html[data-mixdog-mobile-tabs] .session-sidebar .sidebar-view-section[data-sectioned="true"][data-collapsed="true"] {
-  flex-basis: var(--mx-touch);
-}
-html[data-mixdog-mobile-tabs] .session-sidebar .sidebar-view-section-header {
-  height: var(--mx-touch);
-  flex-basis: var(--mx-touch);
-}
-html[data-mixdog-mobile-tabs] .session-sidebar .sidebar-view-section-actions > .session-panel-action {
-  width: var(--mx-touch);
-  height: var(--mx-touch);
-  min-width: var(--mx-touch);
-  flex-basis: var(--mx-touch);
-}
-html[data-mixdog-mobile-tabs] .session-sidebar .sidebar-view-section-actions > .session-panel-action > svg {
-  width: var(--mx-touch-glyph);
-  height: var(--mx-touch-glyph);
-}
-html[data-mixdog-mobile-tabs] .session-sidebar .sidebar-view-section-actions > .session-panel-action:last-child {
-  margin-right: calc(var(--mx-rail-trailing-center, 20px) - 2px - 22px);
 }
 
 /* ── 5. Side sheet views ──────────────────────────────────────────────────
    The sheet header was converted; everything it contains was not, so one
    sheet carried 18/20/22/24/25/28 at once. */
-html[data-mixdog-mobile-tabs] .dock-language-toolbar,
 html[data-mixdog-mobile-tabs] .dock-scm-check-all,
 html[data-mixdog-mobile-tabs] .workbench-side-panel-tabs,
 html[data-mixdog-mobile-tabs] .workbench-side-icon-bar.is-horizontal,
-html[data-mixdog-mobile-tabs] .workbench-search-input,
-html[data-mixdog-mobile-tabs] .dock-language-search,
-html[data-mixdog-mobile-tabs] .utility-dock-pane > .dock-language-search {
+html[data-mixdog-mobile-tabs] .workbench-search-input {
   height: var(--mx-touch);
   min-height: var(--mx-touch);
   flex-basis: var(--mx-touch);
@@ -1299,10 +1246,6 @@ html[data-mixdog-mobile-tabs] .dock-pr-toolbar .row-overflow-trigger,
 html[data-mixdog-mobile-tabs] .dock-pr-row-actions > button,
 html[data-mixdog-mobile-tabs] .dock-pr-row-actions .row-overflow-trigger,
 html[data-mixdog-mobile-tabs] .dock-scm-list-actions > button,
-html[data-mixdog-mobile-tabs] .dock-language-toolbar > button,
-html[data-mixdog-mobile-tabs] .dock-git-action,
-html[data-mixdog-mobile-tabs] .dock-git-refresh,
-html[data-mixdog-mobile-tabs] .dock-agent-back,
 html[data-mixdog-mobile-tabs] .workbench-search-input button {
   width: var(--mx-touch-row);
   height: var(--mx-touch-row);
@@ -1310,8 +1253,7 @@ html[data-mixdog-mobile-tabs] .workbench-search-input button {
 }
 /* Fixed tier: these rows are windowed on a constant that lives in TSX, so the
    row height is not ours to change and the action fills what the row has. */
-html[data-mixdog-mobile-tabs] .dock-scm-file-actions button,
-html[data-mixdog-mobile-tabs] .dock-scm-group-actions button {
+html[data-mixdog-mobile-tabs] .dock-scm-file-actions button {
   width: var(--mx-touch-fixed);
   height: var(--mx-touch-fixed);
   flex-basis: var(--mx-touch-fixed);
@@ -1349,6 +1291,27 @@ html[data-mixdog-mobile-tabs] .studio-detail-close {
 html[data-mixdog-mobile-tabs] .studio-detail-stage-close {
   width: var(--mx-touch-main);
   height: var(--mx-touch-main);
+}
+/* The detail IS the phone surface: no scrim margin or rounded frame, and it
+   stops at the notch and the home indicator so no control sits under them. */
+html[data-mixdog-mobile-tabs] .studio-detail {
+  padding: 0 env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+  background: var(--mx-bg-base);
+}
+html[data-mixdog-mobile-tabs] .studio-detail-card {
+  border-radius: 0;
+  box-shadow: none;
+}
+html[data-mixdog-mobile-tabs] .studio-detail-nav {
+  width: var(--mx-touch-main);
+  height: var(--mx-touch-main);
+  opacity: 1;
+}
+html[data-mixdog-mobile-tabs] :is(.studio-detail-actions > button, .studio-detail-more > button) {
+  min-height: var(--mx-touch-main);
+}
+html[data-mixdog-mobile-tabs] :is(.studio-detail-block-head button, .studio-detail-menu > button) {
+  min-height: var(--mx-touch-row-main);
 }
 
 /* ── 8. Dialogs and overlays ───────────────────────────────────────────────
@@ -1400,10 +1363,6 @@ html[data-mixdog-mobile-tabs]
     .dock-pr-toolbar > button,
     .dock-pr-row-actions > button,
     .dock-scm-list-actions > button,
-    .dock-language-toolbar > button,
-    .dock-git-action,
-    .dock-git-refresh,
-    .dock-agent-back,
     .workbench-search-input button,
     .model-search button,
     .webhook-connection-copy,
@@ -1414,12 +1373,16 @@ html[data-mixdog-mobile-tabs]
   height: var(--mx-touch-row-glyph);
 }
 html[data-mixdog-mobile-tabs]
-  :is(.sidebar-section-action, .workbench-side-icon-bar.is-horizontal > button, .onboarding-top-actions > button)
+  :is(.workbench-side-icon-bar.is-horizontal > button, .onboarding-top-actions > button)
   > svg {
   width: var(--mx-touch-glyph);
   height: var(--mx-touch-glyph);
 }
-html[data-mixdog-mobile-tabs] :is(.studio-detail-stage-close) > svg {
+html[data-mixdog-mobile-tabs] :is(.studio-detail-actions > button, .studio-detail-more > button) > svg {
+  width: var(--mx-touch-row-glyph-main);
+  height: var(--mx-touch-row-glyph-main);
+}
+html[data-mixdog-mobile-tabs] :is(.studio-detail-stage-close, .studio-detail-nav) > svg {
   width: var(--mx-touch-glyph-main);
   height: var(--mx-touch-glyph-main);
 }

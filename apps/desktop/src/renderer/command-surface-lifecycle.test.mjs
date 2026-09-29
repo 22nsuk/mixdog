@@ -261,6 +261,46 @@ test('a failed statistics warmup keeps a stale fallback and can be retried on en
   assert.equal(hasStatsDataCache(api), true);
 });
 
+test('a hidden desktop window defers statistics re-reads until it is shown', async (context) => {
+  const reads = [];
+  let update;
+  const api = {
+    async invokeCapability(request) {
+      reads.push(request);
+      return { value: { totals: { tokens: reads.length } } };
+    },
+    subscribeState(listener) {
+      update = listener;
+      return () => {};
+    },
+  };
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  const page = new EventTarget();
+  page.visibilityState = 'visible';
+  globalThis.document = page;
+  context.after(() => {
+    if (previous) Object.defineProperty(globalThis, 'document', previous);
+    else delete globalThis.document;
+  });
+  const release = holdStatsDataCache(api);
+  context.after(release);
+  await refreshStatsDataCache(api);
+  assert.equal(reads.length, 1);
+
+  page.visibilityState = 'hidden';
+  update({ sessionId: 'one', stats: { inputTokens: 100 } });
+  update({ sessionId: 'one', stats: { inputTokens: 200 } });
+  await new Promise(setImmediate);
+  assert.equal(reads.length, 1, 'no usage re-read while the window is hidden');
+  assert.equal(hasStatsDataCache(api), false);
+
+  page.visibilityState = 'visible';
+  page.dispatchEvent(new Event('visibilitychange'));
+  await new Promise(setImmediate);
+  assert.equal(reads.length, 2, 'one catch-up read once shown');
+  assert.equal(hasStatsDataCache(api), true);
+});
+
 test('desktop state warms statistics before the dialog mounts without blocking boot', async (context) => {
   const { useDesktopState } = await import('./app-desktop-state.ts');
   let desktop;
@@ -545,7 +585,7 @@ test('command surface titles match supported slash command surfaces', () => {
   assert.equal(commandSurfaceTitle('usage'), t('Provider usage'));
   assert.equal(commandSurfaceTitle('doctor'), t('Doctor'));
   assert.equal(commandSurfaceTitle('inherit'), t('Inherit session'));
-  assert.equal(commandSurfaceTitle('stats'), t('Token usage'));
+  assert.equal(commandSurfaceTitle('stats'), t('Usage'));
 });
 
 test('command surface renders usage skeleton while loading then paints table', async (context) => {

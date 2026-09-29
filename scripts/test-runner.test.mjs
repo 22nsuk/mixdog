@@ -53,7 +53,13 @@ test('--changed selects the tests whose static imports reach a changed file', as
     'src/five.test.mjs':
       "const probe = new URL('./fixtures/probe.ps1', import.meta.url);\nconst worker = require('./worker.cjs');\n",
   });
-  const tests = ['src/five.test.mjs', 'src/four.test.mjs', 'src/one.test.mjs', 'src/three.test.mjs', 'src/two.test.mjs'];
+  const tests = [
+    'src/five.test.mjs',
+    'src/four.test.mjs',
+    'src/one.test.mjs',
+    'src/three.test.mjs',
+    'src/two.test.mjs',
+  ];
   // Through a plain import, and through a cycle that reaches the same module.
   assert.deepEqual(selectChangedTests(tests, ['src/a.mjs', 'src/notes.md'], cwd), {
     selected: ['src/one.test.mjs', 'src/three.test.mjs'],

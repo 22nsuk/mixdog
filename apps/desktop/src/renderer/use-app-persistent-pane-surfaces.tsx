@@ -76,7 +76,11 @@ export function useAppPersistentPaneSurfaces({
   workbenchWorkspace: WorkbenchWorkspace;
   fileReveal: { key: string; line: number; nonce: number } | null;
   handleFileDirty(key: string, dirty: boolean): void;
-  registerEditorSaveHandle(key: string, save: { save(): Promise<boolean>; discard(): Promise<void> } | null): void;
+  registerEditorSaveHandle(
+    key: string,
+    save: { save(): Promise<boolean>; discard(): Promise<void> } | null,
+    released?: { save(): Promise<boolean>; discard(): Promise<void> }
+  ): void;
   openFileTab(project: string, rel: string, line?: number, accessToken?: string): void;
   latestEditorLocation: MutableRefObject<EditorNavigationLocation | null>;
   sidebarOpen: boolean;
@@ -147,7 +151,7 @@ export function useAppPersistentPaneSurfaces({
                 active={fileActive}
                 focused={focused}
                 onDirty={(dirty) => handleFileDirty(key, dirty)}
-                onSaveHandle={(save) => registerEditorSaveHandle(key, save)}
+                onSaveHandle={(save, released) => registerEditorSaveHandle(key, save, released)}
                 reveal={fileReveal && fileReveal.key === key ? fileReveal : null}
                 codeGraph={
                   fileSelection.accessToken

@@ -34,7 +34,10 @@ test('an older page that starts at an arbitrary row keeps its own ids and the di
   const paged = reconciler.reconcile({ sessionId: 's', items: incoming });
   const ids = paged.items.map((item) => item.id);
   assert.equal(new Set(ids).size, ids.length, 'no id appears twice');
-  assert.deepEqual(ids, incoming.map((item) => item.id));
+  assert.deepEqual(
+    ids,
+    incoming.map((item) => item.id)
+  );
   // The page became the baseline: the next live append aligns against it.
   const appended = reconciler.reconcile({ sessionId: 's', items: [...incoming, turnRow(128, 'h')] });
   assert.deepEqual(

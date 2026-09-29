@@ -21,7 +21,7 @@ import {
 } from './app-shell-components';
 import { useSidePanelOpenFlip } from './app-side-panel-flip';
 import { usePageHideFlush } from './layout-persistence';
-import { useResponsiveShellBands } from './use-responsive-shell-bands';
+import { BOTTOM_SHEET_QUERY, NARROW_SHELL_QUERY, useResponsiveShellBands } from './use-responsive-shell-bands';
 
 const SIDEBAR_OPEN_KEY = 'mixdog.desktop-sidebar-open.v1';
 
@@ -123,7 +123,7 @@ export function useAppShellPanels(activeBottomPanelPaneId: string) {
   // folds the sheets. Wide inline layouts coexist untouched.
   const dismissBottomPanelForSheet = useCallback(
     (band: 'dock' | 'drawer') => {
-      const query = band === 'dock' ? '(max-width: 940px)' : '(max-width: 760px)';
+      const query = band === 'dock' ? BOTTOM_SHEET_QUERY : NARROW_SHELL_QUERY;
       if (window.matchMedia?.(query).matches === true && bottomPanel.open) {
         bottomPanel.setOpen(false);
       }
@@ -188,7 +188,7 @@ export function useAppShellPanels(activeBottomPanelPaneId: string) {
   // drawer — last press wins. The right dock lives INSIDE each pane now, so
   // it no longer competes with the bottom panel as a window sheet.
   const dismissSheetsForBottomPanel = useCallback(() => {
-    if (window.matchMedia?.('(max-width: 940px)').matches !== true) return;
+    if (window.matchMedia?.(BOTTOM_SHEET_QUERY).matches !== true) return;
     if (narrowShellRef.current && sidebarOpenIntent.current) applySidebarOpen(false);
   }, [applySidebarOpen]);
   const toggleBottomPanel = useCallback(() => {

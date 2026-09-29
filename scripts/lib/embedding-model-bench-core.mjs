@@ -344,4 +344,3 @@ export function aggregateScoredRows(rows) {
   }
   return { overall: aggregate(rows), byLanguage };
 }
-

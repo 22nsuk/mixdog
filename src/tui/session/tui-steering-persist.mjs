@@ -1,13 +1,13 @@
 // Lead TUI busy-input steering queue — disk mirror of in-memory `pending`
 // (same store as manager pending-messages, lead-scoped session key).
 import { randomBytes } from 'node:crypto';
-import { join } from 'node:path';
-import { resolvePluginData } from '../../runtime/shared/plugin-paths.mjs';
 import { updateJsonAtomic } from '../../runtime/shared/atomic-file.mjs';
+import {
+  PENDING_MESSAGES_MODE,
+  pendingMessagesPath,
+  touchPendingSessionEntry,
+} from '../../runtime/agent/orchestrator/session/manager/pending-spool-path.mjs';
 import { promptContentText } from './queue-helpers.mjs';
-
-const PENDING_MESSAGES_FILE = 'session-pending-messages.json';
-const PENDING_MESSAGES_MODE = 0o600;
 // Restore window for persisted busy-input steering rows. Rows older than this
 // are leftovers of a session that ended long ago — restoring them into a fresh
 // TUI boot reads as a surprise self-injection (user report), so they are
@@ -25,10 +25,6 @@ function _serialize(task) {
   // Never let a rejection poison the chain; each op logs its own error.
   _persistChain = run.catch(() => {});
   return run;
-}
-
-function pendingMessagesPath() {
-  return join(resolvePluginData(), PENDING_MESSAGES_FILE);
 }
 
 // Best-effort diagnostic line; stderr can be closed during teardown.
@@ -122,11 +118,6 @@ function normalizePendingStore(raw) {
     out.sessionTouchedAt[sid] = Number.isFinite(touched) && touched > 0 ? touched : storeUpdatedAt;
   }
   return out;
-}
-
-function touchPendingSessionEntry(next, sessionId, now = Date.now()) {
-  if (!next.sessionTouchedAt || typeof next.sessionTouchedAt !== 'object') next.sessionTouchedAt = {};
-  next.sessionTouchedAt[sessionId] = now;
 }
 
 function entryPersistText(entry) {

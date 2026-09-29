@@ -684,7 +684,8 @@ function brokenCellWord(table) {
   // A cell's own w:tcMar wins over the table's, which wins over Word's default.
   const side = (name, own = '') => {
     const found =
-      new RegExp(`<w:${name}\\b[^>]*\\bw:w="(\\d+)"`).exec(own) || new RegExp(`<w:${name}\\b[^>]*\\bw:w="(\\d+)"`).exec(margins);
+      new RegExp(`<w:${name}\\b[^>]*\\bw:w="(\\d+)"`).exec(own) ||
+      new RegExp(`<w:${name}\\b[^>]*\\bw:w="(\\d+)"`).exec(margins);
     return found ? Number(found[1]) : DOCX_DEFAULT_CELL_MARGIN;
   };
   let rowOrdinal = 0;
@@ -712,10 +713,16 @@ function brokenCellWord(table) {
           (total, name) => total + (Number(new RegExp(`\\bw:${name}="(\\d+)"`).exec(indent)?.[1]) || 0),
           0
         );
-        const words = paragraphTexts(paragraph[0], 'w:t').join('').split(/\s+/).filter((word) => UNBREAKABLE_WORD.test(word));
-        const widest = words.map((word) => ({ word, width: measureTextWidth(word, font) })).sort((a, b) => b.width - a.width)[0];
+        const words = paragraphTexts(paragraph[0], 'w:t')
+          .join('')
+          .split(/\s+/)
+          .filter((word) => UNBREAKABLE_WORD.test(word));
+        const widest = words
+          .map((word) => ({ word, width: measureTextWidth(word, font) }))
+          .sort((a, b) => b.width - a.width)[0];
         const line = room - inset / 20;
-        if (widest && widest.width > Math.max(0, line) * 1.05) return { rowOrdinal, cellOrdinal, room: line, ...widest };
+        if (widest && widest.width > Math.max(0, line) * 1.05)
+          return { rowOrdinal, cellOrdinal, room: line, ...widest };
       }
     }
   }
@@ -860,7 +867,7 @@ function documentFontPairingIssues(document, styles) {
       severity: 'info',
       code: 'font_pairing_mismatch',
       path: first.path,
-      message: `${mixed.length} block${mixed.length > 1 ? 's set' : ' sets'} Hangul in ${first.eastAsia} beside Latin and digits in ${first.latin}, a ${faceClass(first.eastAsia)} and a ${faceClass(first.latin)}: the line reads as two typefaces. Pair the faces by class (nameEastAsia beside name, fontNameEastAsia on a table) — Cambria with Batang, Calibri with Malgun Gothic.`,
+      message: `${mixed.length} block${mixed.length > 1 ? 's set' : ' sets'} Hangul in ${first.eastAsia} beside Latin and digits in ${first.latin}, a ${faceClass(first.eastAsia)} and a ${faceClass(first.latin)}: the line reads as two typefaces. Pair the faces by class (nameEastAsia beside name, fontNameEastAsia on a table) — Cambria with Batang, or Malgun Gothic for both in a sans line.`,
       source: 'document-lint',
     },
   ];

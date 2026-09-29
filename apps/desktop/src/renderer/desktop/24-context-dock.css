@@ -73,13 +73,6 @@
   height: 100%;
   background: var(--ctx-color, var(--mx-text-accent));
 }
-.context-runtime-lines > div {
-  min-width: 0;
-  display: grid;
-  grid-template-columns: 88px minmax(0, 1fr);
-  gap: 12px;
-}
-.context-runtime-lines span,
 .context-mix-row > span {
   color: var(--mx-text-muted);
   font-size: var(--mx-font-ui);
@@ -95,14 +88,6 @@
   line-height: var(--mx-line-body);
 }
 
-.context-runtime-lines strong {
-  min-width: 0;
-  overflow-wrap: anywhere;
-  color: var(--mx-text);
-  font-size: var(--mx-font-minor);
-  font-weight: var(--mx-weight-semibold);
-  line-height: var(--mx-line-minor);
-}
 .context-surface-view h3 {
   margin: 0;
 }
@@ -150,7 +135,8 @@
   font-weight: var(--mx-weight-semibold);
   font-variant-numeric: tabular-nums;
 }
-/* Category palette (muted mid-tones that hold up on both themes). */
+/* Category palette: muted mid-tones for the dark plates; light takes the same
+   hues one step deeper below. */
 .context-surface-view [data-context-key="messages"],
 .context-surface-view [data-context-key="user"] {
   --ctx-color: #a091d6;
@@ -187,6 +173,40 @@
 }
 .context-surface-view [data-context-key="free"] {
   --ctx-color: #6f777d;
+}
+/* Paper washed those mid-tones out (2.2-2.9:1): the same hue and saturation,
+   the nearest darker step, keep every segment and legend dot at ≥3:1 on the
+   light plates. System and free already clear it. */
+:root[data-mixdog-theme="light"] .context-surface-view [data-context-key="messages"],
+:root[data-mixdog-theme="light"] .context-surface-view [data-context-key="user"] {
+  --ctx-color: #9382d0;
+}
+:root[data-mixdog-theme="light"] .context-surface-view [data-context-key="assistant"] {
+  --ctx-color: #768bc5;
+}
+:root[data-mixdog-theme="light"] .context-surface-view [data-context-key="reasoning"] {
+  --ctx-color: #c37d50;
+}
+:root[data-mixdog-theme="light"] .context-surface-view [data-context-key="toolResults"] {
+  --ctx-color: #5c988f;
+}
+:root[data-mixdog-theme="light"] .context-surface-view [data-context-key="attachments"] {
+  --ctx-color: #c07d61;
+}
+:root[data-mixdog-theme="light"] .context-surface-view [data-context-key="tools"] {
+  --ctx-color: #619961;
+}
+:root[data-mixdog-theme="light"] .context-surface-view [data-context-key="mcp"] {
+  --ctx-color: #b67aa8;
+}
+:root[data-mixdog-theme="light"] .context-surface-view [data-context-key="agents"] {
+  --ctx-color: #ab7cbb;
+}
+:root[data-mixdog-theme="light"] .context-surface-view [data-context-key="skills"] {
+  --ctx-color: #b18637;
+}
+:root[data-mixdog-theme="light"] .context-surface-view [data-context-key="memory"] {
+  --ctx-color: #5a95b1;
 }
 @media (max-width: 640px) {
   .context-mix-grid {
@@ -443,7 +463,7 @@
   transform: translate(-50%, 8px);
 }
 .context-block-map i {
-  transition: opacity 90ms linear;
+  transition: opacity var(--mx-motion-fast) linear;
   cursor: pointer;
 }
 .context-block-map i[data-context-key="free"] {
@@ -728,82 +748,6 @@
   white-space: nowrap;
   line-height: var(--mx-line-minor);
 }
-.dock-git-context-row {
-  height: 32px;
-  flex-basis: 32px;
-  gap: 6px;
-  padding: 2px 12px;
-  border-bottom: 0;
-}
-/* Pull Requests context row: SCM toolbar grammar with a REAL branch
-   switcher in the branch slot (user: 저기서도 브랜치 바꿀 수 있어야) — the
-   select borrows the project trigger's quiet chrome, the ⑂ glyph leads. */
-.dock-pr-branch-section {
-  gap: 0;
-}
-.dock-pr-branch-glyph {
-  flex: 0 0 auto;
-  margin-left: 7px;
-  color: var(--mx-text-muted);
-}
-.dock-pr-branch-select {
-  min-width: 0;
-  flex: 1 1 auto;
-}
-.dock-pr-branch-select .mx-select-trigger {
-  width: 100% !important;
-  height: 28px;
-  padding: 0 7px 0 5px;
-  border: 0 !important;
-  border-radius: var(--mx-radius-md);
-  outline: 0;
-  background: transparent !important;
-  box-shadow: none !important;
-}
-.dock-pr-branch-select .mx-select-trigger:hover {
-  background: var(--mx-hover) !important;
-}
-.dock-git-context-row .dock-project-select {
-  width: auto;
-  max-width: 62%;
-  flex: 0 1 auto;
-}
-.dock-git-context-row .dock-project-select .mx-select-trigger {
-  width: auto !important;
-  max-width: 100%;
-  height: 28px;
-  padding: 0 7px;
-  border: 0 !important;
-  border-radius: var(--mx-radius-md);
-  outline: 0;
-  background: transparent !important;
-  box-shadow: none !important;
-}
-.dock-git-context-row .dock-project-select .mx-select-trigger:hover {
-  background: var(--mx-hover) !important;
-}
-.dock-git-branch-context {
-  min-width: 0;
-  max-width: 38%;
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 0 5px;
-  overflow: hidden;
-  color: var(--mx-text-muted);
-  font-size: var(--mx-font-meta);
-  line-height: 26px;
-}
-.dock-git-branch-context > svg {
-  flex: 0 0 auto;
-}
-.dock-git-branch-context > span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .utility-dock-body {
   position: relative;
   min-width: 0;
@@ -883,51 +827,4 @@
 .utility-dock-pane[data-tab="pull-requests"] {
   overflow: hidden;
   padding: 0;
-}
-.dock-change {
-  border-bottom: 0.5px solid var(--mx-border-muted);
-}
-.dock-change summary {
-  min-height: 32px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: var(--mx-font-ui);
-  line-height: var(--mx-line-ui);
-  letter-spacing: 0;
-  cursor: pointer;
-  list-style: none;
-  color: var(--mx-text);
-}
-.dock-change summary::-webkit-details-marker {
-  display: none;
-}
-.dock-change summary svg {
-  flex: 0 0 auto;
-  color: var(--mx-icon-muted);
-}
-.dock-change summary b {
-  min-width: 0;
-  overflow: hidden;
-  font-weight: var(--mx-weight-semibold);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  direction: rtl;
-  text-align: left;
-}
-.dock-change summary .diff-stats {
-  margin-left: auto;
-}
-.dock-change[open] {
-  padding-bottom: 10px;
-}
-/* Tasks tab: status dot, type+detail, right
-   elapsed/status. */
-.dock-task-list {
-  min-height: 0;
-  flex: 1;
-  display: grid;
-  align-content: start;
-  overflow: auto;
-  padding: 4px 8px 8px;
 }

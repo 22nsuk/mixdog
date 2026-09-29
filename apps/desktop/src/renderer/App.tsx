@@ -65,6 +65,7 @@ import { AppWorkspaceMain } from './app-root/AppWorkspaceMain';
 import { AppSidebarDrawer } from './app-root/AppSidebarDrawer';
 import { applySessionLaneResult, LAST_SESSION_KEY, useAppTaskLifecycle } from './app-root/use-app-task-lifecycle';
 import { useAppEditorState } from './app-root/use-app-editor-state';
+import { useProjectEntryRename } from './app-root/use-project-entry-rename';
 import { useAppSettingsRouter } from './app-root/use-app-settings-router';
 import { useAppSidebarHub } from './app-root/use-app-sidebar-hub';
 import { useAppWorkbenchNavigationHub } from './app-root/use-app-workbench-navigation-hub';
@@ -238,7 +239,7 @@ export function App() {
     if (sidebarOpen) return;
     const sidebar = document.getElementById('session-sidebar');
     if (sidebar?.contains(document.activeElement)) {
-      document.querySelector<HTMLButtonElement>('.sessions-link')?.focus();
+      document.querySelector<HTMLButtonElement>('.activity-rail [data-side-view="sessions"]')?.focus();
     }
   }, [sidebarOpen]);
 
@@ -640,7 +641,6 @@ export function App() {
   const {
     sidebarNewTask,
     sidebarNewStudio,
-    sidebarPanel,
     sidebarResumeSession,
     renderSidebarPanel,
     sideViewDescriptors,
@@ -732,6 +732,8 @@ export function App() {
     trackSidebarPanelModule,
   });
 
+  const renameProjectEntry = useProjectEntryRename({ paneWorkspace, dirtyFileKeys, registerWorkspaceSelection });
+
   const { renderWorkbenchSideView, renderPaneSideDock, renderPaneProblems } = useAppWorkbenchViews({
     sessions,
     sessionCatalogReady,
@@ -760,6 +762,7 @@ export function App() {
     dockOpenPullRequest,
     dockOpenLeadSession,
     dockOpenAgentSession,
+    renameProjectEntry,
     paneSideDocks,
     setSidebarDiff,
     registeredProjectPath,
@@ -796,8 +799,6 @@ export function App() {
         <div className="desktop-body">
           <AppSidebarDrawer
             {...shellPanels}
-            sidebarPanel={sidebarPanel}
-            refreshProjects={refreshProjects}
             closeSidebarForNavigation={closeSidebarForNavigation}
             openSettings={openSettings}
             workbenchSideLayout={workbenchSideLayout}
@@ -889,6 +890,7 @@ export function App() {
           cancelPendingTabClose={cancelPendingTabClose}
           settingsMounted={settingsMounted}
           settingsPrewarmed={settingsPrewarmed}
+          openSettings={openSettings}
           replaceWithInheritedSession={replaceWithInheritedSession}
           onboardingOpen={onboardingOpen}
           setOnboardingOpen={setOnboardingOpen}

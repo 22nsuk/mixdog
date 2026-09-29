@@ -23,7 +23,7 @@ import { createRefRecovery, decorateRecovery, refRecoveryFor } from './reply-ref
 import { attachFrame, attachScreenshot } from './reply-screenshot';
 import { awaitReplyReady, type ReplyWait } from './reply-wait';
 import type { BrowserScreenshotCapture } from './screenshot';
-import { formatSnapshot } from './snapshot-format';
+import { formatPageReport, formatSnapshot } from './snapshot-format';
 
 export type { BrowserRefRecoveryContext } from './reply-ref-recovery';
 
@@ -65,6 +65,15 @@ export function createBrowserReply(host: BrowserReplyHost) {
     const downloads = unreportedDownloads(downloadsForGuest(guest), record.downloadsReportedAt);
     record.downloadsReportedAt = Date.now();
     return state.redactText(guest, formatSnapshot(payload, record, { downloads, briefAgainst }));
+  }
+
+  /** The same page report without a snapshot, for a reply that keeps the
+   *  caller's refs: whatever is new since the last report, or nothing. */
+  function reportPage(guest: WebContents): string {
+    const record = state.for(guest);
+    const downloads = unreportedDownloads(downloadsForGuest(guest), record.downloadsReportedAt);
+    record.downloadsReportedAt = Date.now();
+    return state.redactText(guest, formatPageReport(record, { downloads }));
   }
 
   /** `dispatched` says whether this command's own gesture already reached the
@@ -204,6 +213,7 @@ export function createBrowserReply(host: BrowserReplyHost) {
     attachFrame,
     dialogResult,
     formatEvaluationValue,
+    reportPage,
     snapshotResult,
     withRefRecovery: recovery.withRefRecovery,
     decorateRecovery,

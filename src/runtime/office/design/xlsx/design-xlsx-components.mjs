@@ -1,14 +1,18 @@
 import { presetLabels, strings } from '../design-tokens.mjs';
 import { columnLabel } from '../../portable/portable-cells.mjs';
+import { withoutRunt, wrapUnits } from '../../shared/line-breaks.mjs';
 
 function mergedBlock(output, { sheet, startColumn, endColumn, row, rows = 1, value, properties }) {
   const start = columnLabel(startColumn);
   const end = columnLabel(endColumn);
   const last = row + Math.max(1, rows) - 1;
-  output.push({ op: 'set_cell', sheet, cell: `${start}${row}`, value: String(value || '') });
+  // The value goes into the merged block, not the lone cell before it: Excel fits a row to a lone cell's broken
+  // lines the moment they are written, and the table's first record stood four lines tall beside the decision. A
+  // merged cell never fits its row.
   if (endColumn > startColumn || last > row) {
     output.push({ op: 'merge_cells', sheet, range: `${start}${row}:${end}${last}` });
   }
+  output.push({ op: 'set_cell', sheet, cell: `${start}${row}`, value: String(value || '') });
   output.push({
     op: 'set_style',
     sheet,
@@ -31,14 +35,48 @@ function normalizedGates(value) {
     .filter((row) => row.length === 3 && row.some(Boolean));
 }
 
-// The height a wrapped band needs: Hangul and CJK run about one em a character, Latin about half; the lines are
-// the text's width over the canvas, each at 1.3 × the size, with the band's own inset.
+// Bold display type runs wider than the regular em, and the merged band loses its cell insets: the estimate leans
+// long, since a band a line too tall reads as air and one a line short cuts the title. Hangul and CJK run about one
+// em a character, Latin about half.
+const textEms = (text) =>
+  [...String(text)].reduce(
+    (total, char) =>
+      total + (/[\u1100-\u11FF\u3130-\u318F\uAC00-\uD7AF\u3040-\u30FF\u4E00-\u9FFF]/.test(char) ? 1.1 : 0.6),
+    0
+  );
+const lineRoom = (canvasPoints) => Math.max(1, (Number(canvasPoints) || 480) * 0.8);
+
+// The height a wrapped band needs: its lines — each line the text breaks itself (wrapWords) and each wrap of one
+// over the canvas — at 1.3 × the size, with the band's own inset.
 export function bandHeight(text, size, canvasPoints) {
-  // Bold display type runs wider than the regular em, and the merged band loses its cell insets: the estimate
-  // leans long, since a band a line too tall reads as air and one a line short cuts the title.
-  const ems = [...String(text)].reduce((total, char) => total + (/[\u1100-\u11FF\u3130-\u318F\uAC00-\uD7AF\u3040-\u30FF\u4E00-\u9FFF]/.test(char) ? 1.1 : 0.6), 0);
-  const lines = Math.max(1, Math.ceil((ems * size) / Math.max(1, (Number(canvasPoints) || 480) * 0.8)));
+  const lines = String(text)
+    .split('\n')
+    .reduce((total, line) => total + Math.max(1, Math.ceil((textEms(line) * size) / lineRoom(canvasPoints))), 0);
   return Math.min(409, Math.round(lines * size * 1.3 + 8));
+}
+
+// Korean breaks between words, never inside one: Excel wraps Hangul at any syllable, and a decision panel read
+// "…승인해 주십 / 시오." (LibreOffice broke it between words). The text is broken at its spaces into lines of the
+// width bandHeight measures, so neither backend has a line of its own to break; words that read as one ("10월 14일",
+// "24억 원") stay together (wrapUnits), and a band never ends on one word alone under a full line (withoutRunt).
+export function wrapWords(text, size, canvasPoints) {
+  const measure = (line) => textEms(line) * size;
+  return String(text)
+    .split('\n')
+    .map((paragraph) => {
+      const lines = [];
+      let line = '';
+      for (const word of wrapUnits(paragraph.split(' '))) {
+        const candidate = line ? `${line} ${word}` : word;
+        if (line && measure(candidate) > lineRoom(canvasPoints)) {
+          lines.push(line);
+          line = word;
+        } else line = candidate;
+      }
+      lines.push(line);
+      return withoutRunt(lines, measure, lineRoom(canvasPoints)).join('\n');
+    })
+    .join('\n');
 }
 
 // widthPoints: the panel's printed width, from which the decision's merged row takes its height — a merged cell
@@ -74,14 +112,16 @@ export function addXlsxDecisionPanel(
   // Beside a table the panel shares the table's rows: a taller decision row made the table's first record taller
   // than the rest. There the decision spans as many 15 pt rows as its lines need instead of growing one.
   const besideTable = firstColumn > 1;
-  const decisionRows = besideTable && widthPoints > 0 ? Math.max(1, Math.ceil(bandHeight(decision, 15, widthPoints) / 15)) : 1;
+  const decisionText = widthPoints > 0 ? wrapWords(decision, 15, widthPoints) : String(decision);
+  const decisionRows =
+    besideTable && widthPoints > 0 ? Math.max(1, Math.ceil(bandHeight(decisionText, 15, widthPoints) / 15)) : 1;
   mergedBlock(output, {
     sheet,
     startColumn: firstColumn,
     endColumn: finalColumn,
     row: cursor,
     rows: decisionRows,
-    value: decision,
+    value: decisionText,
     properties: {
       fontName: type.display,
       fontSize: 15,
@@ -93,7 +133,7 @@ export function addXlsxDecisionPanel(
     },
   });
   if (widthPoints > 0 && !besideTable) {
-    output.push({ op: 'set_row_height', sheet, row: cursor, height: bandHeight(decision, 15, widthPoints) });
+    output.push({ op: 'set_row_height', sheet, row: cursor, height: bandHeight(decisionText, 15, widthPoints) });
   }
   cursor += decisionRows + 1;
   const gateRows = normalizedGates(gates);

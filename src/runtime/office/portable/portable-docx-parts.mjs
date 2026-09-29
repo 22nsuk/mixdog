@@ -10,6 +10,7 @@ import {
   zipText,
 } from './portable-opc.mjs';
 import { docxBodyModel } from './portable-snapshot.mjs';
+import { numberingLevelFormat } from './portable-snapshot-docx.mjs';
 import { EMU_PER_POINT } from './portable-slide-shapes.mjs';
 import {
   DRAWING_MAIN_NS,
@@ -89,21 +90,47 @@ export function trailingSectionProperties(documentXml) {
   return { model, match };
 }
 
-export function upsertSectionChild(sectionXml, tag, element, afterTags = []) {
+// CT_SectPr fixes the order of its children (the header and footer references share the first place). titlePg
+// written straight after pgMar stood ahead of the cols every section carries, and the schema check refused the file.
+const SECTION_CHILD_ORDER = [
+  'headerReference',
+  'footnotePr',
+  'endnotePr',
+  'type',
+  'pgSz',
+  'pgMar',
+  'paperSrc',
+  'pgBorders',
+  'lnNumType',
+  'pgNumType',
+  'cols',
+  'formProt',
+  'vAlign',
+  'noEndnote',
+  'titlePg',
+  'textDirection',
+  'bidi',
+  'rtlGutter',
+  'docGrid',
+  'printerSettings',
+  'sectPrChange',
+];
+const sectionChildRank = (tag) => SECTION_CHILD_ORDER.indexOf(tag === 'footerReference' ? 'headerReference' : tag);
+
+/** Replaces the section's own tag element, or writes it ahead of the first child the schema places after it. */
+export function upsertSectionChild(sectionXml, tag, element) {
   const pattern = new RegExp(`<w:${tag}\\b[^>]*\\/>`);
   if (pattern.test(sectionXml)) return sectionXml.replace(pattern, element);
-  for (const anchor of afterTags) {
-    const found = new RegExp(`<w:${anchor}\\b[^>]*\\/>`).exec(sectionXml);
-    if (found) {
-      const position = found.index + found[0].length;
-      return `${sectionXml.slice(0, position)}${element}${sectionXml.slice(position)}`;
+  const rank = sectionChildRank(tag);
+  const children = /<w:(\w+)\b/g;
+  children.lastIndex = sectionXml.indexOf('>') + 1;
+  for (let child = children.exec(sectionXml); child; child = children.exec(sectionXml)) {
+    if (sectionChildRank(child[1]) > rank) {
+      return `${sectionXml.slice(0, child.index)}${element}${sectionXml.slice(child.index)}`;
     }
   }
-  const references = [...sectionXml.matchAll(/<w:(?:headerReference|footerReference)\b[^>]*\/>/g)];
-  const position = references.length
-    ? references.at(-1).index + references.at(-1)[0].length
-    : sectionXml.indexOf('>') + 1;
-  return `${sectionXml.slice(0, position)}${element}${sectionXml.slice(position)}`;
+  const close = sectionXml.lastIndexOf('</w:sectPr>');
+  return `${sectionXml.slice(0, close)}${element}${sectionXml.slice(close)}`;
 }
 
 // Sections in reading order: each break paragraph carries the properties of the
@@ -147,7 +174,8 @@ export function writeEverySectionProperties(documentXml, section, mutate) {
   const { model, spans } = documentSectionSpans(documentXml);
   if (spans.length <= 1) return writeSectionPropertiesAt(documentXml, section, mutate);
   let inner = model.body.inner;
-  for (const span of [...spans].reverse()) inner = `${inner.slice(0, span.start)}${mutate(span.xml)}${inner.slice(span.end)}`;
+  for (const span of [...spans].reverse())
+    inner = `${inner.slice(0, span.start)}${mutate(span.xml)}${inner.slice(span.end)}`;
   return `${documentXml.slice(0, model.body.start)}${inner}${documentXml.slice(model.body.end)}`;
 }
 
@@ -437,9 +465,14 @@ export async function writeHeaderFooterPart(zip, { header, body, documentXml = '
     const path = target ? /\bTarget="([^"]+)"/.exec(target)?.[1] || '' : '';
     const existing = path ? `word/${path.replace(/^\.?\//, '')}` : '';
     if (existing && zip.file(existing)) {
+      // The story keeps its own root: Word's declares the w14, mc and wp prefixes its paragraphs use, and page
+      // numbers added into Word's footer under a root naming only w and r left a document Word would not open.
       const story = await zipText(zip, existing);
-      const inner = new RegExp(`<w:${tag}\\b[^>]*>([\\s\\S]*)</w:${tag}>`).exec(story)?.[1] ?? '';
-      zip.file(existing, document(compose(inner)));
+      const root = new RegExp(`(<w:${tag}\\b[^>]*>)([\\s\\S]*)</w:${tag}>`).exec(story);
+      zip.file(
+        existing,
+        root ? `${story.slice(0, root.index)}${root[1]}${compose(root[2])}</w:${tag}>` : document(compose(''))
+      );
       return { part: existing, relationshipId: referencedId, replaced: true };
     }
   }
@@ -523,9 +556,13 @@ export async function documentTracksChanges(zip) {
 }
 
 export function revisionAttributes(id, author) {
+  // Word keeps a revision's w:date in local wall-clock time (under a Z it does not mean): written in UTC, a change made
+  // in Seoul read nine hours early in Word's review pane.
+  const now = new Date();
+  const local = new Date(now.getTime() - now.getTimezoneOffset() * 60_000);
   return (
     `w:id="${id}" w:author="${xmlEncode(author || 'Mixdog')}"` +
-    ` w:date="${new Date().toISOString().replace(/\.\d+Z$/, 'Z')}"`
+    ` w:date="${local.toISOString().replace(/\.\d+Z$/, 'Z')}"`
   );
 }
 
@@ -553,7 +590,11 @@ export function markRunsDeleted(paragraphXml, id, author) {
   return output;
 }
 
+// How far a list's text hangs after its mark, on every level of both kinds (the Word backend's templates set the same).
+export const LIST_HANGING_POINTS = 18;
+
 function numberingDefinition(abstractId, kind) {
+  const hanging = LIST_HANGING_POINTS * 20;
   const levels = [0, 1, 2]
     .map((level) => {
       const indent = 720 * (level + 1);
@@ -562,23 +603,67 @@ function numberingDefinition(abstractId, kind) {
         return (
           `<w:lvl w:ilvl="${level}"><w:start w:val="1"/><w:numFmt w:val="bullet"/>` +
           `<w:lvlText w:val="${marks[level]}"/><w:lvlJc w:val="left"/>` +
-          `<w:pPr><w:ind w:left="${indent}" w:hanging="360"/></w:pPr>` +
+          `<w:pPr><w:ind w:left="${indent}" w:hanging="${hanging}"/></w:pPr>` +
           '<w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:hint="default"/></w:rPr></w:lvl>'
         );
       }
-      const formats = ['decimal', 'lowerLetter', 'lowerRoman'];
+      const [format, text] = (kind === 'korean' ? KOREAN_NUMBER_LEVELS : GLOBAL_NUMBER_LEVELS)[level];
       return (
-        `<w:lvl w:ilvl="${level}"><w:start w:val="1"/><w:numFmt w:val="${formats[level]}"/>` +
-        `<w:lvlText w:val="%${level + 1}."/><w:lvlJc w:val="left"/>` +
-        `<w:pPr><w:ind w:left="${indent}" w:hanging="360"/></w:pPr></w:lvl>`
+        `<w:lvl w:ilvl="${level}"><w:start w:val="1"/><w:numFmt w:val="${format}"/>` +
+        `<w:lvlText w:val="${text}"/><w:lvlJc w:val="left"/>` +
+        `<w:pPr><w:ind w:left="${indent}" w:hanging="${hanging}"/></w:pPr></w:lvl>`
       );
     })
     .join('');
   return `<w:abstractNum w:abstractNumId="${abstractId}"><w:multiLevelType w:val="hybridMultilevel"/>${levels}</w:abstractNum>`;
 }
 
-// restart: a new list instance of the kind, counting from 1 again. Word numbers every instance of one abstract
-// definition as one list unless the instance overrides its start, so the restart names it on each level.
+// The levels a numbered list counts in: the global 1. a. i., and the Korean document's 1. 가. 1) (Word's ganada
+// format), which the Word backend's templates set the same.
+const GLOBAL_NUMBER_LEVELS = [
+  ['decimal', '%1.'],
+  ['lowerLetter', '%2.'],
+  ['lowerRoman', '%3.'],
+];
+const KOREAN_NUMBER_LEVELS = [
+  ['decimal', '%1.'],
+  ['ganada', '%2.'],
+  ['decimal', '%3)'],
+];
+
+// The numbering a new list counts in: a list that opens on Korean text counts 1. 가. 1), as a Korean document
+// does, and any other the global 1. a. i.; listNumbering ('korean' or 'global') names it outright. Read from the
+// words rather than the document's language, which only says which Word installed the file (ko-KR from a Korean
+// Word, nothing from the portable writer).
+const HANGUL = /[\uAC00-\uD7A3]/;
+export function numberedListScheme(text, named) {
+  const scheme = String(named ?? '').toLowerCase();
+  if (scheme === 'korean') return 'korean';
+  if (scheme === 'global') return 'number';
+  if (scheme) throw new Error(`listNumbering must be 'korean' or 'global', not "${named}"`);
+  return HANGUL.test(String(text ?? '')) ? 'korean' : 'number';
+}
+
+// The kind a list definition serves, by what its first level shows. A document Word wrote keeps its bullet list as a
+// decimal level with the mark "•": matched by numFmt, a numbered item appended after a heading reused it and
+// printed a bullet.
+function firstLevelFormat(abstractXml) {
+  return numberingLevelFormat(/<w:lvl\b[^>]*\bw:ilvl="0"[^>]*>[\s\S]*?<\/w:lvl>/.exec(abstractXml)?.[0] || '');
+}
+
+// bullet, korean (a numbered list whose second level counts 가, 나, 다), number (any other numbered list), or '' for a
+// definition that is neither — the kinds ensureNumbering reuses a definition for.
+function numberingScheme(abstractXml) {
+  const first = firstLevelFormat(abstractXml);
+  if (first === 'bullet') return 'bullet';
+  if (first !== 'decimal') return '';
+  const second = /<w:lvl\b[^>]*\bw:ilvl="1"[^>]*>[\s\S]*?<\/w:lvl>/.exec(abstractXml)?.[0] || '';
+  return numberingLevelFormat(second) === 'ganada' ? 'korean' : 'number';
+}
+
+// kind: bullet, number (1. a. i.), or korean (1. 가. 1)). restart: a new list instance of the kind, counting from 1
+// again. Word numbers every instance of one abstract definition as one list unless the instance overrides its start,
+// so the restart names it on each level.
 export async function ensureNumbering(zip, kind, { restart = false } = {}) {
   const part = 'word/numbering.xml';
   const xml = await ensurePart(zip, {
@@ -587,10 +672,9 @@ export async function ensureNumbering(zip, kind, { restart = false } = {}) {
     contentType: NUMBERING_CONTENT_TYPE,
     relationship: `${OFFICE_RELATIONSHIP_BASE}/numbering`,
   });
-  const marker = kind === 'bullet' ? 'w:numFmt w:val="bullet"' : 'w:numFmt w:val="decimal"';
   let existingAbstract = null;
   for (const match of xml.matchAll(/<w:abstractNum\b[^>]*\bw:abstractNumId="(\d+)"[^>]*>[\s\S]*?<\/w:abstractNum>/g)) {
-    if (!match[0].includes(marker)) continue;
+    if (numberingScheme(match[0]) !== kind) continue;
     const reuse = new RegExp(
       `<w:num\\b[^>]*\\bw:numId="(\\d+)"[^>]*>\\s*<w:abstractNumId w:val="${match[1]}"\\/>`
     ).exec(xml);
@@ -626,27 +710,39 @@ export async function ensureNumbering(zip, kind, { restart = false } = {}) {
 
 // The numbered list an appended item belongs to. An item right after a list item (its own list's, or a bullet nested
 // under it) continues the latest numbered list; after anything else — a heading, a body paragraph, a table — it starts
-// a new list at 1: "3. 다음 분기 과제" read its two items as 4 and 5 of the list two sections above.
-export async function appendedNumbering(zip, documentXml) {
+// a new list at 1: "3. 다음 분기 과제" read its two items as 4 and 5 of the list two sections above. continued (the
+// item's listContinue) carries the latest list on past them: the step after a note inside a procedure had started
+// again at 1. scheme (number or korean) is the numbering a new list counts in; an item that continues a list takes
+// the one that list opened with, so a Korean list's "QA" item stays its third item rather than opening a list of
+// its own at 1.
+export async function appendedNumbering(zip, documentXml, options = {}) {
   const trailing = documentXml.lastIndexOf('<w:sectPr');
-  const body = documentXml.slice(0, trailing >= 0 ? trailing : documentXml.lastIndexOf('</w:body>')).trimEnd();
+  return numberingAfter(zip, documentXml.slice(0, trailing >= 0 ? trailing : documentXml.lastIndexOf('</w:body>')), options);
+}
+
+// The same choice for an item anywhere in the body, `before` being the body up to it: set_list and
+// set_paragraph_format put a paragraph in a list as Word's backend does, continuing the list just before it and
+// otherwise opening one at 1. Taken as the document's first numbered list wherever the paragraph stood, a lone
+// paragraph read "5." on the portable path and "1." in Word.
+export async function numberingAfter(zip, before, { continued = false, scheme = 'number' } = {}) {
+  const body = String(before).trimEnd();
   const lastParagraph = Math.max(body.lastIndexOf('<w:p>'), body.lastIndexOf('<w:p '));
   const followsList = !body.endsWith('</w:tbl>') && lastParagraph >= 0 && /<w:numPr\b/.test(body.slice(lastParagraph));
-  if (!followsList) return ensureNumbering(zip, 'number', { restart: true });
-  const numbering = await ensureNumbering(zip, 'number');
+  if (!followsList && !continued) return ensureNumbering(zip, scheme, { restart: true });
+  const existing = (await zipText(zip, 'word/numbering.xml')) || '';
   const numberedAbstracts = new Set(
-    [...numbering.xml.matchAll(/<w:abstractNum\b[^>]*\bw:abstractNumId="(\d+)"[^>]*>([\s\S]*?)<\/w:abstractNum>/g)]
-      .filter((match) => match[2].includes('w:numFmt w:val="decimal"'))
+    [...existing.matchAll(/<w:abstractNum\b[^>]*\bw:abstractNumId="(\d+)"[^>]*>([\s\S]*?)<\/w:abstractNum>/g)]
+      .filter((match) => ['number', 'korean'].includes(numberingScheme(match[0])))
       .map((match) => match[1])
   );
   const numberedIds = new Set(
-    [...numbering.xml.matchAll(/<w:num\b[^>]*\bw:numId="(\d+)"[^>]*>\s*<w:abstractNumId w:val="(\d+)"/g)]
+    [...existing.matchAll(/<w:num\b[^>]*\bw:numId="(\d+)"[^>]*>\s*<w:abstractNumId w:val="(\d+)"/g)]
       .filter((match) => numberedAbstracts.has(match[2]))
       .map((match) => match[1])
   );
   for (let at = body.lastIndexOf('<w:numId '); at >= 0; at = body.lastIndexOf('<w:numId ', at - 1)) {
     const id = /^<w:numId w:val="(\d+)"/.exec(body.slice(at))?.[1];
-    if (numberedIds.has(id)) return { ...numbering, numId: Number(id), created: false };
+    if (numberedIds.has(id)) return { xml: existing, numId: Number(id), created: false };
   }
-  return numbering;
+  return ensureNumbering(zip, scheme);
 }

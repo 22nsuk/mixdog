@@ -24,6 +24,7 @@ import {
 import { AutoSaveRow, Group, SelectRow, ToggleRow } from './capability-controls';
 import { label, rows, type PanelContext } from './capability-data';
 import { PushNotificationToggle } from './push-notification-toggle';
+import { NARROW_SHELL_QUERY } from '../use-responsive-shell-bands';
 
 function ThemeChoices({ data, pending }: Pick<PanelContext, 'data' | 'pending'>) {
   const loadedTheme = String(data.theme || 'basic');
@@ -80,7 +81,7 @@ function UiLanguageChoices({ pending }: Pick<PanelContext, 'pending'>) {
 
 function SidePanelChoices({ pending }: Pick<PanelContext, 'pending'>) {
   const configuredMode = useSyncExternalStore(subscribeSidePanelMode, getSidePanelMode, () => 'close-both');
-  const narrow = window.matchMedia?.('(max-width: 760px)').matches === true;
+  const narrow = window.matchMedia?.(NARROW_SHELL_QUERY).matches === true;
   const mode = narrow ? 'close-both' : configuredMode;
   return (
     <Group title="Side panels">

@@ -44,6 +44,12 @@ export function createMemoryCalls({ state, cwd, start, discovery, registry }) {
   async function recordTraceEvents(events = []) {
     return await requestMemoryPath('/admin/trace-record', { events }, { timeoutMs: 5_000 });
   }
+  // Built-in Memory Install: the daemon answers once the embedding model is
+  // loaded, downloading it on first use. The worker's cold load alone may take
+  // 180s after the runtime finishes starting, so the request outlives both.
+  async function warmupEmbedding() {
+    return await requestMemoryPath('/embedding/warmup', null, { timeoutMs: 300_000 });
+  }
   // Abort support: the signal rejects locally at every checkpoint and, once
   // the daemon has the call, also cancels it remotely by call id.
   async function handleToolCall(name, args = {}, signalOrOptions = null) {
@@ -117,5 +123,6 @@ export function createMemoryCalls({ state, cwd, start, discovery, registry }) {
     recordTraceEvents,
     handleToolCall,
     buildSessionCoreMemoryPayload,
+    warmupEmbedding,
   };
 }

@@ -39,8 +39,7 @@ export function alignmentAnchored(
   incomingLength: number
 ): boolean {
   return (
-    candidate.idMatches > 0 ||
-    candidate.overlap >= Math.min(previousLength, incomingLength, MIN_ANONYMOUS_OVERLAP)
+    candidate.idMatches > 0 || candidate.overlap >= Math.min(previousLength, incomingLength, MIN_ANONYMOUS_OVERLAP)
   );
 }
 

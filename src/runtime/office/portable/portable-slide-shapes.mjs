@@ -280,7 +280,8 @@ function tableCellLines(header) {
 }
 
 // A figure sits on the right edge of its column, and its header over it: "1,420", "−12", "8.4", "94.1%", "2,840원".
-const TABLE_FIGURE = /^[\s~+\-−–$€₩£(]*[\d.,]+\s*(?:[%xXKMBT]|배|건|억|조|만|천|원|시간|일|개월|개|명|대|곳|분|초|회|점|년)*[)]?\s*$|^[-–—]$/;
+const TABLE_FIGURE =
+  /^[\s~+\-−–$€₩£(]*[\d.,]+\s*(?:[%xXKMBT]|배|건|억|조|만|천|원|시간|일|개월|개|명|대|곳|분|초|회|점|년)*[)]?\s*$|^[-–—]$/;
 
 function tableCellXml(text, header, properties, fill, align) {
   const defaults = {
@@ -332,7 +333,10 @@ export function tableXml({
   const headerFill = normalizeHex(properties.headerFillColor);
   const bodyFill = normalizeHex(properties.bodyFillColor);
   const alignments = Array.from({ length: columns }, (_, column) => {
-    const cells = rows.slice(1).map((row) => String(row[column] ?? '').trim()).filter(Boolean);
+    const cells = rows
+      .slice(1)
+      .map((row) => String(row[column] ?? '').trim())
+      .filter(Boolean);
     return column > 0 && cells.length > 0 && cells.every((cell) => TABLE_FIGURE.test(cell)) ? 'right' : 'left';
   });
   const body = rows
@@ -470,16 +474,6 @@ export function restyleShapeText(shape, properties) {
     }
     return `<a:bodyPr${attrs}${selfClosing}>`;
   });
-  const alignKey = String(properties.alignment || '').toLowerCase();
-  if (Object.hasOwn(ALIGNMENT, alignKey)) {
-    inner = inner
-      .replace(/<a:p>(?!<a:pPr)/g, '<a:p><a:pPr/>')
-      .replace(
-        /<a:pPr\b([^>]*?)(\/?)>/g,
-        (_match, attributes, selfClosing) =>
-          `<a:pPr${withAttribute(attributes, 'algn', ALIGNMENT[alignKey])}${selfClosing}>`
-      );
-  }
   const spacing = Number(properties.paragraphSpacing);
   if (properties.paragraphSpacing != null && Number.isFinite(spacing)) {
     // Space before every paragraph, as add_shape writes it and the Office backend sets it; set_shape ignored it.
@@ -494,14 +488,36 @@ export function restyleShapeText(shape, properties) {
         return `${head}${lineSpacing}${before}${rest.slice(lineSpacing.length)}</a:pPr>`;
       });
   }
+  inner = restyledParagraphs(inner, properties);
+  return `${next.slice(0, body.index)}<p:txBody>${inner}</p:txBody>${next.slice(body.index + body[0].length)}`;
+}
+
+/** A text body's paragraphs aligned (properties.alignment) and its runs restyled — face, size, weight, colour. */
+export function restyledParagraphs(inner, properties) {
+  let next = inner;
+  const alignKey = String(properties.alignment || '').toLowerCase();
+  if (Object.hasOwn(ALIGNMENT, alignKey)) {
+    next = next
+      .replace(/<a:p>(?!<a:pPr)/g, '<a:p><a:pPr/>')
+      .replace(
+        /<a:pPr\b([^>]*?)(\/?)>/g,
+        (_match, attributes, selfClosing) =>
+          `<a:pPr${withAttribute(attributes, 'algn', ALIGNMENT[alignKey])}${selfClosing}>`
+      );
+  }
   if (['fontName', 'fontSize', 'bold', 'italic', 'color'].some((name) => properties[name] != null)) {
-    inner = inner
+    next = next
       .replace(/<a:r>(?!<a:rPr)/g, '<a:r><a:rPr/>')
       .replace(/<a:(rPr|endParaRPr)\b([^>]*?)(?:\/>|>([\s\S]*?)<\/a:\1>)/g, (_match, tag, attributes, children) =>
         restyledRun(tag, attributes, children || '', properties)
       );
   }
-  return `${next.slice(0, body.index)}<p:txBody>${inner}</p:txBody>${next.slice(body.index + body[0].length)}`;
+  return next;
+}
+
+/** The vertical anchor a text frame or table cell takes for a verticalAlignment word, or '' for none. */
+export function textAnchor(verticalAlignment) {
+  return ANCHOR[String(verticalAlignment || '').toLowerCase()] || '';
 }
 
 export function solidFillXml(color, transparency) {

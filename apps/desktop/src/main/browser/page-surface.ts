@@ -48,9 +48,11 @@ export interface BrowserPageSurfaceHost {
 export function createBrowserPageSurface(host: BrowserPageSurfaceHost) {
   const state = createPageSurfaceState(host);
   const { viewportChanges, paneSizes, presentedGuests, invalidateGeometry } = state;
+  const frame = createPageSurfaceFrame(host, state);
 
   return {
-    frame: createPageSurfaceFrame(host, state),
+    frame,
+    metadata: frame.metadata,
     control: createPageSurfaceControl(host, state),
     beginViewportChange(guest: WebContents): () => void {
       viewportChanges.set(guest, (viewportChanges.get(guest) ?? 0) + 1);

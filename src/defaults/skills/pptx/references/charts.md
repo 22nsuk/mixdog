@@ -175,8 +175,8 @@ function chart(slide, x, y, w, h, { type = 'col', labels, series, accent, overla
 // Waterfall: native stacked columns — an invisible base (the surface color) carries each bar to its running start.
 // steps: [{ label, value }] with a negative value for a drop, and { label, total: true } for a closing bar at the running total.
 // Values stay editable; the closing figure is labeled by the author (a hero or a takeaway), not by the chart.
-// The walk reads as three kinds of bar, each named where the chart starts: the totals (the opening figure and any
-// { total: true } step) in the dark neutral, the rises in the accent, the drops in the light neutral — and every bar
+// The walk reads as up to three kinds of bar, each kind it draws named where the chart starts: the totals (the opening
+// figure and any { total: true } step) in the dark neutral, the rises in the accent, the drops in the light neutral — and every bar
 // carries its figure (+380, −120, 4,200) over it, so the change is read from the number, not from the colour alone.
 // The first step is the opening total. names: the legend words; Korean or English by the labels' script.
 // Returns the bottom edge, like every other carrier, so a reading registers under it.
@@ -209,14 +209,18 @@ function waterfall(slide, x, y, w, h, steps, { size = DIAG.note, surface = T.pap
   // Headroom for the figures over the bars is a share of the span the plot shows, not of the peak: on a floored axis
   // 15 % of 3,060 left the upper half of the plot empty.
   const top = peak + (peak - floor) * 0.18 || 1;
+  // Only the kinds the walk draws become series and legend entries: a cost walk has no rise, and its empty "증가"
+  // series stood in the legend beside the total and the drops, a swatch for a bar the chart did not have.
+  const bars = { total, rise, drop };
+  const kinds = ['total', 'rise', 'drop'].filter((kind) => kind === 'total' || bars[kind].some((v) => v > 0));
   slide.addChart(pres.ChartType.bar, [
-    { name: '', labels, values: base }, { name: legend.total, labels, values: total }, { name: legend.rise, labels, values: rise }, { name: legend.drop, labels, values: drop },
-  ], { ...box(x, plotY, w, plotH), barDir: 'col', barGrouping: 'stacked', barGapWidthPct: 40, chartColors: [surface, colors.total, colors.rise, colors.drop],
+    { name: '', labels, values: base }, ...kinds.map((kind) => ({ name: legend[kind], labels, values: bars[kind] })),
+  ], { ...box(x, plotY, w, plotH), barDir: 'col', barGrouping: 'stacked', barGapWidthPct: 40, chartColors: [surface, ...kinds.map((kind) => colors[kind])],
     fontFace: T.sans, showLegend: false, showValue: false, catAxisLabelColor: T.muted, catAxisLabelFontSize: size, catAxisLabelFontFace: T.sans,
     catAxisLineShow: false, valAxisHidden: true, valAxisLineShow: false, valGridLine: { style: 'none' }, catGridLine: { style: 'none' },
     valAxisMinVal: floor, valAxisMaxVal: top, layout: { ...PLOT } });
   let lx = x + PLOT.x * w;
-  for (const key of ['total', 'rise', 'drop']) {
+  for (const key of kinds) {
     const sw = 0.14, tw = textW(legend[key], size, T.sans) + 0.1;
     slide.addShape(S.rect, { ...box(lx, y + (legendH - GAP.within - sw) / 2, sw, sw), fill: { color: colors[key] }, line: { color: colors[key] } });
     text(slide, legend[key], lx + sw + GAP.bind, y, tw, size, { color: T.muted, h: legendH - GAP.within, valign: 'middle', lh: 1 });

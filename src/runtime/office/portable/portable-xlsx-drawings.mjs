@@ -4,7 +4,7 @@
 // the parts a deleted frame owned alone).
 import { extname, posix } from 'node:path';
 import { readFile } from 'node:fs/promises';
-import { fitDrawingSheetOnePageWide, worksheetGeometry } from './portable-sheet-page.mjs';
+import { fitDrawingSheetOnePageWide, workbookDigitWidth, worksheetGeometry } from './portable-sheet-page.mjs';
 import { toEmu } from './portable-slide-shapes.mjs';
 import { columnNumber, parseCellRef } from './portable-cells.mjs';
 import {
@@ -80,12 +80,14 @@ function imagePlacementSize(op, data) {
   };
 }
 
+// The picture names its relationship namespace where it uses it, as the chart frame does: Excel's own drawing
+// declares only xdr and a at its root, and a picture added to it with an undeclared r: left a file Excel would not open.
 function imageAnchorXml({ embedId, anchorCount, cell, left, top, width, height, altText }) {
   return frameAnchorXml(
     { cell, left, top, width, height },
     `<xdr:pic><xdr:nvPicPr><xdr:cNvPr id="${anchorCount + 2}" name="Picture ${anchorCount + 1}"${pictureDescription(altText)}/>` +
       '<xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr></xdr:nvPicPr>' +
-      `<xdr:blipFill><a:blip r:embed="${embedId}"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill>` +
+      `<xdr:blipFill><a:blip xmlns:r="${OFFICE_RELATIONSHIP_BASE}" r:embed="${embedId}"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill>` +
       '<xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/></a:xfrm>' +
       '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic>'
   );
@@ -227,7 +229,7 @@ export async function setWorksheetDrawing(zip, sheet, xml, op) {
   if (target.kind === 'twoCellAnchor') {
     // The frame hangs between two cells, so moving it means finding the cells
     // the new rectangle starts and ends in and the offset into each.
-    const geometry = worksheetGeometry(xml);
+    const geometry = worksheetGeometry(xml, await workbookDigitWidth(zip));
     const marker = (tag) => {
       const value = new RegExp(`<xdr:${tag}>([\\s\\S]*?)<\\/xdr:${tag}>`).exec(body)?.[1] || '';
       const number = (name) => Number(new RegExp(`<xdr:${name}>(-?\\d+)<\\/xdr:${name}>`).exec(value)?.[1]) || 0;

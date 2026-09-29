@@ -6,6 +6,11 @@
  * tool calls emitted as plain text.
  */
 import {
+  GoogleGenerativeAIAbortError,
+  GoogleGenerativeAIError,
+  GoogleGenerativeAIFetchError,
+} from '@google/generative-ai';
+import {
   PROVIDER_FIRST_BYTE_TIMEOUT_MS,
   PROVIDER_MAX_BEFORE_WARN_MS,
   providerTimeoutError,
@@ -69,16 +74,27 @@ function geminiStreamCorruptionError(message, cause = null) {
   });
 }
 
+// The SDK's own base error class. Its subclasses for an HTTP status
+// (FetchError) and a cancellation (AbortError) carry typed evidence of their
+// own; the bare class is what the SDK throws for everything else, and it sets
+// no `name` of its own.
+function isBareGoogleSdkError(err) {
+  return (
+    err instanceof GoogleGenerativeAIError &&
+    !(err instanceof GoogleGenerativeAIFetchError) &&
+    !(err instanceof GoogleGenerativeAIAbortError)
+  );
+}
+
 function isGeminiSdkStreamParseError(err) {
   let cursor = err;
   const seen = new Set();
   for (let depth = 0; cursor && depth < 5 && !seen.has(cursor); depth++) {
     seen.add(cursor);
     if (cursor instanceof SyntaxError) return true;
-    const name = String(cursor?.name || '');
     const message = String(cursor?.message || '');
     if (
-      name === 'GoogleGenerativeAIError' &&
+      isBareGoogleSdkError(cursor) &&
       /(?:parse|parsing|json|unexpected token|unexpected end|unterminated)/i.test(message)
     ) {
       return true;
@@ -88,7 +104,32 @@ function isGeminiSdkStreamParseError(err) {
   return false;
 }
 
-function normalizeGeminiSdkStreamError(err, label) {
+// The SDK rethrows a network failure as a bare GoogleGenerativeAIError and
+// discards the socket error with its errno, so the SDK's own fixed wording is
+// the only evidence left. A failed body read is a stream cut short; a failed
+// request keeps the runtime's own message (e.g. 'fetch failed') after the URL,
+// which the shared transport rules already classify.
+const SDK_STREAM_READ_FAILURE = '[GoogleGenerativeAI Error]: Error reading from the stream';
+const SDK_FETCH_FAILURE_RE = /^\[GoogleGenerativeAI Error\]: Error fetching from \S+: ([\s\S]+)$/;
+
+function geminiSdkTransportError(err, label) {
+  if (!isBareGoogleSdkError(err)) return null;
+  if (err.message === SDK_STREAM_READ_FAILURE) {
+    return Object.assign(new Error(`${label} stream read failed`, { cause: err }), {
+      name: 'TruncatedStreamError',
+      code: 'TRUNCATED_STREAM',
+      truncatedStream: true,
+    });
+  }
+  const fetchFailure = SDK_FETCH_FAILURE_RE.exec(err.message);
+  if (!fetchFailure) return null;
+  return Object.assign(new Error(fetchFailure[1].trim(), { cause: err }), { name: 'GeminiSdkFetchError' });
+}
+
+/** Typed shape of any SDK failure: transport loss, corrupt stream JSON, or an RPC status. */
+export function normalizeGeminiSdkError(err, label) {
+  const transport = geminiSdkTransportError(err, label);
+  if (transport) return transport;
   const stamped = stampGeminiRpcError(err);
   return isGeminiSdkStreamParseError(stamped)
     ? geminiStreamCorruptionError(`${label} corrupt SDK SSE JSON`, stamped)
@@ -563,7 +604,7 @@ export async function consumeGeminiSdkStream(
       } catch (err) {
         if (reader.idleTimedOut) throw reader.idleError();
         if (signal?.aborted) throw abortError();
-        throw normalizeGeminiSdkStreamError(err, label);
+        throw normalizeGeminiSdkError(err, label);
       }
       if (signal?.aborted) throw abortError();
       if (step.done) break;
@@ -590,7 +631,7 @@ export async function consumeGeminiSdkStream(
       try {
         response = await runAbortable(signal, () => responsePromise);
       } catch (err) {
-        throw normalizeGeminiSdkStreamError(err, label);
+        throw normalizeGeminiSdkError(err, label);
       }
       raw = response?.candidates ? response : response?.response || response;
     }

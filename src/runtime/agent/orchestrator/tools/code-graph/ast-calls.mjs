@@ -180,7 +180,8 @@ function _astImportsUnresolved(node, cwd) {
   return _astImportedRels(node, cwd).length === 0;
 }
 
-function _nodeInAstScope(node, fileRel, scopeRelPrefix) {
+// A file/directory anchor scopes every graph mode, symbol_search included.
+export function _nodeInAstScope(node, fileRel, scopeRelPrefix) {
   return _astRelInScope(node?.rel, fileRel, scopeRelPrefix);
 }
 

@@ -60,7 +60,11 @@ function installLayout(dom, heights) {
         .filter((target) => target.isConnected)
         .map((target) => {
           const height = heightOf(target);
-          return { target, borderBoxSize: [{ blockSize: height, inlineSize: 600 }], contentRect: { height, width: 600 } };
+          return {
+            target,
+            borderBoxSize: [{ blockSize: height, inlineSize: 600 }],
+            contentRect: { height, width: 600 },
+          };
         });
       if (entries.length) observer.callback(entries, observer);
     }

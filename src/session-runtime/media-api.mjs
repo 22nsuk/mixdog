@@ -69,6 +69,9 @@ export function createMediaApi() {
     async deleteMediaAsset(id) {
       return (await store()).deleteMediaAsset(id);
     },
+    async deleteMediaAssets(filter) {
+      return (await store()).deleteMediaAssets(filter || {});
+    },
     async openMediaAsset(id) {
       return (await store()).openMediaAsset(id);
     },

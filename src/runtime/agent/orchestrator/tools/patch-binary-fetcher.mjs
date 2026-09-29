@@ -64,9 +64,7 @@ function validCachedUpgrade(manifest) {
 
 /** The manifest key whose asset this host installs. */
 function assetKey(manifest) {
-  return resolvePlatformKey(
-    (key) => Boolean(manifest?.assets?.[key]?.url) && validSha256(manifest.assets[key].sha256)
-  );
+  return resolvePlatformKey((key) => Boolean(manifest?.assets?.[key]?.url) && validSha256(manifest.assets[key].sha256));
 }
 
 function selectLocalManifest(dataDir, options = {}) {

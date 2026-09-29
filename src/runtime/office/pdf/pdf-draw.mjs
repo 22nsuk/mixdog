@@ -3,6 +3,7 @@ import { extname } from 'node:path';
 import { rgb } from 'pdf-lib';
 import sharp from 'sharp';
 import { pageSizePoints } from '../shared/page-sizes.mjs';
+import { withoutRunt, wrapUnits } from '../shared/line-breaks.mjs';
 
 export const SAVE_OPTIONS = Object.freeze({ useObjectStreams: true, addDefaultPage: false });
 
@@ -95,22 +96,27 @@ function breakWord(word, font, size, width) {
 
 // Line breaks are honoured, words wrap at spaces, and a run wider than the
 // line (CJK prose, URLs) breaks by character instead of leaving the page.
+// Words that read as one ("10월 14일", "24억 원") wrap together (wrapUnits), and
+// a paragraph never ends on one word alone under a full line (withoutRunt).
 export function wrapText(text, font, size, width) {
   const lines = [];
+  const measure = (value) => font.widthOfTextAtSize(value, size);
   for (const raw of String(text ?? '').split(/\r?\n/)) {
+    const paragraph = [];
     let line = '';
-    for (const word of raw.split(/[ \t]+/).filter(Boolean)) {
+    for (const word of wrapUnits(raw.split(/[ \t]+/).filter(Boolean))) {
       const candidate = line ? `${line} ${word}` : word;
-      if (font.widthOfTextAtSize(candidate, size) <= width) {
+      if (measure(candidate) <= width) {
         line = candidate;
         continue;
       }
-      if (line) lines.push(line);
-      const pieces = font.widthOfTextAtSize(word, size) <= width ? [word] : breakWord(word, font, size, width);
+      if (line) paragraph.push(line);
+      const pieces = measure(word) <= width ? [word] : breakWord(word, font, size, width);
       line = pieces.pop() || '';
-      lines.push(...pieces);
+      paragraph.push(...pieces);
     }
-    lines.push(line);
+    paragraph.push(line);
+    lines.push(...withoutRunt(paragraph, measure, width));
   }
   return lines.length ? lines : [''];
 }

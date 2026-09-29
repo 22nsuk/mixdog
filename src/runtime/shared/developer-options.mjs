@@ -1,40 +1,55 @@
 // Developer options: the data-driven registry behind Settings → Developer.
 // A new sub-category or toggle is one entry in DEVELOPER_SECTIONS; the
 // runtime API, TUI and desktop render every section/option from this data.
-// Each option is on when its env var is truthy (a developer machine opt-in
-// that settings cannot turn off) OR the stored agent config value
-// `developer.<optionId>` is true. Default off.
+// Each option is on only while the stored agent config value
+// `developer.<optionId>` is true. Default off. An option with a `warning`
+// turns on only after the user confirms that warning; an option with a
+// `provider` gates that dev-only OAuth provider.
 import { readSection } from './config.mjs';
+
+const OAUTH_RISK_WARNING =
+  'Using this provider through OAuth carries a high risk of penalties such as account restrictions.';
 
 export const DEVELOPER_SECTIONS = Object.freeze([
   Object.freeze({
     id: 'providers',
     label: 'Providers',
+    description: OAUTH_RISK_WARNING,
     options: Object.freeze([
       Object.freeze({
-        id: 'devProviders',
-        label: 'Dev providers',
-        description: 'Show Cursor OAuth and Antigravity OAuth in Providers and the model picker.',
-        env: 'MIXDOG_DEV_PROVIDERS',
+        id: 'antigravityOAuth',
+        label: 'Gemini (Antigravity)',
+        description: 'Show Antigravity (Gemini) OAuth in Providers and the model picker.',
+        warning: OAUTH_RISK_WARNING,
+        provider: 'antigravity-oauth',
+      }),
+      Object.freeze({
+        id: 'cursorOAuth',
+        label: 'Cursor',
+        description: 'Show Cursor OAuth in Providers and the model picker.',
+        warning: OAUTH_RISK_WARNING,
+        provider: 'cursor-oauth',
       }),
     ]),
   }),
 ]);
 
-/** The registry entry for an option id, or null when unknown. */
-export function developerOption(id) {
+function findOption(matches) {
   for (const section of DEVELOPER_SECTIONS) {
-    const option = section.options.find((entry) => entry.id === id);
+    const option = section.options.find(matches);
     if (option) return option;
   }
   return null;
 }
 
-function envFlagEnabled(name) {
-  const raw = String((name && process.env[name]) || '')
-    .trim()
-    .toLowerCase();
-  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+/** The registry entry for an option id, or null when unknown. */
+export function developerOption(id) {
+  return findOption((entry) => entry.id === id);
+}
+
+/** The option gating a dev-only provider, or null when the provider is not gated. */
+export function developerOptionForProvider(provider) {
+  return findOption((entry) => entry.provider === provider);
 }
 
 /** Stored `developer` values: booleans only, anything else dropped. */
@@ -47,11 +62,9 @@ function storedDeveloperConfig() {
   return normalizeDeveloperConfig(readSection('agent').developer);
 }
 
-/** True when the option's env var is truthy or its stored value is true. */
+/** True when the option exists and its stored value is true. */
 export function developerOptionEnabled(id, stored = storedDeveloperConfig()) {
-  const option = developerOption(id);
-  if (!option) return false;
-  return envFlagEnabled(option.env) || normalizeDeveloperConfig(stored)[id] === true;
+  return developerOption(id) !== null && normalizeDeveloperConfig(stored)[id] === true;
 }
 
 /** Settings view of every section; `stored` defaults to the on-disk values. */
@@ -61,17 +74,15 @@ export function developerSettingsView(stored = storedDeveloperConfig()) {
     sections: DEVELOPER_SECTIONS.map((section) => ({
       id: section.id,
       label: section.label,
-      options: section.options.map((option) => {
-        const envForced = envFlagEnabled(option.env);
-        return {
-          id: option.id,
-          label: option.label,
-          description: option.description,
-          env: option.env,
-          enabled: envForced || values[option.id] === true,
-          envForced,
-        };
-      }),
+      ...(section.description ? { description: section.description } : {}),
+      options: section.options.map((option) => ({
+        id: option.id,
+        label: option.label,
+        description: option.description,
+        ...(option.warning ? { warning: option.warning } : {}),
+        ...(option.provider ? { provider: option.provider } : {}),
+        enabled: values[option.id] === true,
+      })),
     })),
   };
 }

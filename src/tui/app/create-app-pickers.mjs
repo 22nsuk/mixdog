@@ -115,6 +115,7 @@ export function createAppPickers({
     setProviderPrompt,
     setSettingsPrompt,
     closeUsagePanel,
+    clearModelCaches,
   });
   // Onboarding wizard + channel setup picker factories. Instantiated here —
   // after the onboarding refs above (const-TDZ) — with later-defined openers

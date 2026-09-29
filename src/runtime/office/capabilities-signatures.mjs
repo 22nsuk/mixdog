@@ -42,13 +42,13 @@ export const FORMAT_SIGNATURES = {
       {
         propertySets: ['design'],
         notes:
-          'Optional preset, not the default authoring path. It chooses typography, summary emphasis and spacing. For an authored design use set_page and native append_text/table/image operations with explicit properties.',
+          'Optional preset, not the default authoring path. It chooses typography, summary emphasis and spacing. For an authored design use set_page and native append_text/table/image operations with explicit properties. summaryLabel draws the summary as a labelled box. Each section takes heading (or title), eyebrow, level (2 for a subheading), pageBreak, accent, kind, paragraphs (or body), bullets, steps ({ title, detail } or "Label: text"), quote with quoteBy (its speaker), table (rows, the first the header) with source (its 자료 line, set under it), callout with calloutLabel and calloutTone; any other field is refused.',
       }
     ),
     append_text: signature(['text'], ['style', 'properties', 'author'], {
       propertySets: ['paragraph', 'font', 'paragraphFormat'],
       notes:
-        'Creates one real paragraph. With track_changes on the paragraph is inserted as a tracked change; author labels it, as it does on every other tracked edit.',
+        'Creates one real paragraph. With track_changes on the paragraph is inserted as a tracked change; author labels it, as it does on every other tracked edit. On an item listKind puts in a list, indentLeft places its mark and the text hangs 18 pt after it, so a list inside a callout takes the callout\'s own indentLeft; a negative indentFirstLine hangs a first line out, "①\\t" before words that wrap under the words.',
     }),
     set_paragraph_text: signature(['paragraph', 'text'], ['author'], {
       notes:
@@ -63,22 +63,26 @@ export const FORMAT_SIGNATURES = {
     add_table: signature(['values'], ['paragraph', 'rows', 'columns', 'properties'], {
       propertySets: ['table'],
       notes:
-        'properties.alignment places the table on the page (left, center, right); properties.columnAlignments sets the text of each column (one of left, center, right, justify per column); without it a column of figures (184,200, 2.1%, 2.6억 원) sets right and the rest left. Without style, borders, or shading the table takes a bold header row with a rule under it and hairlines between rows; headerBold:false keeps the header plain.',
+        'properties.alignment places the table on the page (left, center, right); properties.columnAlignments sets the text of each column (one of left, center, right, justify per column); without it a column of figures (184,200, 2.1%, 2.6억 원) sets right and the rest left. Without style, borders, or shading the table takes a bold header row with a rule under it and hairlines between rows; headerBold:false keeps the header plain. properties.headerRows (default 1) is how many rows the header takes: a two-level header, its group label merged across the columns it spans (merge_table_cells), is headerRows:2, and every header row is set bold on its bottom edge and repeats on a continuation page.',
     }),
     set_table_style: signature(['table', 'properties'], [], {
       propertySets: ['table'],
       notes:
         'Replaces the table-level properties; columnAlignments re-aligns the text of every existing cell in each column.',
     }),
-    merge_table_cells: signature(['table', 'row', 'col'], ['rowSpan', 'colSpan']),
+    merge_table_cells: signature(['table', 'row', 'col'], ['rowSpan', 'colSpan'], {
+      notes:
+        'row and col count the cells as the table stands: a merge across columns joins them, and the cells after it in that row move left (a five-column header row merged at col 2 with colSpan 3 holds cells 1 to 3). Merge a row from its right end first, or name the later cells by their new positions.',
+    }),
     set_table_cell_style: signature(['table', 'row', 'col', 'properties'], [], {
       propertySets: ['tableCell'],
       notes:
-        "Patches the named properties only: the width and the bottom alignment a new table's cells carry stay unless set. fontSize also repitches the cell's lines (1.3× the size, at least), so a 9 pt label row under a 22 pt value row sits close to it.",
+        "Patches the named properties only: the width and the bottom alignment a new table's cells carry stay unless set. fillColor: null takes the shading away and bold:false / italic:false set the weight back, as a data row inserted above a total needs. fontSize also repitches the cell's lines (1.3× the size, at least), so a 9 pt label row under a 22 pt value row sits close to it.",
     }),
     set_paragraph_format: signature(['paragraph', 'properties'], [], {
       propertySets: ['paragraphFormat'],
-      notes: 'Patches supplied properties only; lineSpacing is a minimum in points on both backends.',
+      notes:
+        "Patches supplied properties only; lineSpacing is a minimum in points on both backends, and lineSpacingRule:'exact' holds the line at it (a display title's leading). listKind and listLevel put the paragraph in a list ('none' takes it out) and it keeps its style; indentLeft given with listKind places the mark, as on append_text.",
     }),
     remove_paragraph: signature(['paragraph'], ['author'], {
       notes:
@@ -101,6 +105,15 @@ export const FORMAT_SIGNATURES = {
       notes:
         "altText describes the picture for a reader who cannot see it; without it the audit reports missing_alt_text. The picture's paragraph keeps with the next one (its caption) unless properties.keepWithNext is false; properties.alignment:'center' centres it.",
     }),
+    add_chart: signature(
+      ['categories', 'values'],
+      ['chartType', 'title', 'unit', 'highlight', 'forecast', 'accent', 'height', 'width', 'altText', 'paragraph', 'properties'],
+      {
+        propertySets: ['paragraphFormat'],
+        notes:
+          "One series drawn as a picture, the way a PDF chart block draws it, identical on both backends: chartType bar lays the bars across (a ranking, its names on the left), column stands them up (periods left to right, height the plot's points); every bar carries its value (unit follows the number: '건', '%'), there is no grid, and highlight (an index or a category) takes the accent while the other bars recede. accent (hex) colours the highlighted bar in the document's own accent, as a brand's report sets its headings and callouts; without it the writer's teal. forecast (an index, a category, or a list of them) draws projected bars pale inside a dashed outline, their values muted, so a plan or an estimate never reads as a counted figure. values are zero or more, one per category. It lands as add_image does (width in points, 420 by default; paragraph; properties.alignment), keeps with its caption, and altText names each figure unless given. Word cannot edit its bars: a chart the reader should edit belongs in a workbook.",
+      }
+    ),
     add_comment: signature(['find', 'text'], ['author', 'initials'], {
       notes:
         'find is the body phrase the comment anchors to — the snapshot reports it back as anchoredText, which this operation also accepts.',
@@ -108,9 +121,15 @@ export const FORMAT_SIGNATURES = {
     add_comment_reply: signature(['comment', 'text'], ['author', 'initials']),
     delete_comment: signature(['comment']),
     set_comment_resolved: signature(['comment', 'resolved']),
-    insert_table_row: signature(['table', 'row']),
+    insert_table_row: signature(['table', 'row'], [], {
+      notes:
+        'row is the position the new row takes: it goes in before the row there now and copies that row, and one past the last row adds it at the end. A row the table does not have is refused with the table\'s size and first words, so a metric strip taken for the results table shows at once.',
+    }),
     delete_table_row: signature(['table', 'row']),
-    insert_table_column: signature(['table', 'column']),
+    insert_table_column: signature(['table', 'column'], [], {
+      notes:
+        'column is the position the new column takes: it goes in before the column there now and copies it, and one past the last column adds it at the end, copying the last. A column the table does not have is refused with the table\'s size and first words.',
+    }),
     delete_table_column: signature(['table', 'column']),
     set_header_footer: signature(['text'], ['section', 'kind', 'variant', 'header', 'properties'], {
       propertySets: ['headerFooter'],
@@ -135,7 +154,7 @@ export const FORMAT_SIGNATURES = {
     fit_table: signature(['table']),
     insert_toc: signature([], ['paragraph', 'lowerHeadingLevel', 'upperHeadingLevel'], {
       notes:
-        'Lands in a paragraph of its own after paragraph (or at the end of the document, where the batch has reached) on both backends, and is rebuilt from the Heading 1..3 paragraphs at every save. The list carries no title of its own: write one before it as a bold paragraph, never as a Heading, or the contents would list themselves.',
+        'Lands in a paragraph of its own after paragraph (or at the end of the document, where the batch has reached) on both backends, and is rebuilt from the Heading 1..3 paragraphs at every save. lowerHeadingLevel and upperHeadingLevel bound the heading levels it lists (1 and 3 unless given) and are read in either order. The list carries no title of its own: write one before it as a bold paragraph, never as a Heading, or the contents would list themselves.',
     }),
     add_page_numbers: signature(
       [],
@@ -149,7 +168,10 @@ export const FORMAT_SIGNATURES = {
       notes:
         'kind: page (default) | column | section_next (a new section on the next page, which set_page can then turn landscape or lay in columns) | section_continuous (a new section on the same page).',
     }),
-    set_list: signature(['paragraph', 'kind'], ['level']),
+    set_list: signature(['paragraph', 'kind'], ['level', 'numbering'], {
+      notes:
+        "kind: bullet | number | none. level counts from 0 (the outermost) to 2, on both backends. A numbered list counts 1. a. i., or 1. 가. 1) when it opens on Korean text; numbering ('global' | 'korean') names it.",
+    }),
     add_hyperlink: signature([], ['find', 'paragraph', 'address', 'subAddress', 'display'], {
       oneOf: [['find'], ['paragraph']],
       propertySets: ['links'],
@@ -201,24 +223,43 @@ export const FORMAT_SIGNATURES = {
     set_cell: signature(['cell', 'value'], ['sheet']),
     set_formula: signature(['cell', 'formula'], ['sheet']),
     set_range: signature(['range', 'values'], ['sheet']),
-    append_row: signature(['values'], ['sheet']),
+    append_row: signature(['values'], ['sheet'], {
+      notes:
+        "Writes the row under the last used row, formatted as that row is (number formats, fonts, fills, borders, height), as an inserted row takes the row above's — so an appended figure reads 1,200 under a #,##0 column. A row appended under a total takes the total's look: insert_rows above the total instead.",
+    }),
     clear_cell: signature(['cell'], ['sheet']),
     add_sheet: signature(['name'], [], {
       notes:
         'Appends the sheet after the last one on both backends, so the order the batch names is the order the workbook opens in.',
     }),
-    copy_sheet: signature(['sheet'], ['name']),
-    delete_sheet: signature(['sheet']),
-    rename_sheet: signature(['name'], ['sheet']),
+    copy_sheet: signature(['sheet'], ['name'], {
+      notes:
+        "The copy has its own charts, notes and print area, and its formulas, charts and sheet-level names read the copy, as Excel's copy does; a workbook name that reads the source gains a copy-level twin.",
+    }),
+    delete_sheet: signature(['sheet'], [], {
+      notes: 'Every formula, name, rule, validation and chart series that named the sheet reads #REF! afterwards, as Excel saves it.',
+    }),
+    rename_sheet: signature(['name'], ['sheet'], {
+      notes: 'Every formula, name, rule, validation, chart series and pivot source that names the sheet follows the new name.',
+    }),
+    insert_rows: signature(['row'], ['sheet', 'count'], {
+      notes:
+        "Excel's insert on both backends: every formula, name (the print area among them), rule, validation, chart series, pivot source, filter, merge, note and drawing that names the moved rows follows them — a range the insert lands inside grows — and the new rows take the row above's format. What cannot be rewritten (a table's columns, an array formula it would split) refuses the edit, listed.",
+    }),
+    delete_rows: signature(['row'], ['sheet', 'count'], {
+      notes:
+        "Excel's delete on both backends: references to the deleted rows read #REF! (Data!#REF! from another sheet), a range that loses some rows closes up, and a rule, validation, merge or note whose cells are all deleted goes.",
+    }),
     set_style: signature(['properties'], ['sheet'], {
       oneOf: [['cell'], ['range']],
       propertySets: ['cellStyle'],
+      notes: 'fillColor: null takes the fill away and bold:false / italic:false set the weight back, on both backends.',
     }),
     add_note: signature(['cell', 'text'], ['sheet']),
     delete_note: signature(['cell'], ['sheet']),
     set_drawing: signature(['drawing'], ['sheet', 'left', 'top', 'width', 'height'], {
       notes:
-        'Moves or resizes a chart or picture already on the sheet. drawing is the name the snapshot reports or its 1-based index on that sheet; left/top/width/height are points, the unit add_chart places one with. This is the answer to drawing_overlap and drawing_outside_print_area.',
+        'Moves or resizes a chart or picture already on the sheet. drawing is the name the snapshot reports or its 1-based index on that sheet; left/top/width/height are points, the unit add_chart places one with. This is the answer to drawing_overlap, drawing_covers_cells, and drawing_outside_print_area.',
     }),
     delete_drawing: signature(['drawing'], ['sheet'], {
       notes:
@@ -316,8 +357,6 @@ export const FORMAT_SIGNATURES = {
       notes:
         'visibility is visible, hidden, or very_hidden; visible: true/false works too, as it does for rows and columns. Keep at least one worksheet visible.',
     }),
-    insert_rows: signature(['row'], ['sheet', 'count']),
-    delete_rows: signature(['row'], ['sheet', 'count']),
     insert_columns: signature(['column'], ['sheet', 'count']),
     delete_columns: signature(['column'], ['sheet', 'count']),
     merge_cells: signature(['range'], ['sheet']),
@@ -325,7 +364,7 @@ export const FORMAT_SIGNATURES = {
     set_autofilter: signature(['range'], ['sheet', 'enabled']),
     sort_range: signature(['range'], ['sheet', 'by', 'order', 'hasHeader'], {
       notes:
-        "by names the key column by letter (C) or by its header text; without it the range's first column sorts. order is asc (default) or desc, and hasHeader (default true) keeps the first row in place. The rows move with their formats; a range holding formulas is refused, since their references would follow the move.",
+        "by names the key column by letter (C) or by its header text; without it the range's first column sorts. order is asc (default) or desc, and hasHeader (default true) keeps the first row in place. The rows move with their formats and formulas as Excel moves them: a reference on the formula's own sheet follows the row where it is relative (=C6/B6-1 moved to row 2 reads =C2/B2-1) and stays where it is pinned ($C$2:$C$6), and a reference that names a sheet keeps naming its cell — so a formula reading another row of the range reads whatever row lands at the same distance. Formulas outside the range keep naming the same cells, whatever moved into them.",
     }),
     set_hyperlink: signature(['cell'], ['sheet', 'address', 'subAddress', 'text', 'screenTip'], {
       propertySets: ['links'],
@@ -385,10 +424,14 @@ export const FORMAT_SIGNATURES = {
     move_slide: signature(['slide', 'index']),
     duplicate_slide: signature(['slide'], ['index']),
     import_slides: signature(['path'], ['after', 'slides']),
-    use_template_page: signature(['path', 'after'], ['role', 'slide', 'title', 'eyebrow', 'subtitle', 'body', 'source', 'items', 'notes'], {
-      notes:
-        "Takes a page from the template deck at path and fills it: role picks the page by the job it does (the snapshot reports it as slide.role — cover, comparison, process, metrics, split, statement, closing, content), or slide names one exact page. after is the slide the new page follows, 0 for the front. title fills the title slot; eyebrow, subtitle, body (the page's lead prose), and source (its 출처/Source line) fill their own, and text given for a box the page lacks is refused; items[] fill the page's repeated group in order, each { title, body } (a metric page reads them as { value, label }). A template's sidecar (<path>.mixdog.json) names the roles when it has one. Fewer items than slots empties the unused ones, and an eyebrow, subtitle, body, or detail line given no text is emptied rather than left in the template's words; more items than the page holds is refused, since a page takes another item by being replaced, never by shrinking its type.",
-    }),
+    use_template_page: signature(
+      ['path', 'after'],
+      ['role', 'slide', 'title', 'eyebrow', 'subtitle', 'body', 'source', 'items', 'notes'],
+      {
+        notes:
+          "Takes a page from the template deck at path and fills it: role picks the page by the job it does (the snapshot reports it as slide.role — cover, comparison, process, metrics, split, statement, closing, content), or slide names one exact page. after is the slide the new page follows, 0 for the front. title fills the title slot; eyebrow, subtitle, body (the page's lead prose), and source (its 출처/Source line) fill their own, and text given for a box the page lacks is refused; items[] fill the page's repeated group in order, each { title, body } (a metric page reads them as { value, label }). A template's sidecar (<path>.mixdog.json) names the roles when it has one. Fewer items than slots empties the unused ones, and an eyebrow, subtitle, body, or detail line given no text is emptied rather than left in the template's words; more items than the page holds is refused, since a page takes another item by being replaced, never by shrinking its type. The page's chart, table, or picture still holds the template's data: the result's templateData names each with the operation that replaces it, and a chart's title (the template's words) for set_chart_data's title to replace.",
+      }
+    ),
     keep_slides: signature(['slides']),
     set_notes: signature(['slide', 'text']),
     set_footer: signature(['slide', 'text']),
@@ -420,7 +463,7 @@ export const FORMAT_SIGNATURES = {
     set_shape: signature(['slide', 'shape', 'properties'], [], {
       propertySets: ['shape'],
       notes:
-        'properties.left/top/width/height are points (72 per inch; the wide canvas is 960 × 540), the unit the snapshot reports — not the inches of an authoring script. fillTransparency and lineTransparency are percentages (0-100); shadow is true (PowerPoint’s own) or { color, transparency 0-1, blur, offsetX, offsetY } in points; paragraphSpacing is the space before each paragraph in points.',
+        'properties.left/top/width/height are points (72 per inch; the wide canvas is 960 × 540), the unit the snapshot reports — not the inches of an authoring script. fillColor: null and lineColor: null take the fill and the outline away; fillTransparency and lineTransparency are percentages (0-100); shadow is true (PowerPoint’s own) or { color, transparency 0-1, blur, offsetX, offsetY } in points; paragraphSpacing is the space before each paragraph in points.',
     }),
     group_shapes: signature(['slide', 'shapes']),
     ungroup_shape: signature(['slide', 'shape']),
@@ -470,12 +513,17 @@ export const FORMAT_SIGNATURES = {
     add_table: signature(['slide', 'values'], ['rows', 'columns', 'left', 'top', 'width', 'height', 'properties'], {
       propertySets: ['table'],
       notes:
-        'properties.columnWidths (points, one per column) share the table width in their proportions; without them each column takes the width its text needs.',
+        'properties.columnWidths (points, one per column) share the table width in their proportions; without them the columns are equal on both backends, so a short label column beside long text, or right-aligned figures beside a left-aligned word ("29,000 채택"), wants widths that follow the text.',
     }),
     set_table_data: signature(['slide', 'shape', 'values'], [], {
       propertySets: ['table'],
       notes:
-        'The table takes the shape of the data on both backends: a row or column past its edge repeats the last one (formatting and width), and rows past the data are removed.',
+        "The table takes the shape of the data on both backends: a row or column past its edge repeats the last one's formatting, and rows past the data are removed — so a toned cell the new row copied (a verdict's fill and ink) is retoned with set_table_cell_style. The table grows down by the rows it gains; its width is the page's, so the columns it gains share that width with the others rather than push its edge past the slide's.",
+    }),
+    set_table_cell_style: signature(['slide', 'shape', 'row', 'col', 'properties'], [], {
+      propertySets: ['tableCell'],
+      notes:
+        'One cell of a slide table, counted as the table stands (row 1 is the header): fillColor (null leaves the cell unfilled), the text color, bold, italic, fontSize, fontName, horizontalAlignment (left, center, right) and verticalAlignment (top, middle, bottom). Only the named properties change.',
     }),
     set_chart_data: signature(
       ['slide', 'shape', 'series'],
@@ -489,11 +537,12 @@ export const FORMAT_SIGNATURES = {
         'valueNumberFormat',
         'dataLabelPosition',
         'dataLabelColor',
+        'categoryOrder',
       ],
       {
         propertySets: ['chart'],
         notes:
-          'New numbers keep the chart as it stands — labels, number format, legend, base line, and series colours — unless a field here overrides one.',
+          "New numbers keep the chart as it stands — labels, number format, legend, base line, series colours, and title — unless a field here overrides one; title:'' removes the title. categoryOrder:'topDown' lists a horizontal bar chart's categories from the top in the order given (the runtime's own bar charts read so); 'bottomUp' is PowerPoint's default, which a template's bar chart usually carries. Omitted, the order stays as the chart was authored, and the result says readingOrder:'bottomUp' when the first category sits lowest.",
       }
     ),
     set_chart_series: signature(

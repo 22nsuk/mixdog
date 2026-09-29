@@ -28,8 +28,11 @@ test('turn review headlines exclude filename dates for individual and aggregated
       else delete globalThis[key];
     }
   });
+  // The turn keeps its prompt row: rows without one are a cut-off tail, whose
+  // headline shows the review's own totals instead of the edit workload.
+  const prompt = { kind: 'user', id: 'line-stats-prompt', text: 'write the report' };
   rememberAgentReviews(
-    'line-stats-test:none',
+    'line-stats-test:line-stats-prompt',
     [],
     '',
     [{ path: 'report-20260920.md', status: 'A', additions: 292, deletions: 0 }],
@@ -62,15 +65,16 @@ test('turn review headlines exclude filename dates for individual and aggregated
       );
     });
   const document = dom.window.document;
-  await render([created]);
+  await render([prompt, created]);
   assert.equal(document.querySelector('.turn-review-summary .diff-stats i')?.textContent, '+292');
   assert.equal(document.querySelector('.turn-review-summary .diff-stats em'), null);
 
-  await render([created, modified]);
+  await render([prompt, created, modified]);
   assert.equal(document.querySelector('.turn-review-summary .diff-stats i')?.textContent, '+293');
   assert.equal(document.querySelector('.turn-review-summary .diff-stats em')?.textContent, '-2');
 
   await render([
+    prompt,
     {
       ...created,
       aggregate: true,

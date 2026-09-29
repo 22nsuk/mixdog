@@ -1,5 +1,6 @@
 // The serif Latin faces the presets set their display role in.
-export const SERIF_FACE = /^(?:cambria|georgia|bookman old style|times new roman|garamond|book antiqua|palatino linotype|constantia)$/i;
+export const SERIF_FACE =
+  /^(?:cambria|georgia|bookman old style|times new roman|garamond|book antiqua|palatino linotype|constantia)$/i;
 export const HANGUL = /[\u1100-\u11ff\u3130-\u318f\uac00-\ud7af]/u;
 
 // The Latin faces the presets assign that carry no Hangul. Set beside Hangul,
@@ -8,7 +9,8 @@ export const HANGUL = /[\u1100-\u11ff\u3130-\u318f\uac00-\ud7af]/u;
 // Korean face of its class. Serif roles keep their Latin face where the format
 // pairs a Korean face per run (Word); a sheet cell holds one face, so there a
 // serif role takes Batang. Any other face is the author's and stays.
-const LATIN_OFFICE_FACE = /^(?:calibri|arial|cambria|bookman old style|courier new|times new roman|georgia|segoe ui|aptos)$/i;
+const LATIN_OFFICE_FACE =
+  /^(?:calibri|arial|cambria|bookman old style|courier new|times new roman|georgia|segoe ui|aptos)$/i;
 export function koreanDesign(design, text, { pairsEastAsia = false } = {}) {
   const typography = design?.tokens?.typography;
   if (!typography || !HANGUL.test(text)) return design;
@@ -30,8 +32,7 @@ export function koreanDesign(design, text, { pairsEastAsia = false } = {}) {
  *  serif role takes Batang (바탕), the serif Korean Windows and Office carry. */
 export function documentTypography(operation, typography) {
   const text = JSON.stringify([operation.title, operation.subtitle, operation.summary, operation.sections]);
-  const korean =
-    /^ko(?:-|$)/i.test(operation.language || '') || HANGUL.test(text);
+  const korean = /^ko(?:-|$)/i.test(operation.language || '') || HANGUL.test(text);
   const eastAsia = operation.nameEastAsia || (korean ? 'Malgun Gothic' : '');
   return {
     ...typography,

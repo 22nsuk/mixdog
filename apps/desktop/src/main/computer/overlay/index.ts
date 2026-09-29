@@ -45,7 +45,7 @@ export function createComputerUseOverlay(controls: ComputerUseOverlayControls, l
   const fade = createOverlayFade({ liveEntries: windows.liveEntries, visible: () => latestPresentation.visible });
 
   const stop = (): void => {
-    void controller.invoke('stop', latestPresentation.generation, latestPresentation.sessionIds);
+    void controller.invoke('stop', latestPresentation.sessionIds);
   };
 
   /** Windows lays out a transparent always-on-top window only once it actually
@@ -66,11 +66,7 @@ export function createComputerUseOverlay(controls: ComputerUseOverlayControls, l
   const render = async (): Promise<void> => {
     const currentRender = ++renderRevision;
     const revision = latestSnapshot.revision;
-    const presentation = computerUseOverlayPresentation(
-      latestSnapshot,
-      locale,
-      controller.state(latestSnapshot.takeoverGeneration ?? 0)
-    );
+    const presentation = computerUseOverlayPresentation(latestSnapshot, locale, controller.state());
     latestPresentation = presentation;
     if (!presentation.visible) {
       windows.forgetRendered();
@@ -115,7 +111,11 @@ export function createComputerUseOverlay(controls: ComputerUseOverlayControls, l
     scheduleRender();
   });
   const shortcutRegistered = globalShortcut.register(STOP_SHORTCUT, () => {
-    if (latestPresentation.visible || latestSnapshot.userControlActive) stop();
+    // The pill leaves between commands, but a turn that used the computer can
+    // still use it again: the emergency Stop reaches every such session.
+    if (latestPresentation.visible || latestPresentation.sessionIds.length > 0 || latestSnapshot.userControlActive) {
+      stop();
+    }
   });
   if (!shortcutRegistered) {
     // Another process owns the chord. The pill's Stop control still works, but

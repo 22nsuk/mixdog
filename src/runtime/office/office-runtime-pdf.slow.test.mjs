@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
+import { PDFArray, PDFDocument, StandardFonts, decodePDFRawStream, rgb } from 'pdf-lib';
 import { executeOfficeTool } from './index.mjs';
 import { renderPdfPages } from './pdf/pdf-render.mjs';
 import { inferPdfTables, ocrTextLines, parseOcrBlocks, parseOcrTsv } from './pdf/pdf-analysis.mjs';
@@ -219,8 +219,7 @@ test('crop_pages trims the displayed sides, rotated pages included', async (t) =
     { page: 1, from: { width: 400, height: 300 }, to: { width: 350, height: 280 } },
     { page: 2, from: { width: 400, height: 300 }, to: { width: 380, height: 250 } },
   ]);
-  const pages = value(await executeOfficeTool({ action: 'snapshot', session: opened.session }, { cwd })).document
-    .pages;
+  const pages = value(await executeOfficeTool({ action: 'snapshot', session: opened.session }, { cwd })).document.pages;
   assert.deepEqual(
     pages.map(({ width, height, origin }) => ({ width, height, origin })),
     [
@@ -537,6 +536,103 @@ test('a caption crosses the page break with its table, not without it', async (t
   assert.ok(pages[captioned].includes('Name'), 'the header repeats over the row that moved with it');
 });
 
+// A picture that fit at the foot of a page left its caption to open the next one under nothing; the caption is
+// measured with the picture, as a table's is.
+test('a picture crosses the page break with its caption', async (t) => {
+  const cwd = await workspace(t);
+  const png = join(cwd, 'dot.png');
+  await writeFile(png, PNG_PIXEL);
+  const created = value(
+    await executeOfficeTool(
+      {
+        action: 'create',
+        format: 'pdf',
+        path: join(cwd, 'picture.pdf'),
+        snapshotAfter: true,
+        properties: { pageSize: [300, 300], margin: 54, pageNumbers: false },
+        blocks: [
+          ...Array.from({ length: 4 }, (_, index) => ({ type: 'paragraph', text: `Line ${index + 1}`, size: 10 })),
+          { type: 'image', path: png, width: 80, height: 90 },
+          { type: 'caption', text: 'Figure 1. The dot.' },
+        ],
+      },
+      { cwd }
+    )
+  );
+  const pages = created.document.pages.map((page) => page.text);
+  assert.equal(pages.length, 2, 'the picture and its caption do not fit under the lines on the first page');
+  assert.ok(pages[1].includes('Figure 1'), 'the caption sits on the page its picture moved to');
+  assert.ok(!pages[0].includes('Figure 1'));
+});
+
+// A heading reserved three of its own lines and no more: the picture it introduced moved to the next page and left
+// the heading alone at the foot of this one.
+test('a heading moves with the picture it introduces', async (t) => {
+  const cwd = await workspace(t);
+  const png = join(cwd, 'dot.png');
+  await writeFile(png, PNG_PIXEL);
+  const created = value(
+    await executeOfficeTool(
+      {
+        action: 'create',
+        format: 'pdf',
+        path: join(cwd, 'heading-picture.pdf'),
+        snapshotAfter: true,
+        properties: { pageSize: [300, 300], margin: 54, pageNumbers: false },
+        blocks: [
+          ...Array.from({ length: 3 }, (_, index) => ({ type: 'paragraph', text: `Line ${index + 1}`, size: 10 })),
+          { type: 'heading', text: 'Volume chart', level: 2 },
+          { type: 'image', path: png, width: 80, height: 90 },
+          { type: 'caption', text: 'Figure 1. The dot.' },
+        ],
+      },
+      { cwd }
+    )
+  );
+  const pages = created.document.pages.map((page) => page.text);
+  const captioned = pages.findIndex((text) => text.includes('Figure 1'));
+  assert.ok(captioned > 0, `the picture does not fit under the lines on the first page: ${JSON.stringify(pages)}`);
+  assert.ok(pages[captioned].includes('Volume chart'), 'the heading stands on the page of its picture');
+});
+
+// Row by row, the last of 24 weeks opened a page alone under its repeated header, and a paragraph left one line at
+// the foot of a page. Wherever the break falls, a page holds none or at least two of a long table's rows, and none
+// or at least two lines of a paragraph.
+test('a page break never leaves one table row or one paragraph line alone', async (t) => {
+  const cwd = await workspace(t);
+  const count = (text, pattern) => (text.match(pattern) || []).length;
+  for (let fill = 0; fill <= 8; fill += 1) {
+    const created = value(
+      await executeOfficeTool(
+        {
+          action: 'create',
+          format: 'pdf',
+          path: join(cwd, `breaks-${fill}.pdf`),
+          overwrite: true,
+          snapshotAfter: true,
+          properties: { pageSize: [300, 300], margin: 54, pageNumbers: false },
+          blocks: [
+            ...Array.from({ length: fill }, (_, index) => ({ type: 'paragraph', text: `Line ${index + 1}`, size: 10 })),
+            {
+              type: 'table',
+              headers: ['Name', 'Count'],
+              rows: Array.from({ length: 9 }, (_, index) => [`Row${index + 1}`, String(index + 1)]),
+              rowHeight: 20,
+              fontSize: 9,
+            },
+            { type: 'paragraph', text: 'P1\nP2\nP3\nP4\nP5', size: 10 },
+          ],
+        },
+        { cwd }
+      )
+    );
+    for (const page of created.document.pages.map((entry) => entry.text)) {
+      assert.notEqual(count(page, /Row\d/g), 1, `fill ${fill}: a page holds one table row: ${page}`);
+      assert.notEqual(count(page, /P\d/g), 1, `fill ${fill}: a page holds one paragraph line: ${page}`);
+    }
+  }
+});
+
 // A PDF can only carry characters some embedded face has a glyph for. Refusing
 // is right — a dropped character would ship silently — but the refusal has to
 // name what blocks the file, or the caller hunts for a font that cannot exist.
@@ -574,7 +670,10 @@ test('a character no installed font carries is named in the refusal, not left to
 test('a minus sign the face lacks is set as an en dash instead of refusing the document', async (t) => {
   const cwd = await workspace(t);
   // The writing guide asks for U+2212 on a negative figure; Malgun Gothic and Helvetica carry none.
-  for (const [name, text] of [['korean.pdf', '정체 지수 −6p'], ['latin.pdf', 'Churn −1.4 pts']]) {
+  for (const [name, text] of [
+    ['korean.pdf', '정체 지수 −6p'],
+    ['latin.pdf', 'Churn −1.4 pts'],
+  ]) {
     const written = value(
       await executeOfficeTool(
         {
@@ -582,7 +681,10 @@ test('a minus sign the face lacks is set as an en dash instead of refusing the d
           format: 'pdf',
           path: join(cwd, name),
           snapshotAfter: true,
-          blocks: [{ type: 'stats', items: [{ value: '−6p', label: 'change' }] }, { type: 'paragraph', text }],
+          blocks: [
+            { type: 'stats', items: [{ value: '−6p', label: 'change' }] },
+            { type: 'paragraph', text },
+          ],
         },
         { cwd }
       )
@@ -824,7 +926,7 @@ test('PDF blocks are checked before writing, and a list is drawn as a list', asy
   assert.match(message, /block 1 names its block with kind; the field is type/);
   assert.match(
     message,
-    /block 2 has unknown type "bullets"\. Use one of: paragraph, heading, list, table, image, pagebreak, cover, callout, quote, caption, stats, rule/
+    /block 2 has unknown type "bullets"\. Use one of: paragraph, heading, list, table, image, pagebreak, cover, callout, quote, caption, stats, chart, rule/
   );
   assert.match(message, /block 3 \(table\) has unknown field\(s\): columns/);
   assert.match(message, /block 3 \(table\) is missing: rows/);
@@ -953,6 +1055,114 @@ test('PDF anatomy blocks — cover, stats, callout, quote, caption, rule — are
   );
   assert.equal(refused.isError, true);
   assert.match(refused.content[0].text, /stats\) items must be an array of \{ value, label \} objects/);
+});
+
+// A report's chart is drawn by the page itself: a PDF had no chart, and a figure came in as a picture with no names or
+// values on it. The bars carry their values; across, each value sits on its name's line right of it; upright, over it.
+test('a PDF chart block draws labelled bars across or upright', async (t) => {
+  const cwd = await workspace(t);
+  const created = value(
+    await executeOfficeTool(
+      {
+        action: 'create',
+        path: join(cwd, 'chart.pdf'),
+        format: 'pdf',
+        blocks: [
+          { type: 'heading', text: '권역별 야간 처리량' },
+          {
+            type: 'chart',
+            categories: ['수도권', '부산', '호남'],
+            values: [82400, 71600, 30200],
+            unit: '건',
+            highlight: '부산',
+          },
+          { type: 'caption', text: '그림 1. 권역별 처리량 (자료: 운영관리시스템)' },
+          {
+            type: 'chart',
+            chartType: 'column',
+            title: '분기별 처리량',
+            categories: ['1분기', '2분기', '3분기'],
+            values: [120, 150, 184.2],
+          },
+        ],
+      },
+      { cwd }
+    )
+  );
+  const layout = value(
+    await executeOfficeTool({ action: 'query', session: created.session, queryKind: 'pdf-layout' }, { cwd })
+  );
+  const items = layout.pages[0].items.map((item) => ({ ...item, text: item.text.trim() }));
+  const at = (text) => items.find((item) => item.text === text);
+  for (const [name, figure] of [
+    ['수도권', '82,400건'],
+    ['부산', '71,600건'],
+    ['호남', '30,200건'],
+  ]) {
+    assert.ok(at(name) && at(figure), `${name} and ${figure}: ${JSON.stringify(items.map((item) => item.text))}`);
+    assert.ok(Math.abs(at(name).top - at(figure).top) < 2 && at(figure).x > at(name).x, name);
+  }
+  assert.ok(at('그림 1. 권역별 처리량 (자료: 운영관리시스템)'), 'the caption follows the chart');
+  for (const [name, figure] of [
+    ['1분기', '120'],
+    ['3분기', '184.2'],
+  ]) {
+    assert.ok(at(name) && at(figure), `${name} and ${figure}`);
+    assert.ok(at(figure).top < at(name).top, `${figure} stands over ${name}`);
+  }
+  assert.ok(at('분기별 처리량'), 'the chart title');
+  const refused = await executeOfficeTool(
+    {
+      action: 'create',
+      path: join(cwd, 'refused-chart.pdf'),
+      format: 'pdf',
+      blocks: [{ type: 'chart', categories: ['a', 'b'], values: [1] }],
+    },
+    { cwd }
+  );
+  assert.equal(refused.isError, true);
+  assert.match(refused.content[0].text, /has 2 categories and 1 values; give one value per category/);
+});
+
+// The drawing commands of a page's content, decoded: what the page actually strokes and fills.
+async function pageContent(path) {
+  const document = await PDFDocument.load(await readFile(path));
+  const contents = document.getPage(0).node.Contents();
+  const streams =
+    contents instanceof PDFArray ? contents.asArray().map((reference) => document.context.lookup(reference)) : [contents];
+  return streams.map((stream) => Buffer.from(decodePDFRawStream(stream).decode()).toString('latin1')).join('\n');
+}
+
+// A projected quarter stood in the same grey as the counted ones and read as a count: forecast draws those bars pale
+// inside a dashed outline. A forecast that names no bar is refused rather than drawn as a count.
+test('a PDF chart block draws its forecast bars as projections and refuses one it cannot find', async (t) => {
+  const cwd = await workspace(t);
+  const chart = (forecast) => ({
+    type: 'chart',
+    chartType: 'column',
+    categories: ['1분기', '2분기', '3분기', '4분기(전망)'],
+    values: [120.4, 151.2, 184.2, 205],
+    unit: '천 건',
+    highlight: 2,
+    ...(forecast === undefined ? {} : { forecast }),
+  });
+  const draw = async (name, forecast) => {
+    const path = join(cwd, `${name}.pdf`);
+    const created = value(
+      await executeOfficeTool({ action: 'create', path, format: 'pdf', blocks: [chart(forecast)] }, { cwd })
+    );
+    value(await executeOfficeTool({ action: 'close', session: created.session }, { cwd }));
+    return await pageContent(path);
+  };
+  assert.doesNotMatch(await draw('counted', undefined), /\[2\.4 1\.6\] 0 d/, 'counted bars carry no dashed outline');
+  assert.match(await draw('by-name', '4분기(전망)'), /\[2\.4 1\.6\] 0 d/, 'the projected bar is outlined dashed');
+  assert.match(await draw('by-index', [3]), /\[2\.4 1\.6\] 0 d/);
+  const refused = await executeOfficeTool(
+    { action: 'create', path: join(cwd, 'unknown.pdf'), format: 'pdf', blocks: [chart('5분기')] },
+    { cwd }
+  );
+  assert.equal(refused.isError, true);
+  assert.match(refused.content[0].text, /forecast names "5분기", not a category or its index/);
 });
 
 // A user's .svg logo lands in Word, Excel and PowerPoint; the PDF page draws
@@ -1086,7 +1296,15 @@ test('an invoice table sets currency figures right, rules only its rows, and wri
               ['추가 시트', '₩600,000'],
             ],
           },
-          { type: 'table', headers: false, totalRow: true, rows: [['공급가액', '₩3,000,000'], ['합계', '₩3,300,000']] },
+          {
+            type: 'table',
+            headers: false,
+            totalRow: true,
+            rows: [
+              ['공급가액', '₩3,000,000'],
+              ['합계', '₩3,300,000'],
+            ],
+          },
         ],
       },
       { cwd }
@@ -1142,7 +1360,10 @@ test('a table given no widths takes them from its text, sets 억 원 amounts rig
   assert.ok(Math.abs(rightEdge('2.6억 원') - rightEdge('1.6억 원')) < 0.6, 'the amounts share the right edge');
   assert.ok(rightEdge('2.6억 원') > rightEdge('예산') - 0.6, 'the header sits over them');
   // The description takes one line in the width it was given; equal thirds wrapped it.
-  assert.ok(at('정산 시스템 이중화, 리전 간 복제 구성과 장애 격리 자동화'), JSON.stringify(items.map((item) => item.text)));
+  assert.ok(
+    at('정산 시스템 이중화, 리전 간 복제 구성과 장애 격리 자동화'),
+    JSON.stringify(items.map((item) => item.text))
+  );
   const text = items.map((item) => item.text).join('\n');
   assert.match(text, /— 김서연, 운영팀장/);
   assert.doesNotMatch(text, /— —/);
@@ -1154,7 +1375,18 @@ test('a form merged into a pack keeps its fields and can be filled there', async
   const form = join(cwd, 'form.pdf');
   const cover = join(cwd, 'cover.pdf');
   for (const [path, blocks] of [
-    [form, [{ type: 'fieldRow', items: [{ name: 'team', label: 'Team', type: 'text' }, { name: 'agree', label: 'Agree', type: 'checkbox' }] }]],
+    [
+      form,
+      [
+        {
+          type: 'fieldRow',
+          items: [
+            { name: 'team', label: 'Team', type: 'text' },
+            { name: 'agree', label: 'Agree', type: 'checkbox' },
+          ],
+        },
+      ],
+    ],
     [cover, [{ type: 'heading', text: 'Pilot pack' }]],
   ]) {
     const created = value(await executeOfficeTool({ action: 'create', path, format: 'pdf', blocks }, { cwd }));
@@ -1194,10 +1426,13 @@ test('moving, extracting, and deleting pages keep the form and attachments on th
   const attachment = join(cwd, 'note.txt');
   await writeFile(attachment, 'note');
   const call = (args) => executeOfficeTool(args, { cwd });
-  const create = async (name) => value(await call({ action: 'create', path: join(cwd, `${name}.pdf`), format: 'pdf', blocks }));
+  const create = async (name) =>
+    value(await call({ action: 'create', path: join(cwd, `${name}.pdf`), format: 'pdf', blocks }));
   const run = async (name, operations) => {
     const { session } = await create(name);
-    value(await call({ action: 'batch', session, operations: [{ op: 'add_attachment', path: attachment }, ...operations] }));
+    value(
+      await call({ action: 'batch', session, operations: [{ op: 'add_attachment', path: attachment }, ...operations] })
+    );
     const snapshot = value(await call({ action: 'snapshot', session }));
     const flattened = await call({ action: 'batch', session, operations: [{ op: 'flatten_form' }] });
     value(await call({ action: 'close', session }));
@@ -1209,7 +1444,10 @@ test('moving, extracting, and deleting pages keep the form and attachments on th
   assert.equal(moved.document.attachments.length, 1);
   assert.match(moved.document.pages[0].text, /Appendix/);
   const extracted = await run('extracted', [{ op: 'extract_pages', pages: [3, 1] }]);
-  assert.deepEqual(extracted.document.fields.map((field) => field.name), ['team']);
+  assert.deepEqual(
+    extracted.document.fields.map((field) => field.name),
+    ['team']
+  );
   assert.equal(extracted.document.attachments.length, 1);
   assert.equal(extracted.flattened.isError, undefined, 'the field on the dropped page no longer points at it');
   // A field on a deleted page leaves the form, and the rest of the batch reads the pages that remain.
@@ -1217,7 +1455,10 @@ test('moving, extracting, and deleting pages keep the form and attachments on th
     { op: 'delete_pages', pages: [1] },
     { op: 'add_text', text: 'After delete', page: 1, x: 72, y: 72 },
   ]);
-  assert.deepEqual(deleted.document.fields.map((field) => field.name), ['agree']);
+  assert.deepEqual(
+    deleted.document.fields.map((field) => field.name),
+    ['agree']
+  );
   assert.match(deleted.document.pages[0].text, /After delete/);
   assert.equal(deleted.flattened.isError, undefined, JSON.stringify(deleted.flattened.content));
   const { session } = await create('far');
@@ -1237,8 +1478,20 @@ test('a checkbox in a field row is a square with its label beside it, not a colu
         path,
         format: 'pdf',
         blocks: [
-          { type: 'fieldRow', items: [{ name: 'team', label: 'Team', type: 'text' }, { name: 'lead', label: 'Lead', type: 'text' }] },
-          { type: 'fieldRow', items: [{ name: 'import', label: 'Import issues', type: 'checkbox' }, { name: 'rules', label: 'Use rules', type: 'checkbox' }] },
+          {
+            type: 'fieldRow',
+            items: [
+              { name: 'team', label: 'Team', type: 'text' },
+              { name: 'lead', label: 'Lead', type: 'text' },
+            ],
+          },
+          {
+            type: 'fieldRow',
+            items: [
+              { name: 'import', label: 'Import issues', type: 'checkbox' },
+              { name: 'rules', label: 'Use rules', type: 'checkbox' },
+            ],
+          },
         ],
       },
       { cwd }
@@ -1248,9 +1501,14 @@ test('a checkbox in a field row is a square with its label beside it, not a colu
   const opened = value(await executeOfficeTool({ action: 'open', path }, { cwd }));
   const fields = opened.document.fields;
   const widget = (name) => fields.find((field) => field.name === name).widgets[0];
-  assert.ok(widget('import').width <= 16 && Math.abs(widget('import').width - widget('import').height) < 0.5, JSON.stringify(widget('import')));
+  assert.ok(
+    widget('import').width <= 16 && Math.abs(widget('import').width - widget('import').height) < 0.5,
+    JSON.stringify(widget('import'))
+  );
   assert.ok(widget('team').width > 100, JSON.stringify(widget('team')));
-  const layout = value(await executeOfficeTool({ action: 'query', session: opened.session, queryKind: 'pdf-layout' }, { cwd }));
+  const layout = value(
+    await executeOfficeTool({ action: 'query', session: opened.session, queryKind: 'pdf-layout' }, { cwd })
+  );
   const label = layout.pages[0].items.find((item) => item.text === 'Import issues');
   assert.ok(label.x > widget('import').x + widget('import').width, 'the label reads to the right of its square');
   value(await executeOfficeTool({ action: 'close', session: opened.session }, { cwd }));
@@ -1265,22 +1523,40 @@ test('a radio question lays its options out in a row, each with its own words be
         action: 'create',
         path,
         format: 'pdf',
-        blocks: [{ type: 'field', name: 'fleet', label: 'Fleet size', fieldType: 'radio', options: ['Under 10', '10-49', '50 or more'] }],
+        blocks: [
+          {
+            type: 'field',
+            name: 'fleet',
+            label: 'Fleet size',
+            fieldType: 'radio',
+            options: ['Under 10', '10-49', '50 or more'],
+          },
+        ],
       },
       { cwd }
     )
   );
   const issues = value(await executeOfficeTool({ action: 'issues', session: created.session }, { cwd })).issues || [];
-  assert.equal(issues.some((issue) => issue.code === 'overlapping_form_fields'), false, JSON.stringify(issues));
+  assert.equal(
+    issues.some((issue) => issue.code === 'overlapping_form_fields'),
+    false,
+    JSON.stringify(issues)
+  );
   value(await executeOfficeTool({ action: 'close', session: created.session }, { cwd }));
   const opened = value(await executeOfficeTool({ action: 'open', path }, { cwd }));
   const widgets = opened.document.fields.find((field) => field.name === 'fleet').widgets;
   assert.equal(widgets.length, 3);
   assert.ok(widgets[0].x < widgets[1].x && widgets[1].x < widgets[2].x, JSON.stringify(widgets));
-  assert.ok(widgets.every((widget) => widget.y === widgets[0].y), 'one row');
-  const layout = value(await executeOfficeTool({ action: 'query', session: opened.session, queryKind: 'pdf-layout' }, { cwd }));
+  assert.ok(
+    widgets.every((widget) => widget.y === widgets[0].y),
+    'one row'
+  );
+  const layout = value(
+    await executeOfficeTool({ action: 'query', session: opened.session, queryKind: 'pdf-layout' }, { cwd })
+  );
   const words = layout.pages[0].items.map((item) => item.text).join(' ');
-  for (const text of ['Fleet size', 'Under 10', '10-49', '50 or more']) assert.ok(words.includes(text), `${text} is on the page: ${words}`);
+  for (const text of ['Fleet size', 'Under 10', '10-49', '50 or more'])
+    assert.ok(words.includes(text), `${text} is on the page: ${words}`);
   const question = layout.pages[0].items.find((item) => item.text === 'Fleet size');
   assert.ok(Math.abs(question.x - widgets[0].x) <= 1, 'the question starts where its first option does');
   value(await executeOfficeTool({ action: 'close', session: opened.session }, { cwd }));
@@ -1310,11 +1586,18 @@ test('a review taken at a custom render width finalizes an opened copy', async (
   value(await executeOfficeTool({ action: 'close', session: created.session }, { cwd }));
   const opened = value(
     await executeOfficeTool(
-      { action: 'open', path: source, output: join(cwd, 'marked.pdf'), operations: [{ op: 'highlight', find: 'Total' }] },
+      {
+        action: 'open',
+        path: source,
+        output: join(cwd, 'marked.pdf'),
+        operations: [{ op: 'highlight', find: 'Total' }],
+      },
       { cwd }
     )
   );
-  const rendered = value(await executeOfficeTool({ action: 'render', session: opened.session, maxWidth: 900 }, { cwd }));
+  const rendered = value(
+    await executeOfficeTool({ action: 'render', session: opened.session, maxWidth: 900 }, { cwd })
+  );
   const finalized = value(
     await executeOfficeTool(
       {
@@ -1324,7 +1607,13 @@ test('a review taken at a custom render width finalizes an opened copy', async (
         design: {
           reviewed: true,
           reviewToken: rendered.reviewToken,
-          critique: [{ page: 1, verdict: 'pass', note: 'The highlight sits on the word Total and the figure beside it stays legible.' }],
+          critique: [
+            {
+              page: 1,
+              verdict: 'pass',
+              note: 'The highlight sits on the word Total and the figure beside it stays legible.',
+            },
+          ],
         },
       },
       { cwd }
@@ -1333,7 +1622,11 @@ test('a review taken at a custom render width finalizes an opened copy', async (
   assert.equal(
     finalized.finalized,
     true,
-    JSON.stringify({ reason: finalized.reason, blockers: finalized.visualReview?.blockers, issues: finalized.review?.issuesAfter })
+    JSON.stringify({
+      reason: finalized.reason,
+      blockers: finalized.visualReview?.blockers,
+      issues: finalized.review?.issuesAfter,
+    })
   );
 });
 
@@ -1621,7 +1914,11 @@ test("a form field takes a reader's rectangle and draws the caption it declares"
     )
   );
   const edgeIssues = value(await executeOfficeTool({ action: 'issues', session: edge.session }, { cwd })).issues || [];
-  assert.equal(edgeIssues.some((issue) => issue.code === 'field_too_small'), false, JSON.stringify(edgeIssues));
+  assert.equal(
+    edgeIssues.some((issue) => issue.code === 'field_too_small'),
+    false,
+    JSON.stringify(edgeIssues)
+  );
 
   const boxless = await executeOfficeTool(
     {
@@ -1664,13 +1961,19 @@ test('a text field tall enough for two lines takes a paragraph', async (t) => {
       {
         action: 'batch',
         session: created.session,
-        operations: [{ op: 'fill_form', values: { name: '김도서', reason: '가족 행사로 10월 20일부터 22일까지 연차를 사용합니다.' } }],
+        operations: [
+          {
+            op: 'fill_form',
+            values: { name: '김도서', reason: '가족 행사로 10월 20일부터 22일까지 연차를 사용합니다.' },
+          },
+        ],
       },
       { cwd }
     )
   );
   assert.equal(filled.results[0].clipped, undefined, JSON.stringify(filled.results[0].clipped));
-  const fields = value(await executeOfficeTool({ action: 'snapshot', session: created.session }, { cwd })).document.fields;
+  const fields = value(await executeOfficeTool({ action: 'snapshot', session: created.session }, { cwd })).document
+    .fields;
   const multiline = Object.fromEntries(fields.map((field) => [field.name, field.multiline === true]));
   assert.deepEqual(multiline, { name: false, reason: true, code: false });
 });
@@ -1889,6 +2192,45 @@ test('PDF flow opens a section: a heading takes more space above it than below',
   assert.ok(above > below, `heading gap above ${above.toFixed(1)} should exceed below ${below.toFixed(1)}`);
   // The first block still starts at the top margin: the rule never opens a page with a hole.
   assert.ok(first.top < 60, `first heading starts at ${first.top.toFixed(1)}`);
+});
+
+// A section head at 20 pt stood nearly as large as the 26 pt cover title, and a one-line cell centred beside a
+// wrapped one floated between its two lines: the heads take Word's sizes, and a row reads from its first line.
+test('PDF section heads step down from the cover title, and a wrapped table row reads from its first line', async (t) => {
+  const cwd = await workspace(t);
+  const created = value(
+    await executeOfficeTool(
+      {
+        action: 'create',
+        path: join(cwd, 'anatomy.pdf'),
+        format: 'pdf',
+        properties: { margin: 54, pageNumbers: false },
+        blocks: [
+          { type: 'cover', title: 'Partner Day' },
+          { type: 'heading', text: 'Program', level: 1 },
+          {
+            type: 'table',
+            headers: ['Speaker', 'Topic'],
+            columnWidths: [1, 1],
+            rows: [
+              ['Kim', 'How payments changed over ten years and what the next ten years will change for small shops'],
+              ['Lee', 'A short topic'],
+            ],
+          },
+        ],
+      },
+      { cwd }
+    )
+  );
+  const layout = value(
+    await executeOfficeTool({ action: 'query', session: created.session, queryKind: 'pdf-layout' }, { cwd })
+  );
+  const items = layout.pages[0].items;
+  const at = (text) => items.find((item) => item.text.startsWith(text));
+  const [title, heading, speaker, topic] = ['Partner Day', 'Program', 'Kim', 'How payments'].map(at);
+  assert.ok(title && heading && speaker && topic, JSON.stringify(items.map((item) => item.text)));
+  assert.ok(heading.height < title.height * 0.7, `head ${heading.height.toFixed(1)} under title ${title.height.toFixed(1)}`);
+  assert.ok(Math.abs(speaker.top - topic.top) < 1, `speaker at ${speaker.top.toFixed(1)}, topic at ${topic.top.toFixed(1)}`);
 });
 
 // A first column of 1호, 2호 is a row label with a digit in it; figures are set
@@ -2171,6 +2513,23 @@ test('PDF text wrapping keeps line breaks, wraps at spaces, and breaks unspaced 
   assert.deepEqual(wrapText('first\n\nthird', font, 10, 100), ['first', '', 'third']);
   assert.deepEqual(wrapText('가나다라마바사', font, 10, 30), ['가나다', '라마바', '사']);
   assert.deepEqual(wrapText('ab 가나다라마바사 cd', font, 10, 40), ['ab', '가나다라', '마바사', 'cd']);
+  // A paragraph never ends on one word alone under a full line: the word before it comes along, the lines stay two.
+  assert.deepEqual(wrapText('야간 처리량 34% 증가, 부산 허브 증설이 필요합니다', font, 10, 250), [
+    '야간 처리량 34% 증가, 부산 허브',
+    '증설이 필요합니다',
+  ]);
+  // Words that read as one wrap together: a date, a fraction, a sum with its unit ("…10월 / 14일" read as two facts).
+  // Each sentence from the width its longest bound phrase needs ("12만 6천 원을" is nine characters).
+  for (const [sentence, narrowest] of [
+    ['투자심의는 10월 14일 오후에 열리고 24억 원을 3분의 1씩 나눠 집행한다', 70],
+    ['제휴 카페는 한 달 12만 6천 원을 아끼고 쓰레기를 줄인다', 90],
+  ]) {
+    for (let width = narrowest; width <= 200; width += 10) {
+      const lines = wrapText(sentence, font, 10, width);
+      assert.equal(lines.join(' '), sentence, `${width}: only spaces break`);
+      assert.ok(!lines.some((line) => /(?:\d월|\d분의|\d억|\d만)$/.test(line)), `${width}: ${lines.join(' / ')}`);
+    }
+  }
 });
 
 test('PDF batches merge sources, extract page subsets to a file, rotate relatively, and round-trip attachments', async (t) => {

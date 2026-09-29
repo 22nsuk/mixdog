@@ -301,6 +301,30 @@ export function contentFileDescriptors(content) {
   });
 }
 
+// Wire bytes of the media one content carries: the base64 payload of an inline
+// image or document, or the base64 size a stored attachment expands to (from
+// its recorded size, never by reading the blob).
+export function contentMediaBytes(content) {
+  const parts = contentParts(content);
+  if (!parts) return 0;
+  let bytes = 0;
+  for (const part of parts) {
+    if (!part || typeof part !== 'object') continue;
+    if (isAttachmentReference(part)) {
+      if (part.type === 'image' || part.type === 'file') bytes += Math.ceil((Number(part.sizeBytes) || 0) / 3) * 4;
+      continue;
+    }
+    const inline = imageInfo(part) || geminiInlineInfo(part) || fileInfo(part);
+    if (inline) {
+      bytes += inline.data.length;
+      continue;
+    }
+    const url = imageUrlFromPart(part);
+    if (url?.startsWith('data:')) bytes += url.length;
+  }
+  return bytes;
+}
+
 function projectContentText(content, fallback, projectPart) {
   if (typeof content === 'string') return content;
   const parts = contentParts(content);

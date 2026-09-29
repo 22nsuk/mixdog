@@ -13,6 +13,7 @@ import React, {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { clampOverlayIntoView } from './anchored-panel';
+import { explorerAbsolutePath } from './explorer-tree-model';
 import { FileText, FileDiff, Folder, MessageCircle, Plus, Sparkles, Terminal, X } from 'lucide-react';
 
 import type { DesktopSessionSummary } from '../shared/contract';
@@ -102,11 +103,6 @@ function menuFileTarget(selection: WorkspaceTab['selection']) {
   }
   if (selection.kind === 'diff') return { project: selection.project, rel: selection.rel, accessToken: undefined };
   return null;
-}
-
-function absoluteFilePath(project: string, rel: string): string {
-  const separator = project.includes('\\') ? '\\' : '/';
-  return `${project.replace(/[\\/]+$/, '')}${separator}${rel.replace(/[\\/]+/g, separator)}`;
 }
 
 /* Browser-style tab-strip layout —
@@ -536,7 +532,7 @@ function workspaceTabContextMenu({
           {
             label: 'Copy Path',
             run: () => {
-              const absolute = absoluteFilePath(fileTarget.project, fileTarget.rel);
+              const absolute = explorerAbsolutePath(fileTarget.project, fileTarget.rel);
               void navigator.clipboard?.writeText(absolute)?.then(undefined, () => {});
             },
           },

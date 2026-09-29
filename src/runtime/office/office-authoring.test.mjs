@@ -467,7 +467,9 @@ await pres.writeFile({ fileName: OUTPUT });
   const content = await zipText(zip, 'ppt/slides/slide2.xml');
   // A Korean deck sets its figures in the Korean face (Arial carries no Hangul for the units beside them).
   const hero = [...content.matchAll(/<p:sp>[\s\S]*?<\/p:sp>/g)].map((m) => m[0]).find((sp) => sp.includes('>42'));
-  const accent = /<a:srgbClr val="([0-9A-F]{6})"\/><\/a:solidFill><a:latin typeface="Noto Sans KR"/.exec(hero || '')?.[1];
+  const accent = /<a:srgbClr val="([0-9A-F]{6})"\/><\/a:solidFill><a:latin typeface="Noto Sans KR"/.exec(
+    hero || ''
+  )?.[1];
   assert.ok(accent, 'the hero numeral carries the accent');
   const [r, g, b] = [0, 2, 4].map((i) => parseInt(accent.slice(i, i + 2), 16));
   assert.ok(r > b, `a warm accent (${accent}) against the navy seed`);

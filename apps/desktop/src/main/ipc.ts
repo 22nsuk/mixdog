@@ -112,9 +112,10 @@ interface DesktopIpcDependencies {
     | 'configureGuestViewport'
     | 'browserCredentialSuggestions'
     | 'browserCredentialFill'
-    | 'browserClearData'
     | 'browserPageFrame'
     | 'browserPageControl'
+    | 'browserPageMetadata'
+    | 'browserPresentNative'
   >;
   /** Settings → Connection pairing card; resolves null while the bridge is off. */
   remoteAccessInfo?: () => Promise<DesktopRemoteAccessInfo | null>;

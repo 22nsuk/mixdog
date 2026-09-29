@@ -59,6 +59,7 @@ tmp/
 artifacts/
 build-out*.txt
 baseline-dom.txt
+/.tm-*.png
 apps/desktop/scripts/tmp-*.mjs
 benchmarks/terminal-bench-2.1/jobs-*
 # Published verification artifacts (analysis/export-raw.mjs) live under
@@ -137,6 +138,7 @@ bench-results/
 /.runtime/
 /deliverables/
 /output/
+/outputs/
 __pycache__/
 
 apps/desktop/.tmp-dev/

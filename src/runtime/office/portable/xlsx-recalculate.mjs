@@ -3,10 +3,18 @@
 // machine that has none, and only for the formulas it can read. A cell it
 // cannot evaluate keeps whatever the file already held, and the result names it.
 import { extname } from 'node:path';
-import { cellRecords, columnNumber, parseCellRef, sharedStrings, workbookSheets } from './portable-cells.mjs';
+import {
+  cellRecords,
+  columnNumber,
+  parseCellRef,
+  sharedStrings,
+  workbookSheets,
+  writeCachedValues,
+} from './portable-cells.mjs';
 import { expandSharedFormulas } from './portable-shared-formulas.mjs';
 import { loadPackage, savePackage, zipText } from './portable-opc.mjs';
 import { libreOfficeAvailable, recalculateLibreOfficeWorkbook } from './portable-soffice.mjs';
+import { refreshChartCaches } from './portable-xlsx-charts.mjs';
 import { xmlDecode, xmlEncode } from './portable-xml.mjs';
 import { UnsupportedFormula, evaluateFormula, isBlank, isFormulaError } from './xlsx-formula-engine.mjs';
 
@@ -20,27 +28,13 @@ const MAX_CHAIN_DEPTH = 500;
 // contract whichever backend answered.
 const MAX_REPORTED_CELLS = 100;
 
-// How Excel stores a computed result: the cell keeps its formula and carries the
-// value beside it, typed the way the reader expects it back.
+// A computed value typed the way writeCachedValues stores it.
 function cachedCell(value) {
   if (isFormulaError(value)) return { type: 'e', text: xmlEncode(value) };
   if (typeof value === 'boolean') return { type: 'b', text: value ? '1' : '0' };
   if (typeof value === 'number') return { type: '', text: String(value) };
   if (isBlank(value)) return { type: 'str', text: '' };
   return { type: 'str', text: xmlEncode(String(value)) };
-}
-
-function writeCachedValues(xml, values) {
-  return xml.replace(/<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g, (whole, attributes, body) => {
-    const ref = /\br="([A-Z]+\d+)"/.exec(attributes)?.[1];
-    if (!ref || !values.has(ref)) return whole;
-    // Only the first cell of an array block holds the formula; the rest of the
-    // block carries the value alone, which is how Excel writes them too.
-    const formula = /<f(?:\s[^>]*)?(?:\/>|>[\s\S]*?<\/f>)/.exec(body || '')?.[0] || '';
-    const { type, text } = cachedCell(values.get(ref));
-    const kept = attributes.replace(/\st="[^"]*"/g, '').replace(/\s*\/$/, '');
-    return `<c${kept}${type ? ` t="${type}"` : ''}>${formula}<v>${text}</v></c>`;
-  });
 }
 
 // A name the workbook defines as one cell, one range or a plain constant is
@@ -223,8 +217,12 @@ export async function recalculateWithFormulaEngine(path) {
   const tally = { unevaluated: [], errorCells: [], evaluated: 0 };
   for (const part of parts) {
     const values = evaluateSheetFormulas(part, cellValue, tally);
-    if (values.size) zip.file(part.sheet.path, writeCachedValues(part.xml, values));
+    if (values.size) {
+      const cached = new Map([...values].map(([ref, value]) => [ref, cachedCell(value)]));
+      zip.file(part.sheet.path, writeCachedValues(part.xml, cached));
+    }
   }
+  await refreshChartCaches(zip);
   const { unevaluated, errorCells, evaluated } = tally;
   if (!evaluated) {
     return {

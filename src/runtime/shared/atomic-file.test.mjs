@@ -289,9 +289,12 @@ test('a reclaim guard stranded by a dead process is revoked only once stale', as
   // A stale guard of a live owner is never revoked.
   writeFileSync(guard, `${process.pid} 0 live\n`);
   utimesSync(guard, old, old);
-  await assert.rejects(withFileLock(lock, () => assert.fail('guarded'), { timeoutMs: 0 }), {
-    code: 'ELOCKCONTENDED',
-  });
+  await assert.rejects(
+    withFileLock(lock, () => assert.fail('guarded'), { timeoutMs: 0 }),
+    {
+      code: 'ELOCKCONTENDED',
+    }
+  );
   assert.equal(readFileSync(guard, 'utf8'), `${process.pid} 0 live\n`);
 
   for (const acquire of [withFileLockSync, withFileLock]) {

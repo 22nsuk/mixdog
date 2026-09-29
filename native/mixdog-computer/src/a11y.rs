@@ -2,7 +2,7 @@
 //! role vocabulary and capabilities on each operating system, so snapshots,
 //! refs and predicates read alike wherever they were taken.
 
-use crate::platform::{WindowInfo, Wid};
+use crate::platform::{Wid, WindowInfo};
 use crate::protocol::Obj;
 use std::rc::Rc;
 
@@ -31,7 +31,8 @@ pub trait Element {
     fn focus(&self) -> Result<(), String>;
     /// Scrolls the element's own scroll range; `None` when it has none.
     /// Returns the positions before and after.
-    fn scroll(&self, horizontal: bool, increments: i32) -> Result<Option<(String, String)>, String>;
+    fn scroll(&self, horizontal: bool, increments: i32)
+        -> Result<Option<(String, String)>, String>;
     /// Where the element sits in its tree, for structured captures.
     fn structure(&self) -> Obj;
     fn range_value(&self) -> Option<String> {
@@ -74,7 +75,12 @@ pub trait Accessibility {
     /// accessibility from this process.
     fn available(&self) -> Result<(), String>;
     /// Every element of the window in document order, up to `limit`.
-    fn snapshot(&self, window: &WindowInfo, include_noninteractive: bool, limit: usize) -> Result<Vec<Node>, String>;
+    fn snapshot(
+        &self,
+        window: &WindowInfo,
+        include_noninteractive: bool,
+        limit: usize,
+    ) -> Result<Vec<Node>, String>;
     /// The element that currently has keyboard focus, if it hides typed text.
     fn focused_masked(&self) -> bool;
     fn invoke_menu(
@@ -86,8 +92,22 @@ pub trait Accessibility {
 }
 
 pub const INTERACTIVE_ROLES: [&str; 16] = [
-    "Button", "Edit", "CheckBox", "RadioButton", "ComboBox", "List", "ListItem", "MenuItem", "TabItem",
-    "Hyperlink", "Tree", "TreeItem", "Slider", "Document", "Spinner", "SplitButton",
+    "Button",
+    "Edit",
+    "CheckBox",
+    "RadioButton",
+    "ComboBox",
+    "List",
+    "ListItem",
+    "MenuItem",
+    "TabItem",
+    "Hyperlink",
+    "Tree",
+    "TreeItem",
+    "Slider",
+    "Document",
+    "Spinner",
+    "SplitButton",
 ];
 
 pub fn is_interactive(role: &str) -> bool {
@@ -134,7 +154,11 @@ pub fn normalize_menu_label(label: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut index = 0;
     while index < chars.len() {
-        if chars[index] == '(' && index + 2 < chars.len() && chars[index + 2] == ')' && chars[index + 1].is_ascii_alphanumeric() {
+        if chars[index] == '('
+            && index + 2 < chars.len()
+            && chars[index + 2] == ')'
+            && chars[index + 1].is_ascii_alphanumeric()
+        {
             while out.ends_with(char::is_whitespace) {
                 out.pop();
             }

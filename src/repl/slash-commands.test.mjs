@@ -19,7 +19,18 @@ test('/help lists exactly the commands the plain REPL implements, on ctx.out', a
   const listed = new Set(written.join('').match(/\/[a-z][a-z-]*/gi));
   assert.deepEqual(
     [...listed].sort(),
-    ['/clear', '/compact', '/exit', '/help', '/mode', '/model', '/output-style', '/outputstyle', '/quit', '/style'].sort()
+    [
+      '/clear',
+      '/compact',
+      '/exit',
+      '/help',
+      '/mode',
+      '/model',
+      '/output-style',
+      '/outputstyle',
+      '/quit',
+      '/style',
+    ].sort()
   );
 });
 

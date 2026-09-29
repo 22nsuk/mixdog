@@ -6,6 +6,9 @@ contextBridge.exposeInMainWorld('mixdogDesktop', {
   ...createBrowserTextureBridge(),
   browserPageControl: (sessionId: string, input: unknown) =>
     ipcRenderer.invoke(DESKTOP_IPC.browserPageControl, sessionId, input),
+  browserPageMetadata: (sessionId: string) => ipcRenderer.invoke(DESKTOP_IPC.browserPageMetadata, sessionId),
+  browserPresentNative: (sessionId: string, rect: unknown) =>
+    ipcRenderer.invoke(DESKTOP_IPC.browserPresentNative, sessionId, rect),
   browserSetActiveGuest: (sessionId: string, id: number, active: boolean) =>
     ipcRenderer.invoke(DESKTOP_IPC.browserSetActiveGuest, sessionId, id, active),
   browserConfigureGuestViewport: (sessionId: string, id: number, config: unknown) =>

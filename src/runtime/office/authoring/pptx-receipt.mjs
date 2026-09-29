@@ -159,7 +159,9 @@ function textColorsOf(shape) {
   if (!longs.length) {
     const color = shape?.font?.color;
     if (typeof color === 'number') return Number.isFinite(color) && color >= 0 ? [bgrHex(color)] : [];
-    const hex = String(color ?? '').replace(/^#/, '').toUpperCase();
+    const hex = String(color ?? '')
+      .replace(/^#/, '')
+      .toUpperCase();
     return /^[0-9A-F]{6}$/.test(hex) ? [hex] : [];
   }
   return [...new Set(longs.filter((rgb) => Number.isFinite(rgb) && rgb >= 0).map(bgrHex))];
@@ -613,8 +615,7 @@ export function compositionReceipt(document, brief = null) {
     deck,
     absent,
     // The field glossary lives in the pptx skill (§2 step 6), read once, instead of riding every receipt.
-    note:
-      'Observations, not design targets; the pptx skill (§2 step 6, "Receipt fields") defines each one. absent lists unused families, not required objects. Judge relevance, legibility, grouping, and emphasis from the rendered pages, not from these ratios.',
+    note: 'Observations, not design targets; the pptx skill (§2 step 6, "Receipt fields") defines each one. absent lists unused families, not required objects. Judge relevance, legibility, grouping, and emphasis from the rendered pages, not from these ratios.',
   };
 }
 
@@ -708,7 +709,10 @@ export function receiptForDelivery(receipt, session) {
     slides,
     deck,
     ...(collapsed
-      ? { unchangedMeans: 'unchanged: this part matches the receipt this session sent last; only render readings are new.' }
+      ? {
+          unchangedMeans:
+            'unchanged: this part matches the receipt this session sent last; only render readings are new.',
+        }
       : {}),
   };
 }

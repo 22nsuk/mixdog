@@ -29,7 +29,12 @@ async function readSurfaceCapability(
   api: SurfaceApi,
   request: DesktopCapabilityRequest
 ): Promise<Pick<DesktopCapabilityResult, 'value'> & Partial<Pick<DesktopCapabilityResult, 'snapshot'>>> {
-  if (!request.sessionId && (request.capability === 'getUsageDashboard' || request.capability === 'getUsageStats')) {
+  if (
+    !request.sessionId &&
+    (request.capability === 'getUsageDashboard' ||
+      request.capability === 'getUsageStats' ||
+      request.capability === 'getQuotaHistory')
+  ) {
     return {
       value: (
         await readGlobalCapabilities(api, [
@@ -50,6 +55,9 @@ interface UseCommandSurfaceLifecycleOptions {
   api: SurfaceApi;
   snapshot?: unknown;
   sessionId?: string;
+  /** Hold the opening read while the surface shows something that reads its
+   *  own data (the usage dialog on subscription usage); it runs once released. */
+  deferLoad?: boolean;
 }
 
 interface UseCommandSurfaceLifecycleResult {
@@ -71,6 +79,7 @@ export function useCommandSurfaceLifecycle({
   api,
   snapshot,
   sessionId: explicitSessionId = '',
+  deferLoad = false,
 }: UseCommandSurfaceLifecycleOptions): UseCommandSurfaceLifecycleResult {
   const loadSequence = useRef(0);
   const loadingSurface = useRef<CommandSurfaceName | null>(null);
@@ -163,7 +172,7 @@ export function useCommandSurfaceLifecycle({
   }, [api, open, surface]);
 
   useEffect(() => {
-    if (open) void load();
+    if (open && !deferLoad) void load();
     else if (surface === 'stats') {
       setLoading(!hasStatsDataCache(api));
       setRefreshing(false);
@@ -173,7 +182,7 @@ export function useCommandSurfaceLifecycle({
       ++loadSequence.current;
       loadingSurface.current = null;
     };
-  }, [api, load, open, surface]);
+  }, [api, deferLoad, load, open, surface]);
 
   // The context surface is the snapshot it opened with. Following live state
   // frames re-read the gauge dozens of times per streaming turn, which moved

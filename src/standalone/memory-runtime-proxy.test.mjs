@@ -48,6 +48,7 @@ const server = http.createServer((req, res) => {
         if (parsed.name === 'slow') { setTimeout(() => json(200, { late: true }), 5000); return; }
         return json(200, { echo: parsed, callId: req.headers['x-mixdog-call-id'] || null, registers: state.registers });
       case '/session-start/core-memory': return json(200, { core: parsed });
+      case '/embedding/warmup': return json(200, { ok: true, ready: true });
       case '/entry': return json(200, { entry: parsed });
       default: return json(404, { error: 'unknown ' + req.url });
     }
@@ -155,6 +156,10 @@ test('appendEntry, buildSessionCoreMemoryPayload and ingestTranscript hit their 
   assert.deepEqual(await runtime.buildSessionCoreMemoryPayload('/elsewhere'), { core: { cwd: '/elsewhere' } });
   assert.deepEqual(await runtime.buildSessionCoreMemoryPayload(), { core: { cwd: root } });
   await assert.rejects(runtime.ingestTranscript('/no/such.jsonl', { cwd: '/w' }), /unknown \/ingest-transcript/);
+});
+
+test('warmupEmbedding waits on the daemon embedding warmup route', async () => {
+  assert.deepEqual(await runtime.warmupEmbedding(), { ok: true, ready: true });
 });
 
 test('a daemon-side HTTP error surfaces as an Error carrying the status code', async () => {

@@ -206,7 +206,11 @@ export function createKeyedListDeltaDecoder<T>(): KeyedListDeltaDecoder<T> {
       nextOrder = [];
       let taken = 0;
       for (const [index, at] of (patch.place as unknown[]).entries()) {
-        if (!Number.isSafeInteger(at) || (at as number) < nextOrder.length || (at as number) - nextOrder.length > rest.length - taken) {
+        if (
+          !Number.isSafeInteger(at) ||
+          (at as number) < nextOrder.length ||
+          (at as number) - nextOrder.length > rest.length - taken
+        ) {
           return { ok: false };
         }
         while (nextOrder.length < (at as number)) nextOrder.push(rest[taken++]);

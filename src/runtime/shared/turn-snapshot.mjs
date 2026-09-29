@@ -487,10 +487,44 @@ function publicAgentReviews(sessionId) {
   return [...turn.agents.values()].map((review) => ({ ...review }));
 }
 
-/** Start a new user turn and invalidate the prior turn's child review group. */
+/** A whole-worktree baseline cannot attribute concurrent mutations to either
+ *  of two live turns sharing it. Mark both permanently contended so they fall
+ *  back to their exact session-owned mutation trackers. A SEALED turn is
+ *  finished: its baseline already described the worktree exactly, so
+ *  contention is decided between live turns only. */
+function markWorktreeContention(ownerSessionId, tracker) {
+  const root = tracker.worktreeSnapshot?.root;
+  for (const [otherSessionId, other] of _diffTrackersBySession) {
+    if (otherSessionId === ownerSessionId || other.sealed) continue;
+    const sameRequest = Boolean(tracker.worktreeRequest) && other.worktreeRequest === tracker.worktreeRequest;
+    const sameRoot = Boolean(root) && other.worktreeSnapshot?.root === root;
+    if (!sameRequest && !sameRoot) continue;
+    tracker.worktreeContended = true;
+    other.worktreeContended = true;
+  }
+}
+
+/** A completion wake belongs to the user turn that launched its workers. It
+ *  reopens that turn's review instead of replacing it, so the Lead's earlier
+ *  edits and every worker attributed to the turn stay in one review — the same
+ *  scope the composer bar draws from the last user prompt. */
+function continueTurnSnapshot(ownerSessionId) {
+  const turn = _turnsBySession.get(ownerSessionId);
+  const tracker = _diffTrackersBySession.get(ownerSessionId);
+  if (!turn || !tracker || tracker.ownerGeneration !== turn.generation) return false;
+  _turnsBySession.delete(ownerSessionId);
+  _turnsBySession.set(ownerSessionId, turn);
+  tracker.sealed = false;
+  markWorktreeContention(ownerSessionId, tracker);
+  return true;
+}
+
+/** Start a new user turn and invalidate the prior turn's child review group.
+ *  `continueTurn` (a completion wake) reopens the current turn instead. */
 export async function beginTurnSnapshot(worktree, sessionId, options = {}) {
   const ownerSessionId = clean(sessionId);
   if (DISABLED || !ownerSessionId) return;
+  if (options?.continueTurn === true && continueTurnSnapshot(ownerSessionId)) return;
   const generation = (_turnsBySession.get(ownerSessionId)?.generation || 0) + 1;
   const checkpointId = clean(options?.checkpointId);
   for (const [trackedSessionId, tracker] of _diffTrackersBySession) {
@@ -510,33 +544,12 @@ export async function beginTurnSnapshot(worktree, sessionId, options = {}) {
   });
   trimTurnCache();
   if (!tracker) return;
-  for (const [otherSessionId, other] of _diffTrackersBySession) {
-    if (otherSessionId === ownerSessionId || other.sealed) continue;
-    if (!worktreeRequest || other.worktreeRequest !== worktreeRequest) continue;
-    tracker.worktreeContended = true;
-    other.worktreeContended = true;
-  }
+  markWorktreeContention(ownerSessionId, tracker);
   try {
     const snapshot = await createTurnWorktreeSnapshot(worktree);
     if (_diffTrackersBySession.get(ownerSessionId) === tracker) {
       tracker.worktreeSnapshot = snapshot;
-      if (snapshot?.root) {
-        for (const [otherSessionId, other] of _diffTrackersBySession) {
-          if (otherSessionId === ownerSessionId) continue;
-          // A SEALED turn is finished: its baseline already described the
-          // worktree exactly, and completion released its exact-mutation
-          // buffers. Marking it contended from here retroactively stripped a
-          // completed review of EVERY revert source, so contention is decided
-          // between live turns only.
-          if (other.sealed) continue;
-          if (other.worktreeSnapshot?.root !== snapshot.root) continue;
-          // A whole-worktree baseline cannot attribute concurrent mutations
-          // to either session. Mark both turns permanently contended and fall
-          // back to their exact session-owned mutation trackers.
-          tracker.worktreeContended = true;
-          other.worktreeContended = true;
-        }
-      }
+      if (snapshot?.root) markWorktreeContention(ownerSessionId, tracker);
     }
   } catch {
     // Git is optional. Exact apply_patch tracking remains the fallback.

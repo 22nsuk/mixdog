@@ -81,7 +81,7 @@ test('a prepend-capable stored page read answers with only the rows above the he
 });
 
 function liveRuntime(initialItems, sessionId) {
-  let state = { sessionId, items: initialItems, queued: [] };
+  const state = { sessionId, items: initialItems, queued: [] };
   return {
     isWireSafe: true,
     getState: () => state,

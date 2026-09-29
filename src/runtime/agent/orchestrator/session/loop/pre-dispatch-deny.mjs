@@ -5,10 +5,14 @@
 // Error string the serial path would emit. The eager caller ignores the
 // message body and just treats non-null as "do not start eager".
 //
-// The persisted schema allowlist is also the execution allowlist. This keeps a
-// provider-emitted call outside the advertised surface from reaching a tool
-// merely because the process-wide registry knows its name.
+// The persisted schema allowlist is also the execution allowlist, and so is the
+// rest of the session's tool policy: a tool the policy removed from the schema
+// (a disabled feature, delegation) stays refused, and a read-only session runs
+// only what its surfaces offer. This keeps a provider-emitted call outside the
+// advertised surface from reaching a tool merely because the process-wide
+// registry knows its name.
 import { isAgentOwner } from '../../agent-owner.mjs';
+import { isOffReadonlySurface } from './deferred-call-through.mjs';
 
 const WORKER_DENIED_TOOLS = new Set(['agent']);
 
@@ -92,12 +96,21 @@ export function routeWebFetchCall(call) {
 export function preDispatchDenyForSession(sessionRef, call, _toolKind) {
   const name = call?.name;
   if (typeof name !== 'string' || !name) return null;
+  const schemaName = String(call?.schemaName || name);
   if (Array.isArray(sessionRef?.schemaAllowedTools)) {
-    const schemaName = String(call?.schemaName || name);
     const allowed = new Set(sessionRef.schemaAllowedTools.map((toolName) => String(toolName).toLowerCase()));
     if (!allowed.has(schemaName.toLowerCase())) {
       return `Error: tool "${name}" is not available on this session's schema allowlist.`;
     }
+  }
+  if (
+    Array.isArray(sessionRef?.disallowedTools) &&
+    sessionRef.disallowedTools.some((toolName) => String(toolName).toLowerCase() === schemaName.toLowerCase())
+  ) {
+    return `Error: tool "${name}" is not available in this session.`;
+  }
+  if (isOffReadonlySurface(sessionRef, schemaName)) {
+    return `Error: tool "${name}" is not available in this read-only session.`;
   }
   if (hasCompactedPatchPlaceholder(call)) {
     return 'Error: [tool-input-validation] apply_patch received a compacted-history placeholder, not executable patch content. Re-read the current target files and submit a fresh full patch; do not replay or reconstruct the stored marker.';

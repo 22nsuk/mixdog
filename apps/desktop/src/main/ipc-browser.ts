@@ -1,7 +1,6 @@
 import { DESKTOP_IPC, type DesktopBrowserViewportConfig } from '../shared/contract';
 import { requiredSessionId } from './desktop-state';
 import type { BrowserHost } from './browser/host';
-import type { BrowserDataScope } from './browser/browsing-data';
 import type { IpcHandle as Handle } from './ipc';
 import { normalizeBrowserPageControl } from '../shared/browser-page-control';
 
@@ -12,14 +11,37 @@ interface BrowserIpcOptions {
     | 'browserImportSources'
     | 'browserImport'
     | 'browserHistorySearch'
-    | 'browserClearData'
     | 'setGuestActive'
     | 'configureGuestViewport'
     | 'browserCredentialSuggestions'
     | 'browserCredentialFill'
     | 'browserPageFrame'
     | 'browserPageControl'
+    | 'browserPageMetadata'
+    | 'browserPresentNative'
   >;
+}
+
+/** A pane rectangle in shell CSS pixels, or null to park the page. */
+function nativeRect(value: unknown): { x: number; y: number; width: number; height: number } | null {
+  if (value === null) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError('Browser native rectangle is invalid.');
+  }
+  const { x, y, width, height } = value as Record<string, unknown>;
+  const rect = { x: Number(x), y: Number(y), width: Number(width), height: Number(height) };
+  if (
+    ![rect.x, rect.y, rect.width, rect.height].every(Number.isFinite) ||
+    rect.x < 0 ||
+    rect.y < 0 ||
+    rect.width < 1 ||
+    rect.height < 1 ||
+    rect.x + rect.width > 16_384 ||
+    rect.y + rect.height > 16_384
+  ) {
+    throw new TypeError('Browser native rectangle is invalid.');
+  }
+  return rect;
 }
 
 export function registerBrowserIpc({ handle, browserHost }: BrowserIpcOptions): void {
@@ -38,6 +60,14 @@ export function registerBrowserIpc({ handle, browserHost }: BrowserIpcOptions): 
   handle(DESKTOP_IPC.browserPageControl, (_event, sessionId, input) => {
     if (!browserHost) throw new Error('Browser Use is unavailable.');
     return browserHost.browserPageControl(requiredSessionId(sessionId), normalizeBrowserPageControl(input));
+  });
+  handle(DESKTOP_IPC.browserPageMetadata, (_event, sessionId) => {
+    if (!browserHost) throw new Error('Browser Use is unavailable.');
+    return browserHost.browserPageMetadata(requiredSessionId(sessionId));
+  });
+  handle(DESKTOP_IPC.browserPresentNative, (_event, sessionId, rect) => {
+    if (!browserHost) return { enabled: false, shown: false };
+    return browserHost.browserPresentNative(requiredSessionId(sessionId), nativeRect(rect));
   });
   handle(DESKTOP_IPC.browserSetActiveGuest, (_event, sessionId, webContentsId, active) => {
     if (!browserHost) throw new Error('Browser Use is unavailable in this app surface.');
@@ -127,18 +157,6 @@ export function registerBrowserIpc({ handle, browserHost }: BrowserIpcOptions): 
       items: items as Array<'passwords' | 'cookies' | 'history'>,
       administratorApproved: request.administratorApproved === true,
     });
-  });
-  handle(DESKTOP_IPC.browserClearData, (_event, scopes) => {
-    if (!browserHost) throw new Error('Browser data is unavailable in this app surface.');
-    if (
-      !Array.isArray(scopes) ||
-      !scopes.length ||
-      scopes.length > 3 ||
-      scopes.some((scope) => !['cache', 'siteData', 'cookies'].includes(scope as string))
-    ) {
-      throw new TypeError('Browser data scopes are invalid.');
-    }
-    return browserHost.browserClearData(scopes as BrowserDataScope[]);
   });
   handle(DESKTOP_IPC.browserHistorySearch, (_event, query) => {
     if (!browserHost) throw new Error('Browser history is unavailable in this app surface.');

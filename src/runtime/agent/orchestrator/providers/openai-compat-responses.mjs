@@ -114,6 +114,7 @@ async function streamCompatResponses({ provider, params, label, signal, opts }) 
       {
         signal: totalSignal.signal,
         onRetry: compatStreamRetryReporter(label, opts),
+        retry529: opts.retry529,
       }
     );
   } finally {

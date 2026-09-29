@@ -7,7 +7,6 @@ import {
   ArrowLeft,
   ArrowRight,
   Check,
-  Eraser,
   ExternalLink,
   Globe,
   KeyRound,
@@ -22,7 +21,6 @@ import { t } from './i18n';
 import { ErrorNotice } from './ErrorNotice';
 import { normalizeAddressInput } from './browser-address';
 import { BrowserImportDialog } from './BrowserImportDialog';
-import { BrowserDataDialog } from './BrowserDataDialog';
 import { scheduleBrowserForegroundRepaint, watchBrowserForegroundReturns } from './browser-foreground-lifecycle';
 import {
   BROWSER_VIEWPORT_PRESETS,
@@ -435,7 +433,6 @@ function DesktopBrowserPane({
   const [credentialStatus, setCredentialStatus] = useState<'idle' | 'success' | 'error'>('idle');
   const [pageFailure, setPageFailure] = useState<BrowserPageFailure | null>(null);
   const [importOpen, setImportOpen] = useState(false);
-  const [clearDataOpen, setClearDataOpen] = useState(false);
   const [viewportPresetId, setViewportPresetId] = useState<BrowserViewportPresetId>(
     () => readBrowserViewportPreset(window.localStorage, sessionId).id
   );
@@ -851,17 +848,6 @@ function DesktopBrowserPane({
         >
           <ExternalLink size={15} />
         </button>
-        {desktopApi?.browserClearData && (
-          <button
-            type="button"
-            className="browser-pane-nav-button"
-            onClick={() => setClearDataOpen(true)}
-            aria-label={t('Clear browsing data')}
-            data-tooltip={t('Clear browsing data')}
-          >
-            <Eraser size={15} />
-          </button>
-        )}
         {desktopApi?.browserProfileImportSources && (
           <button
             type="button"
@@ -877,7 +863,6 @@ function DesktopBrowserPane({
         )}
       </div>
       <BrowserImportDialog open={importOpen} onClose={() => setImportOpen(false)} />
-      <BrowserDataDialog open={clearDataOpen} onClose={() => setClearDataOpen(false)} />
       <div className={`browser-pane-content${fixedViewport ? ' is-device-frame' : ''}`} ref={contentRef}>
         <div className="browser-pane-viewport" data-viewport-preset={viewportPreset.id} style={viewportFrameStyle}>
           <IsolatedBrowserView
@@ -887,6 +872,7 @@ function DesktopBrowserPane({
             className={`browser-pane-webview${importOpen ? ' is-import-open' : ''}${historySuggestions.length ? ' is-history-open' : ''}${credentialMenuOpen ? ' is-credential-open' : ''}${pageFailure ? ' is-failed' : ''}`}
             sessionId={sessionId}
             active={active && !importOpen && !pageFailure}
+            native={!fixedViewport}
           />
           {/* about:blank paints Chromium's default white; until a real page is
             committed the pane stays in the app theme instead. */}

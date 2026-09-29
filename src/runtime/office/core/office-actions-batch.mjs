@@ -1,10 +1,17 @@
-import { copyFile, readFile, rename, rm } from 'node:fs/promises';
+import { copyFile, mkdtemp, readFile, rename, rm } from 'node:fs/promises';
 import { dirname, extname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { callMicrosoftOffice } from '../com/com-adapter.mjs';
-import { applyPortableOoxmlBatch, clearPortablePresentationSlides } from '../portable/portable-ooxml.mjs';
+import {
+  applyPortableOoxmlBatch,
+  clearPortablePresentationSlides,
+  snapshotPortableOoxml,
+} from '../portable/portable-ooxml.mjs';
+import { provenanceCitation } from '../portable/portable-opc.mjs';
 import { applyPdfBatch } from '../pdf/pdf-adapter.mjs';
+import { createChartPdf } from '../pdf/pdf-writer.mjs';
+import { renderPdfPages } from '../pdf/pdf-render.mjs';
 import { assertOfficeOperationContracts } from '../capabilities.mjs';
 import { quoteUnquotedSheetReferences, validateXlsxOperations } from '../portable/xlsx-contract.mjs';
 import { applyTabularBatch } from './tabular.mjs';
@@ -73,7 +80,9 @@ function withSlideChartColors(operation) {
 // (shared/korean-particles.mjs), handed over with the operation so "{{company}}은" lands as 모아페이는 on both.
 function withTemplateParticles(operations) {
   return operations.map((operation) =>
-    operation?.op === 'fill_template' ? { ...operation, particles: koreanParticleReplacements(operation.tokens) } : operation
+    operation?.op === 'fill_template'
+      ? { ...operation, particles: koreanParticleReplacements(operation.tokens) }
+      : operation
   );
 }
 
@@ -86,6 +95,22 @@ function withPageSizePoints(session, operations) {
     const { pageSize, ...properties } = operation.properties;
     const [pageWidth, pageHeight] = pageSizePoints(pageSize, 'set_page pageSize');
     return { ...operation, properties: { ...properties, pageWidth, pageHeight } };
+  });
+}
+
+// A Word title set at a size and no leading holds its lines 1.25 × the size apart, exact, as the docx skill's title
+// anatomy writes it and the PDF writer sets its titles: on Malgun Gothic's own line a two-line report title stood
+// nearly twice its size apart on both backends. A leading the author gave stays.
+function withTitleLeading(session, operations) {
+  if (session.format !== 'docx') return operations;
+  return operations.map((operation) => {
+    if (operation?.op !== 'append_text' || !/^title$/i.test(String(operation.style || '').trim())) return operation;
+    const size = Number(operation.properties?.size);
+    if (!(size > 0) || operation.properties?.lineSpacing != null) return operation;
+    return {
+      ...operation,
+      properties: { ...operation.properties, lineSpacing: Math.round(size * 1.25 * 2) / 2, lineSpacingRule: 'exact' },
+    };
   });
 }
 
@@ -240,13 +265,24 @@ function microsoftOfficeCall(session, target, request, timeoutMs) {
   );
 }
 
+// A provenance citation is composed once, as the portable writer composes it (its prefix in the language the source is
+// named in), and the Office host writes it as handed.
+function withProvenanceCitations(operations) {
+  return operations.map((operation) => {
+    if (operation?.op !== 'add_provenance') return operation;
+    const citation = provenanceCitation(operation.source);
+    if (!citation) throw new Error('add_provenance requires source with a document or label');
+    return { ...operation, citation };
+  });
+}
+
 async function microsoftBatch(session, args, target, operations) {
   const result = await microsoftOfficeCall(
     session,
     target,
     {
       action: 'batch',
-      operations: withSharedChartDefaults(session, operations),
+      operations: withProvenanceCitations(withSharedChartDefaults(session, operations)),
       save: args.save === true,
       requireChanges: args.requireChanges !== false,
     },
@@ -355,7 +391,10 @@ function recordDesignState(session, prepared) {
 // set_column_width after the fit was widened again.
 const SIZING_FIELDS = ['sheet', 'range', 'minWidth', 'rows', 'column', 'row', 'width', 'height', 'count'];
 function sizingKey(operation) {
-  const target = operation.op === 'autofit_range' ? `${operation.range}|${operation.rows === true}` : `${operation.column ?? operation.row}|${operation.count ?? 1}`;
+  const target =
+    operation.op === 'autofit_range'
+      ? `${operation.range}|${operation.rows === true}`
+      : `${operation.column ?? operation.row}|${operation.count ?? 1}`;
   return `${operation.op}|${operation.sheet || ''}|${target}`;
 }
 function rememberAutofitRanges(session, operations) {
@@ -367,7 +406,10 @@ function rememberAutofitRanges(session, operations) {
         operation.op === 'set_row_height'
     )
     .map((operation) =>
-      Object.fromEntries([['op', operation.op], ...SIZING_FIELDS.filter((field) => operation[field] !== undefined).map((field) => [field, operation[field]])])
+      Object.fromEntries([
+        ['op', operation.op],
+        ...SIZING_FIELDS.filter((field) => operation[field] !== undefined).map((field) => [field, operation[field]]),
+      ])
     );
   if (!sized.length) return;
   // The latest request for a target wins and takes its place in the order.
@@ -411,6 +453,9 @@ async function prepareBatchOperations(session, args) {
   // which both backends already perform.
   prepared.templateData = [];
   operations = await expandTemplatePageOperations(session.format, operations, prepared.templateData);
+  operations = await withImportedSlideBackgrounds(session, operations);
+  prepared.scratch = [];
+  operations = await withDocumentCharts(session, operations, prepared.scratch);
   if (session.format === 'xlsx' || TABULAR_FORMATS.has(session.format)) validateXlsxOperations(operations);
   // Excel rejects `My Sheet!A1` outright; the portable writer quotes it from
   // the sheet list, and an Excel session gets the same courtesy here.
@@ -423,11 +468,90 @@ async function prepareBatchOperations(session, args) {
   }
   operations = withTableStyleNames(
     session,
-    withSlideTableWidths(session, withFigureColumnAlignments(session, withPageSizePoints(session, operations)))
+    withSlideTableWidths(
+      session,
+      withFigureColumnAlignments(session, withTitleLeading(session, withPageSizePoints(session, operations)))
+    )
   );
   operations = await withImageProportions(session, operations);
   return { prepared, operations };
 }
+// PowerPoint's InsertFromFile gives each imported slide the deck's own design and drops the background it had:
+// a template's dark quote and closing pages arrived on the deck's light paper, their white words unreadable (1.08:1),
+// where the portable import keeps them. Each slide imported at a known place takes its source's background again,
+// resolved through its layout and master as the snapshot reads it.
+async function withImportedSlideBackgrounds(session, operations) {
+  if (session.format !== 'pptx' || !isMicrosoftOfficeSession(session)) return operations;
+  if (!operations.some((operation) => operation?.op === 'import_slides')) return operations;
+  const sources = new Map();
+  const output = [];
+  for (const operation of operations) {
+    output.push(operation);
+    if (operation?.op !== 'import_slides' || operation.after == null || !Number.isInteger(Number(operation.after))) {
+      continue;
+    }
+    const path = String(operation.path || '');
+    if (!sources.has(path)) sources.set(path, (await snapshotPortableOoxml(path, 'pptx')).slides || []);
+    const slides = sources.get(path);
+    const numbers =
+      Array.isArray(operation.slides) && operation.slides.length
+        ? operation.slides.map(Number)
+        : slides.map((slide) => slide.index);
+    numbers.forEach((number, offset) => {
+      const color = slides.find((slide) => slide.index === number)?.background?.color;
+      if (color) output.push({ op: 'set_slide_background', slide: Number(operation.after) + offset + 1, color });
+    });
+  }
+  return output;
+}
+
+// A Word document's chart is the picture the PDF writer draws for the same block: Word draws no chart without Excel
+// behind it, and a report's figure had come in as a hand-made picture with no names or values on it. add_chart turns
+// into add_image of that picture before either backend sees it, so both place the same one. The pictures are written
+// into scratch directories the batch removes once it is done.
+const DOCUMENT_CHART_WIDTH = 420;
+async function withDocumentCharts(session, operations, scratch) {
+  if (session.format !== 'docx' || !operations.some((operation) => operation?.op === 'add_chart')) return operations;
+  const directory = await mkdtemp(join(tmpdir(), 'mixdog-docx-chart-'));
+  scratch.push(directory);
+  const output = [];
+  for (const [index, operation] of operations.entries()) {
+    if (operation?.op !== 'add_chart') {
+      output.push(operation);
+      continue;
+    }
+    const { paragraph, width, altText, properties } = operation;
+    // The chart's own fields; the placement ones belong to the picture.
+    const block = { ...operation };
+    for (const key of ['op', 'paragraph', 'width', 'altText', 'properties']) delete block[key];
+    const pointsWide = Number(width) > 0 ? Number(width) : DOCUMENT_CHART_WIDTH;
+    const pdf = join(directory, `chart-${index + 1}.pdf`);
+    await createChartPdf(pdf, block, { width: pointsWide });
+    // Three pixels a point: the picture stays sharp in print and at the zoom a reader uses.
+    const [image] = (
+      await renderPdfPages(pdf, { pages: [1], maxWidth: Math.round(pointsWide * 3), maximumScale: 3 })
+    ).images;
+    output.push({
+      op: 'add_image',
+      path: image.path,
+      width: pointsWide,
+      altText: String(altText || '').trim() || chartDescription(block),
+      ...(paragraph ? { paragraph } : {}),
+      ...(properties ? { properties } : {}),
+    });
+  }
+  return output;
+}
+
+// What the chart shows, for a reader who cannot see it: its title and every figure by name.
+function chartDescription({ title, categories, values, unit }) {
+  const figures = (categories || []).map(
+    (category, index) =>
+      `${category} ${Number(values?.[index]).toLocaleString('en-US', { maximumFractionDigits: 2 })}${unit ?? ''}`
+  );
+  return `${title ? `${title}: ` : ''}${figures.join(', ')}`;
+}
+
 // Marks the open transaction as applying and journals that; a journal that
 // cannot be written leaves the transaction active and stops the batch.
 async function markTransactionApplying(session) {
@@ -643,5 +767,8 @@ export async function applyBatch(session, args) {
   } finally {
     if (plan.backup) await rm(plan.backup, { force: true }).catch(() => {});
     if (plan.replacementSource) await rm(plan.replacementSource, { force: true }).catch(() => {});
+    for (const directory of prepared.scratch || []) {
+      await rm(directory, { recursive: true, force: true }).catch(() => {});
+    }
   }
 }

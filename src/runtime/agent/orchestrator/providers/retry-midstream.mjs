@@ -4,11 +4,11 @@ import { readStreamOutcome } from './lib/stream-outcome.mjs';
 import {
   NON_TERMINAL_STREAM_CLOSE_CODES,
   TERMINAL_EDGE_STATUSES,
-  TRANSIENT_ERROR_CODES,
   TRANSIENT_STATUSES,
   WEBSOCKET_CONNECTION_LIMIT,
   WIRE_ERROR_FATAL_CODES,
   classifyError,
+  isTransientErrorCode,
   typedStatusFrom,
 } from './retry-classification.mjs';
 
@@ -181,6 +181,9 @@ const RESPONSE_FAILED_CODE_CLASSIFIERS = new Map([
   ['auth_expired', 'response_failed_auth_expired'],
   ['previous_response_not_found', 'previous_response_not_found'],
   ['websocket_connection_limit_reached', 'websocket_connection_limit'],
+  // A rate limit is retried after the server-advised wait (the reference
+  // client's RateLimitExceeded); a usage limit stays a fatal code.
+  ['rate_limit_exceeded', 'response_failed_rate_limited'],
 ]);
 
 // SSE classification consumes the provider's stream-state signals.
@@ -276,6 +279,7 @@ const TRANSPORT_FALLBACK_ERRNO = new Set([
   'ERR_HTTP2_SESSION_ERROR',
   'ERR_HTTP2_INVALID_SESSION',
   'ERR_SOCKET_CONNECTION_TIMEOUT',
+  'ERR_STREAM_PREMATURE_CLOSE',
 ]);
 
 export function shouldFallbackTransport(err, { signal, enabled = true } = {}) {
@@ -295,7 +299,7 @@ export function shouldFallbackTransport(err, { signal, enabled = true } = {}) {
   if (TRANSIENT_STATUSES.has(status) || (status >= 500 && status < 600)) return true;
   if (status > 0) return false;
   const code = String(err?.code || '');
-  if (TRANSPORT_FALLBACK_ERRNO.has(code)) return true;
+  if (TRANSPORT_FALLBACK_ERRNO.has(code) || (code.startsWith('ERR_SSL_') && isTransientErrorCode(code))) return true;
   const classifier = String(err?.retryClassifier || err?.midstreamClassifier || '');
   if (TRANSPORT_FALLBACK_CLASSIFIERS.has(classifier)) return true;
   if (/^http_5\d\d$/.test(classifier)) return true;
@@ -331,9 +335,16 @@ export function classifyHandshakeError(err, { retry429 = true } = {}) {
   if (code === 'ETIMEDOUT' || code === 'ESOCKETTIMEDOUT') return 'timeout';
   if (code === 'EWSACQUIRETIMEOUT') return 'acquire_timeout';
   if (code === 'ENETUNREACH' || code === 'EHOSTUNREACH' || code === 'EPIPE') return 'network';
-  if (TRANSIENT_ERROR_CODES.has(String(code))) {
-    if (code === 'UND_ERR_SOCKET' || code === 'EPROTO') return 'network';
-    if (code === 'UND_ERR_DESTROYED' || code === 'UND_ERR_CLOSED' || code === 'ERR_STREAM_DESTROYED') return 'reset';
+  if (isTransientErrorCode(code)) {
+    if (code === 'UND_ERR_SOCKET' || code === 'EPROTO' || String(code).startsWith('ERR_SSL_')) return 'network';
+    if (
+      code === 'UND_ERR_DESTROYED' ||
+      code === 'UND_ERR_CLOSED' ||
+      code === 'ERR_STREAM_DESTROYED' ||
+      code === 'ERR_STREAM_PREMATURE_CLOSE'
+    ) {
+      return 'reset';
+    }
     if (code === 'ECONNABORTED' || code === 'ENETRESET') return 'reset';
     if (String(code).startsWith('ERR_HTTP2_')) return 'reset';
     if (code === 'UND_ERR_CONNECT' || code === 'UND_ERR_CONNECT_TIMEOUT') return 'timeout';

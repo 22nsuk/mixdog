@@ -214,10 +214,14 @@ test('openai-compat/xai Responses stream: completed tool then trailing-text trun
   );
   assert.ok(rejected, 'expected the truncated stream to reject');
   assert.equal(rejected.streamStalled, true);
-  // A tool WAS emitted this turn, so the turn is still unsafe/tool-bearing —
-  // pendingToolUse stays true off the emit state, not a stale active latch.
+  // A tool WAS emitted this turn, so the turn stays tool-bearing: the
+  // completed call rides along on the error (never a text-only partial-final)
+  // and its dispatch is recorded. Nothing was still streaming, so no tool
+  // input is pending — the loop may continue from the finished call.
   assert.ok(emitted >= 1);
-  assert.equal(rejected.pendingToolUse, true);
+  assert.equal(rejected.pendingToolUse, false);
+  assert.equal(rejected.partialToolCalls.length, 1);
+  assert.ok(rejected.streamOutcome.toolCallsDispatched >= 1);
 });
 
 // Reviewer fix: function output_item.done must delete the pendingCalls itemId

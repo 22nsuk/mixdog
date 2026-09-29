@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { estimateTokens } from './token-estimate.mjs';
 import { isWhitespace } from './token-estimate-floors.mjs';
 import { positiveInt } from '../../../shared/numbers.mjs';
+import { hasPlainPrototype } from '../../../shared/object.mjs';
 import { createContextFingerprinter } from './context-fingerprint.mjs';
 import {
   isFinalizedProviderRequestTools,
@@ -328,11 +329,6 @@ const SNAPSHOT_OBJECT = Object.freeze({});
 const SNAPSHOT_ARRAY = Object.freeze({});
 const meteredMessageMemo = new WeakMap();
 
-function plainObjectPrototype(value) {
-  const proto = Object.getPrototypeOf(value);
-  return proto === Object.prototype || proto === null;
-}
-
 function snapshotMeteredValue(value, out, depth) {
   if (value === null || typeof value !== 'object') {
     out.push(value);
@@ -348,7 +344,7 @@ function snapshotMeteredValue(value, out, depth) {
     }
     return true;
   }
-  if (!plainObjectPrototype(value)) return false;
+  if (!hasPlainPrototype(value)) return false;
   out.push(SNAPSHOT_OBJECT, 0);
   const countIndex = out.length - 1;
   let count = 0;
@@ -373,7 +369,7 @@ function matchMeteredValue(value, snapshot, index) {
     return next;
   }
   if (recorded === SNAPSHOT_OBJECT) {
-    if (value === null || typeof value !== 'object' || Array.isArray(value) || !plainObjectPrototype(value)) return -1;
+    if (value === null || typeof value !== 'object' || Array.isArray(value) || !hasPlainPrototype(value)) return -1;
     const count = snapshot[index + 1];
     let next = index + 2;
     let seen = 0;
@@ -778,7 +774,11 @@ function forkContextTranscript(parent) {
   return {
     refs: parent.refs.slice(),
     contributions: parent.contributions.slice(),
-    state: { ...parent.state, rows: copySummaryRows(parent.state.rows), semantic: copySummaryRows(parent.state.semantic) },
+    state: {
+      ...parent.state,
+      rows: copySummaryRows(parent.state.rows),
+      semantic: copySummaryRows(parent.state.semantic),
+    },
     revision: parent.revision,
     result: parent.result,
     signatures: new Map([...parent.signatures].map(([kind, entries]) => [kind, new Map(entries)])),
@@ -1033,10 +1033,7 @@ function putJsonElement(value) {
   else putRaw(JSON.stringify(value) ?? 'null');
 }
 
-const STORED_MEDIA_PLACEHOLDER_PREFIXES = [
-  '[Image omitted from stored history',
-  '[File omitted from stored history',
-];
+const STORED_MEDIA_PLACEHOLDER_PREFIXES = ['[Image omitted from stored history', '[File omitted from stored history'];
 
 // JSON.stringify of
 //   text.replace(/\[(?:Image|File) omitted from stored history[^\]]*\]/g, ' ')

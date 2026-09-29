@@ -150,15 +150,23 @@ const SearchPane = memo(function SearchPane({
   projectPath,
   gitStatus,
   active,
+  activeFileKey = '',
   onOpenFile,
   onOpenFileAt,
+  onRenameEntry,
 }: {
   projectPath: string;
   gitStatus: DesktopGitStatus | null;
   active: boolean;
+  /** The editor tab the tree reveals (`file:<project>:<rel>`). */
+  activeFileKey?: string;
   onOpenFile?(project: string, rel: string, mode?: 'preview' | 'pinned'): void;
   onOpenFileAt?(project: string, rel: string, line?: number): void;
+  onRenameEntry?(projectPath: string, relPath: string, newName: string): Promise<void>;
 }) {
+  // The tree's New File / New Folder / Refresh / Collapse All actions portal
+  // into the mode row while the tree is the body.
+  const [explorerActions, setExplorerActions] = useState<HTMLDivElement | null>(null);
   const folders = useMemo<DesktopWorkspaceFolder[]>(() => (projectPath ? [{ path: projectPath }] : []), [projectPath]);
   // Names filters paths; Contents runs full-text search with the same field.
   const [query, setQuery] = useState('');
@@ -359,11 +367,13 @@ const SearchPane = memo(function SearchPane({
         projectPath={projectPath}
         gitStatus={gitStatus}
         changed={EMPTY_CHANGED_FILES}
-        activeFileKey=""
+        activeFileKey={activeFileKey}
         active={active}
         readinessKey={`search-files:${projectPath}`}
         onReadyChange={ignoreFilesReadyChange}
         onOpenFile={onOpenFile}
+        onRenameEntry={onRenameEntry}
+        headerSlot={explorerActions}
       />
     );
   };
@@ -388,13 +398,16 @@ const SearchPane = memo(function SearchPane({
             </button>
           )}
         </label>
-        <div className="workbench-search-mode" role="tablist" aria-label={t('Search mode')}>
-          <button type="button" role="tab" aria-selected={!contentsMode} onClick={() => setSearchMode('names')}>
-            {t('Names')}
-          </button>
-          <button type="button" role="tab" aria-selected={contentsMode} onClick={() => setSearchMode('contents')}>
-            {t('Contents')}
-          </button>
+        <div className="workbench-search-mode-row">
+          <div className="workbench-search-mode" role="tablist" aria-label={t('Search mode')}>
+            <button type="button" role="tab" aria-selected={!contentsMode} onClick={() => setSearchMode('names')}>
+              {t('Names')}
+            </button>
+            <button type="button" role="tab" aria-selected={contentsMode} onClick={() => setSearchMode('contents')}>
+              {t('Contents')}
+            </button>
+          </div>
+          <div className="workbench-explorer-actions" ref={setExplorerActions} />
         </div>
       </div>
       {renderBody()}
@@ -427,6 +440,8 @@ export const UtilityDock = memo(function UtilityDock({
   onOpenDiff,
   onOpenPullRequest,
   onOpenFileAt,
+  activeFileKey = '',
+  onRenameProjectEntry,
   sessions = [],
   sessionsReady = true,
   activeSessionIds = [],
@@ -463,6 +478,10 @@ export const UtilityDock = memo(function UtilityDock({
   onOpenDiff?(project: string, rel: string, request: SourceControlDiffRequest): void;
   onOpenPullRequest?: PullRequestOpenHandler;
   onOpenFileAt?(project: string, rel: string, line?: number): void;
+  /** Search's file tree reveals this editor tab (`file:<project>:<rel>`). */
+  activeFileKey?: string;
+  /** Explorer rename that keeps the workspace's open tabs attached. */
+  onRenameProjectEntry?(projectPath: string, relPath: string, newName: string): Promise<void>;
   onOpenLeadSession?(sessionId: string): void;
   onOpenAgentSession?(sessionId: string, title: string, ownerSessionId: string): void;
   /** Surface re-entry: render already-open, without the slide-in replay. */
@@ -796,8 +815,10 @@ export const UtilityDock = memo(function UtilityDock({
                 projectPath={dockProjectPath}
                 gitStatus={dockGitStatus}
                 active={paneActive('search')}
+                activeFileKey={activeFileKey}
                 onOpenFile={onOpenFile}
                 onOpenFileAt={onOpenFileAt}
+                onRenameEntry={onRenameProjectEntry}
               />
             </DockPane>
           </UtilityDockViewSection>

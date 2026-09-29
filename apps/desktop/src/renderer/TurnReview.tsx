@@ -6,6 +6,7 @@ import {
   type SetStateAction,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -15,6 +16,7 @@ import { ErrorNotice, errorMessageText } from './ErrorNotice';
 import { GitDiffBody } from './ReviewPane';
 import { findPatch, PATCH_CACHE_LIMIT } from './TranscriptView';
 import { readDiffStyle, TURN_REVIEW_DIFF_STYLE_KEY, type TranscriptItem, writeDiffStyle } from './desktop-types';
+import { openDockSlot } from './dock-slot-motion';
 import { parseUnifiedDiff, turnReviewScope } from './renderer-logic.mjs';
 import { RendererLruCache } from './renderer-lru-cache';
 import { isMobileRemoteSurface } from './mobile-surface';
@@ -237,6 +239,8 @@ function statusCode(entry: TurnReviewFileEntry): string {
 
 // Single-quoted so the capability-inventory source scan counts this surface.
 const TURN_REVIEW_CAPABILITY = 'getTurnReviewDiff';
+/** Longest a session entry holds the bar for its first authoritative read. */
+const ENTRY_REVIEW_HOLD_MS = 500;
 
 function toolPublishesPatch(item: TranscriptItem): boolean {
   const categories = item.categories;
@@ -657,7 +661,21 @@ export const TurnReviewBar = memo(function TurnReviewBar({
     window.addEventListener('pointerdown', closeOnOutsidePointer, true);
     return () => window.removeEventListener('pointerdown', closeOnOutsidePointer, true);
   }, [expanded]);
-  const reviewScope = useMemo(() => turnReviewScope(items), [items]);
+  // A long turn's prompt row can fall out of the transcript tail the daemon
+  // sends. The rows left are still that turn, so it keeps its scope: the
+  // shared `none` scope held an unrelated earlier review and skipped the
+  // checkpoint check (user: 컴포저 위 디프가 엉뚱한 숫자가 나왔다 사라짐).
+  const reviewSession = String(sessionId || 'draft');
+  const rememberedScope = useRef<{ session: string; key: string } | null>(null);
+  const reviewScope = useMemo(() => {
+    const scope = turnReviewScope(items);
+    if (!scope.truncated) {
+      if (scope.key !== 'none') rememberedScope.current = { session: reviewSession, key: scope.key };
+      return scope;
+    }
+    const remembered = rememberedScope.current;
+    return remembered?.session === reviewSession ? { ...scope, key: remembered.key } : scope;
+  }, [items, reviewSession]);
   const turnScopeKey = `${String(sessionId || 'draft')}:${reviewScope.key}`;
   const activeScope = useRef(turnScopeKey);
   activeScope.current = turnScopeKey;
@@ -708,6 +726,27 @@ export const TurnReviewBar = memo(function TurnReviewBar({
   // Only probe once the transcript shows turn activity: a fresh/empty session
   // has no child review and passive mounts must not fire capability calls.
   const hasTurnActivity = reviewScope.hasActivity;
+  // Entering a session with no read for its turn yet shows no bar until the
+  // first authoritative read answers. The transcript estimate also counts
+  // edits outside the worktree: it painted "1 file changed" on entry, the read
+  // removed it ~1s later and the transcript dropped by the bar's height (user:
+  // 세션 처음 열 때 잔상이 남았다가 툭 튄다). A cached read answers in tens of
+  // milliseconds, so the bar lands with the transcript; a slow read falls back
+  // to the estimate. A live turn in a session already answered never waits.
+  const [answeredSession, setAnsweredSession] = useState('');
+  const entryPending =
+    Boolean(sessionId) &&
+    active &&
+    hasTurnActivity &&
+    answeredSession !== reviewSession &&
+    !leadReviewSnapshotKindCache.has(turnScopeKey);
+  const entryPendingRef = useRef(entryPending);
+  entryPendingRef.current = entryPending;
+  useEffect(() => {
+    if (!entryPending) return undefined;
+    const timer = window.setTimeout(() => setAnsweredSession(reviewSession), ENTRY_REVIEW_HOLD_MS);
+    return () => window.clearTimeout(timer);
+  }, [entryPending, reviewSession]);
   // Refresh on turn boundaries, not every streaming transcript publication.
   const turnBoundaryKey = useMemo(() => {
     for (let index = items.length - 1; index >= 0; index--) {
@@ -766,7 +805,10 @@ export const TurnReviewBar = memo(function TurnReviewBar({
         // mixed another turn's diff into the bar and could hit a stale view.
         // The tag lives with the cached review it names, so `unchanged` is only
         // ever asked for a review this scope still holds.
-        const known = reviewTagCache.get(requestedScope) ?? '';
+        // A `none` scope names no turn, so nothing read under it is kept for
+        // a later mount to show as its own review.
+        const cacheable = requestedCheckpoint !== 'none';
+        const known = cacheable ? (reviewTagCache.get(requestedScope) ?? '') : '';
         // Over the relay the patch text is most of each re-read; the collapsed
         // bar never draws it. The desktop's local IPC keeps full reads.
         const summary = isMobileRemoteSurface() && !detailShown.current;
@@ -787,15 +829,17 @@ export const TurnReviewBar = memo(function TurnReviewBar({
         // new prompt, that brought the old diff back above the composer.
         if (checkpointId && requestedCheckpoint !== 'none' && checkpointId !== requestedCheckpoint) return;
         const signature = JSON.stringify([leadPatch, files, snapshotKind, checkpointId, reviews]);
-        rememberAgentReviews(
-          requestedScope,
-          reviews,
-          leadPatch,
-          files,
-          snapshotKind,
-          checkpointId,
-          typeof value?.etag === 'string' ? value.etag : ''
-        );
+        if (cacheable) {
+          rememberAgentReviews(
+            requestedScope,
+            reviews,
+            leadPatch,
+            files,
+            snapshotKind,
+            checkpointId,
+            typeof value?.etag === 'string' ? value.etag : ''
+          );
+        }
         if (lastAgentReviewSignature.current === signature) return;
         lastAgentReviewSignature.current = signature;
         if (activeScope.current === requestedScope) {
@@ -812,6 +856,7 @@ export const TurnReviewBar = memo(function TurnReviewBar({
         // The next turn boundary, visibility change, expansion, or bounded idle
         // refresh retries. A transient read must never permanently lock Revert.
       } finally {
+        if (activeScope.current === requestedScope) setAnsweredSession(String(sessionId));
         capabilityRequestInFlight.current = false;
         const pending = pendingCapabilityRefresh.current;
         pendingCapabilityRefresh.current = null;
@@ -828,7 +873,12 @@ export const TurnReviewBar = memo(function TurnReviewBar({
     // count must catch up. If an older request is still running, the callback
     // above coalesces this into one mandatory follow-up refresh instead of
     // dropping the final file set and leaving an earlier count on screen.
-    if (active && hasTurnActivity) void refreshAgentReviews(true);
+    if (active && hasTurnActivity) {
+      // An idle entry asks the runtime's held snapshot first (fast), then the
+      // fresh worktree read queues behind it.
+      if (entryPendingRef.current && !busy) void refreshAgentReviews(false);
+      void refreshAgentReviews(true);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- turnBoundaryKey stands in for items
   }, [active, busy, refreshAgentReviews, hasTurnActivity, turnBoundaryKey]);
   useEffect(() => {
@@ -958,7 +1008,9 @@ export const TurnReviewBar = memo(function TurnReviewBar({
   // The file set and expanded rows remain the authoritative turn-start → current
   // diff. The collapsed headline mirrors the activity cards' edit workload so
   // replaced/deleted intermediate lines do not disappear into a net +N count.
-  const headlineStats = operationSummary.hasLineStats ? operationSummary : summary;
+  // A truncated transcript holds only part of the turn's edits, so its
+  // workload count is partial; the review's own totals stand in.
+  const headlineStats = operationSummary.hasLineStats && !reviewScope.truncated ? operationSummary : summary;
   const sources = useMemo(() => {
     const transcriptSource = {
       key: authoritativeWorktreeSnapshot ? 'turn' : 'lead',
@@ -967,7 +1019,7 @@ export const TurnReviewBar = memo(function TurnReviewBar({
     };
     return [...(transcriptSummary.files.size > 0 ? [transcriptSource] : []), ...agentSources];
   }, [transcriptSummary, agentSources, authoritativeWorktreeSnapshot]);
-  const reviewVisible = summary.files.size > 0;
+  const reviewVisible = !entryPending && summary.files.size > 0;
   const requestedCheckpointId = reviewScope.key === 'none' ? authoritativeCheckpointId : reviewScope.key;
   const checkpointMatches = !authoritativeCheckpointId || authoritativeCheckpointId === requestedCheckpointId;
   // Revert availability is decided by the runtime at click time. A transient
@@ -979,11 +1031,24 @@ export const TurnReviewBar = memo(function TurnReviewBar({
   const normalizedCwd = String(cwd || '')
     .replace(/\\/g, '/')
     .replace(/\/+$/, '');
+  // A bar that appears while the transcript is on screen opens its slot over
+  // the dock motion; one already there when a session is entered lands at full
+  // height. The opening runs once, on appearance: a CSS animation gated on the
+  // entry flag replayed its unfinished part the moment the flag dropped, and
+  // the freshly revealed transcript slid up again (user: 웹앱에서 트랜스크립트가
+  // 위아래로 튄다). Removal stays instant.
+  useLayoutEffect(() => {
+    if (!reviewVisible) return undefined;
+    const slot = barElement.current?.closest<HTMLElement>('.turn-review-slot');
+    const opening = slot ? openDockSlot(slot) : null;
+    return () => opening?.cancel();
+  }, [reviewVisible]);
   // The prior turn's review must leave at the next user boundary. Conversation
   // reserves geometry only after the CURRENT turn actually touches files, so
   // carrying an empty review row through every busy turn creates a fixed black
   // gap above the composer while new output streams above it.
-  if (!reviewVisible) return null;
+  // An undecided entry holds the conversation's reveal (use-transcript-reveal).
+  if (!reviewVisible) return entryPending ? <span hidden data-entry-pending /> : null;
   return (
     <section
       ref={barElement}

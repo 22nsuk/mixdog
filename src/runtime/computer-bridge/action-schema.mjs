@@ -100,7 +100,7 @@ const captureProperties = {
     type: 'string',
     enum: ['state', 'som', 'vision', 'ax', 'zoom'],
     description:
-      'state (default) is structured UI plus image; som adds marks; vision is image only; ax is accessibility only. zoom uses frame_id and region only; omit window_id, app and screen. Elements omit source when uia and enabled when true.',
+      'state (default) is structured UI plus image; som adds marks; vision is image only; ax is accessibility only. zoom uses frame_id and region only; omit window_id, app and screen. Each element is one line: #mark [ref] Role "name", then value=, state=, source= (non-UIA), disabled and focused only when they apply, @x,y,width,height and its actions. OCR text reads "text" @x,y,width,height line=N.',
   },
   frame_id: {
     type: 'string',

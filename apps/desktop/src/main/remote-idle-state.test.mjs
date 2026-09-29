@@ -133,7 +133,11 @@ test('an idle session with a running Goal and agent job sends no state frames un
       assert.equal(goalElapsedLabel(held.goal, clock), expected);
       assert.equal(goalTimeLabel(held.goal, clock), goalTimeLabel(publicGoal(goal, clock), clock));
     }
-    assert.equal(held.goal.deadlineAt, publicGoal(goal, T0).deadlineAt, 'the deadline an old decoder reads is unchanged');
+    assert.equal(
+      held.goal.deadlineAt,
+      publicGoal(goal, T0).deadlineAt,
+      'the deadline an old decoder reads is unchanged'
+    );
     const job = held.agentJobs[0];
     assert.equal(job.status, 'running');
     assert.equal(job.stage, 'streaming');
@@ -149,7 +153,10 @@ test('an idle session with a running Goal and agent job sends no state frames un
     const stateFields = compact ? changed.wire.sc : changed.wire.__statePatch.changed;
     assert.deepEqual(Object.keys(stateFields).sort(), ['agentJobs', 'agentWorkers']);
     const paused = { ...goal, status: 'paused', timeUsedMs: 7 * 60_000, lastStartedAt: null };
-    const pausedFrame = deliver({ ...snapshotAt(last + 4_000), goal: goalStateSnapshot(publicGoal(paused, last + 4_000)) });
+    const pausedFrame = deliver({
+      ...snapshotAt(last + 4_000),
+      goal: goalStateSnapshot(publicGoal(paused, last + 4_000)),
+    });
     assert.ok(pausedFrame);
     assert.equal(pausedFrame.snapshot.goal.status, 'paused');
     assert.equal(goalElapsedLabel(pausedFrame.snapshot.goal, last + 60_000), formatGoalDuration(7 * 60_000));

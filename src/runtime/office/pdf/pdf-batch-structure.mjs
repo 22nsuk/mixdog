@@ -239,7 +239,12 @@ function registerCopiedFields(document, pages) {
     for (let index = 0; annots && index < annots.size(); index += 1) {
       const ref = annots.get(index);
       const widget = context.lookup(ref);
-      if (!(ref instanceof PDFRef) || !(widget instanceof PDFDict) || widget.get(PDFName.of('Subtype')) !== PDFName.of('Widget')) continue;
+      if (
+        !(ref instanceof PDFRef) ||
+        !(widget instanceof PDFDict) ||
+        widget.get(PDFName.of('Subtype')) !== PDFName.of('Widget')
+      )
+        continue;
       let fieldRef = ref;
       let field = widget;
       while (field.get(PDFName.of('Parent')) instanceof PDFRef) {

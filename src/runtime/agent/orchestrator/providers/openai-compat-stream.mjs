@@ -114,9 +114,9 @@ export async function consumeCompatResponsesStream(
     }
     flushLeak();
   } catch (err) {
-    // Partial-final recovery: attach streamed partial state so a
-    // wedged FINAL no-tool summary can be accepted as partial-final success.
-    if (err?.streamStalled === true) attachPartialState(err, state, leakedCalls);
+    // Every stream that failed mid-flight carries what it completed (a
+    // cancellation keeps the caller's own reason untouched).
+    if (!signal?.aborted) attachPartialState(err, state, leakedCalls);
     throw stampOutcome(markUnsafeRetryIfToolEmitted(err, state));
   } finally {
     firstByteTimeout.cleanup();
@@ -128,13 +128,13 @@ export async function consumeCompatResponsesStream(
   }
   if (!state.completed) {
     const err = truncatedCompatStreamError(label, 'no response.completed');
+    attachPartialState(err, state, leakedCalls);
     if (state.emittedText) {
       // Truncation after visible output: keep the streamed partial
       // (same rule) so the loop can finalize it as partial-final instead
       // of dropping the turn. liveText marking still blocks replay.
       markErrorLiveTextEmitted(err);
       err.streamStalled = true;
-      attachPartialState(err, state, leakedCalls);
     }
     throw stampOutcome(err);
   }

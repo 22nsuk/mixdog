@@ -2,9 +2,9 @@
    Loaded in fixed order from ../desktop.css; the cascade depends on that
    order, so rules must never move between layers or be re-sorted. */
 /* Activity Bar: one 48px global rail on every surface. The top
-   cluster hosts New task / Sessions / primary destinations, the foot hosts
-   the updater badge and Settings. The adjacent session panel collapses
-   independently, exactly like a Primary Side Bar. */
+   cluster is the side-view icon bar (Sessions first, then the other
+   destinations); the foot hosts Usage and Settings. The adjacent side panel
+   collapses independently, exactly like a Primary Side Bar. */
 .activity-rail {
   width: 48px;
   min-width: 48px;
@@ -32,7 +32,6 @@
 /* Glyph and cell measured against VS Code on the same screen (user: 상하
    간격이 다르다): a 44px cell pitch, while the glyph keeps the 24px codicon
    em (≈20px of ink) — at 22px the marks read a step smaller than VS Code's. */
-.activity-rail > nav > button > svg,
 .activity-rail > button > svg {
   width: 24px;
   height: 24px;
@@ -40,11 +39,10 @@
 /* Outrank Monaco's global codicon font shorthand even when its lazy CSS loads
    after the rail, so Settings keeps the same 24px tier as the SVG destinations. */
 .activity-rail .codicon[class*="codicon-"] {
-  font-size: 24px;
+  font-size: var(--mx-icon-2xl);
 }
 /* Direct rail controls only: the usage popup nests its own buttons (rows,
    detail actions) that must keep their list styling. */
-.activity-rail > nav > button,
 .activity-rail > button {
   position: relative;
   width: 47px;
@@ -65,22 +63,17 @@
     color var(--mx-motion-ink),
     background-color var(--mx-motion-ink);
 }
-.activity-rail > nav > button:hover,
 .activity-rail > button:hover,
-.activity-rail > nav > button:focus-visible,
 .activity-rail > button:focus-visible {
   color: var(--mx-text);
   background: var(--mx-hover);
   outline: 0;
 }
-.activity-rail > nav > button.is-active,
 .activity-rail > button.is-active,
-.activity-rail > nav > button.selected,
 .activity-rail > button.selected {
   color: var(--mx-text);
   background: var(--mx-hover);
 }
-.activity-rail > nav > button::before,
 .activity-rail > button::before {
   content: "";
   position: absolute;
@@ -96,32 +89,15 @@
     opacity var(--mx-motion-ink),
     transform var(--mx-motion-base) var(--mx-ease-emphasized);
 }
-.activity-rail > nav > button.is-active::before,
 .activity-rail > button.is-active::before,
-.activity-rail > nav > button.selected::before,
 .activity-rail > button.selected::before {
   opacity: 1;
   transform: scaleY(1);
 }
-.activity-rail > nav > button[data-drop-position="before"] {
-  box-shadow: inset 0 2px 0 var(--mx-focus);
-}
-.activity-rail > nav > button[data-drop-position="after"] {
-  box-shadow: inset 0 -2px 0 var(--mx-focus);
-}
-.activity-rail > nav > button[data-drop-position="inside"] {
-  color: var(--mx-text);
-  background: var(--mx-pressed);
-  box-shadow: inset 0 0 0 1px var(--mx-focus);
-}
-.activity-rail > nav > button[draggable="true"],
-.session-panel-title[draggable="true"],
-.sidebar-view-section-header[draggable="true"] {
+.session-panel-title[draggable="true"] {
   cursor: grab;
 }
-.activity-rail > nav > button[draggable="true"]:active,
-.session-panel-title[draggable="true"]:active,
-.sidebar-view-section-header[draggable="true"]:active {
+.session-panel-title[draggable="true"]:active {
   cursor: grabbing;
 }
 /* The destination list is this icon bar; its own cell rule outranks the
@@ -158,7 +134,6 @@
   background: var(--mx-text);
 }
 /* Keyboard focus is a quiet inset, distinct from the persistent active bar. */
-.activity-rail > nav > button:focus-visible,
 .activity-rail > button:focus-visible {
   box-shadow: var(--mx-list-focus-ring);
 }

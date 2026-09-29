@@ -368,10 +368,6 @@ test('rail trailing controls resolve to one 20px centerline', () => {
   );
   assert.match(
     dialogsSource,
-    /\.sidebar-view-section-actions > \.session-panel-action:last-child\s*\{[^}]*margin-right:\s*calc\(var\(--mx-rail-trailing-center\) - 2px - 14px\);/su
-  );
-  assert.match(
-    dialogsSource,
     /\.schedules-row \.row-overflow-trigger,[\s\S]*?margin-right:\s*calc\(\s*var\(--mx-rail-trailing-center\) -\s*var\(--mx-rail-gutter\) -\s*12px\s*\);/u
   );
   assert.match(
@@ -381,14 +377,6 @@ test('rail trailing controls resolve to one 20px centerline', () => {
   assert.match(
     mobileChromeSource,
     /\.session-sidebar-panels \.workflows-section-head > \.schedules-new\s*\{[^}]*margin-right:\s*calc\(var\(--mx-rail-trailing-center,\s*20px\) - 22px\);/su
-  );
-  assert.match(
-    mobileChromeSource,
-    /\.session-sidebar \.sidebar-view-section-actions > \.session-panel-action\s*\{[^}]*width:\s*var\(--mx-touch\);[^}]*height:\s*var\(--mx-touch\);/su
-  );
-  assert.match(
-    mobileChromeSource,
-    /\.session-sidebar \.sidebar-view-section-actions > \.session-panel-action:last-child\s*\{[^}]*margin-right:\s*calc\(var\(--mx-rail-trailing-center,\s*20px\) - 2px - 22px\);/su
   );
   assert.match(
     mobileChromeSource,

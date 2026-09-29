@@ -336,7 +336,9 @@ function secretTool(args, input) {
 // A missing item exits non-zero with nothing on stderr; anything on stderr is
 // the Secret Service itself failing (no D-Bus session, locked collection).
 function secretToolFailure(action, r) {
-  return new Error(`[keychain] secret-tool ${action} failed: ${(r.stderr || '').trim() || `exit ${r.status}`} — ${secretToolHint()}`);
+  return new Error(
+    `[keychain] secret-tool ${action} failed: ${(r.stderr || '').trim() || `exit ${r.status}`} — ${secretToolHint()}`
+  );
 }
 
 function linuxGet(account) {

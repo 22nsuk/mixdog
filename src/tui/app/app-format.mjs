@@ -170,7 +170,7 @@ export const CONDITIONAL_WELCOME_PROMPT_HINTS = {
   noModel: 'Tip: /model · Choose a model before your first turn.',
   soloWorkflow: 'Tip: /workflow · Switch from Solo when you want agents.',
   webSearchDefaultUnsupported: 'Tip: /websearch · Choose a native web-search model for this main model.',
-  error: 'Tip: /doctor · Check setup health. (coming soon)',
+  error: 'Tip: /doctor · Check setup health.',
 };
 
 export function randomWelcomePromptHint() {

@@ -106,11 +106,7 @@ pub fn named_key(name: &str) -> Result<Key, String> {
                 .filter(|number| (1..=24).contains(number));
             match number {
                 Some(number) => Key::Named(Named::F(number)),
-                None => {
-                    return Err(format!(
-                        "invalid_keys: unsupported key token {{{other}}}"
-                    ))
-                }
+                None => return Err(format!("invalid_keys: unsupported key token {{{other}}}")),
             }
         }
     };
@@ -171,7 +167,12 @@ impl<'a> Parser<'a> {
         if value.encode_utf16().count() > 512 {
             return invalid();
         }
-        Ok(Parser { source, at: 0, cost: 0, _marker: std::marker::PhantomData })
+        Ok(Parser {
+            source,
+            at: 0,
+            cost: 0,
+            _marker: std::marker::PhantomData,
+        })
     }
 
     fn parse(&mut self, depth: u32, group: bool) -> Result<Vec<Node>, String> {
@@ -187,7 +188,10 @@ impl<'a> Parser<'a> {
                 self.at += 1;
                 return Ok(nodes);
             }
-            let mut node = Node { repeat: 1, ..Node::default() };
+            let mut node = Node {
+                repeat: 1,
+                ..Node::default()
+            };
             // '#' as the final character is the literal glyph, not the system key.
             while self.at < self.source.len()
                 && "^%+#".contains(self.source[self.at])
@@ -347,7 +351,9 @@ fn execute(nodes: &[Node], sink: &mut dyn KeySink, held: &mut HashSet<Mod>) -> R
             held.remove(modifier);
         }
         if let Some(error) = release_error {
-            return Err(format!("input_cleanup_unconfirmed: key release failed: {error}"));
+            return Err(format!(
+                "input_cleanup_unconfirmed: key release failed: {error}"
+            ));
         }
         outcome?;
     }
@@ -377,7 +383,9 @@ pub fn held_key(value: &str) -> Result<(Vec<Mod>, Key), String> {
         }
         resolve_text_key(&mut node, &HashSet::new())?;
     }
-    let key = node.key.ok_or_else(|| "invalid_keys: a held key must name exactly one key".to_string())?;
+    let key = node
+        .key
+        .ok_or_else(|| "invalid_keys: a held key must name exactly one key".to_string())?;
     Ok((node.modifiers, key))
 }
 
@@ -433,7 +441,12 @@ mod tests {
     fn chords_press_and_release_in_order() {
         assert_eq!(
             run("^s").unwrap(),
-            vec!["down Mod(Ctrl)", "down Char('s')", "up Char('s')", "up Mod(Ctrl)"]
+            vec![
+                "down Mod(Ctrl)",
+                "down Char('s')",
+                "up Char('s')",
+                "up Mod(Ctrl)"
+            ]
         );
     }
 

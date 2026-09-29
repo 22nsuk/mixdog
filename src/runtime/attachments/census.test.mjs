@@ -92,7 +92,9 @@ async function oracleWouldDelete(now, minAgeMs) {
     }
   }
   const cutoff = now - minAgeMs;
-  return blobs().filter((name) => !referenced.has(name) && statSync(join(shaDir, name.slice(0, 2), name)).mtimeMs <= cutoff);
+  return blobs().filter(
+    (name) => !referenced.has(name) && statSync(join(shaDir, name.slice(0, 2), name)).mtimeMs <= cutoff
+  );
 }
 
 async function censusMatchesOracle() {

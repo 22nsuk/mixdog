@@ -28,8 +28,11 @@ import {
   STREAM_TRANSPORTS,
 } from '../src/runtime/agent/orchestrator/providers/lib/stream-outcome.mjs';
 import {
+  canFallbackNonStreaming,
   classifyError,
   classifyMidstreamError,
+  isServerUnavailable,
+  isToolInputCut,
   shouldFallbackTransport,
   withRetry,
   retryAfterMsFromError,
@@ -1204,7 +1207,9 @@ test('anthropic OAuth wrapper: the real catch keeps the parser pending-input ver
   assert.ok(thrown, 'an incomplete tool input never completes the turn');
   assert.equal(thrown.code, 'TRUNCATED_STREAM');
   assert.equal(dispatched.length, 0);
-  assert.ok(attempts > 1, 'an undispatched incomplete input is idempotent, so the wrapper may retry');
+  // An incomplete tool input is never re-sent unchanged by the wrapper: the
+  // agent loop replays it with a split-into-smaller-calls notice.
+  assert.equal(attempts, 1);
   // The wrapper must NOT have written coarse aliases over the parser verdict.
   assert.equal(thrown.partialToolCall, undefined);
   assert.equal(thrown.unsafeToRetry, undefined);
@@ -1245,7 +1250,7 @@ test('anthropic API-key wrapper: the real catch keeps the parser pending-input v
   assert.ok(thrown);
   assert.equal(thrown.code, 'TRUNCATED_STREAM');
   assert.equal(dispatched.length, 0);
-  assert.ok(attempts > 1);
+  assert.equal(attempts, 1);
   assert.equal(thrown.partialToolCall, undefined);
   assert.equal(thrown.unsafeToRetry, undefined);
   assert.equal(thrown.streamOutcome.pendingToolInput, true);
@@ -2004,6 +2009,91 @@ test('classifyError: undici/TLS transport codes are transient', () => {
     assert.equal(shouldFallbackTransport(err('transport', { code })), true, code);
   }
   assert.equal(classifyHandshakeError(err('socket', { code: 'UND_ERR_SOCKET' })), 'network');
+  // TLS record corruption (every OpenSSL spelling), a plaintext-speaking proxy
+  // and a prematurely closed stream are link faults too.
+  for (const code of [
+    'ERR_SSL_SSLV3_ALERT_BAD_RECORD_MAC',
+    'ERR_SSL_SSL/TLS_ALERT_BAD_RECORD_MAC',
+    'ERR_SSL_DECRYPTION_FAILED_OR_BAD_RECORD_MAC',
+    'ERR_SSL_WRONG_VERSION_NUMBER',
+    'ERR_STREAM_PREMATURE_CLOSE',
+  ]) {
+    assert.equal(classifyError(err('link', { code })), 'transient', code);
+    assert.equal(shouldFallbackTransport(err('link', { code })), true, code);
+    assert.notEqual(classifyHandshakeError(err('link', { code })), null, code);
+  }
+});
+
+test('isServerUnavailable: a provider temporarily unable to serve, never a refusal or rate limit', () => {
+  for (const status of [500, 503, 529, 408]) {
+    assert.equal(isServerUnavailable(err('down', { httpStatus: status })), true, String(status));
+  }
+  for (const status of [400, 401, 429, 525]) {
+    assert.equal(isServerUnavailable(err('refused', { httpStatus: status })), false, String(status));
+  }
+  assert.equal(isServerUnavailable(err('wire', { providerWireError: true, providerErrorCode: 'server_error' })), true);
+  assert.equal(
+    isServerUnavailable(err('wire', { providerWireError: true, providerErrorCode: 'rate_limit_exceeded' })),
+    false
+  );
+  assert.equal(isServerUnavailable(err('rpc', { geminiStatus: 'UNAVAILABLE' })), true);
+  assert.equal(isServerUnavailable(err('first byte', { code: 'EPROVIDERTIMEOUT' })), true);
+  assert.equal(isServerUnavailable(err('reset', { code: 'ECONNRESET' })), false);
+});
+
+test('classifyError: a turn that ended on a malformed or unexpected tool call is re-asked', () => {
+  const incomplete = (finishReason, extra = {}) =>
+    err('incomplete', { providerIncomplete: true, code: 'PROVIDER_INCOMPLETE', finishReason, ...extra });
+  for (const reason of ['MALFORMED_FUNCTION_CALL', 'UNEXPECTED_TOOL_CALL', 'FINISH_REASON_MALFORMED_FUNCTION_CALL']) {
+    assert.equal(classifyError(incomplete(reason)), 'transient', reason);
+  }
+  // A usable call did come back, or the stop was a policy one: not re-asked.
+  assert.notEqual(
+    classifyError(
+      incomplete('MALFORMED_FUNCTION_CALL', { partialToolCalls: [{ id: 'c1', name: 'read', arguments: {} }] })
+    ),
+    'transient'
+  );
+  assert.equal(classifyError(incomplete('SAFETY')), 'unknown');
+});
+
+test('withRetry: a background call gives up on an overload, and a tool-input cut is never re-issued', async () => {
+  const fast = { backoffMs: [0, 0, 0], maxAttempts: 3 };
+  let calls = 0;
+  const overloaded = err('overloaded', { httpStatus: 529 });
+  await assert.rejects(
+    withRetry(
+      async () => {
+        calls += 1;
+        throw overloaded;
+      },
+      { ...fast, retry529: false }
+    ),
+    (thrown) => thrown === overloaded
+  );
+  assert.equal(calls, 1);
+
+  calls = 0;
+  await assert.rejects(
+    withRetry(async () => {
+      calls += 1;
+      throw err('overloaded', { httpStatus: 529 });
+    }, fast)
+  );
+  assert.equal(calls, 3, 'a foreground overload still retries');
+
+  calls = 0;
+  const cut = err('terminated', { name: 'TypeError', pendingToolUse: true });
+  await assert.rejects(
+    withRetry(async () => {
+      calls += 1;
+      throw cut;
+    }, fast),
+    (thrown) => thrown === cut
+  );
+  assert.equal(calls, 1);
+  assert.equal(isToolInputCut(cut), true);
+  assert.equal(canFallbackNonStreaming(cut), false);
 });
 
 test('classifyError: Gemini gRPC UNAVAILABLE/DEADLINE/ABORTED/INTERNAL retry without HTTP', () => {

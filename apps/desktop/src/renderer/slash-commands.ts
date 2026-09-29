@@ -202,6 +202,7 @@ const COMPOSER_SLASH_COMMANDS: ReadonlyArray<DesktopSlashCommand> = [
   'context',
   'goal',
   'inherit',
+  'doctor',
   'fast',
 ].map((name) => ({ ...resolveDesktopSlashCommand(name)!, usage: `/${name}` }));
 

@@ -37,7 +37,6 @@ export async function prepareCodexBatch({
   patchStr,
   requestedFormat,
   basePath,
-  readStateScope,
   preParsedV4ASections,
   v4aConvertOpts,
   mutationPlan,
@@ -46,8 +45,7 @@ export async function prepareCodexBatch({
   let v4aRenamePlan = null;
   if (isV4APatchInput(patchStr, requestedFormat)) {
     try {
-      const parsedSections =
-        preParsedV4ASections || rewriteV4AReadRedirects(parseV4APatch(patchStr), basePath, readStateScope);
+      const parsedSections = preParsedV4ASections || rewriteV4AReadRedirects(parseV4APatch(patchStr), basePath);
       const allSections = coalesceCompatibleV4ASections(parsedSections, basePath);
       v4aRenamePlan = await planV4ARenameSections(allSections, basePath);
       inputPatchStr = await convertV4ASectionsToUnifiedPatch(v4aRenamePlan.remainingSections, basePath, v4aConvertOpts);
@@ -62,7 +60,7 @@ export async function prepareCodexBatch({
     }
   } else if (requestedFormat !== 'unified' && hasUnifiedBareV4AHunk(patchStr)) {
     try {
-      const sections = rewriteV4AReadRedirects(parseUnifiedBareV4APatch(patchStr), basePath, readStateScope);
+      const sections = rewriteV4AReadRedirects(parseUnifiedBareV4APatch(patchStr), basePath);
       inputPatchStr = await convertV4ASectionsToUnifiedPatch(sections, basePath, v4aConvertOpts);
     } catch (err) {
       throw new Error(`apply_patch: bare @@ parse failed — ${err?.message || String(err)}`);
@@ -89,7 +87,7 @@ export async function prepareCodexBatch({
       );
     }
     try {
-      const sections = rewriteV4AReadRedirects(parseUnifiedCountedAsV4APatch(patchStr), basePath, readStateScope);
+      const sections = rewriteV4AReadRedirects(parseUnifiedCountedAsV4APatch(patchStr), basePath);
       inputPatchStr = await convertV4ASectionsToUnifiedPatch(sections, basePath, v4aConvertOpts);
       parsed = parsePatch(prepareInput(inputPatchStr));
       mutationPlan = {
@@ -103,7 +101,7 @@ export async function prepareCodexBatch({
       );
     }
   }
-  parsed = rewriteParsedReadRedirects(parsed, basePath, readStateScope);
+  parsed = rewriteParsedReadRedirects(parsed, basePath);
   if (!Array.isArray(parsed) || parsed.length === 0) {
     return { error: 'Error: patch contained no file sections' };
   }

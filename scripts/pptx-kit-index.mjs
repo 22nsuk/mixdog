@@ -21,10 +21,48 @@ const SOURCES = [
 // A statement this short says its whole meaning (a constant, a one-line arrow); a longer one gives its first line.
 const WHOLE_STATEMENT = 240;
 
+const propertyName = (property) =>
+  property.type === 'Property' ? String(property.key.name ?? property.key.value ?? '') : property.type === 'SpreadElement' ? '…' : '';
+
+// The keys an object literal offers a script, one level into object-valued keys ("body: { x, y, w, h }"). A table of
+// like entries (STYLES: an id per style, each with the same fields) reads as its ids and the fields each carries.
+function objectShape(node) {
+  const properties = node.properties.filter((property) => propertyName(property));
+  const nested = properties.filter((property) => property.value?.type === 'ObjectExpression');
+  if (properties.length >= 4 && nested.length === properties.length) {
+    const fields = [...new Set(nested.flatMap((property) => property.value.properties.map(propertyName)))].filter(Boolean);
+    return `{ ${properties.map(propertyName).join(', ')} } each { ${fields.join(', ')} }`;
+  }
+  const keys = properties.map((property) =>
+    property.value?.type === 'ObjectExpression'
+      ? `${propertyName(property)}: { ${property.value.properties.map(propertyName).filter(Boolean).join(', ')} }`
+      : propertyName(property)
+  );
+  return `{ ${keys.join(', ')} }`;
+}
+
+// What a function hands back when it returns an object literal (zones() → Z, typeScale() → TYPE): the body is
+// elided, and without its shape the script had to open the file to learn Z.foot.takeaway or TYPE.poster.
+function returnedShape(fn) {
+  const shapes = [];
+  const visit = (node) => {
+    if (!node || typeof node.type !== 'string') return;
+    if (node !== fn.body && /Function/.test(node.type)) return;
+    if (node.type === 'ReturnStatement' && node.argument?.type === 'ObjectExpression') shapes.push(objectShape(node.argument));
+    for (const value of Object.values(node)) {
+      if (Array.isArray(value)) value.forEach(visit);
+      else if (value && typeof value === 'object' && typeof value.type === 'string') visit(value);
+    }
+  };
+  visit(fn.body);
+  return shapes.length ? ` // returns ${shapes[shapes.length - 1]}` : '';
+}
+
 function declarationSummary(source, node) {
   const text = source.slice(node.start, node.end);
   if (node.type === 'FunctionDeclaration' || node.type === 'ClassDeclaration') {
-    return `${source.slice(node.start, node.body.start).trimEnd()} { … }`;
+    const shape = node.type === 'FunctionDeclaration' ? returnedShape(node) : '';
+    return `${source.slice(node.start, node.body.start).trimEnd()} { … }${shape}`;
   }
   if (text.length <= WHOLE_STATEMENT) return text;
   if (node.type === 'VariableDeclaration') {
@@ -35,6 +73,7 @@ function declarationSummary(source, node) {
         if (init && (init.type === 'ArrowFunctionExpression' || init.type === 'FunctionExpression')) {
           return `${head} = ${source.slice(init.start, init.body.start).trimEnd()} …;`;
         }
+        if (init?.type === 'ObjectExpression') return `${head} = ${objectShape(init)};`;
         return `${head} = ${source.slice(init?.start ?? declarator.end, declarator.end).split('\n')[0]} …;`;
       })
       .join('\n');

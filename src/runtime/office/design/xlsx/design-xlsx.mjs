@@ -1,9 +1,10 @@
 import { presetLabels, provenanceText, strings } from '../design-tokens.mjs';
 import { officeNumberFormat } from '../content-model.mjs';
-import { addXlsxDecisionPanel, bandHeight } from './design-xlsx-components.mjs';
+import { addXlsxDecisionPanel, bandHeight, wrapWords } from './design-xlsx-components.mjs';
 import { plainObject } from '../../shared/values.mjs';
 import { columnLabel } from '../../portable/portable-cells.mjs';
 import { displayWidth } from '../../portable/portable-sheet-xml.mjs';
+import { provenanceCitation } from '../../portable/portable-opc.mjs';
 import { koreanDesign } from '../docx/document-typography.mjs';
 
 // A metric writes its notation the way a fact does (`format: 'percent'` as well
@@ -32,7 +33,9 @@ function figureMetric(metric) {
   const magnitude = Number(`${whole.replace(/,/g, '')}.${fraction || '0'}`);
   const pattern = `${whole.includes(',') ? '#,##0' : '0'}${fraction ? `.${'0'.repeat(fraction.length)}` : ''}${percent ? '%' : ''}`;
   // 92.8 / 100 is 0.9279999999999999 in binary; the stored figure has the places the text wrote.
-  const scaled = Number(((sign === '-' ? -magnitude : magnitude) / (percent ? 100 : 1)).toFixed(fraction.length + (percent ? 2 : 0)));
+  const scaled = Number(
+    ((sign === '-' ? -magnitude : magnitude) / (percent ? 100 : 1)).toFixed(fraction.length + (percent ? 2 : 0))
+  );
   return {
     ...metric,
     value: scaled,
@@ -148,9 +151,28 @@ function sheetLayout(operation, design, composition) {
 
 // A dashboard's decision panel beside the table is as wide as the table: at a fixed thirteen columns it ran twice the
 // table's width for a two-line decision, and the page's right half stood empty under it.
+// The metric cards run over the panel's columns too, as every band under them does: held to the table, they left the
+// page's top right bare above the panel. The table keeps the widths its card floors gave it (the page it fills), so
+// only the strip changes; a figure that would not fit a card at those widths keeps the cards over the table.
 function panelGeometry(layout) {
-  if (!layout.dashboard || !layout.hasDecisionPanel) return {};
-  return { panelColumns: Math.min(13, Math.max(6, Math.round(tableCanvasPoints(layout) / 48))) };
+  if (!layout.dashboard || !layout.hasDecisionPanel) return { stripColumns: layout.canvasColumns };
+  const panelColumns = Math.min(13, Math.max(6, Math.round(tableCanvasPoints(layout) / 48)));
+  const stripColumns = layout.dataColumns + 1 + panelColumns;
+  const across = layout.metrics.length > 0 && !layout.analysisSheet && cardsFitColumns(layout, stripColumns);
+  return { panelColumns, stripColumns: across ? stripColumns : layout.canvasColumns };
+}
+
+// Whether every card holds its figure across the given columns: a table column at its printed width (its fit, or its
+// card floor), a column past the table at Excel's default (8.43 characters).
+function cardsFitColumns(layout, columns) {
+  const size = metricValueStyle(layout, {}, false).fontSize;
+  const floors = metricColumnFloors(layout);
+  const chars = (column) => (column <= layout.dataColumns ? tableColumnChars(layout, column - 1, floors) : 8.43);
+  return metricCardSpans(layout.metrics, columns).every((card) => {
+    let width = 0;
+    for (let column = card.startColumn; column <= card.endColumn; column += 1) width += chars(column);
+    return width >= metricNeededChars(card.metric, layout, size);
+  });
 }
 
 // The printed width of a table column once the metric cards above it have their floors, in Excel characters.
@@ -161,7 +183,8 @@ function tableColumnChars(layout, index, floors = metricColumnFloors(layout)) {
 function tableCanvasPoints(layout) {
   const floors = metricColumnFloors(layout);
   let points = 0;
-  for (let index = 0; index < layout.dataColumns; index += 1) points += (tableColumnChars(layout, index, floors) * 7 + 5) * 0.75;
+  for (let index = 0; index < layout.dataColumns; index += 1)
+    points += (tableColumnChars(layout, index, floors) * 7 + 5) * 0.75;
   return points;
 }
 
@@ -239,6 +262,19 @@ function pushBand(output, layout, row, value, properties) {
 function pushTitleBands(output, tableLayout, operation) {
   const layout = panelBandLayout(tableLayout);
   const { colors, type, format, dashboard, analysisSheet, narrativeScorecard, headers, rows } = layout;
+  // The source of the sheet's figures, in the gap row under the bands, muted, across their width: a cell note alone
+  // (A1's, which stays as the cell's provenance) never reached a printed or rendered page. Beside a table Excel takes
+  // a written row into the table, and a merge there is refused, so it sits up here.
+  const pushSource = (at) => {
+    if (!operation.source) return false;
+    pushBand(output, layout, at, provenanceText(operation.source) || String(operation.source), {
+      fontName: type.body,
+      fontSize: 8.5,
+      color: colors.muted,
+      verticalAlignment: 'center',
+    });
+    return true;
+  };
   let row = 1;
   if (operation.title) {
     if (dashboard) {
@@ -266,7 +302,8 @@ function pushTitleBands(output, tableLayout, operation) {
     // With the decision panel beside the table the title spans the panel too (panelBandLayout) — held to the table,
     // a one-line claim broke in two over a page whose right half stood empty. A widened title takes no fill: a tinted
     // canvas (F7F6F3) drew the long title band as a block of its own.
-    pushBand(output, layout, row, String(operation.title), {
+    const title = wrapWords(String(operation.title), titleSize, layout.bandPoints);
+    pushBand(output, layout, row, title, {
       fontName: type.display,
       fontSize: titleSize,
       bold: true,
@@ -277,7 +314,7 @@ function pushTitleBands(output, tableLayout, operation) {
     });
     // A merged band never grows to its wrapped lines: the title cut at the default 15 pt row, its second line
     // under the subtitle. The band takes the lines the title needs across its width.
-    const height = bandHeight(String(operation.title), titleSize, layout.bandPoints);
+    const height = bandHeight(title, titleSize, layout.bandPoints);
     output.push({ op: 'set_row_height', sheet: layout.sheet, row, height });
     row += 1;
   }
@@ -292,9 +329,14 @@ function pushTitleBands(output, tableLayout, operation) {
       fillColor: colors.surface,
       wrapText: true,
     });
+    pushSource(row + 1);
     return row + 2;
   }
-  return operation.title ? row + 1 : row;
+  if (operation.title) {
+    pushSource(row);
+    return row + 1;
+  }
+  return pushSource(row) ? row + 1 : row;
 }
 // One metric card: value over label over detail, merged across its span; the
 // first card of the sheet is painted as the headline.
@@ -386,34 +428,69 @@ function metricDisplayText(metric) {
   return `${shown}${percent ? '%' : ''}${units}`;
 }
 
+// A card that reads the table by name (=SUM(Hubs[처리량 (건)])) holds no value until the workbook calculates, and
+// measured as empty text it floored nothing: the headline "204,300건" printed ###. Its aggregate over the rows this
+// sheet writes stands in for the value when the formula is one aggregate of one table column.
+const TABLE_AGGREGATES = {
+  SUM: (values) => values.reduce((sum, value) => sum + value, 0),
+  AVERAGE: (values) => values.reduce((sum, value) => sum + value, 0) / values.length,
+  MAX: (values) => Math.max(...values),
+  MIN: (values) => Math.min(...values),
+  COUNT: (values) => values.length,
+};
+function measuredMetric(metric, layout) {
+  if (typeof metric?.value === 'number') return metric;
+  const match = /^=\s*(SUM|AVERAGE|MAX|MIN|COUNT)\s*\(\s*[^[\]()]*\[([^\]]+)\]\s*\)\s*$/i.exec(String(metric?.formula || ''));
+  const column = match ? layout.headers.indexOf(match[2].trim()) : -1;
+  if (column < 0) return metric;
+  const values = layout.rows.map((row) => Number(Array.isArray(row) ? row[column] : Number.NaN)).filter(Number.isFinite);
+  return values.length ? { ...metric, value: TABLE_AGGREGATES[match[1].toUpperCase()](values) } : metric;
+}
+
 // Columns sized to the table's text are too narrow for a card's value at display size: a figure stored as a number
 // ("47.0%" at 27 pt) then printed as ###. Each column under a card takes its share of the value's width as the
 // autofit's floor, so the column is as wide as its own content or the card's value, whichever is wider. Returns the
 // floor per column, in Excel characters.
+// The cards of the strips, each with the columns it spans: a strip's columns shared out among its cards, the spare ones
+// to the leading cards, the last card running to the strip's edge.
+function metricCardSpans(metrics, columns) {
+  const perRow = Math.max(1, Math.min(metrics.length, columns));
+  const cards = [];
+  for (let index = 0; index < metrics.length; index += perRow) {
+    const strip = metrics.slice(index, index + perRow);
+    const baseSpan = Math.floor(columns / strip.length);
+    const spare = columns % strip.length;
+    let startColumn = 1;
+    strip.forEach((metric, cardIndex) => {
+      const span = Math.max(1, baseSpan + (cardIndex < spare ? 1 : 0));
+      const endColumn = cardIndex === strip.length - 1 ? columns : Math.min(columns, startColumn + span - 1);
+      cards.push({ metric, index: index + cardIndex, strip: index / perRow, startColumn, endColumn });
+      startColumn = endColumn + 1;
+    });
+  }
+  return cards;
+}
+
+// The width a card's figure needs, in Excel characters. Two characters are the cell's own insets; the third keeps the
+// figure off the card's edge. The value is bold, a fifth wider than the regular face the character count stands for
+// (the audit's measure): "11,510건" came out one short and cut.
+function metricNeededChars(metric, layout, size) {
+  return Math.ceil((displayWidth(metricDisplayText(measuredMetric(metric, layout))) * size * 1.2) / 11) + 3;
+}
+
+// The floors are the table's: taken from the cards set over the table, they give it the width that fills the page,
+// wherever the strip then runs (panelGeometry).
 function metricColumnFloors(layout) {
   const { metrics, canvasColumns, analysisSheet, fills } = layout;
   if (!metrics.length || fills || analysisSheet) return new Map();
   const size = metricValueStyle(layout, {}, false).fontSize;
-  const perRow = Math.max(1, Math.min(metrics.length, canvasColumns));
   const floors = new Map();
-  for (let index = 0; index < metrics.length; index += perRow) {
-    const strip = metrics.slice(index, index + perRow);
-    const baseSpan = Math.floor(canvasColumns / strip.length);
-    const spare = canvasColumns % strip.length;
-    let startColumn = 1;
-    strip.forEach((metric, cardIndex) => {
-      const span =
-        cardIndex === strip.length - 1 ? canvasColumns - startColumn + 1 : Math.max(1, baseSpan + (cardIndex < spare ? 1 : 0));
-      // Two characters are the cell's own insets; the third keeps the figure off the card's edge. The value is bold,
-      // a fifth wider than the regular face the character count stands for (the audit's measure): "11,510건" came
-      // out one short and cut.
-      const needed = Math.ceil((displayWidth(metricDisplayText(metric)) * size * 1.2) / 11) + 3;
-      const share = Math.ceil(needed / span);
-      for (let column = startColumn; column < startColumn + span; column += 1) {
-        floors.set(column, Math.max(floors.get(column) || 0, share));
-      }
-      startColumn += span;
-    });
+  for (const card of metricCardSpans(metrics, canvasColumns)) {
+    const span = card.endColumn - card.startColumn + 1;
+    const share = Math.ceil(metricNeededChars(card.metric, layout, size) / span);
+    for (let column = card.startColumn; column <= card.endColumn; column += 1) {
+      floors.set(column, Math.max(floors.get(column) || 0, share));
+    }
   }
   // The figure columns under the cards read as one grid: floored card by card, the months under the widest card ran
   // three times as wide as the month beside them. The label column keeps its own width.
@@ -421,40 +498,29 @@ function metricColumnFloors(layout) {
   for (let column = 2; column <= Math.min(canvasColumns, layout.dataColumns); column += 1) {
     figureWidth = Math.max(figureWidth, floors.get(column) || 0, fittedColumnChars(layout, column - 1));
   }
-  for (let column = 2; column <= Math.min(canvasColumns, layout.dataColumns); column += 1) floors.set(column, figureWidth);
+  for (let column = 2; column <= Math.min(canvasColumns, layout.dataColumns); column += 1)
+    floors.set(column, figureWidth);
   return floors;
 }
 
 function pushMetricStrips(output, layout, row) {
-  const { metrics, canvasColumns, analysisSheet } = layout;
+  const { metrics, stripColumns, analysisSheet } = layout;
   if (!metrics.length) return row;
   // The headline is the card marked `emphasis: true`, else the first.
-  const lead = Math.max(0, metrics.findIndex((metric) => metric?.emphasis === true));
-  const perRow = Math.max(1, Math.min(metrics.length, canvasColumns));
-  const strips = [];
-  for (let index = 0; index < metrics.length; index += perRow) {
-    strips.push(metrics.slice(index, index + perRow));
-  }
-  strips.forEach((strip, stripIndex) => {
-    const baseSpan = Math.floor(canvasColumns / strip.length);
-    const spare = canvasColumns % strip.length;
-    const cardSpans = strip.map((_, index) => Math.max(1, baseSpan + (index < spare ? 1 : 0)));
-    const stripRow = row + stripIndex * 3;
-    strip.forEach((metric, cardIndex) => {
-      const startColumn = cardSpans.slice(0, cardIndex).reduce((total, width) => total + width, 1);
-      const endColumn =
-        cardIndex === strip.length - 1
-          ? canvasColumns
-          : Math.min(canvasColumns, startColumn + cardSpans[cardIndex] - 1);
-      pushMetricCard(output, layout, metric, {
-        headline: stripIndex * perRow + cardIndex === lead && !analysisSheet,
-        startColumn,
-        endColumn,
-        stripRow,
-      });
+  const lead = Math.max(
+    0,
+    metrics.findIndex((metric) => metric?.emphasis === true)
+  );
+  const cards = metricCardSpans(metrics, stripColumns);
+  for (const card of cards) {
+    pushMetricCard(output, layout, card.metric, {
+      headline: card.index === lead && !analysisSheet,
+      startColumn: card.startColumn,
+      endColumn: card.endColumn,
+      stripRow: row + card.strip * 3,
     });
-  });
-  return row + strips.length * 3 + 1;
+  }
+  return row + (cards.at(-1).strip + 1) * 3 + 1;
 }
 function pushInsightBand(output, tableLayout, operation, row) {
   const layout = panelBandLayout(tableLayout);
@@ -466,14 +532,25 @@ function pushInsightBand(output, tableLayout, operation, row) {
   else if (trendDashboard) insightFill = colors.surface;
   // One insight per line: joined inline, the wrap left a separator dangling at
   // the end of the first line ("…낮습니다. •").
-  pushBand(output, layout, row, insights.length > 1 ? insights.map((entry) => `• ${entry}`).join('\n') : insights[0], {
+  const size = dashboard ? Math.max(10.5, format.body) : format.body;
+  const text = wrapWords(
+    insights.length > 1 ? insights.map((entry) => `• ${entry}`).join('\n') : insights[0],
+    size,
+    layout.bandPoints
+  );
+  pushBand(output, layout, row, text, {
     fontName: type.body,
-    fontSize: dashboard ? Math.max(10.5, format.body) : format.body,
+    fontSize: size,
     bold: true,
     color: narrativeScorecard ? colors.onInverse : colors.ink,
     fillColor: insightFill,
     wrapText: true,
   });
+  // A merged band never grows to its lines, and Excel sized this one by its first column when the wrap was set: two
+  // insights stood in a band a hand tall there and two cramped lines in the portable file. The band takes each line
+  // it holds, wrapped across its width, as the title band does.
+  const height = text.split('\n').reduce((total, line) => total + bandHeight(line, size, layout.bandPoints) - 8, 8);
+  output.push({ op: 'set_row_height', sheet: layout.sheet, row, height: Math.min(409, height) });
   return row + 2;
 }
 
@@ -513,7 +590,12 @@ function pushDataTable(output, layout, operation, values, startRow) {
       const body = values.slice(1).map((row) => row?.[index]);
       if (!body.length || !body.every(figureCell)) return;
       const column = columnLabel(index + 1);
-      output.push({ op: 'set_style', sheet, range: `${column}${startRow}`, properties: { horizontalAlignment: 'right' } });
+      output.push({
+        op: 'set_style',
+        sheet,
+        range: `${column}${startRow}`,
+        properties: { horizontalAlignment: 'right' },
+      });
     });
     output.push({
       op: 'add_table',
@@ -750,7 +832,16 @@ function fittedColumnChars(layout, index) {
 }
 
 function pushDecisionPanel(output, layout, operation, { startRow, dataEndRow }) {
-  const { sheet, design, dataColumns, panelColumns, hasDecisionPanel, decisionText, decisionLabel: label, dashboard } = layout;
+  const {
+    sheet,
+    design,
+    dataColumns,
+    panelColumns,
+    hasDecisionPanel,
+    decisionText,
+    decisionLabel: label,
+    dashboard,
+  } = layout;
   if (!hasDecisionPanel) return { lastRow: dataEndRow, lastColumn: 0 };
   if (!dashboard) {
     // Under the table, a row apart, as wide as the table (four columns at least, the gate row's three spans).
@@ -871,14 +962,10 @@ export function expandXlsxSheet(operation, sourceDesign, composition) {
     output.push(...kept, ...formulas);
   }
   const decision = pushDecisionPanel(output, layout, operation, { startRow, dataEndRow });
-  if (operation.source) {
-    output.push({
-      op: 'add_note',
-      sheet: layout.sheet,
-      cell: 'A1',
-      text: `Source: ${provenanceText(operation.source) || String(operation.source)}`,
-    });
-  }
+  // The citation reads as add_provenance writes one, in the copy's language: "Source: 자료: 운영관리시스템…" put an English
+  // label the caller never wrote in front of the one they did.
+  const citation = provenanceCitation(operation.source);
+  if (citation) output.push({ op: 'add_note', sheet: layout.sheet, cell: 'A1', text: citation });
   pushAutofit(output, layout, {
     lastRow: Math.max(decision.lastRow, dataEndRow, row),
     lastColumn: Math.max(canvasColumns, decision.lastColumn),

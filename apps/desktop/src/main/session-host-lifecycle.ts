@@ -340,9 +340,14 @@ export class SessionHostLifecycle {
     }
   }
 
-  async searchProjectFiles(projectIdOrWorkspaceId: string, query: string, limit = 50): Promise<string[]> {
+  async searchProjectFiles(
+    projectIdOrWorkspaceId: string,
+    query: string,
+    limit = 50,
+    includeIgnored = false
+  ): Promise<string[]> {
     const root = await this.owner.projectDirectory(projectIdOrWorkspaceId);
-    return searchProjectDirectory(root, query, limit);
+    return searchProjectDirectory(root, query, limit, { includeIgnored });
   }
 
   async submitNewTask(

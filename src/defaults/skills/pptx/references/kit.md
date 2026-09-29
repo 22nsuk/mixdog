@@ -14,6 +14,19 @@ const pres = new pptxgen();
 pres.layout = 'LAYOUT_WIDE';
 const W = 13.33, H = 7.5;                       // canvas (inches)
 const S = pres.ShapeType;                      // camelCase presets: S.chevron, S.blockArc, S.round1Rect, S.leftBrace, S.wedgeRectCallout, S.custGeom
+// A corner radius of 0 is a square corner. pptxgenjs writes no radius for rectRadius: 0, and PowerPoint and LibreOffice
+// then draw the preset's own corner, a sixth of the short side: a swiss-minimal deck's lifted plane, cards, and steps
+// (RADIUS 0) came out as soft rounded cards. Every slide draws such a shape as the rect it means.
+{
+  const addSlide = pres.addSlide.bind(pres);
+  pres.addSlide = (...args) => {
+    const slide = addSlide(...args);
+    const addShape = slide.addShape.bind(slide);
+    slide.addShape = (shape, options = {}) =>
+      addShape(shape === S.roundRect && options.rectRadius === 0 ? S.rect : shape, options);
+    return slide;
+  };
+}
 const box = (x, y, w, h) => ({ x, y, w, h });
 const PX = 160;                                 // raster density: inches × PX = pixels (≥ 2× placed size)
 // Spacing ladder (composition.md §6): five rungs, decided once per deck like the palette and the type scale. Every
@@ -510,10 +523,13 @@ const HANGUL = /[\uAC00-\uD7A3\u1100-\u11FF\u3130-\u318F]/;
 const NO_BREAK_BEFORE = /^[,.:;!?%)\]}」』’”…·]/;   // a closing mark never starts a line
 // Korean words that belong to their neighbour: a numeral or determiner before its noun ("한 / 분기", "두 / 기능") and
 // a short adverb before its verb never end a line; a counter or bound noun after its word ("3.5조 / 원", "할 / 수")
-// never starts one.
+// never starts one; and a number phrase of two words reads as one — a fraction, a date, a time, a sum in two groups
+// ("3분의 / 1로" split a cover's claim, "10월 / 14일", "14시 / 30분", "12만 / 6천 원").
 const BINDS_FORWARD = /^(?:한|두|세|네|몇|첫|새|옛|각|매|총|약|이|그|저|더|안|잘|못|꼭|또|좀|맨|온|딴|헌)$/;   // 맨 위, 온 가족, 딴 곳, 헌 옷
 const BINDS_BACK = /^(?:원|명|개|건|곳|배|수|것|등|때|번|중)[,.:;!?)…]*$/;
-const breaksBetween = (left, right) => !NO_BREAK_BEFORE.test(right) && !BINDS_FORWARD.test(left) && !BINDS_BACK.test(right);
+const NUMBER_PHRASE = (left, right) => /\d(?:분의|월|시|조|억|만)$/.test(left) && /^\d/.test(right);
+const breaksBetween = (left, right) =>
+  !NO_BREAK_BEFORE.test(right) && !BINDS_FORWARD.test(left) && !BINDS_BACK.test(right) && !NUMBER_PHRASE(left, right);
 const WRAP_MARGIN = 0.98;
 function wrapKo(str, w, size, font = T.sans, bold = false) {
   const s = String(str ?? '');

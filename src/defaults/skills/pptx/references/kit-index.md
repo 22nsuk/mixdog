@@ -27,6 +27,10 @@ const W = 13.33, H = 7.5;
 // canvas (inches)
 const S = pres.ShapeType;
 // camelCase presets: S.chevron, S.blockArc, S.round1Rect, S.leftBrace, S.wedgeRectCallout, S.custGeom
+// A corner radius of 0 is a square corner. pptxgenjs writes no radius for rectRadius: 0, and PowerPoint and LibreOffice
+// then draw the preset's own corner, a sixth of the short side: a swiss-minimal deck's lifted plane, cards, and steps
+// (RADIUS 0) came out as soft rounded cards. Every slide draws such a shape as the rect it means.
+{ …
 const box = (x, y, w, h) => ({ x, y, w, h });
 const PX = 160;
 // raster density: inches × PX = pixels (≥ 2× placed size)
@@ -85,7 +89,7 @@ function counterHue(h) { … }
 // at 4.5:1 (a yellow pill carries dark type, a green one white), else the type form of the accent under white (a mid
 // amber or blue can host neither at 12 pt). Charts, arcs, dots, and bars fill with accentFill; a word in the accent,
 // a kicker, an emphasis run, a hero numeral keep `accent`.
-function palette({ hue = 205, accentHue = counterHue(hue), accentSat = 0.72, accentLight = 0.42 } = {}) { … }
+function palette({ hue = 205, accentHue = counterHue(hue), accentSat = 0.72, accentLight = 0.42 } = {}) { … } // returns { ink, body, muted, lineSubtle, line, lineStrong, mark, markSoft, paper, paperAlt, tint, dark, darkAlt, onDark, onDarkMuted, onDarkAccent, accent, accentDeep, accentFill, accentLabel, onAccent, state }
 const T = { ...palette({ hue: 205 }), display: '', sans: '', light: '', data: '' };
 // deck() seeds it from the brief; faces set by typography()
 // Type scale (direction.md §6): the reading mode sets the body anchor; every role derives from it.
@@ -97,29 +101,29 @@ let MODE = 'balanced';
 // colour, and position more than by size — and their smallest type (sources, axis labels) is 7.5-12. A keynote
 // (Sequoia) reads at body 20 under titles of 30-66. Our earlier scale (18 under 36-44) was one step larger than any
 // of them and carried a fifth of their copy per page. The runtime floors stay: body 12 pt, one-line chrome 9 pt.
-function typeScale(mode) { … }
+function typeScale(mode) { … } // returns { body, lead, caption, kicker, section, title, cover, hero, stat, poster }
 let TYPE = typeScale(MODE);
 // Diagram type: labels inside chevrons, nodes, tiers and the notes under them follow the mode (balanced 14 / 11.5).
 let DIAG = { label: TYPE.caption + 1, note: Math.max(9.5, TYPE.caption - 1.5) };
 // Roles (direction.md §6): a role is size + face + weight + color + leading as one unit, so a caption is the same
 // caption on every slide. role('caption') resolves against the current T and TYPE; text() and flow() take a role
 // name in place of a size. A role's field may be overridden per box (color on a dark field, align) — the size never.
-const ROLES = { …;
+const ROLES = { poster, hero, stat, cover, title, section, lead, body, prose, strong, caption, kicker, label, note };
 function role(name) { … }
 // Component specs (composition.md §9): a carrier's anatomy declared once — slots (what it is made of), variants (the
 // forms it comes in), definitions (the values every form takes, resolved against the current T, TYPE, and DIAG when a
 // helper draws). badge(), callout(), chevrons(), hero() / statBand(), and table() read their sizes, faces, fields, and
 // lines here instead of carrying literals, so the same carrier has the same anatomy on every slide; a deck that needs
 // a different one redefines the entry once (SPEC.badge.definitions = () => ({ ... })) before the slides, never per call.
-const SPEC = { …;
-function spec(name) { … }
+const SPEC = { badge, callout, chevrons, stat, table, structure, cards } each { slots, variants, definitions };
+function spec(name) { … } // returns { slots, variants, … }
 // A spec carrier signs its shape: the receipt reads the name back (composition.md §9) and reports per slide and per deck
 // how many of each carrier the deck holds, in which variants, and whether their anatomy (type size and face) stayed one.
 const specName = (name, variant = '') => `mixdog-spec:${name}${variant ? `:${variant}` : ''}`;
 // tone: the field + type pair a toned carrier takes — neutral ink on tint, accent the mark form of the accent with the
 // type that reads on it (Kakao's yellow pill carries dark type; a blue one white), a state its word on its weak field
 // (direction.md §5: the solid form never sits under type).
-function tone(name = 'neutral') { … }
+function tone(name = 'neutral') { … } // returns { fill, color }
 // Typography roles (direction.md §6). script: 'ko' | 'ja' | 'zh' | 'latin'; pairing: 'serif' | 'weight' | 'concord';
 // fonts: 'noto' (provisioned with the Office capability; the default) | 'safe' (Office system faces, when recipients lack Noto).
 function typography({ script = 'ko', pairing = 'weight', fonts = 'noto' } = {}) { … }
@@ -152,7 +156,7 @@ function darkTheme(hue, accentHue = counterHue(hue)) { … }
 // one frame — the title at the top left, the body under it, the source at the foot — whatever its brief called it.
 // `motifs` is the style's decoration set, not one device: an anchor that names no kind takes the next one, so the
 // cover, the section marks, and the closing of one deck are not the same drawing three times (composition.md §3).
-const STYLES = { …;
+const STYLES = { swiss-minimal, editorial, photo-editorial, data-journalism, soft-rounded, dark-tech, glassmorphism, blueprint, brutalist, custom } each { chrome, radius, line, motifs, singleHue, pairing, titleBoost, theme };
 const STYLE_DEFAULTS = { chrome: 'bare', radius: 0.08, line: 1, motifs: ['rings', 'arcs'], singleHue: false, theme: 'light' };
 let STYLE = { name: 'custom', ...STYLE_DEFAULTS, ...STYLES.custom };
 let LINE = STYLE.line;
@@ -262,11 +266,14 @@ const NO_BREAK_BEFORE = /^[,.:;!?%)\]}」』’”…·]/;
 // a closing mark never starts a line
 // Korean words that belong to their neighbour: a numeral or determiner before its noun ("한 / 분기", "두 / 기능") and
 // a short adverb before its verb never end a line; a counter or bound noun after its word ("3.5조 / 원", "할 / 수")
-// never starts one.
+// never starts one; and a number phrase of two words reads as one — a fraction, a date, a time, a sum in two groups
+// ("3분의 / 1로" split a cover's claim, "10월 / 14일", "14시 / 30분", "12만 / 6천 원").
 const BINDS_FORWARD = /^(?:한|두|세|네|몇|첫|새|옛|각|매|총|약|이|그|저|더|안|잘|못|꼭|또|좀|맨|온|딴|헌)$/;
 // 맨 위, 온 가족, 딴 곳, 헌 옷
 const BINDS_BACK = /^(?:원|명|개|건|곳|배|수|것|등|때|번|중)[,.:;!?)…]*$/;
-const breaksBetween = (left, right) => !NO_BREAK_BEFORE.test(right) && !BINDS_FORWARD.test(left) && !BINDS_BACK.test(right);
+const NUMBER_PHRASE = (left, right) => /\d(?:분의|월|시|조|억|만)$/.test(left) && /^\d/.test(right);
+const breaksBetween = (left, right) =>
+  !NO_BREAK_BEFORE.test(right) && !BINDS_FORWARD.test(left) && !BINDS_BACK.test(right) && !NUMBER_PHRASE(left, right);
 const WRAP_MARGIN = 0.98;
 function wrapKo(str, w, size, font = T.sans, bold = false) { … }
 // A pre-broken string as one paragraph with soft breaks (a:br), so paragraph spacing and bullets stay where the
@@ -405,7 +412,7 @@ function numeralBeat(slide, value, claim, { x = M, y = 1.4, w = W - 2 * M, size 
 // sits on the open canvas with room for a kicker above it. Z.rail / Z.main: the asymmetric grid frontier analyst decks hang on — a
 // 2.2 in rail at the left for the legend, the kicker, a hero figure, and the main column for the carrier; head()
 // with x: Z.main.x, w: Z.main.w puts the title on the same column.
-function zones(mode = MODE, { titleLines = 1, chrome = CHROME } = {}) { … }
+function zones(mode = MODE, { titleLines = 1, chrome = CHROME } = {}) { … } // returns { chrome, head: { kicker, top, display, bottom, band }, body: { top, bottom, x, w }, foot: { takeaway, source, band }, seam, rail: { x, w }, main: { x, w }, plane: { x, y, w, h } }
 let Z = zones(MODE);
 // avail: the height left under `top` before the foot — measured first, then the blocks are chosen to fit it
 // (composition.md §4): the count of readings, the rows of a table, the height a stage or a chart takes are all
@@ -444,7 +451,7 @@ const mid = (c) => c.x + c.w / 2;
 const band = (cols, from = 0, to = cols.length - 1) => ({ x: cols[from].x, w: cols[to].x + cols[to].w - cols[from].x });
 // splitAt: the seam of a two-plane slide from each side's weight; never the middle unless the weights are equal.
 // Returns { left: { x, w }, right: { x, w } } — two named planes, not the array spans() returns for a row of peers.
-function splitAt(x, w, leftWeight, rightWeight, { gap = GUTTER, min = 0.38, max = 0.62 } = {}) { … }
+function splitAt(x, w, leftWeight, rightWeight, { gap = GUTTER, min = 0.38, max = 0.62 } = {}) { … } // returns { left: { x, w }, right: { x, w } }
 // shareDown: the vertical seam of a page that stacks a structure on a stage over a reading row (columns, a ruled
 // list) — the row is measured first (columnsH, readingH) and the stage takes what is left between the
 // body top and the foot, never a guessed 2.2 in that the render then reports as a hollow field or an overflow.
@@ -453,7 +460,7 @@ function splitAt(x, w, leftWeight, rightWeight, { gap = GUTTER, min = 0.38, max 
 // blockH) centres in a taller stage with its `h` option; lanes and steps spend the whole h. minStage is the floor
 // under which the structure stops reading as the carrier (composition.md §6: a quarter of the canvas) — cut the
 // row or move it to a rail instead of shrinking the stage.
-function shareDown(top, underH, { bottom = Z.body.bottom, gap = GAP.between, minStage = 2.2, maxStage = Infinity } = {}) { … }
+function shareDown(top, underH, { bottom = Z.body.bottom, gap = GAP.between, minStage = 2.2, maxStage = Infinity } = {}) { … } // returns { stage: { y, h }, under: { y, h }, slack }
 // Stat band: several numbers with one cause on one baseline (composition.md §4) — value (+ unit) over label over detail
 // per peer, widths by weight, one rule under the band. stats: [{ value, unit?, label, detail?, weight? }]. Returns the
 // bottom edge (under the rule). Anatomy from SPEC.stat at the band scale; scale: 'hero' for two or three large peers.
@@ -542,7 +549,7 @@ function lift(slide, x, y, w, h, tint = T.paper, { radius = RADIUS } = {}) { …
 // default units switch to paper on the tinted field instead of vanishing. The rail beside a stage starts at `st.y`
 // (the inner top, a pad under the field's edge), so its first label registers with the structure's top, never at
 // `top + 0.42` found by eye.
-function stage(slide, x, y, w, h, { tint = T.paperAlt, pad = PAD } = {}) { … }
+function stage(slide, x, y, w, h, { tint = T.paperAlt, pad = PAD } = {}) { … } // returns { …, cx, cy, r, ground, share }
 
 ```
 
@@ -702,8 +709,8 @@ function chart(slide, x, y, w, h, { type = 'col', labels, series, accent, overla
 // Waterfall: native stacked columns — an invisible base (the surface color) carries each bar to its running start.
 // steps: [{ label, value }] with a negative value for a drop, and { label, total: true } for a closing bar at the running total.
 // Values stay editable; the closing figure is labeled by the author (a hero or a takeaway), not by the chart.
-// The walk reads as three kinds of bar, each named where the chart starts: the totals (the opening figure and any
-// { total: true } step) in the dark neutral, the rises in the accent, the drops in the light neutral — and every bar
+// The walk reads as up to three kinds of bar, each kind it draws named where the chart starts: the totals (the opening
+// figure and any { total: true } step) in the dark neutral, the rises in the accent, the drops in the light neutral — and every bar
 // carries its figure (+380, −120, 4,200) over it, so the change is read from the number, not from the colour alone.
 // The first step is the opening total. names: the legend words; Korean or English by the labels' script.
 // Returns the bottom edge, like every other carrier, so a reading registers under it.
@@ -718,7 +725,7 @@ function dumbbell(slide, x, y, w, rows, { min, max, labelW, rowH = 0.6, format =
 function smallMultiples(slide, x, y, w, h, panels, { type = 'col', max, gap = GUTTER, format, labels = null } = {}) { … }
 // The table's pitch: the type and the row height one table takes — dense sets the caption step (never under 12 pt) at
 // 2.0 × its size, the default the body step at SPEC.table's 2.2 ×. table() and tableRows() read the same pair.
-function tablePitch(dense = false, size) { … }
+function tablePitch(dense = false, size) { … } // returns { size, rowH }
 // tableRows: how many body rows a height holds at the table's pitch (one header row plus the body) — decided at plan
 // time so the table's granularity fills its column (monthly rows instead of quarterly, every division instead of the
 // top three, `tableRows(avail(top))` rows) rather than three rows over a bare field: the reference tables run ten to

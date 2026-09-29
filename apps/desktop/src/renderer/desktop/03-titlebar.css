@@ -142,17 +142,11 @@ html[data-mixdog-remote] .titlebar-caption-space {
    (user: 여는 메뉴만 눈에 띄게 밝다 — 색감 통일): codicon glyphs carry more
    ink than the old 1.25px lucide strokes, so soft ink restores the old
    optical weight; interaction states re-ink to full text. */
-.toolbar-sidebar,
-.toolbar-panel,
-.toolbar-dock {
+.toolbar-sidebar {
   color: var(--mx-text-soft);
 }
 .toolbar-sidebar:hover,
-.toolbar-panel:hover,
-.toolbar-dock:hover,
-.toolbar-sidebar:focus-visible,
-.toolbar-panel:focus-visible,
-.toolbar-dock:focus-visible {
+.toolbar-sidebar:focus-visible {
   color: var(--mx-text);
 }
 /* Header cluster glyphs share ONE optical box: identical 18px frame so the
@@ -172,7 +166,7 @@ html[data-mixdog-remote] .titlebar-caption-space {
 .titlebar-brand > img {
   width: 24px;
   height: 24px;
-  opacity: 0.9;
+  opacity: var(--mx-op-soft);
   -webkit-user-drag: none;
   user-select: none;
 }

@@ -19,8 +19,10 @@ export function createMidState(attemptIndex) {
  * @param {number} deps.maxRetries  bounded mid-stream retries for transient stream loss
  * @param {AbortSignal|null} deps.totalSignal
  * @param {ReturnType<import('./anthropic-oauth-recovery.mjs').createAnthropicOAuthRecovery>} deps.recovery
+ * @param {Function|null} [deps.onStageChange]
+ * @param {boolean} [deps.retry529]
  */
-export function createMidstreamRecovery({ maxRetries, totalSignal, recovery }) {
+export function createMidstreamRecovery({ maxRetries, totalSignal, recovery, onStageChange = null, retry529 = true }) {
   return createAnthropicMidstreamRecovery({
     label: 'anthropic-oauth',
     outcomeProvider: 'anthropic-oauth',
@@ -29,5 +31,7 @@ export function createMidstreamRecovery({ maxRetries, totalSignal, recovery }) {
     maxRetries,
     totalSignal,
     recovery,
+    onStageChange,
+    retry529,
   });
 }

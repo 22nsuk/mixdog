@@ -122,8 +122,7 @@ const resumeDigestsMatch = async (encoder, decoder) => {
 };
 
 for (const compact of [false, true]) {
-  const statePatchOf = (encoded) =>
-    compact ? { changed: encoded.sc, lists: encoded.sl } : encoded.__statePatch;
+  const statePatchOf = (encoded) => (compact ? { changed: encoded.sc, lists: encoded.sl } : encoded.__statePatch);
 
   test(`a submit on a full prompt history travels as the new prompt only (compact=${compact})`, async (t) => {
     const encoder = createSnapshotDeltaEncoder({ compact, historyPatch: true });
@@ -199,7 +198,10 @@ for (const compact of [false, true]) {
       // "held index 0 moved to the front" patch, so it need not fall back.
       ['truncation with nothing new', (list) => list.slice(0, 20), (list) => ({ h: [list[0]], k: 19, x: 0 })],
       ['two held prompts swap places', (list) => [list[0], list[1], list[3], list[2], ...list.slice(4)]],
-      ['two held prompts move to the front at once', (list) => [list[4], list[7], ...list.filter((_, i) => i !== 4 && i !== 7)]],
+      [
+        'two held prompts move to the front at once',
+        (list) => [list[4], list[7], ...list.filter((_, i) => i !== 4 && i !== 7)],
+      ],
       ['truncation to a single entry', (list) => list.slice(0, 1)],
       ['a new project swaps the whole list', () => ['other project prompt']],
       ['an emptied history', () => []],
@@ -246,11 +248,16 @@ for (const compact of [false, true]) {
       const next = historySnapshot(history);
       const encoded = encoder.encode(next);
       const patch = statePatchOf(encoded);
-      assert.deepEqual(patch.lists.promptHistoryList, { h: [moved], k: HISTORY_CAP - 1, ...expected }, `re-send ${index}`);
+      assert.deepEqual(
+        patch.lists.promptHistoryList,
+        { h: [moved], k: HISTORY_CAP - 1, ...expected },
+        `re-send ${index}`
+      );
       assert.equal(Object.hasOwn(patch.changed ?? {}, 'promptHistoryList'), false);
       const patchBytes = JSON.stringify(encoded).length;
       assert.ok(patchBytes * 20 < JSON.stringify(history).length, `re-send ${index}: ${patchBytes} bytes`);
-      if (index === 25) t.diagnostic(`move-to-front frame ${patchBytes} bytes; whole field ${JSON.stringify(history).length} bytes`);
+      if (index === 25)
+        t.diagnostic(`move-to-front frame ${patchBytes} bytes; whole field ${JSON.stringify(history).length} bytes`);
       const decoded = decoder.decode(received(encoded, compact));
       assert.equal(decoded.ok, true);
       assert.deepEqual(decoded.snapshot, next);

@@ -182,6 +182,8 @@ export class AnthropicProvider {
       maxRetries: ANTHROPIC_MAX_MIDSTREAM_RETRIES,
       totalSignal,
       recovery,
+      onStageChange,
+      retry529: opts.retry529 !== false,
     });
 
     try {

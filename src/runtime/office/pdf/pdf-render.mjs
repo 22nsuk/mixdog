@@ -76,7 +76,8 @@ function pdfLoadingTask(getDocument, VerbosityLevel, data) {
   });
 }
 
-async function renderPdfPageDirect(path, pageNumber, targetWidth, minimumScale = 0.25) {
+// maximumScale: a preview stops at two pixels a point; a picture placed in a document (a Word chart) asks for three.
+async function renderPdfPageDirect(path, pageNumber, targetWidth, minimumScale = 0.25, maximumScale = 2) {
   installPdfGlobals();
   const { getDocument, Util, VerbosityLevel } = await resolvedPdfJs();
   const loadingTask = pdfLoadingTask(getDocument, VerbosityLevel, new Uint8Array(await readFile(path)));
@@ -84,7 +85,7 @@ async function renderPdfPageDirect(path, pageNumber, targetWidth, minimumScale =
     const document = await loadingTask.promise;
     const page = await document.getPage(pageNumber);
     const base = page.getViewport({ scale: 1 });
-    const scale = Math.min(2, Math.max(minimumScale, Number(targetWidth || 1400) / base.width));
+    const scale = Math.min(maximumScale, Math.max(minimumScale, Number(targetWidth || 1400) / base.width));
     const viewport = page.getViewport({ scale });
     const canvas = createCanvas(Math.ceil(viewport.width), Math.ceil(viewport.height));
     const context = canvas.getContext('2d');
@@ -207,7 +208,7 @@ async function writeContactSheet(group, width, imagePath, renderPage) {
   };
 }
 
-async function renderPdfPagesDirect(path, { pages = null, maxWidth = 1400, signal = null } = {}) {
+async function renderPdfPagesDirect(path, { pages = null, maxWidth = 1400, maximumScale = 2, signal = null } = {}) {
   if (signal?.aborted) throw new Error('PDF rendering was cancelled');
   installPdfGlobals();
   const { getDocument, VerbosityLevel } = await resolvedPdfJs();
@@ -237,6 +238,7 @@ async function renderPdfPagesDirect(path, { pages = null, maxWidth = 1400, signa
           pageNumber,
           targetWidth,
           minimumScale,
+          maximumScale,
         },
         signal
       );
@@ -302,6 +304,7 @@ export async function renderPdfPages(path, options = {}) {
       options: {
         pages: options.pages ?? null,
         maxWidth: options.maxWidth ?? 1400,
+        maximumScale: options.maximumScale ?? 2,
       },
     },
     signal
@@ -316,7 +319,8 @@ if (!isMainThread && [PDF_RENDER_WORKER_KIND, PDF_RENDER_PAGE_WORKER_KIND].inclu
             workerData.path,
             workerData.pageNumber,
             workerData.targetWidth,
-            workerData.minimumScale
+            workerData.minimumScale,
+            workerData.maximumScale
           )
         : await renderPdfPagesDirect(workerData.path, workerData.options);
     parentPort?.postMessage({ ok: true, value });

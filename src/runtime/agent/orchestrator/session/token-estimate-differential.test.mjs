@@ -191,7 +191,9 @@ function messageShapes() {
       ],
       assistantBlocks: [{ type: 'text', text: 'thought through it' }],
       reasoningItems: [{ type: 'reasoning', encrypted_content: OPAQUE }],
-      providerMetadata: { gemini: { thoughtParts: [{ text: 'gemini thought', thought: true, thoughtSignature: OPAQUE }] } },
+      providerMetadata: {
+        gemini: { thoughtParts: [{ text: 'gemini thought', thought: true, thoughtSignature: OPAQUE }] },
+      },
     },
     { role: 'assistant', content: null },
     { role: 'user', content: [{ type: 'text', text: 'dated' }], meta: { at: new Date(0) } },
@@ -219,8 +221,12 @@ test('memoized message meter always equals a fresh meter of the same data', () =
   const cold = messages.map(fresh);
   assert.deepEqual(messages.map(estimateMessageTokens), cold);
   assert.deepEqual(messages.map(estimateMessageTokens), cold, 'warm repeat');
-  assert.equal(estimateMessagesTokens(messages), cold.reduce((sum, tokens) => sum + tokens, 0));
-  for (const value of [null, undefined, 'text', 7]) assert.equal(estimateMessageTokens(value), estimateMessageTokens(value));
+  assert.equal(
+    estimateMessagesTokens(messages),
+    cold.reduce((sum, tokens) => sum + tokens, 0)
+  );
+  for (const value of [null, undefined, 'text', 7])
+    assert.equal(estimateMessageTokens(value), estimateMessageTokens(value));
 
   const mutations = [
     // Restored tool arguments edited in place below an unchanged array.

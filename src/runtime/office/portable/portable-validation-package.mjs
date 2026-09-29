@@ -90,7 +90,7 @@ async function comparePackageParts(
   zip,
   originalZip,
   originalEntries,
-  { applicationSaved, isProtected, renumberedWorkbook }
+  { applicationSaved, isProtected, renumberedWorkbook, chartDataRewritten }
 ) {
   const applicationNormalized = (name) =>
     applicationSaved && (PROTECTED_UNLESS_APPLICATION_SAVED.test(name) || renumberedWorkbook(name));
@@ -106,7 +106,9 @@ async function comparePackageParts(
     const [before, after] = await Promise.all([partHash(originalZip.file(name)), partHash(current)]);
     if (before === after) continue;
     changedParts.push(name);
-    if (isProtected(name) && !renumberedWorkbook(name)) changedProtectedParts.push({ part: name, before, after });
+    if (isProtected(name) && !renumberedWorkbook(name) && !chartDataRewritten(name)) {
+      changedProtectedParts.push({ part: name, before, after });
+    }
     else if (applicationNormalized(name)) applicationNormalizedParts.push(name);
   }
   return { changedProtectedParts, applicationNormalizedParts, changedParts };
@@ -118,10 +120,14 @@ async function baselinePackage(zip, original, { savedBy = '', chartWorkbooks = n
   const applicationSaved = APPLICATION_BACKENDS.has(savedBy);
   const currentEntries = new Set(packageEntryNames(zip));
   const originalEntries = packageEntryNames(originalZip);
-  const originalChartWorkbooks = applicationSaved ? await chartWorkbooksOf(originalZip, originalEntries) : new Set();
+  const originalChartWorkbooks = await chartWorkbooksOf(originalZip, originalEntries);
   // A chart workbook the application renumbered is not lost while the saved package still carries one per chart.
   const renumberedWorkbook = (name) =>
     applicationSaved && originalChartWorkbooks.has(name) && chartWorkbooks.size >= originalChartWorkbooks.size;
+  // A chart's data workbook its chart still names is that chart's own data: set_chart_data rewrites it on either
+  // backend, and the portable path's chart edit failed finalize as a changed embedded object. Renumbered or dropped by
+  // another backend, it stays protected.
+  const chartDataRewritten = (name) => originalChartWorkbooks.has(name) && chartWorkbooks.has(name);
   const isProtected = (name) =>
     PROTECTED_ALWAYS.test(name) || (!applicationSaved && PROTECTED_UNLESS_APPLICATION_SAVED.test(name));
   const protectedParts = originalEntries.filter((name) => isProtected(name) && !renumberedWorkbook(name));
@@ -129,6 +135,7 @@ async function baselinePackage(zip, original, { savedBy = '', chartWorkbooks = n
     applicationSaved,
     isProtected,
     renumberedWorkbook,
+    chartDataRewritten,
   });
   const signatureParts = originalEntries.filter((name) => SIGNATURE_PART.test(name));
   return {

@@ -1,6 +1,6 @@
-import { Ban, Trash2 } from 'lucide-react';
+import { Ban, Check, Trash2 } from 'lucide-react';
 import { ErrorNotice } from './ErrorNotice';
-import { type CSSProperties, type RefObject, type UIEvent, useMemo } from 'react';
+import { type CSSProperties, type ReactNode, type RefObject, type UIEvent, useMemo } from 'react';
 
 import { ProgressSpinner } from './ProgressSpinner';
 import { BrandTile } from './WorkspaceEmptyState';
@@ -42,6 +42,8 @@ function jobElapsed(entry: StudioMediaJob): string {
 
 export function StudioGallery({
   assetUrl,
+  checkedIds,
+  cleanup,
   durations,
   eagerThumbnailCount,
   failedThumbs,
@@ -62,6 +64,7 @@ export function StudioGallery({
   resultsRef,
   rowHeight,
   selectedId,
+  selecting,
   thumbs,
   tileSize,
   tileSizes,
@@ -79,8 +82,11 @@ export function StudioGallery({
   onThumbnailLoad,
   onThumbnailStall,
   onTileSizeChange,
+  onToggleChecked,
 }: {
   assetUrl: (assetId: string, variant: 'thumb' | 'original') => string;
+  checkedIds: ReadonlySet<string>;
+  cleanup: ReactNode;
   durations: Record<string, number>;
   eagerThumbnailCount: number;
   failedThumbs: Record<string, boolean>;
@@ -101,6 +107,7 @@ export function StudioGallery({
   resultsRef: RefObject<HTMLDivElement | null>;
   rowHeight: number;
   selectedId: string;
+  selecting: boolean;
   thumbs: Record<string, string>;
   tileSize: number;
   tileSizes: readonly number[];
@@ -118,6 +125,7 @@ export function StudioGallery({
   onThumbnailLoad: (asset: MediaAsset) => void;
   onThumbnailStall: (assetId: string) => void;
   onTileSizeChange: (size: number) => void;
+  onToggleChecked: (asset: MediaAsset) => void;
 }) {
   const pendingById = useMemo(() => new Map(pendingJobs.map((entry) => [entry.id, entry])), [pendingJobs]);
   const assetIndexById = useMemo(
@@ -153,20 +161,23 @@ export function StudioGallery({
             </button>
           ))}
         </div>
-        <label className="studio-density" aria-label={t('Thumbnail size')}>
-          <input
-            type="range"
-            min={0}
-            max={tileSizes.length - 1}
-            step={1}
-            value={tileSizes.length - 1 - Math.max(0, tileSizes.indexOf(tileSize))}
-            onChange={(event) => {
-              const scaleIndex = Math.max(0, Math.min(tileSizes.length - 1, Number(event.currentTarget.value)));
-              const next = tileSizes[tileSizes.length - 1 - scaleIndex] ?? tileSizes[1];
-              if (next !== undefined) onTileSizeChange(next);
-            }}
-          />
-        </label>
+        <div className="studio-topbar-tools">
+          <label className="studio-density" aria-label={t('Thumbnail size')}>
+            <input
+              type="range"
+              min={0}
+              max={tileSizes.length - 1}
+              step={1}
+              value={tileSizes.length - 1 - Math.max(0, tileSizes.indexOf(tileSize))}
+              onChange={(event) => {
+                const scaleIndex = Math.max(0, Math.min(tileSizes.length - 1, Number(event.currentTarget.value)));
+                const next = tileSizes[tileSizes.length - 1 - scaleIndex] ?? tileSizes[1];
+                if (next !== undefined) onTileSizeChange(next);
+              }}
+            />
+          </label>
+          {cleanup}
+        </div>
       </div>
       <div className="studio-results" aria-label={t('Generated media')} ref={resultsRef} onScroll={onResultsScroll}>
         {visibleAssets.length === 0 && pendingJobs.length === 0 && !loading && (
@@ -282,17 +293,19 @@ export function StudioGallery({
                 // to avoid the renderer GPU exhaustion this guard fixed.
                 const hoverPreview = !narrowPane && asset.kind === 'video' && localTransport;
                 const eagerLocalImage = localTransport && asset.kind === 'image' && assetIndex < eagerThumbnailCount;
+                const checked = selecting && checkedIds.has(asset.id);
                 return (
                   <figure
                     key={asset.id}
-                    className={`studio-tile ${selectedId === asset.id ? 'selected' : ''}`}
+                    className={`studio-tile ${selectedId === asset.id ? 'selected' : ''}${checked ? ' checked' : ''}`}
                     data-studio-asset-id={asset.id}
                     style={tileStyle(tile, rowIndex === lastRowIndex, gridWidth)}
                   >
                     <button
                       type="button"
                       className="studio-tile-open"
-                      onClick={() => onOpen(asset)}
+                      onClick={() => (selecting ? onToggleChecked(asset) : onOpen(asset))}
+                      aria-pressed={selecting ? checked : undefined}
                       aria-label={`Open ${asset.kind}: ${asset.prompt}`}
                       onMouseEnter={hoverPreview ? () => onHoverStart(asset) : undefined}
                       onMouseLeave={hoverPreview ? onHoverEnd : undefined}
@@ -334,17 +347,23 @@ export function StudioGallery({
                         <span className="studio-tile-badge">{asset.durationSeconds || durations[asset.id]}s</span>
                       ) : null}
                     </button>
-                    <div className="studio-tile-actions">
-                      <button
-                        type="button"
-                        className="studio-tile-remove"
-                        aria-label={t('Delete asset')}
-                        title={assetLabel(asset)}
-                        onClick={() => onDelete(asset)}
-                      >
-                        <Trash2 size={16} aria-hidden="true" />
-                      </button>
-                    </div>
+                    {selecting ? (
+                      <span className="studio-tile-check" aria-hidden="true">
+                        {checked ? <Check size={14} /> : null}
+                      </span>
+                    ) : (
+                      <div className="studio-tile-actions">
+                        <button
+                          type="button"
+                          className="studio-tile-remove"
+                          aria-label={t('Delete asset')}
+                          title={assetLabel(asset)}
+                          onClick={() => onDelete(asset)}
+                        >
+                          <Trash2 size={16} aria-hidden="true" />
+                        </button>
+                      </div>
+                    )}
                   </figure>
                 );
               })}

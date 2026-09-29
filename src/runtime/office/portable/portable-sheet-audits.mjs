@@ -15,6 +15,7 @@ import {
 } from './portable-cells.mjs';
 import { partRelationshipPath, relationshipTargetsByType, zipText } from './portable-opc.mjs';
 import {
+  cellWidthScale,
   displayWidth,
   formattedNumberWidth,
   hiddenSheetAreas,
@@ -24,8 +25,7 @@ import {
 } from './portable-sheet-xml.mjs';
 import { resolveCellStyles } from './portable-sheet-styles.mjs';
 import { paragraphTexts, xmlAttribute, xmlDecode } from './portable-xml.mjs';
-
-const DEFAULT_COLUMN_WIDTH = 8.43;
+import { maximumDigitWidth, textCharacters, worksheetGeometry } from './portable-sheet-page.mjs';
 
 function cellText(cell, strings) {
   const type = /\bt="([^"]+)"/.exec(cell.attributes)?.[1] || '';
@@ -62,24 +62,35 @@ function validationEntryCells(xml) {
   return entryCells;
 }
 
-// The entry cells whose style still locks them under sheet protection.
+// The entry cells whose style still locks them under sheet protection, in reading order (row by row): a text sort
+// named B10 before B6.
 function lockedEntryCells(xml, styles, entryCells) {
   for (const cell of iterateSheetCells(xml)) {
     if (!cell.ref || !entryCells.has(cell.ref)) continue;
     const styleIndex = Number(/\bs="(\d+)"/.exec(cell.attributes)?.[1] ?? 0);
     if (styles[styleIndex]?.locked === false) entryCells.delete(cell.ref);
   }
-  return [...entryCells].sort();
+  return [...entryCells]
+    .map(parseCellRef)
+    .sort((left, right) => left.row - right.row || columnNumber(left.col) - columnNumber(right.col))
+    .map((cell) => cell.ref);
 }
 
-function protectedInputIssue(sheet, locked) {
+// total counts every entry cell the validations ask for: "all" only when none of them was opened.
+function protectedInputIssue(sheet, locked, total) {
+  const named =
+    total === 1
+      ? 'the entry cell'
+      : locked.length === total
+        ? `all ${total} entry cells`
+        : `${locked.length} of ${total} entry cells`;
   return {
     severity: 'warning',
     code: 'protected_input_locked',
     path: `/sheet[${sheet.name}]/cell[${locked[0]}]`,
     message:
-      `Sheet protection is on and ${locked.length === 1 ? 'the entry cell' : `all ${locked.length} entry cells`} ` +
-      `(${locked.slice(0, 4).join(', ')}${locked.length > 4 ? ', …' : ''}) stay locked, so nobody can type the value the validation asks for. ` +
+      `Sheet protection is on and ${named} ` +
+      `(${locked.slice(0, 4).join(', ')}${locked.length > 4 ? ', …' : ''}) ${locked.length === 1 ? 'stays' : 'stay'} locked, so nobody can type the value the validation asks for. ` +
       'Run set_style with properties { locked: false } on the entry range before protect_sheet.',
     source: 'sheet-protection',
   };
@@ -95,30 +106,22 @@ export async function protectedInputIssues(zip, sheets) {
     const xml = await zipText(zip, sheet.path);
     if (!xml || !/<sheetProtection\b/.test(xml)) continue;
     const entryCells = validationEntryCells(xml);
-    if (!entryCells.size) continue;
+    const total = entryCells.size;
+    if (!total) continue;
     const locked = lockedEntryCells(xml, styles, entryCells);
     if (!locked.length) continue;
-    issues.push(protectedInputIssue(sheet, locked));
+    issues.push(protectedInputIssue(sheet, locked, total));
     if (issues.length >= 50) return issues;
   }
   return issues;
 }
 
-// Declared column widths by column number; undeclared columns use the default.
-function declaredColumnWidths(xml) {
-  const widths = new Map();
-  const section = worksheetSection(xml, 'cols');
-  if (!section) return widths;
-  for (const match of section[0].matchAll(/<col\b([^>]*)\/>/g)) {
-    const min = Number(xmlAttribute(match[1], 'min')) || 0;
-    const max = Number(xmlAttribute(match[1], 'max')) || min;
-    const width = Number(xmlAttribute(match[1], 'width'));
-    if (!Number.isFinite(width) || width <= 0) continue;
-    for (let column = min; column >= 1 && column <= max && column - min < 2048; column += 1) {
-      widths.set(column, width);
-    }
-  }
-  return widths;
+// The characters each column holds inside Excel's 5 pixels of cell padding, in the default font's digit width, as
+// the sheet lays the column out (an undeclared one at the sheet's default). Read as the stored number, a width Excel
+// wrote (9.625 for 9 characters) lent its padding to the text and one the portable writer wrote bare did not.
+function columnCharacterWidths(xml, digitWidth) {
+  const geometry = worksheetGeometry(xml, digitWidth);
+  return { get: (column) => Math.max(0, (geometry.columnPoints(column) / 0.75 - 5) / digitWidth) };
 }
 
 // Records one cut cell on its column's entry: the column answers once with
@@ -137,16 +140,9 @@ function sortedByColumn(byColumn) {
   return [...byColumn.entries()].sort((left, right) => left[0] - right[0]);
 }
 
-// A column width counts characters of the workbook's default size (the first
-// cell style's face), so a cell set larger needs proportionally more of it —
-// the measure autofit_range sizes columns by. Bold type runs about a fifth
-// wider: a 27 pt bold "47.0%" measured 12.3 characters by size alone, passed in
-// a 14-character column, and printed ### (it fits from 14.7).
-const BOLD_WIDTH = 1.2;
+// The measure autofit_range sizes columns by (cellWidthScale).
 function sizeScale(styles, styleIndex) {
-  const base = Number(styles[0]?.fontSize) || 11;
-  const style = styles[styleIndex];
-  return ((Number(style?.fontSize) || base) / base) * (style?.bold && styleIndex !== 0 ? BOLD_WIDTH : 1);
+  return cellWidthScale(styles[styleIndex], Number(styles[0]?.fontSize) || 11, { isDefault: styleIndex === 0 });
 }
 
 // Numbers a column is too narrow to show: one narrow column cuts every value
@@ -169,8 +165,8 @@ function narrowNumberColumns(xml, { widths, withheld, styles }) {
     const column = columnNumber(position.col);
     if (withheld.columns.has(column) || withheld.rows.has(position.row)) continue;
     const merge = merges.find((area) => area.startCol === column && area.startRow === position.row);
-    let width = widths.get(column) ?? DEFAULT_COLUMN_WIDTH;
-    for (let spanned = column + 1; merge && spanned <= merge.endCol; spanned += 1) width += widths.get(spanned) ?? DEFAULT_COLUMN_WIDTH;
+    let width = widths.get(column);
+    for (let spanned = column + 1; merge && spanned <= merge.endCol; spanned += 1) width += widths.get(spanned);
     const style = Number(/\bs="(\d+)"/.exec(attributes)?.[1]);
     const format = Number.isInteger(style) ? styles[style]?.numberFormat || '' : '';
     // General never prints ###: Excel rounds the decimals to the column, so only an integer part wider than the
@@ -207,10 +203,10 @@ function insideMergedArea(merged, column, row) {
 // The width a label may run across: its own column and the empty shown
 // columns up to its next filled neighbour.
 function labelRoom(column, neighbourColumn, { widths, withheld }) {
-  let available = widths.get(column) ?? DEFAULT_COLUMN_WIDTH;
+  let available = widths.get(column);
   for (let next = column + 1; next < neighbourColumn; next += 1) {
     if (withheld.columns.has(next)) continue;
-    available += widths.get(next) ?? DEFAULT_COLUMN_WIDTH;
+    available += widths.get(next);
   }
   return available;
 }
@@ -220,7 +216,7 @@ function labelRoom(column, neighbourColumn, { widths, withheld }) {
 // label. The label runs until the first column to its right that holds
 // something: the empty columns before it lend their width, and a hidden
 // column lends none, because the sheet gives it no room on the page.
-function cutLabelColumns(xml, { widths, withheld, styles, strings }) {
+function cutLabelColumns(xml, { widths, withheld, styles, strings, digitWidth }) {
   const merged = mergedAreas(xml);
   const cutLabels = new Map();
   for (const row of iterateSheetRows(xml)) {
@@ -244,9 +240,11 @@ function cutLabelColumns(xml, { widths, withheld, styles, strings }) {
       const rowNumber = parseCellRef(cell.ref).row;
       if (withheld.rows.has(rowNumber)) continue;
       if (insideMergedArea(merged, cell.column, rowNumber)) continue;
-      const width = widths.get(cell.column) ?? DEFAULT_COLUMN_WIDTH;
+      const width = widths.get(cell.column);
       const available = labelRoom(cell.column, neighbour.column, { widths, withheld });
-      const needed = displayWidth(text) * sizeScale(styles, styleIndex) + (Number(styles[styleIndex]?.indent) || 0);
+      // The measure autofit_range sizes a label column by.
+      const needed =
+        textCharacters(text, styles[styleIndex] || styles[0], digitWidth) + (Number(styles[styleIndex]?.indent) || 0);
       if (needed <= available + 0.5) continue;
       const neighbourRef = `${columnLabel(neighbour.column)}${rowNumber}`;
       noteCutCell(cutLabels, cell.column, { reference: cell.ref, text, needed, width, neighbour: neighbourRef });
@@ -289,7 +287,9 @@ function figureLabelPairs(xml, { withheld, styles, strings }) {
 
 export async function columnFitIssues(zip, sheets) {
   const strings = await sharedStrings(zip);
-  const styles = resolveCellStyles(await zipText(zip, 'xl/styles.xml'));
+  const stylesXml = await zipText(zip, 'xl/styles.xml');
+  const styles = resolveCellStyles(stylesXml);
+  const digitWidth = maximumDigitWidth(stylesXml);
   const issues = [];
   for (const sheet of sheets) {
     // Fit is about what a reader sees. A hidden sheet, row, or column shows
@@ -298,7 +298,13 @@ export async function columnFitIssues(zip, sheets) {
     if (sheet.visibility && sheet.visibility !== 'visible') continue;
     const xml = await zipText(zip, sheet.path);
     if (!xml) continue;
-    const measure = { widths: declaredColumnWidths(xml), withheld: hiddenSheetAreas(xml), styles, strings };
+    const measure = {
+      widths: columnCharacterWidths(xml, digitWidth),
+      withheld: hiddenSheetAreas(xml),
+      styles,
+      strings,
+      digitWidth,
+    };
     for (const [column, entry] of narrowNumberColumns(xml, measure)) {
       issues.push({
         severity: 'warning',

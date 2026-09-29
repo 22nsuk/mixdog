@@ -36,6 +36,7 @@ import { monitorEventLoopDelay, performance } from 'node:perf_hooks';
 import { writeJsonAtomicSync } from '../runtime/shared/atomic-file.mjs';
 import { ensurePrivateRuntimeRoot, resolveRuntimeRoot } from '../runtime/shared/runtime-root.mjs';
 import { ensureProcessListenerHeadroom } from '../runtime/shared/process-listener-headroom.mjs';
+import { listenerLeakWarningLine } from '../runtime/shared/listener-leak-warning.mjs';
 import { claimSingletonOwner, releaseSingletonOwner } from '../runtime/shared/singleton-owner.mjs';
 import { remoteIntentPath } from '../runtime/shared/remote-intent.mjs';
 import { setChannelNotifySink } from '../runtime/channels/lib/parent-bridge.mjs';
@@ -434,6 +435,16 @@ function installTurnTimingLog() {
   });
 }
 
+/** Listener-leak warnings reach daemon.log with the stack that names their
+ *  source (observed: 51 abort listeners on one AbortSignal in an 11h daemon,
+ *  source unknown). */
+function installListenerLeakLog() {
+  process.on('warning', (warning) => {
+    const line = listenerLeakWarningLine(warning);
+    if (line) log(line);
+  });
+}
+
 /** What the session front door reports about this process: session counts plus
  *  every admission/workload gate the daemon owns.
  *  `busy` is what stops a newer install from draining a daemon that is
@@ -576,9 +587,7 @@ async function main() {
   registerMemoryRuntimeLazy();
   // The daemon owns prompt attachments; its census runs off the boot path
   // (first attempt after the store's start delay, then per its interval).
-  void import('../runtime/attachments/store.mjs')
-    .then((store) => store.startAttachmentGc())
-    .catch(() => {});
+  void import('../runtime/attachments/store.mjs').then((store) => store.startAttachmentGc()).catch(() => {});
   // The first session per repository would otherwise run `git status` and
   // `git check-ignore` synchronously while composing its prompt. Registered
   // projects (a small JSON list, most recently selected first) are the cwds
@@ -609,6 +618,7 @@ async function main() {
     },
   });
   installTurnTimingLog();
+  installListenerLeakLog();
 
   // Reclaim deferred garbage while nothing is in flight. V8 keeps a long-lived
   // daemon's dead transcripts resident for as long as the heap limit stays out

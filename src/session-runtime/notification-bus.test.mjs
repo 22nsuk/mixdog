@@ -180,7 +180,7 @@ test('a queued completion wakes its owner session with an empty turn', async () 
   assert.equal(wake({ sessionId: 'lead-wake', executionId: 'exec-1', enqueuedAt: 4242 }), true);
   await settled();
 
-  assert.deepEqual(asks, [{ prompt: '', options: { submittedAt: 4242 } }]);
+  assert.deepEqual(asks, [{ prompt: '', options: { submittedAt: 4242, continueTurn: true } }]);
 });
 
 test('one wake per session is in flight, and a suppressed wake replays afterwards', async () => {
@@ -190,13 +190,13 @@ test('one wake per session is in flight, and a suppressed wake replays afterward
   assert.equal(wake({ sessionId: 'lead-wake', enqueuedAt: 20 }), false);
   assert.equal(wake({ sessionId: '   ' }), false);
   await settled();
-  assert.deepEqual(asks, [{ prompt: '', options: { submittedAt: 30 } }]);
+  assert.deepEqual(asks, [{ prompt: '', options: { submittedAt: 30, continueTurn: true } }]);
 
   // The suppressed completion may have landed after the woken turn took its
   // last look at the queue, so it gets its own wake — oldest wait first.
   await settled();
   assert.equal(asks.length, 2);
-  assert.deepEqual(asks[1], { prompt: '', options: { submittedAt: 20 } });
+  assert.deepEqual(asks[1], { prompt: '', options: { submittedAt: 20, continueTurn: true } });
 
   await settled();
   assert.equal(asks.length, 2, 'a replay that suppressed nothing ends the chain');

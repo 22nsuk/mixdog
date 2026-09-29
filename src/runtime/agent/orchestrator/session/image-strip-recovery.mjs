@@ -59,8 +59,10 @@ export function promptHasInlineImages(messages) {
   return false;
 }
 
-export function stripInlineImages(messages, { startIndex = 0 } = {}) {
-  if (!Array.isArray(messages)) return { messages, stripped: 0, uniqueImages: 0 };
+// `ids` narrows the strip to images with those identities, so a strip decided
+// on one transcript applies unchanged to whatever the transcript has become.
+export function stripInlineImages(messages, { startIndex = 0, ids = null } = {}) {
+  if (!Array.isArray(messages)) return { messages, stripped: 0, uniqueImages: 0, imageIds: [] };
   let stripped = 0;
   const identities = new Set();
   const next = messages.map((message, index) => {
@@ -71,14 +73,16 @@ export function stripInlineImages(messages, { startIndex = 0 } = {}) {
     let changed = false;
     const content = view.parts.map((part) => {
       if (!partLooksLikeImage(part)) return part;
+      const identity = imageIdentity(part);
+      if (ids && !ids.has(identity)) return part;
       changed = true;
       stripped += 1;
-      identities.add(imageIdentity(part));
+      identities.add(identity);
       return { type: 'text', text: IMAGE_STRIP_PLACEHOLDER };
     });
     return changed ? { ...message, content: view.rebuild(content) } : message;
   });
-  return { messages: stripped ? next : messages, stripped, uniqueImages: identities.size };
+  return { messages: stripped ? next : messages, stripped, uniqueImages: identities.size, imageIds: [...identities] };
 }
 
 export function stripInlineImagesFromLatestTurn(messages) {
@@ -98,10 +102,10 @@ export function confirmedImageRejection(err) {
   return /does not represent a valid image/i.test(errorMessage(err));
 }
 
-export function persistenceMessagesForConfirmedImageRejection(err, messages) {
-  if (!confirmedImageRejection(err) || !Array.isArray(messages)) return null;
-  const tail = stripInlineImagesFromLatestTurn(messages);
-  return tail.stripped > 0 && tail.uniqueImages === 1 ? tail.messages : null;
+// Only a confirmed rejection that one newly introduced image explains is
+// healed out of history; any other strip stays request-local.
+export function persistsConfirmedImageRejection(err, strip) {
+  return confirmedImageRejection(err) && strip.stripped > 0 && strip.uniqueImages === 1;
 }
 
 function providerErrorDetail(err) {

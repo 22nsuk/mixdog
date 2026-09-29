@@ -76,7 +76,8 @@ export function ensureCallHierarchyMenu(): void {
     order: 1000,
     command: {
       id: PEEK_CALL_HIERARCHY,
-      title: 'Peek Call Hierarchy',
+      // Monaco draws its menus outside the DOM localizer's reach.
+      title: t('Peek Call Hierarchy'),
       precondition: available,
     },
     when: available,
@@ -87,10 +88,12 @@ export function ensureCallHierarchyMenu(): void {
   const multipleFormatters = ContextKeyExpr.has('editorHasMultipleDocumentFormattingProvider');
   MenuRegistry.appendMenuItem(MenuId.EditorContext, {
     group: '1_modification',
-    order: 1.3,
+    // Right after Format Document (1.3): a shared order fell back to title
+    // order, which put the translated "…With" entry first.
+    order: 1.31,
     command: {
       id: FORMAT_DOCUMENT_WITH,
-      title: 'Format Document With...',
+      title: t('Format Document With...'),
       precondition: multipleFormatters,
     },
     when: multipleFormatters,

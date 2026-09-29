@@ -42,6 +42,10 @@ export function turnReviewScope(items) {
     startIndex,
     key: startIndex >= 0 ? stableItemKey(transcript[startIndex], startIndex) : 'none',
     hasActivity,
+    // Rows without the prompt that opened their turn: the daemon's
+    // byte-budgeted transcript tail cut it off, so every row left still
+    // belongs to that turn.
+    truncated: startIndex < 0 && transcript.length > 0,
   };
 }
 

@@ -235,21 +235,22 @@
    is LEFT. Seven numeric columns need more room than the quota table, and the
    provider rows expand in place into their models. */
 .mixdog-settings-layer:has(> .command-surface[data-surface="stats"]) {
-  --stats-dialog-height: min(760px, calc(100dvh - 48px));
-  /* Equal safe insets keep both full-height and empty dialogs centered. */
-  padding-block: max(var(--settings-layer-safe-top), var(--settings-layer-safe-bottom));
+  /* The layer's insets on every window size: the caption bar above stays
+     clear and the margin below never closes. */
+  padding-block: var(--settings-layer-safe-top) var(--settings-layer-safe-bottom);
   grid-template: minmax(0, 1fr) / minmax(0, 1fr);
   place-items: center;
 }
 .command-surface[data-surface="stats"] {
   width: min(980px, calc(100vw - 32px));
-  height: var(--stats-dialog-height);
+  /* Stops at 760 on a tall window (user: 팝업 상하 최대 크기); the body scrolls. */
+  height: min(760px, var(--settings-panel-height));
   max-height: 100%;
   grid-template-rows: minmax(0, 1fr);
 }
 .command-surface[data-surface="stats"]:has(.stats-surface[data-empty="true"]) {
   height: auto;
-  max-height: min(var(--stats-dialog-height), 100%);
+  max-height: 100%;
 }
 .command-surface[data-surface="stats"] .mixdog-settings__panel {
   max-height: 100%;
@@ -954,6 +955,484 @@
 .stats-surface > .usage-table-shell {
   flex: 0 0 auto;
   min-height: 140px;
+}
+/* Usage dialog header: its two questions are tabs standing in for the title
+   (the heading stays for assistive technology), and the header shares the
+   body's left edge. */
+.command-surface[data-surface="stats"] .mixdog-settings__header {
+  padding-left: 20px;
+}
+.mixdog-settings__header h1.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+}
+.command-surface-tabs {
+  align-self: stretch;
+  align-items: stretch;
+  gap: 20px;
+  min-width: 0;
+  margin-inline-end: auto;
+}
+.command-surface-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  height: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  color: var(--mx-text-muted);
+  background: none;
+  box-shadow: none;
+  font-size: var(--mx-font-ui);
+  font-weight: var(--mx-weight-semibold);
+  line-height: var(--mx-line-ui);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.command-surface-tab:hover,
+.command-surface-tab.is-active {
+  color: var(--mx-text);
+  background: none;
+}
+.command-surface-tab.is-active::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 -0.5px;
+  height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: var(--mx-text);
+}
+/* A card may add one line under its figure: what it means right now. */
+.stats-card em {
+  overflow: hidden;
+  color: var(--mx-text-muted);
+  font-size: var(--mx-font-micro);
+  font-style: normal;
+  line-height: var(--mx-line-meta);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* A pace worth noticing tints the line that says so, never the figure: a
+   subscription used hard on purpose is not an alarm (user: 사용량이랑 그래프
+   넓이가 너무 부정색 아닌가). */
+.stats-card:is([data-tone="warning"], [data-tone="danger"]) em {
+  color: var(--mx-warning);
+}
+
+/* Subscription usage: the provider's own quota meter over time. A model's
+   ink follows its rank in the period, so it keeps one colour across the mix,
+   the chart, its hover card and the table. */
+.quota-surface {
+  --quota-series-0: #b3a3da;
+  --quota-series-1: #71bcb0;
+  --quota-series-2: #d4ba78;
+  --quota-series-3: #8fa9d4;
+  --quota-series-4: #d58eaa;
+  --quota-series-5: #8cb77c;
+  --quota-series-other: #c49fbd;
+  --quota-series-outside: #9a9fa7;
+}
+:root[data-mixdog-theme="light"] .quota-surface {
+  --quota-series-0: #8066b0;
+  --quota-series-1: #398e82;
+  --quota-series-2: #a88435;
+  --quota-series-3: #4f6fa8;
+  --quota-series-4: #b0557a;
+  --quota-series-5: #5a8a4a;
+  --quota-series-other: #9a6a92;
+  --quota-series-outside: #7b8088;
+}
+.quota-surface [data-series="0"] {
+  --quota-ink: var(--quota-series-0);
+}
+.quota-surface [data-series="1"] {
+  --quota-ink: var(--quota-series-1);
+}
+.quota-surface [data-series="2"] {
+  --quota-ink: var(--quota-series-2);
+}
+.quota-surface [data-series="3"] {
+  --quota-ink: var(--quota-series-3);
+}
+.quota-surface [data-series="4"] {
+  --quota-ink: var(--quota-series-4);
+}
+.quota-surface [data-series="5"] {
+  --quota-ink: var(--quota-series-5);
+}
+.quota-surface [data-series="other"] {
+  --quota-ink: var(--quota-series-other);
+}
+.quota-surface [data-series="outside"] {
+  --quota-ink: var(--quota-series-outside);
+}
+.quota-surface [data-series="remaining"] {
+  --quota-ink: transparent;
+}
+.quota-surface .stats-mix-bar > i[data-series],
+.quota-surface .stats-mix li > i[data-series],
+.quota-surface .stats-trend-detail li i[data-series] {
+  background: var(--quota-ink);
+}
+.quota-surface .stats-mix li > i[data-series="remaining"] {
+  box-shadow: inset 0 0 0 1px var(--mx-border-strong);
+}
+.quota-selectors {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+/* The subscription picker, and beside it the account picker of a
+   subscription with several accounts, sit in the chip row at chip height.
+   The shared trigger sets line-height 1, which clipped descenders under its
+   overflow. */
+.quota-subscription.mx-select-root {
+  min-width: 150px;
+}
+.quota-account.mx-select-root {
+  min-width: 110px;
+}
+:is(.quota-subscription, .quota-account).mx-select-root .mx-select-trigger {
+  height: 26px;
+  gap: 6px;
+  padding: 0 6px 0 10px;
+  border-radius: var(--mx-radius-pill);
+  font-size: var(--mx-font-meta);
+  font-weight: var(--mx-weight-semibold);
+}
+:is(.quota-subscription, .quota-account).mx-select-root .mx-select-value {
+  line-height: var(--mx-line-meta);
+}
+.quota-subscription.mx-select-root .mx-select-leading {
+  display: inline-flex;
+  flex: none;
+}
+.quota-subscription.mx-select-root .mx-select-leading svg {
+  width: 14px;
+  height: 14px;
+  color: var(--mx-text);
+  transform: none;
+}
+/* Limit windows: one segmented control, a step below the dialog's tabs and a
+   step above the period chips. */
+.quota-windows {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--mx-radius-pill);
+  background: var(--mx-bg-layer-2);
+}
+.quota-window {
+  height: 22px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--mx-radius-pill);
+  color: var(--mx-text-muted);
+  background: transparent;
+  font-size: var(--mx-font-meta);
+  font-weight: var(--mx-weight-semibold);
+  line-height: var(--mx-line-meta);
+  cursor: pointer;
+}
+.quota-window:hover:not(:disabled) {
+  color: var(--mx-text);
+}
+.quota-window[aria-pressed="true"] {
+  color: var(--mx-text);
+  background: var(--mx-bg-base);
+  box-shadow: var(--mx-button);
+}
+.quota-window:disabled {
+  cursor: default;
+}
+.quota-empty {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 28px 12px;
+  border: 0.5px dashed var(--mx-border);
+  border-radius: var(--mx-radius-md);
+  color: var(--mx-text-muted);
+  font-size: var(--mx-font-meta);
+  line-height: var(--mx-line-meta);
+  text-align: center;
+}
+.quota-empty b {
+  color: var(--mx-text);
+  font-weight: var(--mx-weight-semibold);
+}
+
+/* The chart: a plot box with a left gutter for the percent labels. Strokes
+   keep their width in the stretched viewBox; every label is HTML over it. */
+/* The meter keeps its subscription's own ink whatever the pace; the pace
+   note on the card and the run-out marker say how it is going. */
+.quota-trend {
+  --quota-line: var(--stats-provider-color);
+}
+.quota-chart,
+.quota-chart-skeleton {
+  position: relative;
+  height: 172px;
+}
+.quota-chart {
+  padding: 18px 4px 0 40px;
+}
+.quota-chart-skeleton {
+  display: block;
+  width: 100%;
+}
+.quota-chart-plot {
+  position: relative;
+  height: 100%;
+}
+.quota-chart-plot > svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.quota-chart-plot :is(path, line) {
+  fill: none;
+  vector-effect: non-scaling-stroke;
+}
+.quota-chart-grid {
+  stroke: var(--mx-border);
+  stroke-width: 0.5;
+}
+.quota-chart-limit {
+  stroke: var(--mx-border-strong);
+  stroke-width: 1;
+}
+.quota-chart-pace {
+  stroke: var(--mx-text-faint);
+  stroke-width: 1;
+  stroke-dasharray: 2 4;
+}
+/* The area under the meter fades from its line down to the baseline. */
+.quota-chart-plot .quota-chart-area {
+  stroke: none;
+}
+.quota-chart-area-top {
+  stop-color: var(--quota-line);
+  stop-opacity: 0.3;
+}
+.quota-chart-area-bottom {
+  stop-color: var(--quota-line);
+  stop-opacity: 0.02;
+}
+.quota-chart-line {
+  stroke: var(--quota-line);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.quota-chart-unmeasured {
+  stroke: var(--mx-text-faint);
+  stroke-width: 1.5;
+  stroke-dasharray: 1 4;
+  stroke-linecap: round;
+}
+.quota-chart-forecast {
+  stroke: var(--quota-line);
+  stroke-width: 1.5;
+  stroke-dasharray: 6 4;
+  opacity: 0.8;
+}
+.quota-chart-series {
+  stroke: var(--quota-ink);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+/* The rest of the slot running now: not yet happened, so only sketched. */
+.quota-chart-series-ahead {
+  stroke: var(--quota-ink);
+  stroke-width: 1.5;
+  stroke-dasharray: 2 4;
+  stroke-linecap: round;
+  opacity: 0.6;
+}
+/* Now: a hairline, with the time still to come faintly shaded after it. */
+.quota-chart-now {
+  stroke: var(--mx-text-faint);
+  stroke-width: 1;
+}
+.quota-chart-ahead {
+  fill: color-mix(in srgb, var(--mx-text) 3%, transparent);
+}
+/* A zero-length round-capped stroke: a dot the stretched viewBox cannot squash. */
+.quota-chart-dot {
+  stroke: var(--quota-line);
+  stroke-width: 7;
+  stroke-linecap: round;
+}
+.quota-chart-y,
+.quota-chart-marker,
+.quota-chart-peak {
+  position: absolute;
+  color: var(--mx-text-faint);
+  font-size: var(--mx-font-micro);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--mx-line-meta);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.quota-chart-y {
+  left: -6px;
+  transform: translate(-100%, -50%);
+}
+.quota-chart-marker {
+  color: var(--quota-line);
+  font-weight: var(--mx-weight-semibold);
+  transform: translate(-50%, calc(-100% - 6px));
+}
+.quota-chart-peak {
+  color: var(--mx-text-muted);
+  transform: translate(-50%, calc(-100% - 4px));
+}
+.quota-chart-slots {
+  position: absolute;
+  inset: 0;
+  display: flex;
+}
+.quota-chart-slot {
+  flex: 0 0 auto;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+button.quota-chart-slot {
+  cursor: pointer;
+}
+/* A slot running now lights what has passed of it; the rest, still to come,
+   is only hatched over the shade of the time ahead. */
+button.quota-chart-slot:hover,
+button.quota-chart-slot[aria-expanded="true"] {
+  --quota-slot-lit: color-mix(in srgb, var(--mx-text) 6%, transparent);
+  --quota-slot-hatch: color-mix(in srgb, var(--mx-text) 10%, transparent);
+  background:
+    linear-gradient(var(--quota-slot-lit), var(--quota-slot-lit)) left / var(--quota-slot-elapsed, 100%) 100%
+      no-repeat,
+    repeating-linear-gradient(135deg, var(--quota-slot-hatch) 0 1px, transparent 1px 5px) right /
+      calc(100% - var(--quota-slot-elapsed, 100%)) 100% no-repeat;
+}
+/* A running slot's card: what was read up to now, then the forecast. */
+.stats-trend-detail .quota-slot-split {
+  margin-top: 12px;
+  padding-top: 0;
+  border-top: 0;
+}
+.quota-chart-axis {
+  position: relative;
+  height: 1lh;
+  margin-inline: 40px 4px;
+  color: var(--mx-text-faint);
+  font-size: var(--mx-font-micro);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--mx-line-meta);
+}
+.quota-chart-axis span {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+.quota-chart-axis .quota-chart-axis-now {
+  color: var(--mx-text-muted);
+}
+/* Legend marks draw the stroke each line uses; models keep their dot. */
+.quota-legend li > i {
+  width: 14px;
+  height: 0;
+  border-top: 2px solid var(--quota-line);
+  border-radius: 0;
+  background: none;
+}
+.quota-legend li > i[data-legend="forecast"] {
+  border-top-style: dashed;
+}
+.quota-legend li > i[data-legend="pace"] {
+  border-top: 1px dashed var(--mx-text-faint);
+}
+.quota-legend li > i[data-legend="unmeasured"] {
+  border-top: 2px dotted var(--mx-text-faint);
+}
+.quota-legend li > i[data-series] {
+  width: 8px;
+  height: 8px;
+  border: 0;
+  border-radius: var(--mx-radius-pill);
+  background: var(--quota-ink);
+}
+/* Window history: a table card like the model table, headed by its column
+   labels, with a pager band below the rows once they run past a page. */
+.quota-history {
+  flex: none;
+}
+.quota-history-pager {
+  /* A narrow shell scrolls the table sideways; the pager stays in view. */
+  position: sticky;
+  left: 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-top: 0.5px solid var(--mx-border);
+  color: var(--mx-text-muted);
+  background: var(--mx-bg-layer-1);
+  font-size: var(--mx-font-meta);
+  font-variant-numeric: tabular-nums;
+}
+.quota-history-pager .stats-period-arrow {
+  width: 22px;
+  height: 22px;
+}
+/* The rows still belong to the page before the one asked for. */
+.quota-history[aria-busy="true"] tbody {
+  opacity: 0.6;
+}
+.quota-history-table {
+  min-width: 560px;
+}
+.stats-table.quota-history-table th:first-child {
+  padding-left: 12px;
+}
+.quota-history-estimate {
+  margin-inline-start: 6px;
+  color: var(--mx-text-faint);
+  font-size: var(--mx-font-micro);
+}
+.quota-history-table tr[data-active="true"] td {
+  background: var(--mx-bg-layer-1);
+}
+.quota-history-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  color: var(--mx-text);
+  background: none;
+  font: inherit;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.quota-history-open .usage-plan {
+  flex: none;
+  color: var(--mx-text);
+  background: var(--mx-bg-layer-2);
+}
+.quota-history-open:hover {
+  text-decoration: underline;
 }
 
 /* Narrow shells — the web build on a phone, or a split window. Eight columns

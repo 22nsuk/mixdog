@@ -17,7 +17,8 @@ import type { StudioModelEntry, StudioOptionRow, StudioSliderRow } from './Studi
 import { cancelLayoutFrame, scheduleLayoutFrame } from './interaction-frame-scheduler';
 import { useForegroundMedia } from './media-lifecycle';
 import { runStudioThumbnailTask } from './studio-thumbnail-task';
-import { InlineErrors } from './notifications';
+import { ErrorNotice } from './ErrorNotice';
+import { StudioCleanupBar, type StudioCleanupRequest } from './studio-cleanup';
 import { ensureStudioLoad, reportStudioLoadStage } from './renderer-load-metrics';
 import {
   readStudioAssetReferences,
@@ -37,6 +38,7 @@ import {
   MEDIA_KINDS,
   mediaFrameRatio,
   modelControls,
+  pillLabel,
   posterFromVideo,
   requestOptions,
   resolveStudioModel,
@@ -93,11 +95,24 @@ function thumbnailPayload(dataUrl: string): { mime: string; base64: string } | n
   return match ? { mime: match[1], base64: match[2] } : null;
 }
 
-/** Display casing for lane vocabulary: auto → Auto, 1k → 1K, 480p → 480p. */
-function pillLabel(value: string): string {
-  if (/^\d+k$/i.test(value)) return value.toUpperCase();
-  if (/^[a-z]/.test(value)) return value.charAt(0).toUpperCase() + value.slice(1);
-  return value;
+/** One asset's original bytes and their media type. */
+interface MediaBytes {
+  bytes: ArrayBuffer;
+  mime: string;
+}
+
+function base64Bytes(base64: string): ArrayBuffer {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return bytes.buffer;
+}
+
+/** A named file for the device share sheet or the reference reader. */
+function mediaFile(asset: MediaAsset, media: MediaBytes): File {
+  const extension =
+    media.mime.split('/')[1]?.replace(/[^a-z0-9.+-]/gi, '') || (asset.kind === 'video' ? 'mp4' : 'png');
+  return new File([media.bytes], `mixdog-${asset.id}.${extension}`, { type: media.mime });
 }
 
 /** Fallback thumbnail hydration ONLY: tiles normally load their rendition
@@ -375,7 +390,12 @@ export function StudioPane({
     ...(restoredDraft?.options || {}),
   }));
   const [prompt, setPrompt] = useState(restoredDraft?.prompt || '');
-  const { assets, loadMoreAssets, removeAsset, refreshAssetKind, visibleAssets } = useStudioAssetGallery(api, kind);
+  const { assets, loadMoreAssets, reloadAssetKind, removeAsset, refreshAssetKind, visibleAssets } =
+    useStudioAssetGallery(api, kind);
+  // Selection mode for bulk delete: a tile click toggles its check instead of
+  // opening the detail.
+  const [selecting, setSelecting] = useState(false);
+  const [checkedIds, setCheckedIds] = useState<ReadonlySet<string>>(() => new Set());
   const [selected, setSelected] = useState<MediaAsset | null>(null);
   // ABB: the media detail viewer closes on hardware back.
   useMobileBack(Boolean(selected), () => setSelected(null));
@@ -422,6 +442,8 @@ export function StudioPane({
   const [copied, setCopied] = useState(false);
   // Compact detail sheet: the prompt is clamped to two lines and expands on tap.
   const [promptOpen, setPromptOpen] = useState(false);
+  // ABB: an expanded prompt folds before the detail itself closes.
+  useMobileBack(Boolean(selected) && promptOpen, () => setPromptOpen(false));
   // Tile hover chrome follows the Studio PANE, not the window — a split
   // leaf can be narrow while the window is still wide.
   const [narrowPane, setNarrowPane] = useState(false);
@@ -849,14 +871,127 @@ export function StudioPane({
     }
   };
 
+  const exitSelection = useCallback(() => {
+    setSelecting(false);
+    setCheckedIds(new Set());
+  }, []);
+  const toggleChecked = (asset: MediaAsset) =>
+    setCheckedIds((current) => {
+      const next = new Set(current);
+      if (!next.delete(asset.id)) next.add(asset.id);
+      return next;
+    });
+  /** Bulk cleanup: the runtime names the matching ids first, the user confirms
+   *  that exact count, and only those ids are deleted. */
+  const cleanUp: StudioCleanupRequest = async (filter, confirmText) => {
+    setHoverId('');
+    try {
+      const preview = (await callCapability(api, 'deleteMediaAssets', [{ ...filter, kind, dryRun: true }])) as
+        | { ids?: string[] }
+        | undefined;
+      const ids = Array.isArray(preview?.ids) ? preview.ids : [];
+      if (!ids.length) {
+        window.alert(t('No items to delete.'));
+        return;
+      }
+      if (!window.confirm(confirmText(ids.length))) return;
+      const result = (await callCapability(api, 'deleteMediaAssets', [{ ids }])) as { ids?: string[] } | undefined;
+      const removed = Array.isArray(result?.ids) ? result.ids : [];
+      const gone = new Set(removed);
+      await Promise.all(removed.map((id) => removeStudioAssetReferences(id, referenceStore)));
+      if (selected && gone.has(selected.id)) setSelected(null);
+      setJobs((current) => current.filter((entry) => !(entry.assetId && gone.has(entry.assetId))));
+      exitSelection();
+      await reloadAssetKind(kind, removed);
+    } catch (reason) {
+      setError(errorText(reason));
+    }
+  };
+
+  /** The references an asset was generated with, as composer chips. */
+  const assetReferences = async (asset: MediaAsset): Promise<StudioReference[]> =>
+    (await readStudioAssetReferences(asset.id, referenceStore)).map((reference) => ({
+      ...reference,
+      url: `data:${reference.mime};base64,${reference.base64}`,
+    }));
+
+  // Reuse restores the recipe into the composer — prompt, route, options and
+  // references — to edit before the next run instead of repeating it as is.
+  const reusePrompt = async (asset: MediaAsset) => {
+    const references = await assetReferences(asset);
+    setKind(asset.kind);
+    setLaneId(asset.lane);
+    setModel(asset.model);
+    setOptions((current) => ({ ...current, ...(asset.options || {}) }));
+    setPrompt(asset.prompt);
+    setRefs(references);
+    setSelected(null);
+    promptRef.current?.focus({ preventScroll: true });
+  };
+
+  /** Original bytes: the web app's byte lane when it answers, else the RPC
+   *  read (always on the desktop, where it rides local IPC). */
+  const readOriginalMedia = async (asset: MediaAsset): Promise<MediaBytes> => {
+    const url = localTransport ? '' : assetUrl(asset.id, 'original');
+    if (url) {
+      const response = await fetch(url);
+      if (response.ok) {
+        const mime = (response.headers.get('content-type') || '').split(';')[0]?.trim();
+        return { bytes: await response.arrayBuffer(), mime: mime || asset.mime };
+      }
+    }
+    const result = (await callCapability(api, 'readMediaAsset', [
+      asset.id,
+      { variant: 'original' },
+    ])) as MediaAssetRead | null;
+    if (!result?.base64) throw new Error(t('Could not read this media file.'));
+    return { bytes: base64Bytes(result.base64), mime: result.mime || asset.mime };
+  };
+
+  // The asset joins the next run's references through the same reader as a
+  // picked file, so the model's reference cap applies unchanged.
+  const addAssetReference = async (asset: MediaAsset) => {
+    try {
+      await addFiles([mediaFile(asset, await readOriginalMedia(asset))]);
+      setSelected(null);
+      promptRef.current?.focus({ preventScroll: true });
+    } catch (reason) {
+      setError(errorText(reason));
+    }
+  };
+
+  // Web app Save: the device share sheet reaches Photos and Files on a phone.
+  // Where it is missing or refuses — a slow read can outlive the tap's user
+  // activation — a download link delivers the same file.
+  const saveAsset = async (asset: MediaAsset) => {
+    try {
+      const file = mediaFile(asset, await readOriginalMedia(asset));
+      if (navigator.canShare?.({ files: [file] })) {
+        try {
+          await navigator.share({ files: [file] });
+          return;
+        } catch (reason) {
+          if (reason instanceof DOMException && reason.name === 'AbortError') return;
+        }
+      }
+      const href = URL.createObjectURL(file);
+      const link = document.createElement('a');
+      link.href = href;
+      link.download = file.name;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(href), 60_000);
+    } catch (reason) {
+      setError(errorText(reason));
+    }
+  };
+
   // Detail actions: queue the saved request again, hand the file to the OS
   // viewer, or remove it from the gallery.
   const regenerate = async (asset: MediaAsset) => {
     if (!asset.prompt.trim()) return;
-    const references = (await readStudioAssetReferences(asset.id, referenceStore)).map((reference) => ({
-      ...reference,
-      url: `data:${reference.mime};base64,${reference.base64}`,
-    }));
+    const references = await assetReferences(asset);
     const started = await startQueuedRequest({
       lane: asset.lane,
       kind: asset.kind,
@@ -1033,6 +1168,22 @@ export function StudioPane({
     return justifiedRows(tiles, tileRatios, gridWidth, rowHeight, STUDIO_GRID_GAP, STUDIO_GRID_MAX_WIDTH);
   }, [pendingJobs, visibleAssets, frameRatios, gridWidth, rowHeight]);
   const { routeRows, durationSlider } = studioRouteRows({ controls, disabled, kind, options, setOptions });
+  // Detail paging follows gallery order, and the rail names the route with the
+  // catalog's labels instead of lane and model ids.
+  const selectedIndex = selected ? visibleAssets.findIndex((asset) => asset.id === selected.id) : -1;
+  const previousAsset = selectedIndex > 0 ? visibleAssets[selectedIndex - 1] || null : null;
+  const nextAsset = selectedIndex >= 0 ? visibleAssets[selectedIndex + 1] || null : null;
+  const selectedLane = selected ? lanes.find((entry) => entry.id === selected.lane) || null : null;
+  const selectedModelLabel = selected
+    ? laneSpec(selectedLane, selected.kind)?.models.find((entry) => entry.id === selected.model)?.label ||
+      selected.model
+    : '';
+  // Paging toward the end of the loaded list pulls the next page, so a swipe
+  // through a long gallery never dead-ends at a page boundary.
+  useEffect(() => {
+    if (selectedIndex < 0 || selectedIndex < visibleAssets.length - 3) return;
+    void loadMoreAssets(kind).catch((reason) => setError(errorText(reason)));
+  }, [kind, loadMoreAssets, selectedIndex, visibleAssets.length]);
   const retryJob = (entry: StudioMediaJob) => {
     dismissJob(entry.id);
     void (entry.request ? startQueuedRequest(entry.request) : generate());
@@ -1121,6 +1272,23 @@ export function StudioPane({
           <div className="studio-stage-host">
             <StudioGallery
               assetUrl={assetUrl}
+              checkedIds={checkedIds}
+              cleanup={
+                <StudioCleanupBar
+                  selecting={selecting}
+                  selectedCount={checkedIds.size}
+                  visibleCount={visibleAssets.length}
+                  onSelectMode={() => setSelecting(true)}
+                  onSelectAll={() => setCheckedIds(new Set(visibleAssets.map((asset) => asset.id)))}
+                  onDeleteSelected={() =>
+                    void cleanUp({ ids: [...checkedIds] }, (total) =>
+                      t('Delete {{total}} selected items permanently? This cannot be undone.', { total })
+                    )
+                  }
+                  onExitSelection={exitSelection}
+                  onCleanUp={(filter, confirmText) => void cleanUp(filter, confirmText)}
+                />
+              }
               durations={durations}
               eagerThumbnailCount={EAGER_THUMB_COUNT}
               failedThumbs={failedThumbs}
@@ -1141,6 +1309,7 @@ export function StudioPane({
               resultsRef={resultsRef}
               rowHeight={rowHeight}
               selectedId={selected?.id || ''}
+              selecting={selecting}
               thumbs={thumbs}
               tileSize={tileSize}
               tileSizes={TILE_SIZES}
@@ -1150,7 +1319,10 @@ export function StudioPane({
               onDismiss={dismissJob}
               onHoverEnd={() => setHoverId('')}
               onHoverStart={(asset) => void hoverPreview(asset)}
-              onKindChange={setKind}
+              onKindChange={(next) => {
+                exitSelection();
+                setKind(next);
+              }}
               onOpen={openDetail}
               onResultsScroll={handleResultsScroll}
               onRetry={retryJob}
@@ -1158,12 +1330,13 @@ export function StudioPane({
               onThumbnailLoad={rememberThumbnailRatio}
               onThumbnailStall={startThumbnailFallback}
               onTileSizeChange={updateTileSize}
+              onToggleChecked={toggleChecked}
             />
           </div>
           <div className="studio-dock" ref={dockRef}>
             {/* Progress AND job failures live on the pending tile; the banner is
             only for pane-level errors. */}
-            <InlineErrors messages={[error].filter(Boolean)} />
+            <ErrorNotice error={error} onDismiss={() => setError('')} />
             {lanes.some((entry) => entry.catalogError || entry.catalogWarning) && (
               <button
                 type="button"
@@ -1210,20 +1383,28 @@ export function StudioPane({
             <StudioDetailViewer
               asset={selected}
               assetUrl={assetUrl}
+              canUseAsReference={refs.length < maxRefs}
               copied={copied}
               localTransport={localTransport}
               mediaForeground={mediaForeground}
+              modelLabel={selectedModelLabel}
               previewUrl={previewUrl}
               promptOpen={promptOpen}
+              providerLabel={selectedLane?.label || selected.lane}
               thumbUrl={thumbs[selected.id] || ''}
               onClose={() => setSelected(null)}
               onCopyPrompt={(asset) => void copyPrompt(asset)}
+              onNext={nextAsset ? () => setSelected(nextAsset) : undefined}
               onOpenAsset={(asset) => void openAsset(asset)}
               onOpenFolder={(asset) => void openAssetFolder(asset)}
+              onPrevious={previousAsset ? () => setSelected(previousAsset) : undefined}
               onRegenerate={(asset) => void regenerate(asset)}
               onRemove={(asset) => void remove(asset)}
+              onReusePrompt={(asset) => void reusePrompt(asset)}
+              onSave={(asset) => void saveAsset(asset)}
               onTogglePrompt={() => setPromptOpen((current) => !current)}
               onUrlBroken={markUrlBroken}
+              onUseAsReference={(asset) => void addAssetReference(asset)}
             />
           )}
         </div>

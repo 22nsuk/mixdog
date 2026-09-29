@@ -59,6 +59,7 @@ const CHECKLIST_RULES = Object.freeze({
         'worksheet_print_fit_missing',
         'drawing_outside_print_area',
         'drawing_overlap',
+        'drawing_covers_cells',
       ],
     },
     {

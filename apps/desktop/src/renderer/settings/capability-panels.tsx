@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { ErrorNotice } from '../ErrorNotice';
 
 import type { DesktopApi } from '../../shared/contract';
+import { requestOpenDoctor } from '../command-surface-doctor-event';
 import { t } from '../i18n';
 import { providerDisplayName } from '../provider-display';
 import { record } from '../record-utils';
@@ -336,8 +337,6 @@ function DesktopPowerGroup() {
 }
 
 function SystemPanelBody(context: PanelContext) {
-  const { pending, run } = context;
-  const busy = Boolean(pending);
   return (
     <>
       {/* The remote runtime toggle moved to the session header (user decision):
@@ -349,9 +348,7 @@ function SystemPanelBody(context: PanelContext) {
           title="Diagnostics"
           description="Check the runtime, providers, integrations, and local installation."
           actions={
-            <ActionButton disabled={busy} onClick={() => void run('runDoctor')}>
-              Run doctor
-            </ActionButton>
+            <ActionButton onClick={requestOpenDoctor}>Run doctor</ActionButton>
           }
         />
       </Group>

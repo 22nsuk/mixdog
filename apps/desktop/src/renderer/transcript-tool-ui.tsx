@@ -1,14 +1,5 @@
 import { ChevronRight, Code2, Layers3, ListTree } from 'lucide-react';
-import React, {
-  Suspense,
-  lazy,
-  useEffect,
-  useId,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from 'react';
+import React, { Suspense, lazy, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { TranscriptItem } from './desktop-types';
 import { t } from './i18n';
 import { preloadMarkdownBody } from './markdown-body-loader';
@@ -95,7 +86,9 @@ interface ToolActivityGroupProps {
 function sameToolActivityGroupProps(previous: ToolActivityGroupProps, next: ToolActivityGroupProps): boolean {
   if ((previous.disclosureScope ?? '') !== (next.disclosureScope ?? '')) return false;
   if (previous.items === next.items) return true;
-  return previous.items.length === next.items.length && previous.items.every((item, index) => item === next.items[index]);
+  return (
+    previous.items.length === next.items.length && previous.items.every((item, index) => item === next.items[index])
+  );
 }
 
 /** Memoized: every TranscriptList render re-invokes renderRow for each row. */

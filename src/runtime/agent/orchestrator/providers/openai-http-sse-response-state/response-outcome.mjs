@@ -23,9 +23,10 @@ export function usageFromResponse(rawUsage, serviceTier) {
 }
 
 export function createResponseOutcome({ state }) {
-  const { stampToolSafety, stampOutcome, stallPartial, stampStreamError, endedEarlyError } = createResponseStamps({
-    state,
-  });
+  const { stampToolSafety, stampOutcome, stallPartial, stampStreamError, attachStreamPartial, endedEarlyError } =
+    createResponseStamps({
+      state,
+    });
 
   const traceFinished = ({ liveModel, poolKey, iteration, sseStartedAt, ttftMs }) => {
     traceAgentSse({
@@ -97,5 +98,5 @@ export function createResponseOutcome({ state }) {
     };
   };
 
-  return { stampToolSafety, stampOutcome, stallPartial, stampStreamError, finish };
+  return { stampToolSafety, stampOutcome, stallPartial, stampStreamError, attachStreamPartial, finish };
 }

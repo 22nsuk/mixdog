@@ -1,13 +1,13 @@
 /**
  * http-router/session-routes.mjs — the session-start core-memory payload
- * (curated common + project-scoped lines) and the recall-embedding prewarm
- * that follows a session start.
+ * (curated common + project-scoped lines), the recall-embedding prewarm
+ * that follows a session start, and the built-in Install's awaited warmup.
  */
 import { readBody, sendJson, sendError } from '../http-wire.mjs';
 import { formatCuratedCoreMemoryLine } from '../core-memory-file.mjs';
 import { resolveProjectScope } from '../project-id-resolver.mjs';
 import { warmupEmbeddingProvider, isEmbeddingModelReady } from '../embedding-provider.mjs';
-import { embeddingWarmupCanStart, memorySecondaryMode } from '../memory-config-flags.mjs';
+import { embeddingOnDemandCanStart, embeddingWarmupCanStart, memorySecondaryMode } from '../memory-config-flags.mjs';
 
 // The embedding ONNX session loads lazily and self-disposes after an idle
 // window. Session start is the earliest reliable signal that interactive recall
@@ -60,8 +60,29 @@ export function createSessionRoutes({ getDb, log }) {
     }
   };
 
+  // Built-in Memory Install: load the embedding model (downloading it on first
+  // use) and answer once it is ready, so an offline or failed fetch fails the
+  // Install instead of silently degrading the first recall. It is an explicit
+  // request like an on-demand load, so the eager-warmup env default does not
+  // gate it; a secondary process never owns the model.
+  const embeddingWarmup = async (_req, res) => {
+    if (!embeddingOnDemandCanStart()) {
+      sendJson(res, { ok: true, skipped: 'secondary mode' });
+      return;
+    }
+    try {
+      await warmupEmbeddingProvider();
+      sendJson(res, { ok: true, ready: isEmbeddingModelReady() });
+    } catch (e) {
+      sendError(res, e.message);
+    }
+  };
+
   return {
     buildSessionCoreMemoryPayload,
-    routes: { 'POST /session-start/core-memory': sessionStart },
+    routes: {
+      'POST /session-start/core-memory': sessionStart,
+      'POST /embedding/warmup': embeddingWarmup,
+    },
   };
 }

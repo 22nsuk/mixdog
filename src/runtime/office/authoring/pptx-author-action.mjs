@@ -13,6 +13,7 @@ import {
   throwIfAuthoringCancelled,
 } from './pptx-author-session.mjs';
 import { runPptxAuthoringScript } from './pptx-script-runner.mjs';
+import { htmlBriefScript, measureHtmlDrift, runPptxHtmlAuthoring, writeHtmlComparisons } from './pptx-html-runner.mjs';
 import { factsGate, parseAuthoringBrief, planGate } from './pptx-brief.mjs';
 import { readCompositionReceipt } from './pptx-review-artifacts.mjs';
 import { receiptForDelivery } from './pptx-receipt.mjs';
@@ -20,8 +21,13 @@ import { snapshotPortableOoxml } from '../portable/portable-ooxml.mjs';
 
 /** The design guide lives in the built-in `pptx` skill; the tool never
  *  serves it so one copy stays authoritative and user-overridable. */
-const PPTX_AUTHOR_NEEDS_SCRIPT =
-  'author requires script. Load the `pptx` Skill first (Skill name:"pptx"): it carries the authoring workflow, composition grammar, device kit, and the pptxgenjs footguns, then call author again with path and script.';
+const PPTX_AUTHOR_NEEDS_SOURCE =
+  'author requires script: HTML slides or a pptxgenjs script. Load the `pptx` Skill first (Skill name:"pptx"): it carries the authoring workflow, the HTML contract, the composition grammar, and the device kit, then call author again with path and script.';
+
+// HTML opens with markup (a doctype, a comment, an element); a pptxgenjs script never does.
+function isHtmlSource(source) {
+  return /^\s*</.test(String(source || ''));
+}
 
 // The gates read the staged deck with the portable reader whatever backend
 // will hold it; a package the reader cannot open is left to qa, never turned
@@ -83,8 +89,25 @@ function factsGateResult(target, brief, gate, run) {
   };
 }
 
+// The HTML's own geometry, read in the browser before anything lands: a declared relation that does not
+// hold, or a near miss no declaration covers (pptx-html-geometry.mjs).
+export function geometryGateResult(target, run) {
+  const listed = run.geometry
+    .map((page) => `slide ${page.slide}: ${page.findings.map((finding) => finding.message).join('; ')}`)
+    .join(' | ');
+  return {
+    ok: false,
+    reason: 'geometry_gate',
+    output: target,
+    gate: { code: 'geometry', slides: run.geometry },
+    logs: run.logs,
+    elapsedMs: run.elapsedMs,
+    nextAction: `The pages' geometry does not hold (${listed}), so nothing landed. Compute related positions from one source (flex or grid, calc() on shared custom properties, related shapes in one SVG) and declare the relation (data-on, data-inside, data-between, data-align, data-label); mark an offset that is deliberate data-free. Then call author again.`,
+  };
+}
+
 function resolveAuthorTarget(args, cwd) {
-  if (!String(args.script || '').trim()) throw new Error(PPTX_AUTHOR_NEEDS_SCRIPT);
+  if (!String(args.script || '').trim()) throw new Error(PPTX_AUTHOR_NEEDS_SOURCE);
   const requestedPath = String(args.path || args.output || '').trim();
   if (!requestedPath) throw new Error('author requires path');
   const target = fullPath(requestedPath, cwd);
@@ -92,15 +115,17 @@ function resolveAuthorTarget(args, cwd) {
   return { target, mode: validatePptxAuthorMode(args.mode) };
 }
 
-function scriptFailedResult(target, run) {
+function scriptFailedResult(target, run, html) {
   return {
     ok: false,
-    reason: 'script_failed',
+    reason: html ? 'html_failed' : 'script_failed',
     output: target,
     error: run.error,
     logs: run.logs,
     elapsedMs: run.elapsedMs,
-    nextAction: 'Fix the script at the reported line and call author again.',
+    nextAction: html
+      ? 'Fix the HTML the error names and call author again.'
+      : 'Fix the script at the reported line and call author again.',
   };
 }
 
@@ -134,6 +159,17 @@ async function finishAuthoredDeck(session, { args, cwd, target, run, signal, rep
   } finally {
     delete session.activeSignal;
   }
+  if (run.htmlShots?.length && result.render?.images?.length) {
+    result.render.compare = await writeHtmlComparisons(target, run.htmlShots, result.render.images);
+    const drift = await measureHtmlDrift(run.htmlShots, run.htmlText, result.render.images);
+    result.render.drift = drift;
+    const moved = drift.pages.map((entry) => `slide ${entry.page}: ${entry.items.map((item) => `"${item.text}" dy ${item.dy} dx ${item.dx}`).join(', ')}`);
+    const drifted = moved.length
+      ? ` html_render_drift: text PowerPoint drew more than ${drift.threshold}px from where the HTML put it (${moved.join('; ')}); open those pages' compare pairs and fix the HTML or report the residue.`
+      : '';
+    const unread = drift.unreadPages?.length ? ` Pages ${drift.unreadPages.join(', ')} were rendered in shared images, so their drift was not read; render them in batches of 12 or fewer to read it.` : '';
+    result.nextAction = `${result.nextAction} render.compare holds one image per page, the HTML (left) beside the PPTX render (right): open a page's pair when its render differs from what the HTML drew.${drifted}${unread}`;
+  }
   return result;
 }
 
@@ -158,7 +194,8 @@ export async function authorPptx(args, { cwd, dataDir, signal = null }) {
   // deck leaves the file on disk and the session holding the previous deck
   // untouched.
   const staging = stagingTarget(target);
-  const brief = parseAuthoringBrief(args.script);
+  const html = isHtmlSource(args.script);
+  const brief = parseAuthoringBrief(html ? htmlBriefScript(args.script) : args.script);
   let run;
   let session = null;
   let reusedSession = false;
@@ -166,9 +203,12 @@ export async function authorPptx(args, { cwd, dataDir, signal = null }) {
   let discardStaging = true;
   try {
     throwIfAuthoringCancelled(signal);
-    run = await runPptxAuthoringScript(args.script, staging);
+    run = html
+      ? await runPptxHtmlAuthoring(args.script, staging, { target, signal })
+      : await runPptxAuthoringScript(args.script, staging);
     throwIfAuthoringCancelled(signal);
-    if (!run.ok) return scriptFailedResult(target, run);
+    if (!run.ok) return scriptFailedResult(target, run, html);
+    if (run.geometry?.length) return geometryGateResult(target, run);
     // The gates read the staged deck before anything lands: a figure with no
     // fact behind it, and a page that does not carry what its plan line named,
     // are refused here, not reported once the deck is open.
@@ -215,6 +255,7 @@ function authoredResult(session, target, run, { replacedSession, reusedSession, 
     elapsedMs: run.elapsedMs,
     logs: run.logs,
     kit: run.kit,
+    ...(run.htmlSource ? { htmlSource: run.htmlSource } : {}),
     ...(run.normalizedParagraphs ? { normalizedParagraphs: run.normalizedParagraphs } : {}),
     ...(run.nativeGradients ? { nativeGradients: run.nativeGradients } : {}),
     ...(run.vectorIcons ? { vectorIcons: run.vectorIcons } : {}),

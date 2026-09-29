@@ -165,6 +165,26 @@ test('switching away from an open script retains its surface for one frame', asy
   assert.ok(view.host.querySelector('[data-editor="script.ts"][data-active="false"]'));
 });
 
+test('switching tabs keeps every open editor mounted instead of rebuilding the pane', async (t) => {
+  const view = await mountPaneWorkspace(t);
+  const tabs = [script, otherScript, draft];
+  await view.render([view.leaf(tabs, script)]);
+  const first = view.host.querySelector('[data-editor="script.ts"]');
+  const second = view.host.querySelector('[data-editor="other.ts"]');
+  for (const active of [otherScript, draft, script, otherScript]) {
+    await view.render([view.leaf(tabs, active)]);
+    // The handoff frame repaints the outgoing tab with the SAME editors.
+    assert.equal(view.host.querySelector('[data-editor="script.ts"]'), first);
+    assert.equal(view.host.querySelector('[data-editor="other.ts"]'), second);
+    await view.flushFrame();
+    assert.equal(view.host.querySelector('[data-pane-surface-handoff="true"]'), null);
+    assert.equal(view.host.querySelector('[data-editor="script.ts"]'), first, 'script.ts must not remount');
+    assert.equal(view.host.querySelector('[data-editor="other.ts"]'), second, 'other.ts must not remount');
+  }
+  assert.equal(second.dataset.active, 'true');
+  assert.equal(first.dataset.active, 'false');
+});
+
 test('closing a retained script cancels its pending surface without waiting for a frame', async (t) => {
   const view = await mountPaneWorkspace(t);
   await view.render([view.leaf([script, draft])]);

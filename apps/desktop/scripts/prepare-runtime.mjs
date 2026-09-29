@@ -152,7 +152,9 @@ async function prepareComputerNative() {
   const triple = computerRustTargets[embeddingTarget.key];
   if (!triple) throw new Error(`No Computer Use backend target exists for ${embeddingTarget.key}.`);
   if (process.platform !== embeddingTarget.platform) {
-    throw new Error(`Building the ${embeddingTarget.platform} Computer Use backend requires a ${embeddingTarget.platform} host.`);
+    throw new Error(
+      `Building the ${embeddingTarget.platform} Computer Use backend requires a ${embeddingTarget.platform} host.`
+    );
   }
   const outputDirectory = join(desktopDir, '.cache', 'computer-native', embeddingTarget.key);
   const output = join(outputDirectory, computerNativeFileName);

@@ -175,9 +175,14 @@ test('an older page that starts before the cached window replaces it as a prepen
   const cached = rows.slice(4);
   const paged = rows.slice(0);
   for (const withIds of [false, true]) {
-    const withId = (items, from) => (withIds ? items.map((item, index) => ({ ...item, id: `h${from + index}` })) : items);
+    const withId = (items, from) =>
+      withIds ? items.map((item, index) => ({ ...item, id: `h${from + index}` })) : items;
     const store = createSessionLaneStore({ decorator });
-    store.apply({ sessionId: 'session', snapshot: { sessionId: 'session', items: withId(cached, 4) }, frameSource: 'live' });
+    store.apply({
+      sessionId: 'session',
+      snapshot: { sessionId: 'session', items: withId(cached, 4) },
+      frameSource: 'live',
+    });
     const page = withId(paged, 0);
     if (withIds) page[0] = { ...page[0], id: 'h6' };
     store.apply({ sessionId: 'session', snapshot: { sessionId: 'session', items: page }, frameSource: 'replay' });
@@ -189,7 +194,10 @@ test('an older page that starts before the cached window replaces it as a prepen
     // A genuine tail window still keeps the cached head.
     store.apply({
       sessionId: 'session',
-      snapshot: { sessionId: 'session', items: [...withId(paged.slice(5), 5), ...withId([{ kind: 'user', text: 'third' }], 7)] },
+      snapshot: {
+        sessionId: 'session',
+        items: [...withId(paged.slice(5), 5), ...withId([{ kind: 'user', text: 'third' }], 7)],
+      },
       frameSource: 'live',
     });
     assert.deepEqual(

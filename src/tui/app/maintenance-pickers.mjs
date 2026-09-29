@@ -18,6 +18,7 @@ export function createMaintenancePickers({
   setProviderPrompt,
   setSettingsPrompt,
   closeUsagePanel,
+  clearModelCaches,
 }) {
   return {
     ...createUpdatePicker({ store, surface, setProviderPrompt, setSettingsPrompt }),
@@ -31,6 +32,13 @@ export function createMaintenancePickers({
       closeUsagePanel,
     }),
     ...createProfilePicker({ store, surface, setProviderPrompt, setSettingsPrompt, closeUsagePanel }),
-    ...createDeveloperPicker({ store, surface, setProviderPrompt, setSettingsPrompt, closeUsagePanel }),
+    ...createDeveloperPicker({
+      store,
+      surface,
+      setProviderPrompt,
+      setSettingsPrompt,
+      closeUsagePanel,
+      clearModelCaches,
+    }),
   };
 }

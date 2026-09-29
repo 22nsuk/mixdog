@@ -7,7 +7,10 @@ import { docxStyleId } from './portable-docx-xml.mjs';
 import { wordStyles } from './portable-package.mjs';
 
 const STYLES_PART = 'word/styles.xml';
-const key = (value) => String(value || '').toLowerCase().replace(/\s+/g, '');
+const key = (value) =>
+  String(value || '')
+    .toLowerCase()
+    .replace(/\s+/g, '');
 
 function styleEntries(stylesXml) {
   return [...String(stylesXml || '').matchAll(/<w:style\b([^>]*)>([\s\S]*?)<\/w:style>/g)].map((match) => ({
@@ -51,11 +54,14 @@ export async function documentStyleId(zip, requested, type = 'paragraph') {
     return { id: docxStyleId(wanted), found: false };
   }
   // The definition's own references follow the document's ids: Korean Word's Normal is "a", its Normal Table "a1".
-  const definition = borrowed.xml.replace(/(<w:(?:basedOn|next|link)\s+w:val=")([^"]*)(")/g, (whole, open, ref, close) => {
-    const name = template.find((entry) => entry.id === ref)?.name;
-    const local = name && entries.find((entry) => key(entry.name) === key(name));
-    return local ? `${open}${local.id}${close}` : whole;
-  });
+  const definition = borrowed.xml.replace(
+    /(<w:(?:basedOn|next|link)\s+w:val=")([^"]*)(")/g,
+    (whole, open, ref, close) => {
+      const name = template.find((entry) => entry.id === ref)?.name;
+      const local = name && entries.find((entry) => key(entry.name) === key(name));
+      return local ? `${open}${local.id}${close}` : whole;
+    }
+  );
   zip.file(STYLES_PART, styles.replace('</w:styles>', `${definition}</w:styles>`));
   return { id: borrowed.id, found: true };
 }

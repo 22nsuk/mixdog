@@ -1,7 +1,5 @@
-// Optional feature tools gated by settings for model-initiated calls: office
-// (lazy-loaded), media, tidy, and the setup tool.
-import { executeMediaTool } from '../../runtime/media/tool.mjs';
-import { executeTidyTool } from '../../runtime/tidy/tool.mjs';
+// Optional feature tools gated by settings for model-initiated calls: office,
+// media and tidy (each loaded on first use), and the setup tool.
 import { STANDALONE_DATA_DIR } from '../runtime-paths.mjs';
 
 export function createFeatureToolHandlers({ rt, setupTool, officeToolsEnabled, mediaToolEnabled, tidyToolEnabled }) {
@@ -27,10 +25,12 @@ export function createFeatureToolHandlers({ rt, setupTool, officeToolsEnabled, m
     },
     media: async (args, { callerCtx, callerCwd }) => {
       requireEnabled(callerCtx, mediaToolEnabled, 'media');
+      const { executeMediaTool } = await import('../../runtime/media/tool.mjs');
       return await executeMediaTool(args, { cwd: callerCwd, signal: signalFor(callerCtx) });
     },
     tidy: async (args, { callerCtx, callerCwd }) => {
       requireEnabled(callerCtx, tidyToolEnabled, 'tidy');
+      const { executeTidyTool } = await import('../../runtime/tidy/tool.mjs');
       return await executeTidyTool(args, {
         cwd: callerCwd,
         sessionId: callerCtx?.sessionId || callerCtx?.callerSessionId || rt.session?.id,

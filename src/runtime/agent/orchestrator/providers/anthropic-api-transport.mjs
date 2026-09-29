@@ -14,6 +14,7 @@ import {
   ANTHROPIC_RETRY_JITTER_RATIO,
   anthropicMaxAttempts,
   anthropicRequestTimeoutMs,
+  emitProviderRetryStage,
   withRetry,
   retryAfterMsFromError,
   retryDelayLabel,
@@ -94,6 +95,7 @@ export function createAnthropicApiTransport({ client, label, opts, useModel, par
     perAttemptLabel,
     provider: 'anthropic',
     recoveryOwner,
+    retry529: opts.retry529,
     model: useModel,
     fallbackModel: opts._fallbackTriggered ? undefined : opts.fallbackModel,
   });
@@ -135,7 +137,8 @@ export function createAnthropicApiTransport({ client, label, opts, useModel, par
       },
       {
         ...retryPolicy(totalSignal, `${label} Anthropic streaming response`, `${label}-initial-response`),
-        onRetry: ({ attempt, lastErr, delayMs, delayReason }) => {
+        onRetry: ({ attempt, maxAttempts, lastErr, delayMs, delayReason }) => {
+          emitProviderRetryStage(opts.onStageChange, { attempt: attempt + 1, maxAttempts, lastErr, delayMs });
           // Long/unknown fast-pool window: replay at
           // standard speed rather than waiting it out.
           if (params?.speed === 'fast' && noteFastModeCapacityError(lastErr, { fast: true }) !== 'retry-fast') {
@@ -154,7 +157,11 @@ export function createAnthropicApiTransport({ client, label, opts, useModel, par
   const requestNonStreamingMessage = (nonStreamingParams, signal) =>
     withRetry(
       async ({ signal: attemptSignal }) => client.messages.create(nonStreamingParams, requestOptions(attemptSignal)),
-      retryPolicy(signal, `${label} Anthropic non-streaming fallback`, `${label}-nonstreaming-request`)
+      {
+        ...retryPolicy(signal, `${label} Anthropic non-streaming fallback`, `${label}-nonstreaming-request`),
+        onRetry: ({ attempt, maxAttempts, lastErr, delayMs }) =>
+          emitProviderRetryStage(opts.onStageChange, { attempt: attempt + 1, maxAttempts, lastErr, delayMs }),
+      }
     );
 
   return { requestStreamingResponse, requestNonStreamingMessage };

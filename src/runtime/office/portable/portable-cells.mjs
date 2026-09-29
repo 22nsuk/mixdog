@@ -102,6 +102,47 @@ function cellInBounds(ref, bounds) {
   );
 }
 
+// The results a calculated sheet carries, by cell, in the form writeCachedValues stores: each formula's, and the
+// rest of an array block's, whose formula stands in its first cell alone. A shared-string result is carried as text.
+export function computedCellValues(xml, strings) {
+  const cells = [...iterateSheetCells(xml)];
+  const blocks = cells
+    .map((cell) => /<f\b([^>]*)>/.exec(cell.body)?.[1] || '')
+    .filter((attributes) => /\bt="array"/.test(attributes))
+    .map((attributes) => snapshotRangeBounds(/\bref="([^"]+)"/.exec(attributes)?.[1]))
+    .filter(Boolean);
+  const computed = new Map();
+  for (const cell of cells) {
+    if (!/<f\b/.test(cell.body) && !blocks.some((bounds) => cellInBounds(cell.ref, bounds))) continue;
+    const value = /<v(?:\s[^>]*)?>([\s\S]*?)<\/v>|<v(?:\s[^>]*)?\/>/.exec(cell.body);
+    if (!value) continue;
+    const type = /\bt="([^"]*)"/.exec(cell.attributes)?.[1] || '';
+    const text = value[1] || '';
+    computed.set(
+      cell.ref,
+      type === 's'
+        ? { type: 'str', text: xmlEncode(strings[Number(text)] ?? '') }
+        : { type: type === 'n' ? '' : type, text }
+    );
+  }
+  return computed;
+}
+
+// How Excel stores a computed result: the cell keeps its formula and carries the value beside it, typed the way the
+// reader expects it back ({ type: '' for a number, 'str', 'b' or 'e'; text as XML }).
+export function writeCachedValues(xml, cached) {
+  return xml.replace(/<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g, (whole, attributes, body) => {
+    const ref = /\br="([A-Z]+\d+)"/.exec(attributes)?.[1];
+    if (!ref || !cached.has(ref)) return whole;
+    // Only the first cell of an array block holds the formula; the rest of the
+    // block carries the value alone, which is how Excel writes them too.
+    const formula = /<f(?:\s[^>]*)?(?:\/>|>[\s\S]*?<\/f>)/.exec(body || '')?.[0] || '';
+    const { type, text } = cached.get(ref);
+    const kept = attributes.replace(/\st="[^"]*"/g, '').replace(/\s*\/$/, '');
+    return `<c${kept}${type ? ` t="${type}"` : ''}>${formula}<v>${text}</v></c>`;
+  });
+}
+
 function cellRecord({ attributes: attrs, ref, body }, strings, styles) {
   const type = /\bt="([^"]+)"/.exec(attrs)?.[1] || '';
   const formula = xmlDecode(/<f(?:\s[^>]*)?>([\s\S]*?)<\/f>/.exec(body)?.[1] || '');
