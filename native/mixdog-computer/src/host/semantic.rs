@@ -9,7 +9,7 @@ use crate::platform::WindowInfo;
 use crate::protocol::{Obj, Req};
 use crate::session::RefRecord;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::rc::Rc;
 
 const NONINTERACTIVE_ROLES: [&str; 15] = [
@@ -145,7 +145,7 @@ impl Host {
         let format_started = now_ms();
         let candidate_count = nodes.len();
         let mut found: Vec<Node> = Vec::new();
-        let mut seen: HashMap<String, ()> = HashMap::new();
+        let mut seen: HashSet<String> = HashSet::new();
         for node in nodes {
             if !node.width.is_finite() || node.width <= 0.0 || node.height <= 0.0 {
                 continue;
@@ -191,7 +191,7 @@ impl Host {
                 node.name.to_lowercase(),
                 node.role.to_lowercase()
             );
-            if seen.insert(key, ()).is_some() {
+            if !seen.insert(key) {
                 continue;
             }
             found.push(node);

@@ -545,8 +545,40 @@ impl FileListStore {
         corpus
     }
 
+    #[cfg(test)]
     pub(super) fn begin_live(&self, key: WalkKey, keep_warm: bool) -> (Arc<LiveWalk>, bool) {
         self.begin_live_with_inventory(key, keep_warm, 0)
+    }
+
+    /// Join the live walk for `key`, starting it when this caller is the first.
+    /// An unwatched operand can never be invalidated, so its walk is marked
+    /// uncacheable. The returned guard keeps the walk alive while the caller
+    /// consumes it.
+    pub(super) fn join_live_walk<'a>(
+        self: &'a Arc<Self>,
+        key: WalkKey,
+        operand_path: &Path,
+        parsed: &ParsedArgs,
+        keep_warm: bool,
+        inventory_lease_ms: u64,
+        watched: bool,
+    ) -> (Arc<LiveWalk>, LiveWaiterGuard<'a>) {
+        let (live, owner) =
+            self.begin_live_with_inventory(key.clone(), keep_warm, inventory_lease_ms);
+        if !watched {
+            live.cacheable.store(false, Ordering::Release);
+        }
+        let waiter = self.waiter_guard(key.clone(), Arc::clone(&live));
+        if owner {
+            start_live_walk(
+                Arc::clone(self),
+                key,
+                Arc::clone(&live),
+                operand_path.to_path_buf(),
+                parsed.clone(),
+            );
+        }
+        (live, waiter)
     }
 
     pub(super) fn begin_live_with_inventory(

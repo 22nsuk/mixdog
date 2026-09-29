@@ -15,19 +15,13 @@ pub(super) fn inventory_parallelism() -> usize {
     let available = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(2);
-    std::env::var("MIXDOG_SEARCH_INVENTORY_INFLIGHT")
-        .ok()
-        .and_then(|raw| raw.parse::<usize>().ok())
-        .filter(|n| *n > 0)
+    positive_env_usize("MIXDOG_SEARCH_INVENTORY_INFLIGHT")
         .unwrap_or_else(|| available.clamp(1, 2))
         .clamp(1, 8)
 }
 
 pub(super) fn inventory_publish_batch() -> usize {
-    std::env::var("MIXDOG_SEARCH_INVENTORY_PUBLISH_BATCH")
-        .ok()
-        .and_then(|raw| raw.parse::<usize>().ok())
-        .filter(|n| *n > 0)
+    positive_env_usize("MIXDOG_SEARCH_INVENTORY_PUBLISH_BATCH")
         .unwrap_or(256)
         .clamp(128, 512)
 }
@@ -47,10 +41,7 @@ pub(super) fn inventory_walk_threads(operand: &Path) -> usize {
     // Drive walks have enough independent directories to benefit from more
     // I/O workers. Keep ordinary project walks small and both paths bounded.
     let maximum = if is_filesystem_root(operand) { 12 } else { 4 };
-    std::env::var("MIXDOG_SEARCH_INVENTORY_THREADS")
-        .ok()
-        .and_then(|raw| raw.parse::<usize>().ok())
-        .filter(|threads| *threads > 0)
+    positive_env_usize("MIXDOG_SEARCH_INVENTORY_THREADS")
         .unwrap_or_else(|| {
             std::thread::available_parallelism()
                 .map(usize::from)

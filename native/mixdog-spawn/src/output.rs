@@ -24,7 +24,7 @@ pub(crate) fn emit_task(id: u64, event: &str, managed: &ManagedProcess) {
 pub(crate) const RETAINED_JOB_LIMIT: usize = 256;
 
 pub(crate) fn prune_retained_jobs(manager: &Arc<Manager>) {
-    let mut jobs = manager.jobs.lock().unwrap_or_else(|e| e.into_inner());
+    let mut jobs = manager.lock_jobs();
     if jobs.len() <= RETAINED_JOB_LIMIT {
         return;
     }

@@ -123,7 +123,7 @@ fn declared_kind_of(doc: &str) -> Option<DeclaredKind> {
 pub(crate) fn marker_value<'d>(doc: &'d str, marker: &str) -> Option<&'d str> {
     doc.lines()
         .filter_map(|line| line.trim().strip_prefix(marker))
-        .last()
+        .next_back()
         .map(str::trim)
 }
 

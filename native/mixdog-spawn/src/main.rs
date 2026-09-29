@@ -5,7 +5,7 @@ use std::fs::{metadata, File, OpenOptions};
 use std::io::{BufRead, Read, Seek, SeekFrom, Write};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -311,16 +311,10 @@ fn run_spawn(req: SpawnRequest, manager: Arc<Manager>) {
         retained: AtomicBool::new(req.background),
         stdin: Mutex::new(stdin_handle),
     });
-    manager
-        .live
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(id, Arc::clone(&managed));
+    manager.lock_live().insert(id, Arc::clone(&managed));
     if let Some(job_id) = &job_id {
         manager
-            .jobs
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .lock_jobs()
             .insert(job_id.clone(), Arc::clone(&managed));
     }
 
@@ -391,21 +385,28 @@ fn run_spawn(req: SpawnRequest, manager: Arc<Manager>) {
         "signal": root_signal,
     }));
     join_drained_pumps([stdout_pump, stderr_pump]);
+    finalize_process(id, &managed, &manager, status);
+}
+
+/// Settle the terminal state, publish the completion events, and release or
+/// retain the job identity once the root process and its pumps are done.
+fn finalize_process(
+    id: u64,
+    managed: &Arc<ManagedProcess>,
+    manager: &Arc<Manager>,
+    status: std::io::Result<ExitStatus>,
+) {
     if let Ok(mut state) = managed.state.lock() {
         settle_exit(&mut state, status);
     }
-    manager
-        .live
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .remove(&id);
+    manager.lock_live().remove(&id);
     let (exit_code, signal) = managed
         .state
         .lock()
         .map(|state| (state.exit_code, state.signal.clone()))
         .unwrap_or((None, None));
     if managed.snapshot().is_some() {
-        emit_task(id, "task_complete", &managed);
+        emit_task(id, "task_complete", managed);
     }
     // Foreground identities exist only while the process is live. A promoted
     // or explicitly-background task is retained for later task read/list.
@@ -416,15 +417,11 @@ fn run_spawn(req: SpawnRequest, manager: Arc<Manager>) {
             .ok()
             .and_then(|state| state.job_id.clone());
         if let Some(job_id) = job_id {
-            manager
-                .jobs
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(&job_id);
+            manager.lock_jobs().remove(&job_id);
             emit(&json!({ "id": id, "event": "task_released", "jobId": job_id }));
         }
     } else {
-        prune_retained_jobs(&manager);
+        prune_retained_jobs(manager);
     }
     emit(&json!({
         "id": id,
@@ -435,12 +432,7 @@ fn run_spawn(req: SpawnRequest, manager: Arc<Manager>) {
 }
 
 fn track(req: TrackRequest, manager: &Arc<Manager>) {
-    let managed = manager
-        .live
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(&req.track)
-        .cloned();
+    let managed = manager.live_process(req.track);
     let Some(managed) = managed else {
         spawn_error(req.id, "native process is no longer running");
         return;
@@ -455,21 +447,12 @@ fn track(req: TrackRequest, manager: &Arc<Manager>) {
             req.client_host_pid,
         );
     }
-    manager
-        .jobs
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(req.job_id, Arc::clone(&managed));
+    manager.lock_jobs().insert(req.job_id, Arc::clone(&managed));
     emit_task(req.id, "task_started", &managed);
 }
 
 fn promote(req: PromoteRequest, manager: &Arc<Manager>) {
-    let managed = manager
-        .jobs
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(&req.promote_task)
-        .cloned();
+    let managed = manager.job(&req.promote_task);
     let Some(managed) = managed else {
         spawn_error(req.id, format!("task not found: {}", req.promote_task));
         return;
@@ -549,12 +532,7 @@ fn main() {
 }
 
 fn stdin_write_request(manager: &Manager, stdin_write: u64, data: String, close: bool) {
-    let managed = manager
-        .live
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(&stdin_write)
-        .cloned();
+    let managed = manager.live_process(stdin_write);
     if let Some(managed) = managed {
         // Write off the wire thread: a stalled child pipe must not
         // block request processing.
@@ -572,12 +550,7 @@ fn stdin_write_request(manager: &Manager, stdin_write: u64, data: String, close:
 }
 
 fn stdin_close_request(manager: &Manager, stdin_close: u64) {
-    let managed = manager
-        .live
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(&stdin_close)
-        .cloned();
+    let managed = manager.live_process(stdin_close);
     if let Some(managed) = managed {
         let _ = managed
             .stdin
@@ -615,13 +588,7 @@ fn cancel_task_request(manager: &Manager, id: u64, cancel_task: &str) {
 }
 
 fn cancel_owner_request(manager: &Manager, id: u64, cancel_owner_session: &str) {
-    let live: Vec<Arc<ManagedProcess>> = manager
-        .live
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .values()
-        .cloned()
-        .collect();
+    let live: Vec<Arc<ManagedProcess>> = manager.lock_live().values().cloned().collect();
     let mut cancelled = 0usize;
     for managed in live {
         if let Ok(mut state) = managed.state.lock() {
@@ -646,7 +613,7 @@ fn release_task_request(manager: &Manager, id: u64, release_task: String) {
     // slot: releasing it would strand a running process with no
     // way left to observe or cancel it.
     let released = {
-        let mut jobs = manager.jobs.lock().unwrap_or_else(|e| e.into_inner());
+        let mut jobs = manager.lock_jobs();
         match jobs.get(&release_task) {
             Some(managed) if managed.done.load(Ordering::Acquire) => {
                 jobs.remove(&release_task);
@@ -681,9 +648,7 @@ fn task_list_request(manager: &Manager, id: u64, task_list: bool) {
         return;
     }
     let tasks: Vec<TaskSnapshot> = manager
-        .jobs
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .lock_jobs()
         .values()
         .filter_map(|managed| managed.snapshot())
         .collect();
@@ -698,13 +663,7 @@ fn reap_on_shutdown(manager: &Manager) {
     // those here destroyed the very artifact the caller asked for: a server a
     // task required, left running by design, died the instant the agent
     // process exited (2026-08-23, pypi-server).
-    let live: Vec<Arc<ManagedProcess>> = manager
-        .live
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .values()
-        .cloned()
-        .collect();
+    let live: Vec<Arc<ManagedProcess>> = manager.lock_live().values().cloned().collect();
     for managed in live {
         if managed.retained.load(Ordering::Acquire) {
             continue;

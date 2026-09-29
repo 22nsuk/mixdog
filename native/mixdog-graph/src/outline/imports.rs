@@ -31,15 +31,11 @@ pub(super) fn import_specs(lang: &str, ast_kind: &str, name: &str, text: &str) -
         "scala" | "swift" => single(leading_dotted_path(name)),
         // `#include "a.h"` and `#include <a.h>` both resolve on the bare path;
         // an unquoted `#include MACRO` was never an import edge.
-        "c" | "cpp" => match delimited_include(name, text) {
-            Some(spec) => single(spec),
-            None => Vec::new(),
-        },
+        "c" | "cpp" => delimited_include(name, text).map_or_else(Vec::new, single),
         "objc" => match ast_kind {
-            "preproc_import" | "preproc_include" => match delimited_include(name, text) {
-                Some(spec) => single(spec),
-                None => Vec::new(),
-            },
+            "preproc_import" | "preproc_include" => {
+                delimited_include(name, text).map_or_else(Vec::new, single)
+            }
             _ => single(strip_quotes(name)),
         },
         "java" | "kotlin" | "csharp" => single(name.to_string()),
@@ -136,18 +132,26 @@ fn leading_elixir_alias(spec: &str) -> &str {
 
 /// `A\{B, C}` → `A\B`, `A\C`; a plain spec passes through.
 pub fn expand_php_use_spec(spec: &str) -> Vec<String> {
+    expand_braced_spec(spec, '\\', true)
+}
+
+/// `Prefix<sep>{A, B}` → `Prefix<sep>A`, `Prefix<sep>B`; a spec without braces
+/// passes through. `strip_alias` drops a PHP-style ` as Alias` suffix.
+fn expand_braced_spec(spec: &str, separator: char, strip_alias: bool) -> Vec<String> {
     let spec = spec.trim();
     let Some(open) = spec.find('{') else {
         return vec![spec.to_string()];
     };
-    let prefix = spec[..open].trim().trim_end_matches('\\');
+    let prefix = spec[..open].trim().trim_end_matches(separator);
     let inner = spec[open + 1..].trim().trim_end_matches('}').trim();
     inner
         .split(',')
         .filter_map(|part| {
             let mut name = part.trim();
-            if let Some(index) = name.find(" as ") {
-                name = name[..index].trim();
+            if strip_alias {
+                if let Some(index) = name.find(" as ") {
+                    name = name[..index].trim();
+                }
             }
             if name.is_empty() || name == "*" {
                 return None;
@@ -155,7 +159,7 @@ pub fn expand_php_use_spec(spec: &str) -> Vec<String> {
             Some(if prefix.is_empty() {
                 name.to_string()
             } else {
-                format!("{prefix}\\{name}")
+                format!("{prefix}{separator}{name}")
             })
         })
         .collect()
@@ -163,26 +167,7 @@ pub fn expand_php_use_spec(spec: &str) -> Vec<String> {
 
 /// `Foo.{Bar, Baz}` → `Foo.Bar`, `Foo.Baz`; a plain alias passes through.
 pub fn expand_elixir_alias_spec(spec: &str) -> Vec<String> {
-    let spec = spec.trim();
-    let Some(open) = spec.find('{') else {
-        return vec![spec.to_string()];
-    };
-    let prefix = spec[..open].trim().trim_end_matches('.');
-    let inner = spec[open + 1..].trim().trim_end_matches('}').trim();
-    inner
-        .split(',')
-        .filter_map(|part| {
-            let name = part.trim();
-            if name.is_empty() || name == "*" {
-                return None;
-            }
-            Some(if prefix.is_empty() {
-                name.to_string()
-            } else {
-                format!("{prefix}.{name}")
-            })
-        })
-        .collect()
+    expand_braced_spec(spec, '.', false)
 }
 
 #[cfg(test)]

@@ -30,20 +30,8 @@ pub(super) fn complete_operand_files(
         if let Some(hit) = store.take_ready(&key) {
             return Ok((hit, true, 0, Vec::new(), watched));
         }
-        let (live, owner) = store.begin_live(key.clone(), keep_warm);
-        if !watched {
-            live.cacheable.store(false, Ordering::Release);
-        }
-        let _waiter = store.waiter_guard(key.clone(), Arc::clone(&live));
-        if owner {
-            start_live_walk(
-                Arc::clone(store),
-                key,
-                Arc::clone(&live),
-                operand_path.to_path_buf(),
-                parsed.clone(),
-            );
-        }
+        let (live, _waiter) =
+            store.join_live_walk(key, operand_path, parsed, keep_warm, 0, watched);
         // What the walk published so far, served as an incomplete and
         // uncacheable answer.
         let partial_snapshot = || {
@@ -196,20 +184,7 @@ pub(super) fn scan_streaming_operand(
         let timed_out = deadline_expired(deadline_at);
         return Ok((reached_limit, timed_out, watched, Vec::new()));
     }
-    let (live, owner) = store.begin_live(key.clone(), keep_warm);
-    if !watched {
-        live.cacheable.store(false, Ordering::Release);
-    }
-    let _waiter = store.waiter_guard(key.clone(), Arc::clone(&live));
-    if owner {
-        start_live_walk(
-            Arc::clone(store),
-            key,
-            Arc::clone(&live),
-            operand_path.to_path_buf(),
-            parsed.clone(),
-        );
-    }
+    let (live, _waiter) = store.join_live_walk(key, operand_path, parsed, keep_warm, 0, watched);
     let mut cursor = 0usize;
     let account_walk_errors = || {
         let count = live.walk_errors.load(Ordering::Acquire);
@@ -428,20 +403,14 @@ fn collect_bounded_inventory(
         }
         return Ok(());
     }
-    let (live, owner) = ctx.store.begin_live(key.clone(), ctx.keep_warm);
-    if !watched {
-        live.cacheable.store(false, Ordering::Release);
-    }
-    let _waiter = ctx.store.waiter_guard(key.clone(), Arc::clone(&live));
-    if owner {
-        start_live_walk(
-            Arc::clone(ctx.store),
-            key,
-            Arc::clone(&live),
-            scope.operand_path.to_path_buf(),
-            ctx.parsed.clone(),
-        );
-    }
+    let (live, _waiter) = ctx.store.join_live_walk(
+        key,
+        scope.operand_path,
+        ctx.parsed,
+        ctx.keep_warm,
+        0,
+        watched,
+    );
     let mut cursor = 0usize;
     'inventory: loop {
         let batch = match next_live_batch(&live, &mut cursor, ctx.cancelled, ctx.deadline_at)? {

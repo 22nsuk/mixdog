@@ -280,21 +280,14 @@ fn rank_live_walk(
     let watched = store.watch_root(root);
     let mut cache_safe = watched;
     let walk_key = scope.key.walk.clone();
-    let (live, owner) =
-        store.begin_live_with_inventory(walk_key.clone(), keep_warm, scope.inventory_lease_ms);
-    if !watched {
-        live.cacheable.store(false, Ordering::Release);
-    }
-    let _waiter = store.waiter_guard(walk_key.clone(), Arc::clone(&live));
-    if owner {
-        start_live_walk(
-            Arc::clone(store),
-            walk_key,
-            Arc::clone(&live),
-            root.to_path_buf(),
-            scope.parsed.clone(),
-        );
-    }
+    let (live, _waiter) = store.join_live_walk(
+        walk_key,
+        root,
+        &scope.parsed,
+        keep_warm,
+        scope.inventory_lease_ms,
+        watched,
+    );
     let mut cursor = 0usize;
     loop {
         // Materialize the wire-relative strings the ranker scores once, under

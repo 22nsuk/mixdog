@@ -208,27 +208,22 @@ impl TypePatterns {
 fn extract_top_level_types(text: &str, lang: &str, p: &TypePatterns) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
+    let mut keep = |name: &str| {
+        if seen.insert(name.to_string()) {
+            out.push(name.to_string());
+        }
+    };
     match lang {
         "java" | "kotlin" | "csharp" => {
             for line in text.lines() {
-                if let Some(cap) = p.type_decl_jks.captures(line) {
-                    if let Some(m) = cap.get(1) {
-                        let s = m.as_str();
-                        if seen.insert(s.to_string()) {
-                            out.push(s.to_string());
-                        }
-                    }
+                if let Some(m) = p.type_decl_jks.captures(line).and_then(|cap| cap.get(1)) {
+                    keep(m.as_str());
                 }
             }
         }
         "go" => {
-            for cap in p.go_type.captures_iter(text) {
-                if let Some(m) = cap.get(1) {
-                    let s = m.as_str();
-                    if seen.insert(s.to_string()) {
-                        out.push(s.to_string());
-                    }
-                }
+            for m in p.go_type.captures_iter(text).filter_map(|cap| cap.get(1)) {
+                keep(m.as_str());
             }
         }
         _ => {}

@@ -154,15 +154,14 @@ pub fn glyph_key(glyph: char) -> Option<(char, bool)> {
         .map(|(_, base)| (*base, true))
 }
 
-struct Parser<'a> {
+struct Parser {
     source: Vec<char>,
     at: usize,
     cost: u32,
-    _marker: std::marker::PhantomData<&'a ()>,
 }
 
-impl<'a> Parser<'a> {
-    fn new(value: &'a str) -> Result<Parser<'a>, String> {
+impl Parser {
+    fn new(value: &str) -> Result<Parser, String> {
         let source: Vec<char> = value.chars().collect();
         if value.encode_utf16().count() > 512 {
             return invalid();
@@ -171,7 +170,6 @@ impl<'a> Parser<'a> {
             source,
             at: 0,
             cost: 0,
-            _marker: std::marker::PhantomData,
         })
     }
 

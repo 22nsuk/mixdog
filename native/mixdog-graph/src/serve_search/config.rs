@@ -44,6 +44,15 @@ pub(super) fn bounded_env_usize(name: &str, default: usize, min: usize, max: usi
         .clamp(min, max)
 }
 
+/// A strictly positive integer from the environment, or `None` when the
+/// variable is unset, unparsable or zero.
+pub(super) fn positive_env_usize(name: &str) -> Option<usize> {
+    std::env::var(name)
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+}
+
 /// Request id whose handler must panic, for the isolation probe.
 ///
 /// `contain_search_panic` promises that one panicking request comes back as
@@ -131,19 +140,13 @@ pub(super) fn server_parallelism() -> usize {
     let available = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(2);
-    std::env::var("MIXDOG_SEARCH_SERVER_MAX_INFLIGHT")
-        .ok()
-        .and_then(|raw| raw.parse::<usize>().ok())
-        .filter(|n| *n > 0)
+    positive_env_usize("MIXDOG_SEARCH_SERVER_MAX_INFLIGHT")
         .unwrap_or_else(|| available.clamp(2, 8))
         .clamp(1, MAX_SEARCH_THREADS)
 }
 
 pub(super) fn bulk_parallelism() -> usize {
-    std::env::var("MIXDOG_SEARCH_SERVER_MAX_BULK_INFLIGHT")
-        .ok()
-        .and_then(|raw| raw.parse::<usize>().ok())
-        .filter(|n| *n > 0)
+    positive_env_usize("MIXDOG_SEARCH_SERVER_MAX_BULK_INFLIGHT")
         .unwrap_or(2)
         .min(server_parallelism())
 }

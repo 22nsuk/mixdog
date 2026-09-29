@@ -102,7 +102,7 @@ pub(super) fn write_snapshot_checkpoints<W: Write>(
 
 /// Write a snapshot through a sibling temp file, then move it over `path`.
 /// `write` must flush what it wrote. Returns false — with the temp file
-/// removed and the previous snapshot possibly gone — when any step fails.
+/// removed and the previous snapshot untouched — when any step fails.
 pub(super) fn replace_snapshot_file(
     path: &Path,
     write: impl FnOnce(&mut BufWriter<File>) -> io::Result<()>,
@@ -111,10 +111,9 @@ pub(super) fn replace_snapshot_file(
     let written = File::create(&temp)
         .and_then(|file| write(&mut BufWriter::new(file)))
         .is_ok();
-    if !written
-        || (path.exists() && fs::remove_file(path).is_err())
-        || fs::rename(&temp, path).is_err()
-    {
+    // Rename replaces an existing destination atomically, so a crash never
+    // leaves the directory without a snapshot.
+    if !written || fs::rename(&temp, path).is_err() {
         let _ = fs::remove_file(&temp);
         return false;
     }
@@ -347,4 +346,26 @@ pub(super) fn schedule_file_list_snapshot(ready: Arc<Mutex<HashMap<WalkKey, Read
             schedule_file_list_snapshot(ready);
         }
     });
+}
+
+#[cfg(test)]
+mod replace_tests {
+    use super::*;
+
+    #[test]
+    fn replacing_a_snapshot_keeps_the_previous_one_until_the_new_one_lands() {
+        let dir = std::env::temp_dir().join(format!("mixdog-snapshot-{}", std::process::id()));
+        fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("snapshot.bin");
+        assert!(replace_snapshot_file(&path, |w| w.write_all(b"old")));
+        let failed = replace_snapshot_file(&path, |w| {
+            w.write_all(b"partial")?;
+            Err(io::Error::other("fixture write failure"))
+        });
+        assert!(!failed);
+        assert_eq!(fs::read(&path).expect("previous snapshot"), b"old");
+        assert!(replace_snapshot_file(&path, |w| w.write_all(b"new")));
+        assert_eq!(fs::read(&path).expect("replaced snapshot"), b"new");
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

@@ -238,9 +238,7 @@ pub fn run(root: &Path, args: &[String]) -> Result<(), crate::scan::ScanError> {
                 };
                 // Rules that parsed but cannot run are the rule author's
                 // problem: report them once per language.
-                for error in &compiled.errors {
-                    errors.push(error.clone());
-                }
+                errors.extend(compiled.errors.iter().cloned());
                 per_lang.insert(file.lang, Arc::clone(&compiled));
                 compiled
             }

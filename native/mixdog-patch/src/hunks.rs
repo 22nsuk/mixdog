@@ -279,7 +279,7 @@ pub(crate) fn old_hunk_span_line_eols<'a>(
         }
         let is_last = index + 1 == parts.old.len();
         let has_newline = eol.is_some();
-        if has_newline != expected.has_newline && !(is_last && !has_newline) {
+        if has_newline != expected.has_newline && (!is_last || has_newline) {
             return None;
         }
         eols.push(eol);
@@ -900,9 +900,7 @@ pub(crate) fn source_trailing_eol(source: &[u8]) -> &'static str {
 pub(crate) fn strip_trailing_eol(bytes: &mut Vec<u8>) {
     if bytes.ends_with(b"\r\n") {
         bytes.truncate(bytes.len() - 2);
-    } else if bytes.ends_with(b"\n") {
-        bytes.truncate(bytes.len() - 1);
-    } else if bytes.ends_with(b"\r") {
+    } else if bytes.ends_with(b"\n") || bytes.ends_with(b"\r") {
         bytes.truncate(bytes.len() - 1);
     }
 }

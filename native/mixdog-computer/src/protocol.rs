@@ -120,9 +120,7 @@ pub fn round_half_even(value: f64) -> i64 {
     let diff = value - floor;
     let rounded = if diff > 0.5 {
         floor + 1.0
-    } else if diff < 0.5 {
-        floor
-    } else if (floor as i64) % 2 == 0 {
+    } else if diff < 0.5 || (floor as i64) % 2 == 0 {
         floor
     } else {
         floor + 1.0

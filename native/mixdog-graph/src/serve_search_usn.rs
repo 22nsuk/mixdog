@@ -49,6 +49,29 @@ mod platform {
     };
     use windows_sys::Win32::System::IO::DeviceIoControl;
 
+    /// One second before `now`; an `Instant` too close to the process clock's
+    /// origin cannot go back that far, so `now` itself stands in.
+    fn restored_last_sync(now: Instant) -> Instant {
+        now.checked_sub(Duration::from_secs(1)).unwrap_or(now)
+    }
+
+    #[cfg(test)]
+    mod restore_tests {
+        use super::*;
+
+        #[test]
+        fn restored_last_sync_is_never_after_now_and_survives_an_early_clock() {
+            let now = Instant::now();
+            assert!(restored_last_sync(now) <= now);
+            // An Instant that cannot step back a second falls back to itself.
+            assert!(now.checked_sub(Duration::from_secs(u64::MAX / 4)).is_none());
+            assert_eq!(
+                now.checked_sub(Duration::from_secs(u64::MAX / 4)).unwrap_or(now),
+                now
+            );
+        }
+    }
+
     #[derive(Clone, Copy)]
     struct JournalCursor {
         volume_serial: u32,
@@ -429,7 +452,7 @@ mod platform {
                 volume_serial: checkpoint.volume_serial,
                 journal_id: checkpoint.journal_id,
                 next_usn: checkpoint.next_usn,
-                last_sync: Instant::now() - Duration::from_secs(1),
+                last_sync: restored_last_sync(Instant::now()),
             };
             match state.get_mut(&checkpoint.volume) {
                 Some(current)

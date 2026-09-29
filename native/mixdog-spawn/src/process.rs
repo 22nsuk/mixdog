@@ -270,23 +270,25 @@ impl Manager {
         }
     }
 
-    /// The running process spawned by request `id`. A poisoned registry is
-    /// recovered: a panic elsewhere must not make live processes unreachable.
-    pub(crate) fn live_process(&self, id: u64) -> Option<Arc<ManagedProcess>> {
-        self.live
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&id)
-            .cloned()
+    /// The live-process registry. A poisoned registry is recovered: a panic
+    /// elsewhere must not make live processes unreachable.
+    pub(crate) fn lock_live(&self) -> MutexGuard<'_, HashMap<u64, Arc<ManagedProcess>>> {
+        self.live.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The tracked task `job_id`, recovering a poisoned registry the same way.
+    /// The tracked-task registry, recovered from poisoning the same way.
+    pub(crate) fn lock_jobs(&self) -> MutexGuard<'_, HashMap<String, Arc<ManagedProcess>>> {
+        self.jobs.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The running process spawned by request `id`.
+    pub(crate) fn live_process(&self, id: u64) -> Option<Arc<ManagedProcess>> {
+        self.lock_live().get(&id).cloned()
+    }
+
+    /// The tracked task `job_id`.
     pub(crate) fn job(&self, job_id: &str) -> Option<Arc<ManagedProcess>> {
-        self.jobs
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(job_id)
-            .cloned()
+        self.lock_jobs().get(job_id).cloned()
     }
 }
 

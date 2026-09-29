@@ -22,13 +22,20 @@ pub fn window_id(handle: Wid) -> String {
     format!("hwnd:0x{handle:X}")
 }
 
+/// `get` refuses a slice that would split a multi-byte character, so
+/// non-ASCII input is simply "no prefix" instead of a panic.
+fn strip_prefix_ignore_case<'a>(value: &'a str, prefix: &str) -> Option<&'a str> {
+    let head = value.get(..prefix.len())?;
+    head.eq_ignore_ascii_case(prefix).then(|| &value[prefix.len()..])
+}
+
 pub fn parse_window_id(value: &str) -> Wid {
     let mut raw = value.trim();
-    if raw.len() >= 5 && raw[..5].eq_ignore_ascii_case("hwnd:") {
-        raw = &raw[5..];
+    if let Some(rest) = strip_prefix_ignore_case(raw, "hwnd:") {
+        raw = rest;
     }
-    if raw.len() >= 2 && raw[..2].eq_ignore_ascii_case("0x") {
-        raw = &raw[2..];
+    if let Some(rest) = strip_prefix_ignore_case(raw, "0x") {
+        raw = rest;
     }
     u64::from_str_radix(raw, 16).unwrap_or(0)
 }
@@ -288,5 +295,15 @@ mod tests {
         assert_eq!(parse_window_id("HWND:0x2a"), 0x2a);
         assert_eq!(parse_window_id("0x10"), 16);
         assert_eq!(parse_window_id("nonsense"), 0);
+    }
+
+    #[test]
+    fn non_ascii_window_ids_do_not_panic() {
+        // Byte 5 and byte 2 both fall inside a multi-byte character.
+        assert_eq!(parse_window_id("ééé"), 0);
+        assert_eq!(parse_window_id("héwnd:0x2A"), 0);
+        assert_eq!(parse_window_id("h\u{e9}"), 0);
+        assert_eq!(parse_window_id("0\u{e9}"), 0);
+        assert_eq!(parse_window_id("hwnd:0x2A"), 0x2a);
     }
 }

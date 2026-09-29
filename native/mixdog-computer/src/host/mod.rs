@@ -843,7 +843,7 @@ impl Host {
             let masked = self
                 .desktop
                 .accessibility()
-                .map_or(true, |a11y| a11y.focused_masked());
+                .is_none_or(|a11y| a11y.focused_masked());
             cursor_feedback.insert("focus_masked".into(), json!(masked));
         }
         let before = self.desktop.cursor();

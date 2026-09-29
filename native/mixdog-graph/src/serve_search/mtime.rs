@@ -159,20 +159,8 @@ pub(super) fn handle_mtime_inventory(
             continue;
         }
 
-        let (live, owner) = store.begin_live(walk_key.clone(), req.keep_warm);
-        if !watched {
-            live.cacheable.store(false, Ordering::Release);
-        }
-        let _waiter = store.waiter_guard(walk_key.clone(), Arc::clone(&live));
-        if owner {
-            start_live_walk(
-                Arc::clone(store),
-                walk_key,
-                Arc::clone(&live),
-                operand_path.clone(),
-                parsed.clone(),
-            );
-        }
+        let (live, _waiter) =
+            store.join_live_walk(walk_key, &operand_path, parsed, req.keep_warm, 0, watched);
         let mut cursor = 0usize;
         let mut operand_complete = false;
         loop {
