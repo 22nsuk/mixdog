@@ -5,6 +5,8 @@ the Unreleased section is empty, and stamps it with the released version.
 
 ## Unreleased
 
+## v0.9.175 - 2026-09-29
+
 - Claude agents now keep their conversation cache for 5 minutes instead of an
   hour. When an agent's next request comes after that cache has expired —
   after a long build or test, or when a finished agent is picked up again — it
