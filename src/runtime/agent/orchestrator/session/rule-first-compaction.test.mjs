@@ -375,8 +375,9 @@ test('agent sessions compact before a send once their 5m message cache has expir
     rmSync(root, { recursive: true, force: true });
   });
   t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
-  // Two turns `idleMs` apart: how many messages each provider send carried and
-  // whether the session was compacted in between.
+  // Two turns `idleMs` apart: how many tokens each provider send carried and
+  // whether the session was compacted in between. Compaction archives tool
+  // bodies in place, so the request shrinks even when its message count does not.
   const twoTurns = async ({ owner, messagesTtl, idleMs }) => {
     const session = { ...fixture(), id: `cache-expiry-${owner}-${messagesTtl}-${idleMs}`, owner };
     for (let index = 0; index < 4; index += 1) {
@@ -389,7 +390,7 @@ test('agent sessions compact before a send once their 5m message cache has expir
     const provider = {
       name: session.provider,
       async send(messages) {
-        sent.push(messages.length);
+        sent.push(estimateMessagesTokens(messages));
         return { content: 'Done.', usage: { inputTokens: 2_000, outputTokens: 2 } };
       },
     };
