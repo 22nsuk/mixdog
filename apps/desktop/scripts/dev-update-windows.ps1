@@ -1091,12 +1091,14 @@ if (-not (Test-Path -LiteralPath $InstallDir)) {
 # Release CI commits to the default branch (version bump, synchronized runtime
 # and native manifests). A tree without those commits installs stale manifests
 # under the installed version number, so a behind branch is never deployed.
-# The detached workers run after the front process already checked.
+# The detached workers run after the front process already checked. A
+# FastDirect snapshot is a detached copy; its source checkout holds the branch.
 if (-not ($FastDirectWorker -or $RuntimeOnlyWorker)) {
     Write-Step 'checking the working tree includes the latest upstream commits'
-    & git -C $repoRoot fetch --quiet
+    $upstreamCheckRoot = if ($env:MIXDOG_FASTDIRECT_SOURCE_ROOT) { $env:MIXDOG_FASTDIRECT_SOURCE_ROOT } else { $repoRoot }
+    & git -C $upstreamCheckRoot fetch --quiet
     if ($LASTEXITCODE -ne 0) { throw 'git fetch failed; cannot confirm the working tree includes the latest release commits.' }
-    $behind = & git -C $repoRoot rev-list --count 'HEAD..@{upstream}'
+    $behind = & git -C $upstreamCheckRoot rev-list --count 'HEAD..@{upstream}'
     if ($LASTEXITCODE -ne 0) { throw 'The current branch has no upstream; cannot confirm it includes the latest release commits.' }
     if ([int]$behind -gt 0) {
         throw "The working tree is $behind commit(s) behind its upstream. Pull them first: release commits carry the version and runtime manifest updates."

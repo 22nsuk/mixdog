@@ -320,6 +320,9 @@ try {
     $env:MIXDOG_FASTDIRECT_SNAPSHOT_TIMINGS = ($timings | ConvertTo-Json -Compress)
     $env:MIXDOG_RUNTIME_DEPENDENCY_CACHE = Join-Path $realDesktopCache 'runtime-dependencies\win32-x64'
     $env:MIXDOG_RUNTIME_NPM_CACHE = Join-Path $realDesktopCache 'runtime-npm-cache'
+    # The snapshot is a detached commit whose parent is this checkout's HEAD, so
+    # the deploy checks this checkout's branch against its upstream.
+    $env:MIXDOG_FASTDIRECT_SOURCE_ROOT = [string]$repoRoot
     & powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File $deploy @arguments
     if ($LASTEXITCODE -ne 0) { throw "FastDirect deploy exited with $LASTEXITCODE" }
 
