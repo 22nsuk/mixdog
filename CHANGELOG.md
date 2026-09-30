@@ -5,6 +5,35 @@ the Unreleased section is empty, and stamps it with the released version.
 
 ## Unreleased
 
+- Memory can no longer be knocked out by a runtime rebuild. A rebuilt memory
+  runtime is published under a new release tag instead of replacing files
+  that installed apps verify, a new runtime installs beside the one in use
+  instead of deleting it while PostgreSQL still runs from it, and two
+  processes installing at once no longer delete each other's download. Local
+  development deploys refuse to run from a branch behind its upstream.
+
+- Tool cards no longer mark finished calls as failed. A command whose output
+  contains a `status:` line, a `git diff --quiet` or `git grep` that reports a
+  difference or no match, a code_graph lookup that finds no symbol, and paging
+  stored tidy results now show as completed; a git command that exits non-zero
+  shows as an exit, like the shell; and a browser or computer command stopped
+  because the user took control shows as cancelled.
+
+- Fewer tool calls fail on a first-attempt argument slip: the git tool adds a
+  missing leading `git`, read declares its 10-target limit in its schema, and
+  a Goal full of completed tasks says how to make room for new ones. Failure
+  logs now record read targets and the full size of path batches.
+
+- Requests are priced at the tier they were actually sent with: Fast and
+  Priority requests use their published rates, a Fast request retried as
+  standard is billed as standard, and Cursor Fast variants bill as their
+  catalog model. Toggling Fast updates the status line immediately.
+
+- Excel data validation rules are checked before a workbook is created, so an
+  unknown rule type or a missing bound fails up front on both backends. The
+  live-activity glint is a shorter, paler band, and tool summary names use the
+  medium weight.
+
 ## v0.9.175 - 2026-09-29
 
 - Claude agents now keep their conversation cache for 5 minutes instead of an
