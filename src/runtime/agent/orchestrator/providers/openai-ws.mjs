@@ -23,6 +23,7 @@ import { applyOpenAIDirectCachePolicy, openAiDirectSupportsFast } from './openai
 import { streamCallbacks } from './lib/send-callbacks.mjs';
 import { getAgentApiKey } from '../../../shared/provider-api-key.mjs';
 import { getLlmDispatcher } from '../../../shared/llm/http-agent.mjs';
+import { noteRequestServiceTier } from '../../../shared/llm/usage-context.mjs';
 import { resolveProviderCacheKey, resolveProviderPromptCacheLane } from '../agent-runtime/cache-strategy.mjs';
 
 function applyOpenAIDirectFastTier(body, model, opts) {
@@ -122,6 +123,7 @@ export class OpenAIDirectProvider {
     // so a model can opt into Fast even when the OAuth catalog does not
     // advertise a Fast tier for its OAuth endpoint.
     applyOpenAIDirectFastTier(body, useModel, opts);
+    noteRequestServiceTier(body.service_tier);
     // Keep public response storage and model-specific cache options out of
     // the shared OAuth payload. Storage opt-out still forces full frames in
     // _computeDelta; retained output items make those frames self-contained.

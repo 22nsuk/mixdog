@@ -20,24 +20,31 @@ function rates(source, keys, multiplier) {
   );
 }
 
-export function litellmPricing(entry) {
+// `suffix` selects a service-tier column set (e.g. `_priority`), published as
+// `<key>_priority` and `<key>_above_<N>k_tokens_priority`.
+export function litellmPricing(entry, suffix = '') {
   const thresholds = new Set();
+  const tierKey = new RegExp(`^_above_(\\d+)k_tokens${suffix}$`);
   for (const key of Object.keys(entry || {})) {
     for (const prefix of LITELLM_KEYS) {
       if (!key.startsWith(`${prefix}_above_`)) continue;
-      const match = key.slice(prefix.length).match(/^_above_(\d+)k_tokens$/);
+      const match = key.slice(prefix.length).match(tierKey);
       if (match) thresholds.add(Number(match[1]) * 1000);
     }
   }
   return {
-    ...rates(entry, LITELLM_KEYS, 1_000_000),
+    ...rates(
+      entry,
+      LITELLM_KEYS.map((key) => `${key}${suffix}`),
+      1_000_000
+    ),
     pricingTiers: [...thresholds]
       .sort((a, b) => a - b)
       .map((aboveInputTokens) => ({
         aboveInputTokens,
         ...rates(
           entry,
-          LITELLM_KEYS.map((key) => `${key}_above_${aboveInputTokens / 1000}k_tokens`),
+          LITELLM_KEYS.map((key) => `${key}_above_${aboveInputTokens / 1000}k_tokens${suffix}`),
           1_000_000
         ),
       })),

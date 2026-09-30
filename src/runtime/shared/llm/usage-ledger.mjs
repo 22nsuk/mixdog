@@ -232,7 +232,7 @@ export function makeUsageRecord(args) {
   const ts = Number(args.ts ?? Date.now());
   if (!Number.isSafeInteger(ts) || ts <= 0) throw new Error('Usage requires a valid timestamp');
   const kind = args.kind || usageRouteKind(provider);
-  const priced = priceUsage({ ...args, provider, model, ts });
+  const priced = priceUsage({ ...args, provider, model, ts, kind });
   const supplied =
     args.costUsd !== null &&
     args.costUsd !== undefined &&

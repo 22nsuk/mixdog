@@ -144,10 +144,11 @@ function projectLitellmRow(row) {
     const value = row[field];
     if (typeof value === 'number' && Number.isFinite(value)) out[field] = value;
   }
-  // Preserve the published context-rate columns, not just the base price.
+  // Preserve the published context-rate and Priority-tier columns (read by
+  // litellmPricing), not just the base price.
   for (const [field, value] of Object.entries(row)) {
     if (
-      /^(?:input_cost_per_token|output_cost_per_token|cache_read_input_token_cost|cache_creation_input_token_cost)_above_\d+k_tokens$/.test(
+      /^(?:input_cost_per_token|output_cost_per_token|cache_read_input_token_cost|cache_creation_input_token_cost)(?:_above_\d+k_tokens)?(?:_priority)?$/.test(
         field
       ) &&
       typeof value === 'number' &&

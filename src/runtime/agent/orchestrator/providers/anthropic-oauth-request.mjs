@@ -12,6 +12,7 @@ import { traceAgentFetch } from '../agent-trace.mjs';
 import { createAbortController } from '../../../shared/abort-controller.mjs';
 import { notifyCurrentAnthropicRateLimit } from './admission-scheduler.mjs';
 import { noteFastModeCapacityError } from './anthropic-fast-mode.mjs';
+import { noteRequestServiceTier } from '../../../shared/llm/usage-context.mjs';
 import {
   ANTHROPIC_RETRY_BACKOFF_MS,
   ANTHROPIC_RETRY_JITTER_RATIO,
@@ -66,6 +67,7 @@ export function createAnthropicOAuthRequest({
       // provider-visible cache breakpoint off the cached one — the
       // exact COLD-turn bug this change fixes. Order is fixed:
       // build → sanitize (once) → mark → prepare image bytes → JSON.stringify.
+      noteRequestServiceTier(requestBody?.speed);
       const response = await postMessages({
         accessToken,
         requestBody,

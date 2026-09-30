@@ -21,6 +21,7 @@ import {
 } from './retry-classifier.mjs';
 import { PROVIDER_FIRST_BYTE_TIMEOUT_MS, createTimeoutSignal } from '../stall-policy.mjs';
 import { noteFastModeCapacityError } from './anthropic-fast-mode.mjs';
+import { noteRequestServiceTier } from '../../../shared/llm/usage-context.mjs';
 import { notifyCurrentAnthropicRateLimit } from './admission-scheduler.mjs';
 
 /**
@@ -103,6 +104,7 @@ export function createAnthropicApiTransport({ client, label, opts, useModel, par
   const requestStreamingResponse = () =>
     withRetry(
       async ({ signal: attemptSignal }) => {
+        noteRequestServiceTier(params.speed);
         const res = await client.messages.create(params, requestOptions(attemptSignal)).asResponse();
         if (!res.ok) {
           const text = await res.text().catch(() => '');
@@ -156,7 +158,10 @@ export function createAnthropicApiTransport({ client, label, opts, useModel, par
 
   const requestNonStreamingMessage = (nonStreamingParams, signal) =>
     withRetry(
-      async ({ signal: attemptSignal }) => client.messages.create(nonStreamingParams, requestOptions(attemptSignal)),
+      async ({ signal: attemptSignal }) => {
+        noteRequestServiceTier(nonStreamingParams.speed);
+        return client.messages.create(nonStreamingParams, requestOptions(attemptSignal));
+      },
       {
         ...retryPolicy(signal, `${label} Anthropic non-streaming fallback`, `${label}-nonstreaming-request`),
         onRetry: ({ attempt, maxAttempts, lastErr, delayMs }) =>

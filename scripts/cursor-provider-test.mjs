@@ -26,6 +26,7 @@ import { fastCapableFor } from '../src/session-runtime/model-capabilities.mjs';
 import { providerModelCacheRow } from '../src/session-runtime/model-recency.mjs';
 import { retryAfterMsFromError } from '../src/runtime/agent/orchestrator/providers/retry-classifier.mjs';
 import { parseScheduleModelRef } from '../src/runtime/shared/schedule-model-ref.mjs';
+import { withUsageContext } from '../src/runtime/shared/llm/usage-context.mjs';
 
 function sseResponse(events, onCancel = () => {}) {
   const encoder = new TextEncoder();
@@ -866,6 +867,34 @@ test('Cursor account provider surfaces native tool calls to the Mixdog harness',
   const models = await provider.listModels();
   assert.equal(models[0].provider, 'cursor-oauth');
   assert.equal(models[0].contextWindow, 200000);
+});
+
+test('Cursor stamps the Fast tier it sent and prices pinned variants as their catalog model', async () => {
+  const sent = [];
+  const runtime = {
+    async handleChatCompletion(body) {
+      sent.push(body.model);
+      return sseResponse([{ id: 'r', model: body.model, choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }] }]);
+    },
+    async getCursorModels() {
+      return [
+        { id: 'gpt-5.4-high', name: 'GPT-5.4 High' },
+        { id: 'gpt-5.4-high-fast', name: 'GPT-5.4 High Fast' },
+      ];
+    },
+  };
+  const provider = new CursorOAuthProvider({ accessToken: 'cursor-oauth-access', runtime });
+  const send = async (model, opts) => {
+    const identity = {};
+    const result = await withUsageContext(identity, () =>
+      provider.send([{ role: 'user', content: 'hi' }], model, [], opts)
+    );
+    return { tier: identity.requestServiceTier, pricingModel: result.pricingModel };
+  };
+  assert.deepEqual(await send('gpt-5.4', { effort: 'high', fast: true }), { tier: 'fast', pricingModel: undefined });
+  assert.deepEqual(await send('gpt-5.4', { effort: 'high' }), { tier: '', pricingModel: undefined });
+  assert.deepEqual(await send('gpt-5.4-high-fast', {}), { tier: 'fast', pricingModel: 'gpt-5.4' });
+  assert.deepEqual(sent, ['gpt-5.4-high-fast', 'gpt-5.4-high', 'gpt-5.4-high-fast']);
 });
 
 test('Cursor stream cancellation reaches the wire response body', async () => {

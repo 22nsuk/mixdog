@@ -23,8 +23,18 @@ export async function accountProviderSend(provider, instance, send, model, opts 
   } catch (error) {
     openingError = error;
   }
+  const identity = {
+    provider,
+    requestedModel: model,
+    sessionId,
+    sourceType,
+    inputTokensInclusive,
+  };
   const record = async (result) => {
     if (!result?.usage) return;
+    // A nested send (e.g. a fallback model re-send) already stamped its own
+    // final attempt's tier; the outer context only saw the abandoned attempt.
+    result.requestServiceTier ??= identity.requestServiceTier || '';
     if (openingError) throw openingError;
     if (!ledger) return;
     const usage = result.usage;
@@ -46,7 +56,7 @@ export async function accountProviderSend(provider, instance, send, model, opts 
       cacheWrite1hTokens: usage.cacheWrite1hTokens,
       costUsd: usage.costUsd,
       serviceTier: result.serviceTier || usage.raw?.service_tier,
-      fast: opts.fast === true,
+      requestServiceTier: result.requestServiceTier,
       responseId: result.responseId,
       // The account this send is bound to, so quota history can tell one
       // connected subscription's records from another's.
@@ -68,16 +78,7 @@ export async function accountProviderSend(provider, instance, send, model, opts 
   };
   let result;
   try {
-    result = await withUsageContext(
-      {
-        provider,
-        requestedModel: model,
-        sessionId,
-        sourceType,
-        inputTokensInclusive,
-      },
-      send
-    );
+    result = await withUsageContext(identity, send);
   } catch (error) {
     // Only provider-reported partial usage is recordable; never invent
     // tokens for a failed request or reinterpret an error as a success.

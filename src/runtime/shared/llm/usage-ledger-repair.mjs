@@ -81,8 +81,10 @@ function* planUsageRepair(rows, { providerOverrides = {}, price = priceUsage }) 
               cacheReadTokens: row.cache_read,
               cacheWriteTokens: row.cache_write,
               cacheWrite1hTokens: oldRates?.cacheWrite1hTokens,
-              fast: oldRates?.fast,
+              // Rows written before the sent tier was recorded carry `fast`.
+              requestServiceTier: oldRates?.requestServiceTier ?? (oldRates?.fast ? 'fast' : undefined),
               serviceTier: oldRates?.serviceTier,
+              kind,
               ts: row.ts,
               historical: true,
             });

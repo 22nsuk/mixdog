@@ -64,7 +64,7 @@ export function priceUsage(args) {
     pricingProvider: meta?.pricingProvider || identity.pricingProvider,
     pricingSource: meta?.pricingSource || null,
     ...(args.inputTokensKnown === false ? { inputTokensKnown: false } : {}),
-    ...(args.fast ? { fast: true } : {}),
+    ...(args.requestServiceTier ? { requestServiceTier: args.requestServiceTier } : {}),
     ...(args.serviceTier ? { serviceTier: args.serviceTier } : {}),
     ...(written1h ? { cacheWrite1hTokens: written1h } : {}),
   };
@@ -78,7 +78,19 @@ export function priceUsage(args) {
       },
     };
   const promptTokens = input + cached + written;
-  if (args.historicalAggregate && meta.pricingTiers?.some((tier) => promptTokens > tier.aboveInputTokens)) {
+  // The tier the request itself carried decides its rate: subscription quota
+  // is charged by the tier sent, and an Anthropic fast request either runs
+  // fast or is rejected (its retry is a new, standard request). Only the
+  // OpenAI API bills a ramp-downgraded Priority request at Standard rates,
+  // reporting it as service_tier "default".
+  const sentTier = args.requestServiceTier || '';
+  const premium =
+    (sentTier === 'priority' || sentTier === 'fast') && !(args.kind === 'api' && args.serviceTier === 'default');
+  // Anthropic fast mode is a flat 2x on fast-capable Opus; every other
+  // premium request needs the model's published Fast/Priority rates.
+  const anthropicFast = premium && sentTier === 'fast' && supportsAnthropicFastMode(identity.pricingModel);
+  const rateMeta = premium && !anthropicFast ? meta.fastPricing || {} : meta;
+  if (args.historicalAggregate && rateMeta.pricingTiers?.some((tier) => promptTokens > tier.aboveInputTokens)) {
     // A daily sum cannot establish which individual requests crossed a
     // context boundary. Do not price the whole day as one huge prompt.
     return { input, costUsd: null, rates: { ...provenance, unpricedReason: 'request-boundaries-unavailable' } };
@@ -93,10 +105,10 @@ export function priceUsage(args) {
     if (!peak) multiplier *= meta.offPeakMultiplier;
   }
   // Fast mode bills 2x standard rates on every fast-capable Opus.
-  if (supportsAnthropicFastMode(identity.pricingModel) && (args.fast || args.serviceTier === 'fast')) multiplier *= 2;
+  if (anthropicFast) multiplier *= 2;
   const keys = PRICING_RATE_KEYS;
   const tokens = [input, n(args.outputTokens), cached, written - written1h];
-  const tierRates = ratesForPrompt(meta, promptTokens);
+  const tierRates = ratesForPrompt(rateMeta, promptTokens);
   const rates = {
     ...provenance,
     ...Object.fromEntries(keys.map((key) => [key, tierRates[key] == null ? null : tierRates[key] * multiplier])),

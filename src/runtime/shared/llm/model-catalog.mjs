@@ -443,6 +443,44 @@ const PRICED_VARIANTS = Object.freeze({
   }),
 });
 
+// Cursor-billed rates no catalog publishes: Cursor's first-party SKUs and Fast
+// rates Cursor sells beyond the vendor's own catalog. `fast` is the rate of a
+// request Cursor ran in Fast mode. Other Cursor Fast requests bill at the
+// vendor's Fast rate (Anthropic fast mode, OpenAI Priority/Fast).
+// Source: https://cursor.com/docs/models-and-pricing — list $/M, verified 2026-09-30.
+const CURSOR_PRICING = Object.freeze({
+  'composer-2.5': {
+    inputCostPerM: 0.5,
+    cacheReadCostPerM: 0.2,
+    outputCostPerM: 2.5,
+    fast: { inputCostPerM: 3, cacheReadCostPerM: 0.5, outputCostPerM: 15 },
+  },
+  'grok-4.7': {
+    fast: {
+      inputCostPerM: 4,
+      cacheReadCostPerM: 1,
+      outputCostPerM: 12,
+      // Fast long context (>256k input) bills at 3x the standard rates.
+      pricingTiers: [{ aboveInputTokens: 256000, inputCostPerM: 6, cacheReadCostPerM: 1.5, outputCostPerM: 18 }],
+    },
+  },
+  'grok-4.6': { fast: { inputCostPerM: 4, cacheReadCostPerM: 1, outputCostPerM: 12 } },
+  'grok-4.5': { fast: { inputCostPerM: 4, cacheReadCostPerM: 1, outputCostPerM: 18 } },
+  'claude-opus-4-7': {
+    fast: { inputCostPerM: 30, cacheWriteCostPerM: 37.5, cacheReadCostPerM: 3, outputCostPerM: 150 },
+  },
+});
+
+function listedRates(row) {
+  return {
+    ...Object.fromEntries(PRICING_RATE_KEYS.map((key) => [key, row[key] ?? null])),
+    pricingTiers: (row.pricingTiers || []).map((tier) => ({
+      aboveInputTokens: tier.aboveInputTokens,
+      ...Object.fromEntries(PRICING_RATE_KEYS.map((key) => [key, tier[key] ?? null])),
+    })),
+  };
+}
+
 function scaledRates(row, factor) {
   return Object.fromEntries(PRICING_RATE_KEYS.map((key) => [key, row?.[key] == null ? null : row[key] * factor]));
 }
@@ -512,6 +550,13 @@ function lookupModelMetadata(originalId, provider, catalog, modelsDevCatalog) {
       };
     }
   }
+  const cursorRow = /^cursor-(?:oauth|api)$/.test(String(provider || '').toLowerCase()) ? CURSOR_PRICING[id] : null;
+  if (cursorRow) {
+    if (!PRICING_RATE_KEYS.some((key) => meta?.[key] != null)) {
+      meta = { ...meta, ...listedRates(cursorRow), pricingSource: 'override' };
+    }
+    if (cursorRow.fast) meta = { ...meta, fastPricing: listedRates(cursorRow.fast) };
+  }
   if (providerUsesEndpointScopedLimits(provider) && !providerNative && meta) {
     // OAuth/backend routes can expose smaller account/backend windows than
     // the public API SKU. External catalogs and manual overrides remain useful
@@ -546,10 +591,13 @@ function lookupModelMetadata(originalId, provider, catalog, modelsDevCatalog) {
 
 function _normalize(entry) {
   if (!entry || typeof entry !== 'object') return null;
+  // OpenAI's Priority processing (since renamed Fast mode) columns.
+  const fastPricing = litellmPricing(entry, '_priority');
   return {
     contextWindow: entry.max_input_tokens || entry.max_tokens || null,
     outputTokens: entry.max_output_tokens || null,
     ...litellmPricing(entry),
+    ...(PRICING_RATE_KEYS.some((key) => fastPricing[key] != null) ? { fastPricing } : {}),
     ...(entry.off_peak_multiplier ? { offPeakMultiplier: entry.off_peak_multiplier } : {}),
     supportsVision: entry.supports_vision === true,
     supportsFunctionCalling: entry.supports_function_calling === true,

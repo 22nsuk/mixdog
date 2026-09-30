@@ -4,3 +4,10 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 const context = new AsyncLocalStorage();
 export const withUsageContext = (identity, send) => context.run(identity, send);
 export const currentUsageContext = () => context.getStore();
+// Each wire attempt stamps the tier it actually sent on its own send's
+// context object, so the last attempt (the one that produced the usage) wins
+// and concurrent sends never observe each other's tier.
+export const noteRequestServiceTier = (tier) => {
+  const identity = context.getStore();
+  if (identity) identity.requestServiceTier = tier || '';
+};

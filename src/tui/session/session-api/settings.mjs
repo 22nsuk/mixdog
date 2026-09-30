@@ -49,16 +49,22 @@ export function createSessionSettingsApi(bag) {
       },
       { busyResult: false, onRelease: flushEmitImmediate }
     ),
-    setFast: withCommandLock(async (value) => {
-      const enabled = await runtime.setFast(value);
-      set({ ...routeState() });
-      return enabled;
-    }),
-    toggleFast: withCommandLock(async () => {
-      const enabled = await runtime.toggleFast();
-      set({ ...routeState() });
-      return enabled;
-    }),
+    setFast: withCommandLock(
+      async (value) => {
+        const enabled = await runtime.setFast(value);
+        set({ ...routeState() });
+        return enabled;
+      },
+      { onRelease: flushEmitImmediate }
+    ),
+    toggleFast: withCommandLock(
+      async () => {
+        const enabled = await runtime.toggleFast();
+        set({ ...routeState() });
+        return enabled;
+      },
+      { onRelease: flushEmitImmediate }
+    ),
     setToolMode: (m) => {
       void runtime
         .setToolMode(m)

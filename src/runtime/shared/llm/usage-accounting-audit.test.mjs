@@ -5,6 +5,7 @@ import { UsageLedger, makeUsageRecord } from './usage-ledger.mjs';
 import { repairUsageLedger, usageLedgerIntegrity } from './usage-ledger-repair.mjs';
 import { accountProviderSend } from './usage-accounting.mjs';
 import { importTraceRow } from './usage-ledger-import.mjs';
+import { noteRequestServiceTier } from './usage-context.mjs';
 import { usageStatsSnapshot } from '../../../session-runtime/services/usage-stats-model.mjs';
 import { resolveUsageStatsPeriod } from '../../../session-runtime/services/usage-stats-period.mjs';
 
@@ -49,6 +50,59 @@ test('selected identity survives concurrent nested transport traces and does not
   traceAgentUsage({ provider: 'custom-api', model: 'other', inputTokens: 1, outputTokens: 1 });
   assert.equal(rows.at(-1).payload.provider, 'custom-api');
   assert.equal(rows.at(-1).payload.requested_model, null);
+});
+
+test('each send records the tier its own final attempt sent, under concurrency and nesting', async () => {
+  const usage = { inputTokens: 10, outputTokens: 1, cachedTokens: 0 };
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const send = (attempts) =>
+    accountProviderSend(
+      'openai-oauth',
+      {},
+      async () => {
+        for (const [tier, ms] of attempts) {
+          noteRequestServiceTier(tier);
+          await sleep(ms);
+        }
+        return { usage: { ...usage } };
+      },
+      'gpt-5.5',
+      { sessionId: 'tier-session' }
+    );
+  // Interleaved attempts: a fast-pool downgrade retry and a priority send.
+  const [downgraded, priority, standard] = await Promise.all([
+    send([
+      ['fast', 5],
+      ['', 1],
+    ]),
+    send([['priority', 3]]),
+    send([['', 2]]),
+  ]);
+  assert.equal(downgraded.requestServiceTier, '');
+  assert.equal(priority.requestServiceTier, 'priority');
+  assert.equal(standard.requestServiceTier, '');
+  // A fallback re-send runs its own accounting; the outer abandoned fast
+  // attempt must not overwrite the tier the inner send actually used.
+  const nested = await accountProviderSend(
+    'anthropic-oauth',
+    {},
+    async () => {
+      noteRequestServiceTier('fast');
+      return accountProviderSend(
+        'anthropic-oauth',
+        {},
+        async () => {
+          noteRequestServiceTier('');
+          return { usage: { ...usage } };
+        },
+        'claude-opus-5',
+        {}
+      );
+    },
+    'claude-opus-5-5',
+    {}
+  );
+  assert.equal(nested.requestServiceTier, '');
 });
 
 test('Grok prices the requested SKU while retaining the actual response model; imports preserve it', () => {

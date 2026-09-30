@@ -39,6 +39,7 @@ import {
   resolveProviderCacheKey,
 } from '../agent-runtime/cache-strategy.mjs';
 import { preconnect } from '../../../shared/llm/http-agent.mjs';
+import { noteRequestServiceTier } from '../../../shared/llm/usage-context.mjs';
 import { sendViaHttpSse, _envFlag } from './openai-oauth-http-sse.mjs';
 import { warmCodexClientVersion } from './codex-client-meta.mjs';
 import { CODEX_BACKEND_ORIGIN } from './openai-codex-endpoints.mjs';
@@ -209,6 +210,8 @@ export class OpenAIOAuthProvider {
     const authState = { tokens: await _authP };
     await _verP;
     const body = await _bodyP;
+    // Every WS/HTTP attempt of this send carries this body's tier unchanged.
+    noteRequestServiceTier(body.service_tier);
     // poolKey != cacheKey by design. poolKey isolates socket/delta state per
     // session. cacheKey is body.prompt_cache_key and affects prompt-cache
     // routing only; Codex handshake identity comes from sendOpts and remains

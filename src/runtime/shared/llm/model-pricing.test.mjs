@@ -43,6 +43,8 @@ const litellm = {
     litellm_provider: 'openai',
     input_cost_per_token: 2e-6,
     output_cost_per_token: 10e-6,
+    input_cost_per_token_priority: 5e-6,
+    output_cost_per_token_priority: 25e-6,
     supports_web_search: true,
     supports_vision: true,
   },
@@ -223,7 +225,7 @@ test('Anthropic 1-hour cache writes bill at 2x base input, the rest at the 5-min
   assert.ok(Math.abs(split.rates.cacheWrite1hCostPerM - 8) < 1e-9);
   assert.equal(split.rates.cacheWrite1hTokens, 400_000);
   // Fast mode multiplies every slot, including the 1h write rate.
-  assert.equal(priceUsage({ ...args, cacheWrite1hTokens: 400_000, fast: true }).costUsd, 12.408);
+  assert.equal(priceUsage({ ...args, cacheWrite1hTokens: 400_000, requestServiceTier: 'fast' }).costUsd, 12.408);
   assert.equal(makeUsageRecord({ ...args, cacheWrite1hTokens: 400_000, ts: Date.now() }).costUsd, 6.204);
 });
 
@@ -241,6 +243,44 @@ test('GPT-6 Sol and Luna price on both OpenAI routes, doubling input above 272K'
   assert.equal(catalog.getModelMetadataSync('gpt-6-sol', 'openai').contextWindow, 1050000);
   assert.equal(catalog.getModelMetadataSync('gpt-6-luna', 'openai').outputTokens, 128000);
   assert.equal(sol.contextWindow, null);
+});
+
+test('a sent Priority tier prices at the published Priority rates; only an API downgrade bills Standard', () => {
+  const near = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-9, `${actual} != ${expected}`);
+  const args = { model: 'gpt-6-sol', inputTokens: 100_000, outputTokens: 10_000, requestServiceTier: 'priority' };
+  // Subscription quota is charged by the tier sent, whatever the response says.
+  near(priceUsage({ ...args, provider: 'openai-oauth', kind: 'oauth', serviceTier: 'default' }).costUsd, 0.75);
+  near(priceUsage({ ...args, provider: 'openai', kind: 'api', serviceTier: 'priority' }).costUsd, 0.75);
+  // OpenAI API reports a ramp-downgraded Priority request as "default".
+  near(priceUsage({ ...args, provider: 'openai', kind: 'api', serviceTier: 'default' }).costUsd, 0.3);
+  // A standard send is never repriced from the route's fast toggle.
+  near(priceUsage({ ...args, provider: 'openai-oauth', requestServiceTier: '', fast: true }).costUsd, 0.3);
+  const unpublished = priceUsage({ ...args, provider: 'openai-oauth', model: 'gpt-6-luna' });
+  assert.equal(unpublished.costUsd, null);
+  assert.equal(unpublished.rates.unpricedReason, 'missing-rate');
+  assert.equal(unpublished.rates.requestServiceTier, 'priority');
+});
+
+test('Cursor Fast bills the vendor Fast rate or Cursor’s published Fast SKU', () => {
+  const near = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-9, `${actual} != ${expected}`);
+  const cursor = (model, extra = {}) =>
+    priceUsage({ provider: 'cursor-oauth', kind: 'oauth', model, inputTokens: 100_000, outputTokens: 10_000, ...extra })
+      .costUsd;
+  const fast = { requestServiceTier: 'fast' };
+  // Anthropic fast mode: 2x Opus 5.5 ($4/$20 → $8/$40).
+  near(cursor('claude-opus-5-5'), 0.6);
+  near(cursor('claude-opus-5-5', fast), 1.2);
+  // OpenAI Fast: the published Priority rates.
+  near(cursor('gpt-6-sol', fast), 0.75);
+  // Cursor-published Fast SKUs, including Grok 4.7's 3x long-context Fast.
+  near(cursor('grok-4.7', fast), 0.52);
+  near(cursor('grok-4.7', { ...fast, inputTokens: 300_000 }), 1.98);
+  near(cursor('claude-opus-4-7', fast), 4.5);
+  // Composer is Cursor's own SKU: standard and Fast both come from Cursor.
+  near(cursor('composer-2.5'), 0.075);
+  near(cursor('composer-2.5', fast), 0.45);
+  // Outside Cursor these rows never apply.
+  assert.equal(priceUsage({ provider: 'xai', model: 'composer-2.5', inputTokens: 1000 }).costUsd, null);
 });
 
 test('published variant multiples and vendor-served relay ids price from their base SKU', () => {

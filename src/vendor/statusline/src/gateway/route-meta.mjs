@@ -478,11 +478,16 @@ function promptFootprintTokens(provider, usage) {
   return isInclusiveProvider(provider) ? input : input + cacheRead + cacheWrite;
 }
 
-function usageCostUsd(routeInfo, usage) {
+function usageCostUsd(routeInfo, providerOut) {
+  const usage = providerOut?.usage || {};
   if (Number.isFinite(Number(usage?.costUsd))) return round(Number(usage.costUsd), 6);
   return computeCostUsd({
     provider: routeInfo?.provider,
     model: routeInfo?.model,
+    pricingModel: providerOut?.pricingModel,
+    kind: routeInfo?.providerKind || providerKind(routeInfo?.provider),
+    requestServiceTier: providerOut?.requestServiceTier,
+    serviceTier: cleanString(providerOut?.serviceTier) || cleanString(usage?.raw?.service_tier) || undefined,
     inputTokens: num(usage?.inputTokens, 0),
     outputTokens: num(usage?.outputTokens, 0),
     cacheReadTokens: num(usage?.cachedTokens ?? usage?.cacheReadTokens, 0),
@@ -516,7 +521,7 @@ export function summarizeGatewayUsage(routeInfo, providerOut, compact = null, du
       contextUsedPct = Math.min(100, round(promptTokens * 100 / boundaryTokens, 2));
     }
   }
-  const costUsd = usageCostUsd(routeInfo, u);
+  const costUsd = usageCostUsd(routeInfo, providerOut);
   const usageCompact = compact && typeof compact === 'object' ? { ...compact } : compact;
   return {
     at: Date.now(),

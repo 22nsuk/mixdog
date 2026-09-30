@@ -74,7 +74,9 @@ test('official context and UTC time tiers are priced at request granularity', ()
   assert.equal(priceUsage({ ...deepseek, ts: Date.parse('2026-09-11T10:00:00Z') }).costUsd, 0.15);
   assert.equal(priceUsage({ ...deepseek, ts: Date.parse('2026-09-12T06:00:00Z') }).costUsd, 0.15);
   assert.equal(priceUsage({ ...deepseek, ts: now, historical: true }).costUsd, 0.3);
-  assert.equal(row({ fast: true }).costUsd, 0.02875);
+  assert.equal(row({ requestServiceTier: 'fast' }).costUsd, 0.02875);
+  // The route's fast toggle alone never prices a request that was sent standard.
+  assert.equal(row({ fast: true }).costUsd, 0.014375);
 });
 
 test('years of history survive reopen with no TTL or session deletion dependency', () => {

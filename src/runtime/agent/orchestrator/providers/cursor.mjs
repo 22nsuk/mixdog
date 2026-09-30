@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { getAgentApiKey } from '../../../shared/config.mjs';
+import { noteRequestServiceTier } from '../../../shared/llm/usage-context.mjs';
 import {
   knownToolNamesFromOpenAITools,
   parseToolCalls,
@@ -510,6 +511,15 @@ function selectParameterizedCursorVariant(group, requested, sendOpts = {}) {
   };
 }
 
+// Fast is a RequestedModel parameter on parameterized models and an id
+// suffix on raw variants.
+function cursorSelectionIsFast(selection) {
+  if (selection.parameters?.length) {
+    return selection.parameters.some((parameter) => parameter.id === 'fast' && parameter.value === 'true');
+  }
+  return parseCursorVariantId(selection.modelId).fast;
+}
+
 function selectCursorVariant(group, { effort = null, fast = false } = {}) {
   if (!Array.isArray(group) || group.length === 0) return null;
   const normalizedEffort =
@@ -680,11 +690,13 @@ class CursorProviderBase {
       sendOpts.sessionId || sendOpts.providerCacheKey || sendOpts.promptCacheKey || `cursor-call:${randomUUID()}`
     );
     const openAiTools = tools?.length ? toOpenAITools(tools) : undefined;
-    const dispatch = () =>
-      this._dispatchChat(
+    const dispatch = () => {
+      noteRequestServiceTier(cursorSelectionIsFast(cursorSelection) ? 'fast' : '');
+      return this._dispatchChat(
         this._chatBody(messages, { cursorSelection, sessionScope, openAiTools, toolChoice: sendOpts.toolChoice }),
         { runtime, accessToken, signal, sendOpts, openAiTools }
       );
+    };
     let assembled;
     try {
       assembled = await dispatch();
@@ -702,9 +714,15 @@ class CursorProviderBase {
       assembled = await dispatch();
     }
     const rawUsage = assembled.rawUsage;
+    // A pinned raw variant (effort/Fast suffix) bills as its catalog model;
+    // the Fast part is carried by the request's tier, not the id.
+    const pinned = parseCursorVariantId(canonicalCursorModelId(String(model || '').trim()));
+    const pricingModel =
+      pinned.baseId !== pinned.id && this._cursorCatalog?.groups?.has(pinned.baseId) ? pinned.baseId : undefined;
     return {
       content: assembled.content || '',
       model: model || assembled.model || 'auto',
+      ...(pricingModel ? { pricingModel } : {}),
       toolCalls: assembled.toolCalls,
       stopReason: assembled.stopReason,
       ...(assembled.reasoningContent ? { reasoningContent: assembled.reasoningContent } : {}),
