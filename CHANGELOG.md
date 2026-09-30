@@ -5,6 +5,25 @@ the Unreleased section is empty, and stamps it with the released version.
 
 ## Unreleased
 
+- The desktop app on Windows 11 now sits in a Mica window frame with a calmer,
+  monochrome shell: popups and panels separate by shadow instead of borders,
+  selections no longer turn blue, and the accent is kept for live state. Text
+  follows one type scale (12px captions up to 20px page titles and headline
+  figures), the selected tab is a raised card, destructive buttons stay
+  neutral until hovered, and the usage and context charts share one palette.
+
+- Closing the window asks once whether to keep Mixdog running in the tray or
+  quit completely, and remembers the answer. Quitting while an agent is still
+  working asks every time.
+
+- Subscription usage shows each model's share as a stacked area under the
+  total line, and its hover card only follows the pointer inside the chart.
+
+- The conversation stays attached to its latest message when a card changes
+  height during a scroll. SVG files an agent writes appear as image results
+  and open in the system viewer, and agents hand over visual work such as
+  SVGs or HTML pages as saved files instead of pasting their source.
+
 ## v1.0.0 - 2026-09-30
 
 - Memory can no longer be knocked out by a runtime rebuild. A rebuilt memory
