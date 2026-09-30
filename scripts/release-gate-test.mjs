@@ -798,6 +798,10 @@ test('native release workflows are reusable and unchanged runtime platforms stay
   ]);
   for (const worker of [runtime, voice, patch, graph, spawn]) assert.match(worker, /workflow_call:/);
   assert.match(runtime, /needs\.build\.result == 'skipped' && inputs\.refresh_manifest/);
+  // Shipped runtime assets are immutable: every publish step uses the gate's
+  // planned tag, never the requested one.
+  assert.match(runtime, /node scripts\/plan-runtime-release-tag\.mjs/);
+  assert.doesNotMatch(runtime, /(?:tag_name|RELEASE_TAG): \$\{\{ inputs\.tag/);
   assert.doesNotMatch(runtime, /needs\.build\.result == 'success' \|\| needs\.build\.result == 'skipped'\)\s*\}\}/);
   assert.ok(voiceConfig.platforms.some((platform) => platform.key === 'linux-arm64'));
   assert.match(voice, /draft:\s*true[\s\S]*Verify complete hidden release[\s\S]*draft:\s*false/);

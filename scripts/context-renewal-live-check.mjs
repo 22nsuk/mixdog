@@ -125,7 +125,8 @@ try {
   for (const spec of specs) {
     const dataDir = path.join(sandbox, spec.name);
     const db = path.join(dataDir, 'pgdata');
-    const ctl = path.join(dataDir, 'runtime', 'runtime-pg16.4+pgvector-0.8.2', 'bin', 'pg_ctl.exe');
+    const runtimeKey = fs.readFileSync(path.join(dataDir, 'runtime', 'active-version'), 'utf8').trim();
+    const ctl = path.join(dataDir, 'runtime', `runtime-${runtimeKey}`, 'bin', 'pg_ctl.exe');
     if (process.platform === 'win32' && fs.existsSync(ctl) && fs.existsSync(path.join(db, 'postmaster.pid'))) {
       const stopped = spawnSync(ctl, ['-D', db, '-m', 'fast', '-w', 'stop'], { stdio: 'inherit' });
       if (stopped.status !== 0) cleanupFailed = true;

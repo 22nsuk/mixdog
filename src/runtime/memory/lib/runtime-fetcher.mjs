@@ -7,9 +7,12 @@ import { __mixdogMemoryLog } from './memory-log.mjs';
 // Downloads and verifies a prebuilt native PG runtime from the mixdog GitHub
 // release manifest.
 //
-// Layout: <dataDir>/runtime/runtime-{ver}/  +  <dataDir>/runtime/active-version
+// Layout: <dataDir>/runtime/runtime-{key}/  +  <dataDir>/runtime/active-version
+// holding {key}. New installs key the directory by version plus asset digest;
+// installs from before that keep their bare-version key and stay valid.
 // Atomic swap: write active-version.tmp then rename → active-version.
-// GC: removes stale runtime-* dirs and staging-* dirs on every ensureRuntime call.
+// GC: removes stale runtime-* dirs and staging-* dirs on every ensureRuntime
+// call, but only a dir that can be moved aside whole (never one in use).
 //
 // Public API: ensureRuntime(dataDir) → { runtimeDir, pgBinDir, libDir, sharePath, version }
 
@@ -21,6 +24,7 @@ import {
   openSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   statSync,
   unlinkSync,
@@ -107,6 +111,38 @@ function readActiveVersion(runtimeDir) {
 
 function runtimeVerDir(runtimeDir, ver) {
   return join(runtimeDir, `runtime-${ver}`);
+}
+
+// A rebuilt asset of the same version gets its own directory, so installing it
+// never touches the tree a still-running PostgreSQL may hold open.
+function runtimeInstallKey(version, sha256) {
+  return `${version}-${String(sha256).slice(0, 12)}`;
+}
+
+// True while a PostgreSQL from this runtime is running: a running executable
+// cannot be opened for writing (EBUSY on Windows, ETXTBSY on Linux).
+function runtimeDirInUse(dir) {
+  const exe = join(dir, 'bin', process.platform === 'win32' ? 'postgres.exe' : 'postgres');
+  try {
+    closeSync(openSync(exe, 'r+'));
+    return false;
+  } catch (error) {
+    return error?.code === 'EBUSY' || error?.code === 'ETXTBSY';
+  }
+}
+
+// Remove a runtime dir only when nothing runs from it, moving it aside whole
+// first. Deleting in place could strip a running PostgreSQL's files and the
+// sha stamp while the locked binaries survive, leaving a tree that looks
+// installed but is not; an in-use dir makes this throw and stays intact.
+function discardRuntimeDir(runtimeDir, dir) {
+  if (runtimeDirInUse(dir)) throw new Error(`[runtime-fetcher] runtime dir is in use: ${dir}`);
+  const trash = join(
+    runtimeDir,
+    `staging-discard-${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`
+  );
+  renameSync(dir, trash);
+  rmSync(trash, { recursive: true, force: true });
 }
 
 function runtimePaths(verDir) {
@@ -370,9 +406,11 @@ function gcRuntimeDir(runtimeDir, keepVer) {
           continue;
         }
         const dir = join(runtimeDir, name);
-        const lockPath = stagingLockPath(dir);
-        // Never wipe a staging dir guarded by a LIVE lock — that is a sibling
-        // process mid-extract/swap.
+        // A download (staging-{tag}.tar.gz) is guarded by its staging dir's lock.
+        const guardName = name.endsWith('.tar.gz') ? name.slice(0, -'.tar.gz'.length) : name;
+        const lockPath = stagingLockPath(join(runtimeDir, guardName));
+        // Never wipe a staging dir or download guarded by a LIVE lock — that is
+        // a sibling process mid-download/extract/swap.
         if (_stagingLockIsLive(lockPath)) continue;
         try {
           rmSync(dir, { recursive: true, force: true });
@@ -382,8 +420,10 @@ function gcRuntimeDir(runtimeDir, keepVer) {
           if (existsSync(lockPath)) unlinkSync(lockPath);
         } catch {}
       } else if (name.startsWith('runtime-') && name !== `runtime-${keepVer}`) {
+        const path = join(runtimeDir, name);
         try {
-          rmSync(join(runtimeDir, name), { recursive: true, force: true });
+          if (statSync(path).isDirectory()) discardRuntimeDir(runtimeDir, path);
+          else rmSync(path, { force: true });
         } catch {}
       }
     }
@@ -451,11 +491,36 @@ function selectRuntimeAsset(manifest, pkey) {
 /** Fast path: the active-version pointer names this version and the extracted
  *  tree carries the expected sha256. Returns the reusable dir, else null. */
 function cachedRuntimeDir(runtimeBaseDir, version, sha256) {
-  if (readActiveVersion(runtimeBaseDir) !== version) return null;
-  const verDir = runtimeVerDir(runtimeBaseDir, version);
-  if (!existsSync(join(verDir, '.version-sha256'))) return null;
-  const stored = readFileSync(join(verDir, '.version-sha256'), 'utf8').trim();
-  return stored === sha256 ? verDir : null;
+  const key = readActiveVersion(runtimeBaseDir);
+  if (key !== version && key !== runtimeInstallKey(version, sha256)) return null;
+  const verDir = runtimeVerDir(runtimeBaseDir, key);
+  return readRuntimeStamp(verDir) === sha256 ? verDir : null;
+}
+
+// The asset digest stamped into a complete runtime tree, '' when absent.
+function readRuntimeStamp(verDir) {
+  try {
+    return readFileSync(join(verDir, '.version-sha256'), 'utf8').trim();
+  } catch {
+    return '';
+  }
+}
+
+// Publish an extracted, stamped staging tree as runtime-{key} and point
+// active-version at it. A sibling that raced this install may already have
+// published the same asset: that tree is kept (it may be running) and this
+// copy dropped. Any other runtime-{key} tree is an interrupted install of this
+// asset; it is moved aside whole, and an in-use one fails the publish intact.
+function publishRuntimeDir(runtimeBaseDir, stagingDir, key, sha256) {
+  const verDir = runtimeVerDir(runtimeBaseDir, key);
+  if (readRuntimeStamp(verDir) === sha256) {
+    rmSync(stagingDir, { recursive: true, force: true });
+  } else {
+    if (existsSync(verDir)) discardRuntimeDir(runtimeBaseDir, verDir);
+    renameWithRetrySync(stagingDir, verDir);
+  }
+  writeFileAtomicSync(activeVersionPath(runtimeBaseDir), key, { fsyncDir: true });
+  return verDir;
 }
 
 /**
@@ -476,10 +541,11 @@ async function installRuntimeVersion({ runtimeBaseDir, url, sha256, size, versio
   // process fail to obtain the lock for its own staging dir).
   const stagingTag = `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
   const stagingDir = join(runtimeBaseDir, `staging-${stagingTag}`);
-  const tarPath = join(runtimeBaseDir, `runtime-${pkey}-${stagingTag}.tar.gz`);
+  // Named after the staging dir so the same live lock guards it from GC.
+  const tarPath = `${stagingDir}.tar.gz`;
 
-  const verDir = runtimeVerDir(runtimeBaseDir, version);
-  const avPath = activeVersionPath(runtimeBaseDir);
+  const key = runtimeInstallKey(version, sha256);
+  const verDir = runtimeVerDir(runtimeBaseDir, key);
 
   // Cross-process lock: hold the staging lockfile (O_EXCL) for the WHOLE
   // download → extract → swap lifetime. GC in any concurrently-booting sibling
@@ -527,16 +593,11 @@ async function installRuntimeVersion({ runtimeBaseDir, url, sha256, size, versio
     normalizeBinExecBit(stagingDir);
 
     // Atomic swap:
-    // 1. Rename staging → runtime-{ver}
+    // 1. Rename staging → runtime-{key} (or reuse a sibling's identical publish)
     // 2. Write active-version.tmp → rename to active-version
     // Stale dirs cleaned up by GC after.
     try {
-      // If a prior runtime-{ver} dir exists (interrupted earlier run), remove it.
-      if (existsSync(verDir)) {
-        rmSync(verDir, { recursive: true, force: true });
-      }
-      renameWithRetrySync(stagingDir, verDir);
-      writeFileAtomicSync(avPath, version, { fsyncDir: true });
+      publishRuntimeDir(runtimeBaseDir, stagingDir, key, sha256);
     } catch (swapErr) {
       __mixdogMemoryLog(`[runtime-fetcher] atomic swap failed: ${swapErr.message}\n`);
       // Attempt to leave things in a recoverable state: if verDir landed but
@@ -544,10 +605,10 @@ async function installRuntimeVersion({ runtimeBaseDir, url, sha256, size, versio
       throw swapErr;
     }
 
-    // GC: remove stale runtime-* dirs (anything that isn't runtime-{version}).
+    // GC: remove stale runtime-* dirs (anything that isn't runtime-{key}).
     // Still under the lock so the just-swapped staging lockfile reap below sees
     // a consistent view.
-    gcRuntimeDir(runtimeBaseDir, version);
+    gcRuntimeDir(runtimeBaseDir, key);
   } finally {
     releaseStagingLock(stagingLock);
   }
@@ -555,6 +616,16 @@ async function installRuntimeVersion({ runtimeBaseDir, url, sha256, size, versio
   __mixdogMemoryLog(`[runtime-fetcher] runtime ready at ${verDir}\n`);
   return verDir;
 }
+
+export const _runtimeLayoutInternals = {
+  acquireStagingLock,
+  cachedRuntimeDir,
+  discardRuntimeDir,
+  gcRuntimeDir,
+  publishRuntimeDir,
+  releaseStagingLock,
+  runtimeInstallKey,
+};
 
 export async function ensureRuntime(dataDir) {
   const key = resolve(dataDir);

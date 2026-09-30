@@ -1088,6 +1088,21 @@ if (-not (Test-Path -LiteralPath $InstallDir)) {
     throw "No installed build at $InstallDir. Install one first (npm run build:win, then run the installer)."
 }
 
+# Release CI commits to the default branch (version bump, synchronized runtime
+# and native manifests). A tree without those commits installs stale manifests
+# under the installed version number, so a behind branch is never deployed.
+# The detached workers run after the front process already checked.
+if (-not ($FastDirectWorker -or $RuntimeOnlyWorker)) {
+    Write-Step 'checking the working tree includes the latest upstream commits'
+    & git -C $repoRoot fetch --quiet
+    if ($LASTEXITCODE -ne 0) { throw 'git fetch failed; cannot confirm the working tree includes the latest release commits.' }
+    $behind = & git -C $repoRoot rev-list --count 'HEAD..@{upstream}'
+    if ($LASTEXITCODE -ne 0) { throw 'The current branch has no upstream; cannot confirm it includes the latest release commits.' }
+    if ([int]$behind -gt 0) {
+        throw "The working tree is $behind commit(s) behind its upstream. Pull them first: release commits carry the version and runtime manifest updates."
+    }
+}
+
 if ($RuntimeOnly) {
     # runtime.asar-only swap: only the session daemon restarts; the app window,
     # renderer, and native tools stay untouched. Valid ONLY while the installed
