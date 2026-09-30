@@ -23,7 +23,9 @@
      centring the boxes centres the text too (user: 띵킹 스피너도 마찬가지). */
   align-items: center;
   gap: 7px;
-  color: var(--mx-text);
+  /* Muted like the tool rows: in full ink the verb read as transcript body
+     text (user: 본문이랑 띵킹스피너 색이 같은게 이상한데). */
+  color: var(--mx-text-muted);
 }
 /* Gated like every other milestone (.turn-status, .compaction-divider): the
    4px slide belongs to work that STARTS on screen, never to a band restored
@@ -51,12 +53,13 @@
   display: block;
   width: 12px;
   height: 12px;
-  /* The MARK stays neutral ink. Painting the rhombus with the brand accent
-     put a lone indigo shape in a column of grey text and green tool icons and
-     it read as unrelated chrome (user: 도형색은 너무 뜬금없고). Its motion is
-     the signal; the accent is spent on the shimmer head instead, where it
-     travels through the words rather than sitting beside them. */
-  color: var(--mx-text);
+  /* The MARK stays neutral, in the verb's muted ink. Painting the rhombus
+     with the brand accent put a lone indigo shape in a column of grey text
+     and green tool icons and it read as unrelated chrome (user: 도형색은 너무
+     뜬금없고). Its motion is the signal; the accent is spent on the shimmer
+     head instead, where it travels through the words rather than sitting
+     beside them. */
+  color: var(--mx-text-muted);
   overflow: visible;
 }
 /* The TUI's hollow -> filled -> ring sweep, drawn as ONE morphing rhombus

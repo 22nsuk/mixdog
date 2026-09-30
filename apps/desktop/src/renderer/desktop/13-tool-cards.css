@@ -191,12 +191,13 @@
   font-size: var(--mx-font-ui);
   line-height: var(--mx-line-ui);
 }
-/* Level 1 of three (summary → call rows → call detail): the one roll-up line
-   carries full ink and the medium label weight, so the muted call rows
-   beneath it never read as more summaries (user: 최상위 / 한 번 / 상세가
-   명확하게). */
+/* Level 1 of three (summary → call rows → call detail): the roll-up line
+   carries the medium label weight so the call rows beneath it never read as
+   more summaries (user: 최상위 / 한 번 / 상세가 명확하게). Its ink is muted:
+   in full ink it read as transcript body text (user: 본문이랑 툴표기 네임쪽이
+   색이 같은게 이상한데). */
 .tool-activity[data-surface="desktop"] .tool-activity-title b {
-  color: var(--mx-text);
+  color: var(--mx-text-muted);
   font-weight: var(--mx-weight-medium);
 }
 .tool-activity-failed {

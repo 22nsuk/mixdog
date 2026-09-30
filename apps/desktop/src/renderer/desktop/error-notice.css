@@ -26,6 +26,15 @@
 .error-notice[role="status"] .error-notice-summary > svg {
   color: var(--mx-text-muted);
 }
+/* A failed turn in the transcript is announced politely (role=status) but is
+   still a failure: it keeps the red mark, and its copy sits one step under
+   full ink so it never reads as transcript body text. */
+.error-notice.transcript-error-notice {
+  color: var(--mx-text-soft);
+}
+.error-notice.transcript-error-notice .error-notice-summary > svg {
+  color: var(--mx-danger);
+}
 .error-notice-copy {
   display: grid;
   min-width: 0;

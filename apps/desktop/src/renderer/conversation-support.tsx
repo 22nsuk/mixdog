@@ -285,6 +285,7 @@ export function transcriptRowNode(
       .find((failure) => turnPromptText(settledItems, settledTurnKeys, failure.turnKey))?.turnKey;
     return (
       <ErrorNotice
+        className="transcript-error-notice"
         errors={row.failures.map(
           ({ item }) => item?.errorDetails || item?.detail || item?.message || item?.text || item?.label || t('Failed')
         )}
