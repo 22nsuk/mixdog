@@ -3,6 +3,7 @@ import { plainObject } from './shared/values.mjs';
 import { FIELD_ALIASES, OPERATION_ALIASES, PROPERTY_ALIASES } from './capabilities-aliases.mjs';
 import { BACKENDS, CATALOG, COMMON, VIRTUAL_OPERATIONS } from './capabilities-catalog.mjs';
 import { COMMON_SIGNATURES, FORMAT_SIGNATURES, signature } from './capabilities-signatures.mjs';
+import { normalizeXlsxValidation } from './portable/xlsx-contract.mjs';
 
 export { OFFICE_ACTIONS } from './capabilities-catalog.mjs';
 
@@ -141,6 +142,19 @@ function describeHint(format, backend, operation) {
   })}.`;
 }
 
+function operationProperties(catalog, signatureValue, backend) {
+  return Object.fromEntries(
+    signatureValue.propertySets
+      .filter((name) => catalog.properties[name])
+      .map((name) => [
+        name,
+        catalog.properties[name].filter(
+          (field) => !backend || !signatureValue.propertyBackends[field] || signatureValue.propertyBackends[field].includes(backend)
+        ),
+      ])
+  );
+}
+
 function operationDescription(format, backend, catalog, requested) {
   const knownOperations = catalogOperations(format);
   const operation = resolveOperationAlias(format, requested);
@@ -152,11 +166,7 @@ function operationDescription(format, backend, catalog, requested) {
   }
   const available = operationsForBackend(format, backend);
   const signatureValue = operationSignature(format, operation);
-  const properties = Object.fromEntries(
-    signatureValue.propertySets
-      .filter((name) => catalog.properties[name])
-      .map((name) => [name, catalog.properties[name]])
-  );
+  const properties = operationProperties(catalog, signatureValue, backend);
   return {
     name: operation,
     ...(VIRTUAL_OPERATIONS.has(operation) || VIRTUAL_OPERATIONS.has(`${format}:${operation}`) ? { virtual: true } : {}),
@@ -311,10 +321,10 @@ function hoistGeometryProperties(signatureValue, operation, allowed) {
   delete operation.properties;
 }
 
-function propertyKeySet(catalog, signatureValue) {
+function propertyKeySet(catalog, signatureValue, backend) {
   return new Set(
-    signatureValue.propertySets
-      .flatMap((set) => catalog.properties?.[set] || [])
+    Object.values(operationProperties(catalog, signatureValue, backend))
+      .flat()
       .map((entry) => String(entry).split('.')[0])
   );
 }
@@ -474,14 +484,24 @@ function operationContractFaults(batch, operation, index) {
   if (cellFault) return [cellFault];
   hoistComposeSheetTable(format, name, operation);
   hoistGeometryProperties(signatureValue, operation, allowed);
-  const propertyKeys = propertyKeySet(catalog, signatureValue);
+  const propertyKeys = propertyKeySet(catalog, signatureValue, backend);
   const missing = signatureValue.required.filter((field) => !suppliedField(operation, field, stableTargets));
-  return [
+  const faults = [
     unknownFieldsFault(batch, name, operation, index, { allowed, propertyKeys, missing }),
     unknownPropertiesFault(batch, name, operation, index, propertyKeys),
     ...docxTableAlignmentFaults(format, name, operation, index),
     requiredInputFault(batch, name, operation, index, signatureValue, stableTargets),
   ].filter(Boolean);
+  if (!faults.length && format === 'xlsx' && name === 'add_validation') {
+    try {
+      Object.assign(operation, normalizeXlsxValidation(operation));
+    } catch (error) {
+      faults.push(
+        `XLSX operation "${name}" at operation ${index + 1}: ${error.message}. ${describeHint(format, backend, name)}`
+      );
+    }
+  }
+  return faults;
 }
 
 export function assertOfficeOperationContracts({ format = '', backend = '', operations = [] } = {}) {

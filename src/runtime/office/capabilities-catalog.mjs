@@ -139,6 +139,7 @@ export const CATALOG = {
     properties: {
       paragraph: ['style'],
       font: ['name', 'nameEastAsia', 'size', 'bold', 'italic', 'underline', 'color', 'hidden'],
+      documentFont: ['name', 'nameEastAsia', 'size', 'color'],
       page: [
         'pageSize',
         'orientation',
@@ -169,6 +170,7 @@ export const CATALOG = {
         'headerRows',
         'keepWithNext',
       ],
+      tableStyle: ['style', 'alignment', 'columnAlignments', 'columnWidths', 'borders', 'shading'],
       tableCell: [
         'fillColor',
         'horizontalAlignment',

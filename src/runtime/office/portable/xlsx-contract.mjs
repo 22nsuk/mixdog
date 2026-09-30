@@ -246,6 +246,42 @@ export function listValidationChoices(formula1) {
   return `"${text}"`;
 }
 
+export const XLSX_VALIDATION_TYPES = Object.freeze(['list', 'whole', 'decimal', 'date', 'time', 'textLength', 'custom']);
+export const XLSX_VALIDATION_OPERATORS = Object.freeze([
+  'between',
+  'notBetween',
+  'equal',
+  'notEqual',
+  'greaterThan',
+  'lessThan',
+  'greaterThanOrEqual',
+  'lessThanOrEqual',
+]);
+
+// Resolve and validate once, before either Excel COM or the portable writer
+// can interpret an unknown name as a different rule.
+export function normalizeXlsxValidation(operation) {
+  if (!String(operation.formula1 ?? '').trim()) throw new Error('add_validation requires non-empty formula1');
+  const requestedType = String(operation.type ?? '').trim() || (listValidationFormula(operation.formula1) ? 'list' : 'custom');
+  const type = XLSX_VALIDATION_TYPES.find((value) => value.toLowerCase() === requestedType.toLowerCase());
+  if (!type) throw new Error(`add_validation type must be one of ${XLSX_VALIDATION_TYPES.join(', ')}`);
+  const requestedOperator = String(operation.operator ?? '').trim();
+  const bounded = !['list', 'custom'].includes(type);
+  const operator = requestedOperator
+    ? XLSX_VALIDATION_OPERATORS.find((value) => value.toLowerCase() === requestedOperator.toLowerCase())
+    : bounded ? 'between' : '';
+  if (requestedOperator && !operator) {
+    throw new Error(`add_validation operator must be one of ${XLSX_VALIDATION_OPERATORS.join(', ')}`);
+  }
+  if (!bounded && requestedOperator) {
+    throw new Error(`add_validation operator is unsupported for type "${type}"; omit operator`);
+  }
+  if (['between', 'notBetween'].includes(operator) && !String(operation.formula2 ?? '').trim()) {
+    throw new Error(`add_validation operator "${operator}" requires formula2; for one bound use a comparison operator`);
+  }
+  return { type, ...(operator ? { operator } : {}) };
+}
+
 // Three ways a sheet marks its numbers: a rule that paints the cells it picks,
 // a scale that colors every cell by where its value sits, and a bar drawn in
 // the cell. The first needs a formula and a format; the other two carry their
@@ -394,9 +430,7 @@ function validateXlsxOperation(operation) {
   // Both backends write the kind named here, so the default is settled once:
   // a formula that names choices is a dropdown, a formula that states a test
   // is a custom rule. Writing B2>0 as a list would offer it as one entry.
-  if (op === 'add_validation' && !String(operation.type ?? '').trim()) {
-    operation.type = listValidationFormula(operation.formula1) ? 'list' : 'custom';
-  }
+  if (op === 'add_validation') Object.assign(operation, normalizeXlsxValidation(operation));
   if (op === 'set_style' && operation.cell) parseXlsxCell(operation.cell);
   if (operation.range && RANGE_OPERATIONS.includes(op)) validateRangeOperation(operation, op);
   else if (op === 'set_range') throw new Error('XLSX set_range requires range');

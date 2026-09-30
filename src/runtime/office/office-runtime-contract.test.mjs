@@ -2,12 +2,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import JSZip from 'jszip';
 import { officeBenchmarkSnapshotRequest, officeBenchmarkVisualPolicy } from './bench/benchmark.mjs';
 import { OFFICE_ACTIONS, assertOfficeOperationContracts, describeOfficeCapabilities } from './capabilities.mjs';
 import { runOfficeContractBenchmark } from './bench/contract-benchmark.mjs';
 import { executeOfficeTool } from './index.mjs';
 import { createOfficeSnapshotRequest, finalizeOfficeSnapshotPage } from './core/pagination.mjs';
 import { TOOL_DEFS } from './tool-defs.mjs';
+import { addWorksheetValidation } from './portable/portable-xlsx-operations.mjs';
+import { xmlDecode } from './portable/portable-xml.mjs';
+import { validateXlsxOperations } from './portable/xlsx-contract.mjs';
 import { value, workspace } from './office-test-support.mjs';
 
 process.env.MIXDOG_OOXML_VALIDATOR_DISABLED = '1';
@@ -32,6 +36,8 @@ test('office is a first-class built-in tool with stateful document actions', () 
   const deferredLead = TOOL_DEFS[0].description.slice(0, 220);
   assert.match(deferredLead, /XLSX\/CSV\/TSV set_range/);
   assert.match(TOOL_DEFS[0].inputSchema.properties.action.description, /\bsecure\b/);
+  assert.match(TOOL_DEFS[0].inputSchema.properties.action.description, /render exports PDF and page images/);
+  assert.match(TOOL_DEFS[0].inputSchema.properties.output.description, /render: exported PDF path/);
   assert.doesNotMatch(TOOL_DEFS[0].inputSchema.properties.action.description, /media tool/);
   assert.match(TOOL_DEFS[0].inputSchema.properties.operations.description, /per the format skill/);
   assert.doesNotMatch(
@@ -319,6 +325,125 @@ test('describe returns compact operation contracts and actionable input errors',
   });
   assert.equal(invalid.isError, true);
   assert.match(invalid.content[0].text, /Did you mean: add_chart/);
+});
+
+test('validation discovery names exact operators and both backends reject malformed rules before dispatch', () => {
+  const operators = ['between', 'notBetween', 'equal', 'notEqual', 'greaterThan', 'lessThan', 'greaterThanOrEqual', 'lessThanOrEqual'];
+  for (const backend of ['microsoft-office-com', 'mixdog-ooxml']) {
+    const description = describeOfficeCapabilities({ format: 'xlsx', backend, operation: 'add_validation' }).operation;
+    for (const operator of operators) assert.ok(description.notes.includes(operator));
+    assert.match(description.notes, /between\/notBetween require formula2/);
+    for (const [fields, error] of [
+      [{ type: 'whole', operator: 'greaterOrEqual' }, /operator must be one of.*greaterThanOrEqual/],
+      [{ type: 'unknown' }, /type must be one of/],
+      [{ type: 'whole', operator: 'between' }, /requires formula2/],
+      [{ type: 'whole', operator: 'notBetween' }, /requires formula2/],
+      [{ type: 'whole' }, /requires formula2/],
+      [{ type: 'custom', operator: 'equal' }, /operator is unsupported for type "custom"/],
+    ]) {
+      const operation = { op: 'add_validation', range: 'A1', formula1: '0', ...fields };
+      assert.throws(() => assertOfficeOperationContracts({ format: 'xlsx', backend, operations: [operation] }), error);
+      assert.throws(() => validateXlsxOperations([structuredClone(operation)]), error);
+      const zip = new JSZip();
+      assert.throws(
+        () => addWorksheetValidation(zip, { name: 'Sheet1', path: 'xl/worksheets/sheet1.xml' }, '<worksheet><sheetData/></worksheet>', operation),
+        error
+      );
+      assert.deepEqual(Object.keys(zip.files), []);
+    }
+    for (const operator of operators) {
+      const operation = { op: 'add_validation', range: 'A1', type: 'whole', operator, formula1: 0 };
+      if (['between', 'notBetween'].includes(operator)) operation.formula2 = 50;
+      assert.doesNotThrow(() => assertOfficeOperationContracts({ format: 'xlsx', backend, operations: [operation] }));
+    }
+    for (const type of ['decimal', 'date', 'time', 'textLength']) {
+      assert.doesNotThrow(() => assertOfficeOperationContracts({
+        format: 'xlsx', backend,
+        operations: [{ op: 'add_validation', range: 'A1', type, operator: 'greaterThanOrEqual', formula1: '0' }],
+      }));
+    }
+  }
+});
+
+test('valid single-bound, ranged, list, and custom validation rules persist in the workbook', async (t) => {
+  const cwd = await workspace(t);
+  const path = join(cwd, 'rules.xlsx');
+  const created = value(await executeOfficeTool({
+    action: 'create', path, mode: 'portable',
+    operations: [
+      { op: 'add_validation', range: 'A1', type: 'WHOLE', operator: 'GREATERTHANOREQUAL', formula1: '0' },
+      { op: 'add_validation', range: 'A2', type: 'whole', formula1: '0', formula2: '50' },
+      { op: 'add_validation', range: 'A3', formula1: '"서울,부산"' },
+      { op: 'add_validation', range: 'A4', formula1: 'A4>0' },
+    ],
+  }, { cwd }));
+  const zip = await JSZip.loadAsync(await readFile(path));
+  const sheet = xmlDecode(await zip.file('xl/worksheets/sheet1.xml').async('string'));
+  assert.match(sheet, /type="whole" operator="greaterThanOrEqual"[^>]*sqref="A1:A1"><formula1>0<\/formula1>/);
+  assert.match(sheet, /type="whole" operator="between"[^>]*sqref="A2:A2"><formula1>0<\/formula1><formula2>50<\/formula2>/);
+  assert.match(sheet, /type="list"[^>]*sqref="A3:A3"><formula1>"서울,부산"<\/formula1>/);
+  assert.match(sheet, /type="custom"[^>]*sqref="A4:A4"><formula1>A4>0<\/formula1>/);
+  value(await executeOfficeTool({ action: 'close', session: created.session, save: false }, { cwd }));
+});
+
+test('invalid initial operations are refused before creation and preserve an overwrite target', async (t) => {
+  const cwd = await workspace(t);
+  const invalid = { op: 'add_validation', range: 'A1', type: 'whole', operator: 'greaterOrEqual', formula1: '0' };
+  for (const mode of ['portable', 'background']) {
+    const result = await executeOfficeTool({
+      action: 'create', path: join(cwd, `${mode}.xlsx`), mode, operations: [structuredClone(invalid)],
+    }, { cwd });
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /operator must be one of.*greaterThanOrEqual/);
+  }
+  assert.deepEqual(await readdir(cwd), []);
+  const path = join(cwd, 'existing.xlsx');
+  const created = value(await executeOfficeTool({ action: 'create', path, mode: 'portable' }, { cwd }));
+  value(await executeOfficeTool({ action: 'close', session: created.session, save: false }, { cwd }));
+  const before = await readFile(path);
+  const result = await executeOfficeTool({
+    action: 'create', path, mode: 'portable', overwrite: true, design: { operations: [invalid] },
+  }, { cwd });
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /operator must be one of/);
+  assert.deepEqual(await readFile(path), before);
+});
+
+test('Word discovery and input checks expose only properties the selected operation applies', () => {
+  for (const backend of ['microsoft-office-com', 'mixdog-ooxml']) {
+    const font = describeOfficeCapabilities({ format: 'docx', backend, operation: 'set_document_font' }).operation;
+    assert.deepEqual(Object.values(font.properties).flat(), ['name', 'nameEastAsia', 'size', 'color']);
+    assert.doesNotThrow(() => assertOfficeOperationContracts({
+      format: 'docx', backend,
+      operations: [{ op: 'set_document_font', properties: { name: 'Malgun Gothic', nameEastAsia: '맑은 고딕', size: 11, color: '112233' } }],
+    }));
+    for (const field of ['bold', 'italic', 'underline', 'hidden']) {
+      assert.throws(() => assertOfficeOperationContracts({
+        format: 'docx', backend, operations: [{ op: 'set_document_font', properties: { [field]: true } }],
+      }), /unknown properties/);
+    }
+    const table = describeOfficeCapabilities({ format: 'docx', backend, operation: 'set_table_style' }).operation;
+    const fields = Object.values(table.properties).flat();
+    assert.ok(fields.includes('columnAlignments'));
+    assert.equal(fields.includes('columnWidths'), backend === 'microsoft-office-com');
+    assert.equal(fields.includes('fontSize'), false);
+    assert.match(table.notes, /set_table_cell_style/);
+    assert.doesNotThrow(() => assertOfficeOperationContracts({
+      format: 'docx', backend,
+      operations: [{ op: 'set_table_style', table: 1, properties: { alignment: 'left', columnAlignments: ['left', 'right'] } }],
+    }));
+    assert.throws(() => assertOfficeOperationContracts({
+      format: 'docx', backend, operations: [{ op: 'set_table_style', table: 1, properties: { fontSize: 12 } }],
+    }), /unknown properties/);
+  }
+  assert.doesNotThrow(() => assertOfficeOperationContracts({
+    format: 'docx', backend: 'microsoft-office-com',
+    operations: [{ op: 'set_table_style', table: 1, properties: { columnWidths: [100, 200] } }],
+  }));
+  assert.throws(() => assertOfficeOperationContracts({
+    format: 'docx', backend: 'mixdog-ooxml',
+    operations: [{ op: 'set_table_style', table: 1, properties: { columnWidths: [100, 200] } }],
+  }), /unknown properties: columnWidths/);
 });
 
 test('an operation error suggests a field only when it reads as a typo', async (t) => {

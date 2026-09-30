@@ -10,12 +10,7 @@ import {
   releaseOfficeSession,
   toolResult,
 } from './office-core.mjs';
-import { createSession, openSession, snapshot } from './office-sessions.mjs';
-
-function initialOfficeOperations(args) {
-  if (Array.isArray(args.operations) && args.operations.length) return args.operations;
-  return Array.isArray(args.design?.operations) ? args.design.operations : [];
-}
+import { createSession, initialOfficeOperations, openSession, snapshot } from './office-sessions.mjs';
 
 async function discardFailedOfficeSession(session, { action, initialEditSettled }) {
   if (session.reused) return;

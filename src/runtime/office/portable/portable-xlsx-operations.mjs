@@ -1,7 +1,7 @@
 // Worksheet-level operations the portable XLSX backend applies: sheet
 // management, images, header/footer, conditional formats, validation, sort,
 // autofit, pivot tables and charts.
-import { conditionalFormatKind, listValidationChoices, listValidationFormula } from './xlsx-contract.mjs';
+import { conditionalFormatKind, listValidationChoices, normalizeXlsxValidation } from './xlsx-contract.mjs';
 import { nextRelationshipId, partRelationshipPath, zipText } from './portable-opc.mjs';
 import {
   OFFICE_RELATIONSHIP_BASE,
@@ -44,29 +44,6 @@ function headerFooterFields(text) {
     .replace(/\{sheet\}/gi, '&A')
     .replace(/\{file\}/gi, '&F');
 }
-
-// Cell validation as both backends express it: the OOXML names here, the Excel
-// enumeration in the COM host.
-const XLSX_VALIDATION_TYPES = Object.freeze({
-  list: 'list',
-  whole: 'whole',
-  decimal: 'decimal',
-  date: 'date',
-  time: 'time',
-  textlength: 'textLength',
-  custom: 'custom',
-});
-
-const XLSX_VALIDATION_OPERATORS = Object.freeze({
-  between: 'between',
-  notbetween: 'notBetween',
-  equal: 'equal',
-  notequal: 'notEqual',
-  greaterthan: 'greaterThan',
-  lessthan: 'lessThan',
-  greaterthanorequal: 'greaterThanOrEqual',
-  lessthanorequal: 'lessThanOrEqual',
-});
 
 export const TABLE_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml';
 
@@ -330,18 +307,6 @@ async function expressionConditionalRule(zip, op, priority) {
 
 // The comparison a bounded validation applies; a second bound without one
 // means between.
-function validationOperator(op, type) {
-  const requested = String(op.operator || '').trim();
-  let operator = '';
-  if (requested && Object.hasOwn(XLSX_VALIDATION_OPERATORS, requested.toLowerCase())) {
-    operator = XLSX_VALIDATION_OPERATORS[requested.toLowerCase()];
-  } else if (op.formula2 != null && !['list', 'custom'].includes(type)) operator = 'between';
-  if (requested && !operator) {
-    throw new Error(`add_validation operator must be one of ${Object.keys(XLSX_VALIDATION_OPERATORS).join(', ')}`);
-  }
-  return operator;
-}
-
 function dataValidationXml(op, { type, operator, reference }) {
   const formula = (value) => `${xmlEncode(String(value).replace(/^=/, ''))}`;
   return (
@@ -359,19 +324,7 @@ function dataValidationXml(op, { type, operator, reference }) {
 /** One data validation over a range, appended to the validations already there. */
 export function addWorksheetValidation(zip, sheet, xml, op) {
   const reference = areaReference(parseAreaRange(op.range));
-  // A list is the common case and what Excel writes through the same
-  // operation, so it is the default; the other kinds guard a number, a
-  // date, or a length, and take a second bound. A formula that states a
-  // rule rather than naming choices is that rule, not a dropdown of one
-  // entry: "서울,부산" and $A$1:$A$9 are lists, B2>0 is a custom check.
-  const kind = String(op.type || (listValidationFormula(op.formula1) ? 'list' : 'custom'))
-    .trim()
-    .toLowerCase();
-  const type = Object.hasOwn(XLSX_VALIDATION_TYPES, kind) ? XLSX_VALIDATION_TYPES[kind] : '';
-  if (!type) {
-    throw new Error(`add_validation type must be one of ${Object.keys(XLSX_VALIDATION_TYPES).join(', ')}`);
-  }
-  const operator = validationOperator(op, type);
+  const { type, operator = '' } = normalizeXlsxValidation(op);
   const existing = worksheetSection(xml, 'dataValidations');
   const previous = existing ? containerBody(existing[0], 'dataValidations') : '';
   const count = (previous.match(/<dataValidation\b/g) || []).length + 1;

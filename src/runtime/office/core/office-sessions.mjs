@@ -3,6 +3,7 @@ import { constants as fsConstants } from 'node:fs';
 import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
+import { assertOfficeOperationContracts } from '../capabilities.mjs';
 import {
   callMicrosoftOffice,
   detectMicrosoftOffice,
@@ -496,6 +497,11 @@ async function createMicrosoftOfficeSession(creation, args, mode) {
   });
 }
 
+export function initialOfficeOperations(args) {
+  if (Array.isArray(args.operations) && args.operations.length) return args.operations;
+  return Array.isArray(args.design?.operations) ? args.design.operations : [];
+}
+
 export async function createSession(args, cwd, dataDir) {
   const requestedPath = String(args.path || args.output || '').trim();
   if (!requestedPath) throw new Error('create requires path or output');
@@ -506,6 +512,8 @@ export async function createSession(args, cwd, dataDir) {
   if (format !== inferredFormat)
     throw new Error(`Office create format ${args.format} does not match target .${fileKind}`);
   assertCreateContentFields(format, args);
+  const initialOperations = initialOfficeOperations(args);
+  assertOfficeOperationContracts({ format, operations: initialOperations });
   // Whether this call brings the file into being decides what a failed create
   // may clean up afterwards: a file it wrote itself, never one already there.
   const targetExisted = await exists(target);
@@ -528,6 +536,7 @@ export async function createSession(args, cwd, dataDir) {
     throw new Error('Office create requires visible, background, or portable mode');
   }
   const selected = await selectMode(requestedMode, format, target);
+  assertOfficeOperationContracts({ format, backend: selected.backend, operations: initialOperations });
   if (selected.backend === 'mixdog-ooxml') return createPortableOoxmlSession(creation);
   return createMicrosoftOfficeSession(creation, args, selected.mode);
 }

@@ -26,7 +26,7 @@ export const TOOL_DEFS = [
           type: 'string',
           enum: OFFICE_ACTIONS,
           description:
-            'detect/describe discover; author: PPTX from HTML or pptxgenjs; transactions/recover, begin/diff/commit/rollback checkpoint; create/attach/open start; snapshot/get/query inspect; batch edits; issues/qa/render/validate review; save/finalize/close finish; secure encrypts/decrypts PDF.',
+            'detect/describe discover; author: HTML/pptxgenjs PPTX; transactions/recover/begin/diff/commit/rollback checkpoints; create/attach/open; snapshot/get/query; batch edits; issues/qa/validate review; render exports PDF and page images; save/finalize/close; secure: PDF passwords.',
         },
         path: { type: 'string', description: 'Document path; relative paths resolve from the caller project.' },
         script: { type: 'string', description: 'author: HTML slides or a pptxgenjs script (pptx skill).' },
@@ -75,7 +75,7 @@ export const TOOL_DEFS = [
           description:
             'auto defaults to background with Office, otherwise portable. Only explicit attach (alias live) co-edits an open file; visible opens a window; background edits a copy.',
         },
-        output: { type: 'string', description: 'Output copy or render destination; defaults beside source.' },
+        output: { type: 'string', description: 'Output copy; render: exported PDF path. Defaults beside source.' },
         target: { type: 'string', description: 'Stable path from snapshot/query, e.g. /body/p[2].' },
         query: { type: 'string', description: 'Case-insensitive value search; with pdf-layout, where the text sits.' },
         queryKind: {

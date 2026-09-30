@@ -1,8 +1,13 @@
 // Operation input signatures: which fields each Office operation requires,
 // accepts, or takes as alternatives, per format.
+import { XLSX_VALIDATION_OPERATORS, XLSX_VALIDATION_TYPES } from './portable/xlsx-contract.mjs';
 
-export function signature(required = [], optional = [], { oneOf = [], propertySets = [], notes = '' } = {}) {
-  return { required, optional, oneOf, propertySets, notes };
+export function signature(
+  required = [],
+  optional = [],
+  { oneOf = [], propertySets = [], propertyBackends = {}, notes = '' } = {}
+) {
+  return { required, optional, oneOf, propertySets, propertyBackends, notes };
 }
 
 export const COMMON_SIGNATURES = {
@@ -66,9 +71,10 @@ export const FORMAT_SIGNATURES = {
         'properties.alignment places the table on the page (left, center, right); properties.columnAlignments sets the text of each column (one of left, center, right, justify per column); without it a column of figures (184,200, 2.1%, 2.6억 원) sets right and the rest left. Without style, borders, or shading the table takes a bold header row with a rule under it and hairlines between rows; headerBold:false keeps the header plain. properties.headerRows (default 1) is how many rows the header takes: a two-level header, its group label merged across the columns it spans (merge_table_cells), is headerRows:2, and every header row is set bold on its bottom edge and repeats on a continuation page.',
     }),
     set_table_style: signature(['table', 'properties'], [], {
-      propertySets: ['table'],
+      propertySets: ['tableStyle'],
+      propertyBackends: { columnWidths: ['microsoft-office-com'] },
       notes:
-        'Replaces the table-level properties; columnAlignments re-aligns the text of every existing cell in each column.',
+        'Replaces table-level properties; columnAlignments re-aligns existing cells. columnWidths is Microsoft Office only. For existing cell fonts or fills use set_table_cell_style, not set_table_style.',
     }),
     merge_table_cells: signature(['table', 'row', 'col'], ['rowSpan', 'colSpan'], {
       notes:
@@ -91,7 +97,7 @@ export const FORMAT_SIGNATURES = {
     move_paragraph: signature(['paragraph', 'index']),
     set_paragraph_style: signature(['paragraph', 'style']),
     set_document_font: signature(['properties'], [], {
-      propertySets: ['font'],
+      propertySets: ['documentFont'],
       notes:
         "The document's own face, size, and ink — what every paragraph without its own reads, and what a paragraph added later in Word or by append_text starts from. properties: name, nameEastAsia, size, color.",
     }),
@@ -325,7 +331,7 @@ export const FORMAT_SIGNATURES = {
       ['sheet', 'type', 'operator', 'formula2', 'inputMessage', 'errorMessage'],
       {
         notes:
-          'type is list, whole, decimal, date, time, textLength, or custom; without it a formula naming choices ("a,b,c" or $A$1:$A$9) becomes a list and any other formula a custom rule. A ranged kind takes operator (between by default with formula2) and its bounds. Under protect_sheet the entry cells need set_style properties { locked: false } or nobody can type in them.',
+          `type: ${XLSX_VALIDATION_TYPES.join(', ')}. Without type, choices ("a,b,c" or $A$1:$A$9) mean list; other formulas mean custom. Numeric/date/time/textLength rules take operator: ${XLSX_VALIDATION_OPERATORS.join(', ')} (default between). between/notBetween require formula2; other operators use formula1. Example: type:"whole", operator:"greaterThanOrEqual", formula1:"0". Under protect_sheet unlock entry cells with set_style properties:{ locked:false }.`,
       }
     ),
     freeze_panes: signature([], ['sheet', 'row', 'column'], {
