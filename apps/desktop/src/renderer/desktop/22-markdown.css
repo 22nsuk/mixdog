@@ -12,7 +12,7 @@
      answer. Flow blocks (p/lists) keep 12, the section rule keeps 32. */
   margin: 20px 0;
   overflow: hidden;
-  border-radius: var(--mx-radius-md);
+  border-radius: var(--mx-radius-lg);
   background: var(--mx-bg-base);
   box-shadow: 0 0 0 0.5px var(--mx-border-muted);
 }
@@ -1074,7 +1074,7 @@ html[data-mixdog-mobile-tabs] .jump-to-latest::before {
   overscroll-behavior-inline: contain;
   /* Grok-web table container: rounded card with a hairline ring and a tinted
      header band instead of a naked full-bleed grid. */
-  border-radius: var(--mx-radius-md);
+  border-radius: var(--mx-radius-lg);
   box-shadow: 0 0 0 0.5px var(--mx-border);
   background: var(--mx-bg-base);
 }
@@ -1514,10 +1514,13 @@ html[data-mixdog-mobile-tabs] .jump-to-latest::before {
   margin-bottom: 8px;
 }
 .session-goal-host > .session-goal-island {
-  --session-island-frame-bg: color-mix(in srgb, var(--mx-bg-base) 62%, var(--mx-workspace-sheet));
-  /* Three controls + progress·time take ~150px of the capsule, so a 416px
+  /* The prompt card's material, so the stack reads as one family (user:
+     디프랑 골 같은 거 컴포저랑 이질감이 심한데), but still a centred capsule
+     rather than the full column (user: 골은 전체 확장 안 해도 될 거 같은데).
+     Three controls + progress·time take ~150px of the capsule, so a 416px
      pill left the objective ~200px — most goals ellipsized after a few
      words (user: goal도 많이 잘리던데). The title now gets the room. */
+  --session-island-frame-bg: var(--mx-composer-surface);
   --session-goal-width: 560px;
   --session-goal-trigger-height: 32px;
   --session-goal-control-size: 28px;
@@ -1536,8 +1539,11 @@ html[data-mixdog-mobile-tabs] .jump-to-latest::before {
   left: 0;
   display: grid;
   grid-template-rows: auto auto;
-  border: 0.5px solid var(--mx-border);
-  border-radius: var(--mx-radius-pill);
+  /* The review bar's 12px corner closed or open — 16 made a full pill at
+     32px tall, rounder than the card (user: 너무 태두리가 컴포저에 비해 둥근
+     거 같은데) — and the card's raised edge only, no ring of its own. */
+  border: 0;
+  border-radius: var(--mx-radius-xl);
   color: var(--mx-text);
   font-family: var(--mx-font-sans);
   font-weight: var(--mx-weight-regular);
@@ -1545,9 +1551,6 @@ html[data-mixdog-mobile-tabs] .jump-to-latest::before {
   box-shadow: var(--mx-raised);
   overflow: hidden;
   transition: none;
-}
-.session-goal-island[data-open="true"] .session-goal-stack {
-  border-radius: var(--mx-radius-md);
 }
 .session-goal-summary {
   min-width: 0;

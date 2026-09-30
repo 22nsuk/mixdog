@@ -66,33 +66,41 @@
 .activity-rail > button:hover,
 .activity-rail > button:focus-visible {
   color: var(--mx-text);
-  background: var(--mx-hover);
   outline: 0;
 }
 .activity-rail > button.is-active,
 .activity-rail > button.selected {
   color: var(--mx-text);
-  background: var(--mx-hover);
 }
-.activity-rail > button::before {
+/* Selection grammar (user: 사이드레일 선택 UI 좀 바꾸자 — 코덱스처럼): a
+   rounded tile inset in the cell carries hover and selection; the old 2px
+   edge bar and full-cell wash are gone. */
+.activity-rail > button::before,
+.workbench-side-icon-bar.is-vertical > button::before {
   content: "";
   position: absolute;
-  /* Active-border grammar: a 2px FULL-HEIGHT bar FLUSH with the window edge
-     in foreground ink — VS Code's activityBar.activeBorder width — no
-     offset, no outline. */
-  inset: 0 auto 0 0;
-  width: 2px;
-  background: var(--mx-text);
+  z-index: -1;
+  inset: 4px 6px;
+  border-radius: 8px;
+  background: var(--mx-rail-tile-hover);
   opacity: 0;
-  transform: scaleY(0.55);
-  transition:
-    opacity var(--mx-motion-ink),
-    transform var(--mx-motion-base) var(--mx-ease-emphasized);
+  transition: opacity var(--mx-motion-ink);
+}
+.activity-rail {
+  --mx-rail-tile-hover: color-mix(in srgb, var(--mx-text) 6%, transparent);
+  --mx-rail-tile-active: color-mix(in srgb, var(--mx-text) 11%, transparent);
+  isolation: isolate;
+}
+.activity-rail > button:hover::before,
+.activity-rail > button:focus-visible::before,
+.workbench-side-icon-bar.is-vertical > button:hover::before {
+  opacity: 1;
 }
 .activity-rail > button.is-active::before,
-.activity-rail > button.selected::before {
+.activity-rail > button.selected::before,
+.workbench-side-icon-bar.is-vertical > button.active::before {
   opacity: 1;
-  transform: scaleY(1);
+  background: var(--mx-rail-tile-active);
 }
 .session-panel-title[draggable="true"] {
   cursor: grab;
@@ -124,14 +132,6 @@
 .workbench-side-icon-bar.is-vertical > button:hover,
 .workbench-side-icon-bar.is-vertical > button.active {
   color: var(--mx-text);
-  background: var(--mx-hover);
-}
-.workbench-side-icon-bar.is-vertical > button.active::before {
-  content: "";
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: 2px;
-  background: var(--mx-text);
 }
 /* Keyboard focus is a quiet inset, distinct from the persistent active bar. */
 .activity-rail > button:focus-visible {

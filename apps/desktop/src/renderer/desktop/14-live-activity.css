@@ -435,7 +435,8 @@
   width: 100%;
   padding: 16px;
   border: 0;
-  border-radius: var(--mx-radius-md);
+  /* The prompt card's corner: the approval sits in the same stack. */
+  border-radius: var(--mx-radius-sheet);
   color: var(--mx-text);
   background: var(--mx-bg-layer-1);
   box-shadow: 0 0 0 1px var(--mx-approval-ring);
@@ -514,7 +515,7 @@
    and stat chip sat flush against the frame — and its border-bottom-color
    never painted, because no border-style was ever set. */
 .code-diff {
-  border-radius: var(--mx-radius-md);
+  border-radius: var(--mx-radius-lg);
   background: var(--mx-bg-base);
   box-shadow: 0 0 0 0.5px var(--mx-border-muted);
 }

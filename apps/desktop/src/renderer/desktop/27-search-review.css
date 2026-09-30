@@ -198,13 +198,21 @@
 .turn-review-slot > * {
   pointer-events: auto;
 }
+/* Cut from the prompt card's own material — its fill, corner and raised
+   edge, without the card's drop — so the stack above the input reads as one
+   family (user: 디프랑 골 같은 거 컴포저랑 이질감이 심한데). The outlined 6px
+   bar (user: 테두리 처리가 어색) and the faint 4% plate after it both read as
+   a different material from the card. */
 .turn-review-bar {
   container-type: inline-size;
   width: 100%;
   margin: 0 auto;
-  border-radius: var(--mx-radius-md);
-  background: var(--mx-bg-layer-1);
-  box-shadow: inset 0 0 0 0.5px var(--mx-border-muted);
+  /* 12px, not the card's 16: at 32px tall 16 turned the bar into a full
+     pill, rounder than the card below it (user: 너무 태두리가 컴포저에 비해
+     둥근 거 같은데). */
+  border-radius: var(--mx-radius-xl);
+  background: var(--mx-composer-surface);
+  box-shadow: var(--mx-raised);
 }
 .turn-review-summary {
   width: 100%;

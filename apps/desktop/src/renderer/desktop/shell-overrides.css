@@ -53,11 +53,6 @@
   .sidebar-drawer-frame > .workbench-side-panel > .workbench-side-panel-resize {
     display: none;
   }
-  /* The sheet titles itself: the header's full-bleed hairline read as chrome
-     band residue on the floating card, so the title row sits clean. */
-  .sidebar.session-sidebar > .session-panel-header::after {
-    display: none;
-  }
   .sidebar-backdrop {
     display: block;
     position: fixed;

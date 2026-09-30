@@ -81,6 +81,14 @@
   --mx-bg-contrast: #5c5c61;
   /* Surface-base: translucent plate used by chat bubbles. */
   --mx-surface-plate: rgba(255, 255, 255, 0.035);
+  /* Prompt card and user bubble: one step above the sheet, so the composer
+     and the bubble read as the same raised plate; the card also carries a
+     soft drop under the shell's raised edge. The drop's negative spread keeps
+     it below and beside the card: nothing darkens the strip above it, where
+     the changed-files plate sits. */
+  --mx-composer-surface: var(--mx-bg-layer-1);
+  --mx-composer-lift: 0 12px 24px -4px rgb(0 0 0 / 22%);
+  --mx-user-bubble: var(--mx-bg-layer-1);
   /* Terminal canvas stays dark in every theme (xterm palette parity). */
   --mx-terminal-bg: #121215;
 
@@ -100,6 +108,10 @@
   --mx-font-emphasis: 15px;
   --mx-font-body: 15px;
   --mx-font-panel-title: 16px;
+  /* Rail panel titles (세션, 에이전트 …): the 16px panel tier — 18 read too
+     large (user: 이건 또 너무 커) — in a roomier band (--mx-rail-panel-band). */
+  --mx-rail-panel-title: 16px;
+  --mx-rail-panel-band: 52px;
   --mx-font-category: var(--mx-font-emphasis);
   --mx-font-item: var(--mx-font-ui);
   --mx-font-supporting: var(--mx-font-meta);
@@ -195,7 +207,9 @@
      sidebar/dock/tab-strip seams read crisply (#2b2b2b-class). */
   --mx-border-muted: rgba(255, 255, 255, 0.09);
   --mx-border: rgba(255, 255, 255, 0.125);
-  --mx-border-structure: rgba(255, 255, 255, 0.16);
+  /* Workbench seams (titlebar, rail, sidebar, docks, pane splits) share the
+     muted weight: fewer, lighter lines carry the structure (user: 선 정리). */
+  --mx-border-structure: var(--mx-border-muted);
   --mx-border-strong: rgba(255, 255, 255, 0.24);
 
   /* ── 4. Interaction ── */
@@ -438,6 +452,10 @@
   --mx-bg-layer-3: #e3e3e6;
   --mx-bg-contrast: #242427;
   --mx-surface-plate: rgba(23, 24, 26, 0.045);
+  /* Paper: the prompt card stays white on the sheet, the bubble one grey step. */
+  --mx-composer-surface: var(--mx-bg-base);
+  --mx-composer-lift: 0 10px 20px -4px rgb(0 0 0 / 6%);
+  --mx-user-bubble: var(--mx-bg-layer-2);
 
   /* ── 3. Ink ── */
   /* Deep ink, one step off black — the paper mirror of dark's #e9e9e9 (not
@@ -457,7 +475,7 @@
   /* Neutral hairlines: the warm alpha set pulled every seam brown. */
   --mx-border-muted: rgba(23, 24, 26, 0.1);
   --mx-border: rgba(23, 24, 26, 0.14);
-  --mx-border-structure: rgba(23, 24, 26, 0.2);
+  --mx-border-structure: var(--mx-border-muted);
   --mx-border-strong: rgba(23, 24, 26, 0.26);
 
   /* ── 4. Interaction ── */

@@ -716,7 +716,7 @@ export function ProjectListSection({
           )}
           {onMemoryControl && (
             <ExtensionSection
-              title={t('Memories')}
+              title={t('Instructions')}
               description={t(
                 'Saved memories are included in new conversations. Common memories apply to every project.'
               )}

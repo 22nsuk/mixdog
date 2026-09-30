@@ -494,11 +494,13 @@
   height: var(--mx-icon-xs);
   stroke: none;
 }
+/* Nothing to send: a faint arrow on a quiet plate — no ink disc until the
+   draft has content. */
 .send-button:disabled {
-  color: var(--mx-icon-muted);
-  background: var(--mx-bg-layer-3);
+  color: var(--mx-text-faint);
+  background: color-mix(in srgb, var(--mx-text) 9%, transparent);
   box-shadow: none;
-  opacity: var(--mx-op-dim);
+  opacity: 1;
 }
 .composer-attachments {
   box-sizing: border-box;

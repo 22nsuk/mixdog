@@ -809,6 +809,13 @@
   background: var(--mx-pressed);
   box-shadow: inset 0 0 0 0.5px var(--mx-rail-item-outline-active);
 }
+/* Idle titles rest one ink step under the selected row's full ink. */
+.session-sidebar .session-row-copy b {
+  color: var(--mx-text-soft);
+}
+.session-sidebar .session-row.selected .session-row-copy b {
+  color: var(--mx-text);
+}
 /* Light rows: translucent hover/pressed backgrounds under OPAQUE action
    gradients rendered a visible rectangle around the row actions. Use opaque
    tones (light interaction tokens) and keep the action surface identical to
@@ -872,15 +879,16 @@
 .session-sidebar-sessions > .session-sidebar-scroll {
   padding-top: 2px;
 }
-/* Fixed launchers use category typography and leading icons on the same
-   left edge as category headings, retaining the primary-link hit area. */
+/* Fixed launchers use item typography at the label weight and leading icons
+   on the same left edge as category headings, retaining the primary-link hit
+   area. */
 .session-sidebar .task-link.session-launcher-row {
   display: flex;
   align-items: center;
   justify-content: flex-start;
   padding: 0;
-  font-size: var(--mx-font-category);
-  font-weight: var(--mx-weight-semibold);
+  font-size: var(--mx-font-item);
+  font-weight: var(--mx-weight-medium);
   text-align: left;
 }
 .session-launcher-label {
@@ -908,12 +916,11 @@
   /* EXACTLY the row-pill inset (6px): session titles render at the same 6px
      inside their pills, so header and titles share one left line. */
   padding: 0 6px;
-  /* Full ink like the model trigger — muted read as a weaker tier than the
-     controls around it (user: Recent looks washed). */
-  color: var(--mx-text);
-  /* CATEGORY tier: 14/600, one step below the panel title. */
-  font-size: var(--mx-font-category);
-  font-weight: var(--mx-weight-semibold);
+  /* A quiet group label — meta 13/500 in faint ink: the rows carry the
+     weight and the label only names the group (user: 최근은 작고 흐리게). */
+  color: var(--mx-text-faint);
+  font-size: var(--mx-font-meta);
+  font-weight: var(--mx-weight-medium);
   letter-spacing: 0;
   line-height: var(--mx-line-ui);
 }
@@ -928,7 +935,7 @@
   line-height: var(--mx-line-meta);
 }
 /* AFTER the base heading rules on purpose: the collapsible variant must win
-   order-dependent overrides. Same CATEGORY tier as the base heading above. */
+   order-dependent overrides. Same quiet label tier as the base heading above. */
 .sidebar-recent-heading.sidebar-heading-toggle {
   position: relative;
   height: 32px;
@@ -940,11 +947,11 @@
   border: 0;
   background: transparent;
   font-family: inherit;
-  font-size: var(--mx-font-category);
-  font-weight: var(--mx-weight-semibold);
+  font-size: var(--mx-font-meta);
+  font-weight: var(--mx-weight-medium);
   line-height: var(--mx-line-ui);
   letter-spacing: 0;
-  color: var(--mx-text);
+  color: var(--mx-text-faint);
   text-align: left;
   cursor: pointer;
 }

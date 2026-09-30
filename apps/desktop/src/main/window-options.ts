@@ -1,4 +1,5 @@
 import { readFileSync, writeFile } from 'node:fs';
+import { release } from 'node:os';
 
 import * as electron from 'electron';
 import type { BrowserWindow, BrowserWindowConstructorOptions, NativeTheme } from 'electron';
@@ -9,6 +10,12 @@ export const DESKTOP_BACKGROUND_COLOR = '#151518';
 /* Light window band (neutral set) — must track --mx-window-band on light. */
 export const DESKTOP_LIGHT_BACKGROUND_COLOR = '#efeff2';
 export const DESKTOP_TITLEBAR_HEIGHT = 35;
+
+/* Windows 11 22H2+ (build 22621) draws the Mica system backdrop behind a
+   clear window; older builds and other platforms keep the opaque band. */
+export const DESKTOP_WINDOW_MICA = process.platform === 'win32' && Number(release().split('.')[2]) >= 22621;
+const CLEAR_BACKGROUND_COLOR = '#00000000';
+const micaWindows = new WeakSet<object>();
 
 type DesktopTitleBarWindow = Pick<BrowserWindow, 'setBackgroundColor' | 'setTitleBarOverlay'>;
 
@@ -72,7 +79,9 @@ export function setDesktopTitleBarTheme(window: DesktopTitleBarWindow, value: un
   else if (light) band = 'light';
   titleBarThemes.set(window as object, light);
   pinNativeThemeSource(band);
-  window.setBackgroundColor(light ? DESKTOP_LIGHT_BACKGROUND_COLOR : DESKTOP_BACKGROUND_COLOR);
+  // A Mica window stays clear: the material follows the pinned native theme.
+  if (micaWindows.has(window as object)) window.setBackgroundColor(CLEAR_BACKGROUND_COLOR);
+  else window.setBackgroundColor(light ? DESKTOP_LIGHT_BACKGROUND_COLOR : DESKTOP_BACKGROUND_COLOR);
   // Remember the applied band for the NEXT launch: the window constructor
   // reads it so a light-theme start never flashes the dark default band
   // (user-reported titlebar/tab pop right after launch).
@@ -102,9 +111,15 @@ export function configureTitleBarThemePersistence(path: string): void {
   titleBarThemePersistPath = path;
 }
 
-/** Constructor overrides for the persisted theme (empty when dark/unknown). */
+/** Constructor overrides for the product window: the Mica backdrop where
+ *  Windows supports it, and the persisted theme (empty when dark/unknown and
+ *  no Mica). The capture harness builds from DESKTOP_WINDOW_OPTIONS alone, so
+ *  its evidence stays on the opaque band. */
 export function initialTitleBarWindowOverrides(): Partial<BrowserWindowConstructorOptions> {
-  if (!titleBarThemePersistPath) return {};
+  const material: Partial<BrowserWindowConstructorOptions> = DESKTOP_WINDOW_MICA
+    ? { backgroundMaterial: 'mica', backgroundColor: CLEAR_BACKGROUND_COLOR }
+    : {};
+  if (!titleBarThemePersistPath) return material;
   let persisted = '';
   try {
     persisted = readFileSync(titleBarThemePersistPath, 'utf8').trim();
@@ -115,11 +130,24 @@ export function initialTitleBarWindowOverrides(): Partial<BrowserWindowConstruct
   // never exposes the OS light brush under the default dark band.
   pinNativeThemeSource(persisted === 'system' || persisted === 'light' ? persisted : 'dark');
   const light = persisted === 'light' || (persisted === 'system' && !nativeThemePrefersDark());
-  if (!light) return {};
+  if (!light) return material;
   return {
     backgroundColor: DESKTOP_LIGHT_BACKGROUND_COLOR,
     ...(process.platform === 'win32' ? { titleBarOverlay: titleBarOverlay(true) } : {}),
+    ...material,
   };
+}
+
+/** Binds a window built with initialTitleBarWindowOverrides() to its Mica
+ *  backdrop: theme changes keep its background clear, and every loaded page
+ *  gets html[data-window-material="mica"] so the renderer opens the
+ *  titlebar and rail to the material (03-titlebar.css). */
+export function installDesktopWindowMaterial(window: BrowserWindow): void {
+  if (!DESKTOP_WINDOW_MICA) return;
+  micaWindows.add(window);
+  window.webContents.on('dom-ready', () => {
+    void window.webContents.executeJavaScript("document.documentElement.dataset.windowMaterial = 'mica'");
+  });
 }
 
 function nativeThemePrefersDark(): boolean {

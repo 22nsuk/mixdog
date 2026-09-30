@@ -25,13 +25,8 @@ export function DesktopTitlebar({ updaterState, onOpenUpdate }: DesktopTitlebarP
   const updateInstalling = updaterState?.status === 'installing';
   return (
     <header className="topbar" aria-label={t('Window bar')}>
-      {/* LEFT cluster: the brand mark only (user: 왼쪽
-          사이드탭 열기는 오른쪽으로, 그 자리에 로고). */}
-      <div className="titlebar-leading titlebar-nav" aria-label={t('Navigation')}>
-        <span className="titlebar-brand" aria-hidden="true">
-          <img src="./mixdog.svg" alt="" draggable={false} />
-        </span>
-      </div>
+      {/* No brand mark: the bare band reads lighter (user: 로고 뺄까 뭔가
+          로고 있으니까 답답하네). */}
       <div className="titlebar-spacer" aria-hidden="true" />
       {/* RIGHT cluster: updater badge ahead of the native caption reserve.
           Layout surfaces use contextual pane entry points. */}

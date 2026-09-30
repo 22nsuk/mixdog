@@ -576,9 +576,6 @@ html[data-mixdog-mobile-tabs] .sidebar-collapsed .sidebar-drawer-frame > .sideba
   pointer-events: auto;
   transition: none;
 }
-html[data-mixdog-mobile-tabs] .sidebar.session-sidebar > .session-panel-header::after {
-  display: none;
-}
 html[data-mixdog-mobile-tabs] .sidebar-backdrop {
   display: block;
   position: fixed;

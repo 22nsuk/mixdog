@@ -53,6 +53,7 @@ import {
   DESKTOP_WINDOW_OPTIONS,
   configureTitleBarThemePersistence,
   initialTitleBarWindowOverrides,
+  installDesktopWindowMaterial,
   setDesktopTitleBarZoom,
 } from './window-options';
 import {
@@ -1182,6 +1183,7 @@ async function createWindow(): Promise<void> {
   });
   configureTitleBarThemePersistence(join(app.getPath('userData'), 'desktop-titlebar-theme'));
   const window = createMainBrowserWindow(savedState, brandIconPath);
+  installDesktopWindowMaterial(window);
   if (savedState?.maximized) window.maximize();
   windowState = persistWindowState(window, statePath);
   mainWindow = window;

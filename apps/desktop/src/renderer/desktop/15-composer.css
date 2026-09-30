@@ -32,9 +32,11 @@
   overflow: hidden;
   pointer-events: none;
 }
-/* Project / workflow pills: one shared boxed-chip grammar. The container owns the plate, ring, and the
-   hover/expanded highlight; the inner select trigger must never paint its own
-   fill or the chip splits into two highlight regions. */
+/* Project / workflow pills: one shared ghost-chip grammar. At rest the chip
+   paints no plate or ring (it reads as part of the prompt area, not a second
+   box above it); the container owns the hover/expanded wash, and the inner
+   select trigger must never paint its own fill or the chip splits into two
+   highlight regions. */
 .composer-project-context,
 .composer-workflow-context {
   min-width: 112px;
@@ -42,12 +44,13 @@
   gap: 0;
   padding-left: 8px;
   border-radius: var(--mx-radius-md);
-  color: var(--mx-icon);
-  background: var(--mx-bg-layer-1);
-  box-shadow: 0 0 0 0.5px var(--mx-border);
-}
-.composer-project-context {
+  color: var(--mx-icon-muted);
+  background: transparent;
   box-shadow: none;
+}
+/* The project pill hugs its label. */
+.composer-project-context {
+  min-width: 0;
 }
 .context-pill-select {
   flex: 1 1 auto;
@@ -91,7 +94,7 @@
 .composer-workflow-context:focus-within,
 .composer-workflow-context:has(.mx-select-trigger[aria-expanded="true"]) {
   color: var(--mx-icon);
-  background: linear-gradient(var(--mx-hover), var(--mx-hover)), var(--mx-bg-layer-1);
+  background: var(--mx-hover);
 }
 .composer-project-context:hover .mx-select-trigger,
 .composer-project-context:focus-within .mx-select-trigger,
@@ -105,13 +108,15 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* The prompt card: a rounder, one-step-raised plate with no outline — the
+   shell's raised edge plus a soft drop lift it off the sheet. */
 .composer {
   min-height: 84px;
   padding: 0;
   border: 0;
-  border-radius: var(--mx-radius-xl);
-  background: var(--mx-bg-base);
-  box-shadow: var(--mx-raised);
+  border-radius: var(--mx-radius-sheet);
+  background: var(--mx-composer-surface);
+  box-shadow: var(--mx-raised), var(--mx-composer-lift);
   /* Keep textarea autosize layout inside the composer formatting context.
      Paint containment belongs on the textarea itself: placing it here clips
      the absolute slash/mention palettes that intentionally open above it. */
@@ -120,7 +125,7 @@
 }
 .composer:focus-within {
   border: 0;
-  box-shadow: var(--mx-raised);
+  box-shadow: var(--mx-raised), var(--mx-composer-lift);
 }
 .composer textarea:focus,
 .composer textarea:focus-visible {
@@ -175,6 +180,10 @@
 }
 .composer-model-aside .session-context-indicator circle {
   stroke-width: 2.5;
+}
+/* An empty ring says nothing: the gauge appears once there is a reading. */
+.composer-model-aside .session-context-indicator[data-active="false"] {
+  display: none;
 }
 .composer-model-aside .session-context-popover {
   top: auto;
@@ -265,8 +274,8 @@
   justify-content: center;
   gap: 12px;
   padding: 0 16px;
-  border-radius: var(--mx-radius-xl) var(--mx-radius-xl) 0 0;
-  background: var(--mx-bg-base);
+  border-radius: var(--mx-radius-sheet) var(--mx-radius-sheet) 0 0;
+  background: var(--mx-composer-surface);
 }
 .composer-dictation-meter {
   display: flex;
@@ -387,8 +396,8 @@
   color: var(--mx-text);
 }
 /* Cursor-style composer circles, FLAT (user: the gradient read as 3D).
-   Send is a solid contrast disc; the mic stays a quiet ghost circle until
-   it actually records. Placed after the shared 28px rule so 6px cannot win. */
+   Send is a solid ink disc; the mic stays a quiet ghost circle until it
+   actually records. Placed after the shared 28px rule so 6px cannot win. */
 .composer-mic,
 .send-button {
   border-radius: var(--mx-radius-pill);
@@ -404,14 +413,26 @@
   height: var(--mx-icon-xs);
   stroke: none;
 }
+/* The send disc is ink — white on dark, near-black on paper — with the arrow
+   cut in the sheet tone (user: 입력 버튼은 흰색). */
 .send-button {
-  color: var(--mx-grey-100);
+  color: var(--mx-workspace-sheet);
   /* Longhand for the same clip reason as the recording mic above. */
-  background-color: var(--mx-bg-contrast);
+  background-color: var(--mx-text);
   background-image: none;
   box-shadow: none;
 }
+/* A mid-grey wash dims the white disc and lifts the ink one alike. */
 .send-button:hover:not(:disabled) {
+  background-image: linear-gradient(rgb(128 128 128 / 20%), rgb(128 128 128 / 20%));
+  background-color: var(--mx-text);
+}
+/* Stop keeps the contrast disc (grey on dark, ink on paper) and its square. */
+.send-button.stop {
+  color: var(--mx-grey-100);
+  background-color: var(--mx-bg-contrast);
+}
+.send-button.stop:hover:not(:disabled) {
   background-image: linear-gradient(var(--mx-contrast-hover), var(--mx-contrast-hover));
   background-color: var(--mx-bg-contrast);
 }
@@ -517,6 +538,9 @@
   color: var(--mx-text);
   background: var(--mx-hover);
 }
+/* Workflow and delegation pills (단독 …) take the project pill's ghost
+   grammar: no plate or ring at rest (user: 단독에도 프레임 빼주고), one wash
+   on hover, focus or while the list is open. */
 .composer-route-workflow {
   width: max-content;
   min-width: 0;
@@ -525,8 +549,8 @@
   align-items: center;
   border-radius: var(--mx-radius-md);
   color: var(--mx-text);
-  background: var(--mx-bg-layer-1);
-  box-shadow: 0 0 0 0.5px var(--mx-border);
+  background: transparent;
+  box-shadow: none;
 }
 .composer-route-workflow .workflow-context-select .mx-select-value {
   max-width: 220px;
@@ -534,7 +558,7 @@
 .composer-route-workflow:hover,
 .composer-route-workflow:focus-within,
 .composer-route-workflow:has(.mx-select-trigger[aria-expanded="true"]) {
-  background: linear-gradient(var(--mx-hover), var(--mx-hover)), var(--mx-bg-layer-1);
+  background: var(--mx-hover);
 }
 .composer-route-workflow .mx-select-trigger:hover:not(:disabled),
 .composer-route-workflow .mx-select-trigger[aria-expanded="true"]:not(:disabled) {

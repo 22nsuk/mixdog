@@ -1140,11 +1140,13 @@ html[data-mixdog-mobile-tabs] .sidebar-diff-column {
   align-self: stretch;
   /* Strip: tabs sit flush in a square band — no inset. */
   padding: 0;
-  /* The tab band sits one step darker than the sheet and closes with a
-     hairline, so the ACTIVE (sheet-colored) tab visibly connects to its
-     surface below — the editor-group look. */
+  /* The tab band sits one step darker than the sheet and needs no closing
+     hairline: the ACTIVE (sheet-colored) tab runs straight into its surface
+     below. The 1px bottom edge stays (the strip keeps the sidebar header's
+     36px band) but clear of the band paint, so the sheet shows through it. */
   background: var(--mx-window-band);
-  border-bottom: 1px solid var(--mx-border);
+  background-clip: padding-box;
+  border-bottom: 1px solid transparent;
 }
 /* Workspace scrollbars follow the shell-wide square grammar (desktop.css). */
 

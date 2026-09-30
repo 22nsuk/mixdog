@@ -742,11 +742,12 @@
   /* Match the session form's block flow. Its inline textarea line box plus
      footer is the rendered chat-card height; grid tracks made Studio shorter. */
   display: block;
-  /* Chat-composer parity (user): same radius, type scale, and row metrics. */
-  border-radius: var(--mx-radius-xl);
+  /* Chat-composer parity (user): same radius, surface, lift, type scale, and
+     row metrics. */
+  border-radius: var(--mx-radius-sheet);
   min-height: 84px;
-  background: var(--mx-bg-base);
-  box-shadow: var(--mx-raised);
+  background: var(--mx-composer-surface);
+  box-shadow: var(--mx-raised), var(--mx-composer-lift);
   overflow: hidden;
 }
 .studio-composer textarea {

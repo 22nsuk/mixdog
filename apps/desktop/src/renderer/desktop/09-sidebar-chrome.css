@@ -125,30 +125,23 @@
   overflow: hidden;
 }
 /* Panel title: shares the workspace tab strip's exact 36px band and owns the
-   top 15px tier. Full-bleed ::after keeps the width contract. */
+   top 15px tier. No closing hairline: the band simply gives way to the list. */
 .session-panel-header {
   position: relative;
   flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 6px;
-  height: 36px;
+  /* Roomy title band shared with every rail page title (user: 상하 헤더
+     패딩이 여유가 없게 느껴져). */
+  height: var(--mx-rail-panel-band);
   padding: 0 4px 0 6px;
   color: var(--mx-text);
-  font-size: var(--mx-font-panel-title);
+  font-size: var(--mx-rail-panel-title);
   font-weight: var(--mx-weight-semibold);
   line-height: var(--mx-line-emphasis);
   letter-spacing: 0;
   user-select: none;
-}
-.session-panel-header::after {
-  content: "";
-  position: absolute;
-  bottom: 0;
-  left: -8px;
-  right: -8px;
-  height: 1px;
-  background: var(--mx-border-muted);
 }
 /* ONE vertical rhythm for every rail page (user: 상단·하단 패딩이 안
    맞는다 + 서치박스 위쪽 패딩): content opens 12px under the header

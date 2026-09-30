@@ -23,7 +23,7 @@
   place-items: center;
   overflow: hidden;
   color: var(--mx-text-muted);
-  border-radius: var(--mx-radius-md);
+  border-radius: var(--mx-radius-lg);
   background: var(--mx-bg-layer-1);
   box-shadow: inset 0 0 0 1px var(--mx-border-muted);
 }
@@ -851,7 +851,7 @@
 .shell-output {
   overflow: hidden;
   border: 1px solid var(--mx-border-muted);
-  border-radius: var(--mx-radius-md);
+  border-radius: var(--mx-radius-lg);
   background: transparent;
 }
 .shell-output pre {
@@ -863,7 +863,7 @@
 .notice {
   padding: 8px 12px;
   border: 0;
-  border-radius: var(--mx-radius-md);
+  border-radius: var(--mx-radius-lg);
   color: var(--mx-text-muted);
   background: var(--mx-bg-layer-1);
   box-shadow: 0 0 0 0.5px var(--mx-border);

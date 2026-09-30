@@ -367,15 +367,17 @@
 .workbench-side-section-body > .utility-dock .utility-dock-header {
   position: relative;
   box-sizing: border-box;
-  flex: 0 0 36px;
-  height: 36px;
+  /* Roomy title band (user: 상하 헤더 패딩이 여유가 없게 느껴져), flowing
+     into the list with no hairline (user: 아래쪽과 구분선 제거하자). */
+  flex: 0 0 var(--mx-rail-panel-band);
+  height: var(--mx-rail-panel-band);
   margin: 0;
   gap: 6px;
   /* Title opens on the panel's 12px box line, the same edge the toolbar,
      filter field and row checkboxes below it use (user: 헤더만 들여쓰기
      간격이 아래랑 다르다). */
   padding: 0 4px 0 12px;
-  font-size: var(--mx-font-panel-title);
+  font-size: var(--mx-rail-panel-title);
   font-weight: var(--mx-weight-semibold);
   line-height: var(--mx-line-emphasis);
   letter-spacing: 0;
@@ -386,22 +388,13 @@
   user-select: none;
 }
 .workbench-side-section-body > .utility-dock .utility-dock-header > b {
-  font-size: var(--mx-font-panel-title);
+  font-size: var(--mx-rail-panel-title);
   font-weight: var(--mx-weight-semibold);
   line-height: var(--mx-line-emphasis);
   letter-spacing: 0;
 }
 .workbench-side-section-body > .utility-dock .utility-dock-header:active {
   cursor: grabbing;
-}
-.workbench-side-section-body > .utility-dock .utility-dock-header::after {
-  content: "";
-  position: absolute;
-  bottom: 0;
-  left: -8px;
-  right: -8px;
-  height: 1px;
-  background: var(--mx-border-muted);
 }
 .workbench-side-section-body .utility-dock-body {
   width: 100%;

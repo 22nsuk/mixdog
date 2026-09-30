@@ -590,13 +590,13 @@ html[data-mixdog-mobile-tabs] .conversation {
   /* The user bubble measure caps at 64ch — full-width lines were a
      major readability drag for long prompts. */
   max-width: min(100%, 64ch);
-  padding: 8px 12px;
-  border: 1px solid var(--mx-border-muted);
-  /* Grok-web user pill: a softer, rounder bubble. */
-  border-radius: var(--mx-radius-lg);
-  /* User bubble reads too faint at the 3–4% plate (user feedback):
-     use the deeper pressed tint so the pill is clearly a block. */
-  background: var(--mx-pressed);
+  padding: 9px 16px;
+  /* A borderless plate in the prompt card's family: the same 16px round and,
+     on dark, the same raised tone — the outline only doubled the edge the
+     fill already draws. Still a clear block, not the faint 3–4% plate. */
+  border: 0;
+  border-radius: var(--mx-radius-sheet);
+  background: var(--mx-user-bubble);
 }
 .message.user .message-body p {
   margin: 0;
@@ -604,9 +604,10 @@ html[data-mixdog-mobile-tabs] .conversation {
 .markdown pre {
   padding: 12px;
   border: 0;
-  /* Content containers share one rounded-8 language (Grok-web cleanliness):
-     code blocks, shell output, diffs, and tables all read as quiet cards. */
-  border-radius: var(--mx-radius-md);
+  /* Content containers share one rounded-10 language (Grok-web cleanliness):
+     code blocks, shell output, diffs, and tables all read as quiet cards,
+     one step under the prompt card's 16px. */
+  border-radius: var(--mx-radius-lg);
   color: var(--mx-text);
   /* Code blocks sit on the sheet tone with a hairline border — not a darker
      inset well. The base size here is the CHROME mono; .detail-block keeps it
