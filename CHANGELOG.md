@@ -5,6 +5,8 @@ the Unreleased section is empty, and stamps it with the released version.
 
 ## Unreleased
 
+## v1.0.1 - 2026-09-30
+
 - The desktop app on Windows 11 now sits in a Mica window frame with a calmer,
   monochrome shell: popups and panels separate by shadow instead of borders,
   selections no longer turn blue, and the accent is kept for live state. Text
