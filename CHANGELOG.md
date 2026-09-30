@@ -5,6 +5,8 @@ the Unreleased section is empty, and stamps it with the released version.
 
 ## Unreleased
 
+## v1.0.0 - 2026-09-30
+
 - Memory can no longer be knocked out by a runtime rebuild. A rebuilt memory
   runtime is published under a new release tag instead of replacing files
   that installed apps verify, a new runtime installs beside the one in use
