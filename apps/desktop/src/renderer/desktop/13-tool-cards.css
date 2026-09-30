@@ -192,12 +192,12 @@
   line-height: var(--mx-line-ui);
 }
 /* Level 1 of three (summary → call rows → call detail): the one roll-up line
-   carries full ink and the heavier label weight, so the muted call rows
+   carries full ink and the medium label weight, so the muted call rows
    beneath it never read as more summaries (user: 최상위 / 한 번 / 상세가
    명확하게). */
 .tool-activity[data-surface="desktop"] .tool-activity-title b {
   color: var(--mx-text);
-  font-weight: var(--mx-weight-semibold);
+  font-weight: var(--mx-weight-medium);
 }
 .tool-activity-failed {
   line-height: var(--mx-line-meta);

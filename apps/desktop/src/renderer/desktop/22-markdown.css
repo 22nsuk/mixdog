@@ -1235,35 +1235,24 @@ html[data-mixdog-mobile-tabs] .jump-to-latest::before {
     background-position: calc(-1 * var(--text-shimmer-size)) 0;
   }
 }
-/* Comet — ONE look for the live-activity verb and a running Agents-dock
-   session name (user: 흘러가는 연출이 잘 안보여, 두개다 리뉴얼). Both labels
-   rest at full ink, so the old sweeps had no headroom: a 55% accent tint
-   barely moved off the ink, and a 3-cell ramp to a 1px accent tip passed
-   unseen. The head is now the full accent and the 6 cells behind it decay
-   back to ink (TUI renderShimmerText, GLIMMER_TRAIL = 6), with one soft cell
-   ahead so the edge never slices a glyph. The real glyphs keep their ink and
-   weight; the color rides a transparent copy laid over them, because
-   clipping the text itself to a gradient drops Chromium to grayscale
-   antialiasing and the words read thinner (user: 폰트두꺼운상태에서 색이
-   흐르게). */
+/* Shared glint for the live-activity verb and running Agents-dock title.
+   A narrow, pale peak with symmetric soft edges reads as reflected light,
+   not a long accent-colored wipe. Keep the real glyphs at their original
+   ink and weight: only the transparent overlay clips its color to text. */
 .live-activity [data-component="text-shimmer"],
 .utility-dock .agent-session-heading h2 [data-component="text-shimmer"] {
-  /* Comet length and the empty run after each pass, in terminal cells.
-     TextShimmer reports the phrase in cells (CJK counted as 2), so `ch`
-     tracks the rendered width in either script and the head advances one
-     cell per 120ms (TUI GLIMMER_SPEED_MS). Status verbs never reach the
-     cap; it keeps a long session name on a calm 4s cycle instead of letting
-     one pass drag on. */
-  --text-shimmer-comet: 7;
+  /* Band and rest lengths use terminal cells (CJK counted as 2).
+     Advance at 100ms per cell; cap long titles at a 3.2s cycle. */
+  --text-shimmer-comet: 4;
   --text-shimmer-rest: 3;
   --text-shimmer-duration: min(
-    calc((var(--text-shimmer-cells, 12) + var(--text-shimmer-comet) + var(--text-shimmer-rest)) * 120ms),
-    4000ms
+    calc((var(--text-shimmer-cells, 12) + var(--text-shimmer-comet) + var(--text-shimmer-rest)) * 100ms),
+    3200ms
   );
 }
 /* A heading breathes longer between passes than the status verb. */
 .utility-dock .agent-session-heading h2 [data-component="text-shimmer"] {
-  --text-shimmer-rest: 10;
+  --text-shimmer-rest: 5;
 }
 .live-activity [data-component="text-shimmer"][data-active="true"] [data-slot="text-shimmer-char"],
 .utility-dock
@@ -1290,9 +1279,10 @@ html[data-mixdog-mobile-tabs] .jump-to-latest::before {
   background:
     linear-gradient(
       90deg,
-      transparent 0,
-      color-mix(in oklch, var(--mx-accent) 46%, transparent) 1ch,
-      var(--mx-accent) calc(100% - 1ch),
+      transparent 0%,
+      color-mix(in oklch, var(--mx-accent) 35%, transparent) 25%,
+      color-mix(in oklch, var(--mx-accent) 22%, white) 50%,
+      color-mix(in oklch, var(--mx-accent) 35%, transparent) 75%,
       transparent 100%
     )
     0 0 / calc(var(--text-shimmer-comet) * 1ch) 100% no-repeat;
@@ -1300,8 +1290,8 @@ html[data-mixdog-mobile-tabs] .jump-to-latest::before {
   -webkit-background-clip: text;
   animation: text-shimmer-comet var(--text-shimmer-duration) linear infinite;
 }
-/* One pass per cycle: the comet starts just off the left edge and ends once
-   its tail has cleared the right edge by the rest run. */
+/* One pass per cycle: the glint starts off the left edge and ends once
+   the whole band has cleared the right edge by the rest run. */
 @keyframes text-shimmer-comet {
   from {
     background-position: calc(var(--text-shimmer-comet) * -1ch) 0;
