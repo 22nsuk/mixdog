@@ -11,6 +11,8 @@ import { PaneSurfaceGate } from './PaneSurfaceGate';
 import type { SurfaceApi } from './command-surface-cache';
 import { useCommandSurfaceLifecycle } from './command-surface-lifecycle';
 import { SurfaceBody } from './command-surface-body';
+import { commandSurfaceDisplaySnapshot } from './command-surface-state';
+import { ContextReading } from './ContextBody';
 import { UsageSkeleton } from './command-surface-usage';
 import { UsageModeTabs } from './UsageSurface';
 import { useUsageSurfaceMode } from './usage-surface-mode';
@@ -157,6 +159,9 @@ export function CommandSurface({
             </h1>
             {surface === 'stats' && <UsageModeTabs mode={usageMode} onChange={setUsageMode} />}
             <div className="command-surface-header-actions">
+              {surface === 'context' && (
+                <ContextReading status={data.contextStatus} snapshot={commandSurfaceDisplaySnapshot(data, snapshot)} />
+              )}
               {surface === 'stats' && refreshing && !loading && (
                 <span className="stats-refresh-status" role="status">
                   {t('Refreshing…')}

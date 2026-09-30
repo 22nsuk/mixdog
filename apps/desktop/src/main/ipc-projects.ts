@@ -1,17 +1,15 @@
-// Project list and lifecycle, instructions files, workspace search, and the
+// Project list and lifecycle, workspace search, and the
 // shell hand-offs (open folder, media asset, external link) the renderer asks for.
 import type { Shell } from 'electron';
 import { isAbsolute as pathIsAbsolute } from 'node:path';
 import { DESKTOP_IPC } from '../shared/contract';
 import type { DesktopService } from './desktop-service-contract';
-import { instructionsFilesFor } from './instructions-file';
 import { openLocalFileLink } from './local-file-links';
 import {
   projectDisplayName,
   requiredExternalUrl,
   requiredFileSearchLimit,
   requiredGitPaths,
-  requiredInstructionsContent,
   requiredString,
   requiredWorkspaceSearchOptions,
 } from './ipc-validation';
@@ -82,23 +80,6 @@ export function registerProjectIpc({
   handle(DESKTOP_IPC.removeProject, (_event, projectPath) =>
     host.removeProject(requiredString(projectPath, 'projectPath'))
   );
-  // Instructions editor (Projects page). null/'' → the common instructions
-  // file (data/instructions.md, injected as "# Common Instructions" in BP3;
-  // legacy user-workflow.md is read as a fallback so old installs surface
-  // their existing guidance); a project path → `<project>/.mixdog/
-  // instructions.md` (injected once per session after the `# Session` block).
-  const instructionsFiles = (projectPath: unknown) =>
-    instructionsFilesFor(projectPath, (project) => host.projectDirectory(requiredString(project, 'projectPath')));
-  handle(DESKTOP_IPC.readInstructions, async (_event, projectPath) => {
-    const { file, legacyFile } = await instructionsFiles(projectPath);
-    return invokeDesktopOperation('readInstructions', [file, legacyFile]);
-  });
-  handle(DESKTOP_IPC.writeInstructions, async (_event, projectPath, content, expectedContent) => {
-    const text = requiredInstructionsContent(content);
-    const { file, legacyFile } = await instructionsFiles(projectPath);
-    const expected = expectedContent === undefined ? undefined : requiredInstructionsContent(expectedContent);
-    return invokeDesktopOperation('writeInstructions', [file, text, expected, legacyFile]);
-  });
   handle(DESKTOP_IPC.searchProjectFiles, (_event, projectIdOrWorkspaceId, query, limit, includeIgnored) => {
     if (typeof query !== 'string' || query.length > 1_024) {
       throw new TypeError('query is invalid.');

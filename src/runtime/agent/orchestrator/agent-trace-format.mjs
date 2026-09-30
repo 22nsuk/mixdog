@@ -410,6 +410,11 @@ function classifyToolFailure(resultText, toolName) {
     if (/\[signal:\s*[^\]]+/i.test(leading)) return 'process/signal';
     return 'command-exit';
   }
+  // edit quotes the file around a miss (the nearest line and a current-file
+  // excerpt). That quoted text is file content, so a word in it such as
+  // "unreadable", "timeout" or "permission" must not pick the category.
+  if (toolName === 'edit' && /^edit failed \(old_string (?:not found|found \d+ times)\b/i.test(leading))
+    return 'runtime/failure';
   if (/compacted-history placeholder/.test(text)) return 'expected-preflight';
   if (/\[tool-input-validation\]/.test(text)) return 'schema/args';
   // These are emitted validation/cancellation contracts, not keywords found

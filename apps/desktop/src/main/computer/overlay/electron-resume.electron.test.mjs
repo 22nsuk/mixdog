@@ -10,7 +10,7 @@ import { build } from 'esbuild';
 import electron from 'electron';
 import { computerSourceEsbuildPlugin } from '../../../../scripts/computer-source-assets.mjs';
 
-async function runFixture(name) {
+async function runFixture(name, softwareRendering) {
   const directory = await mkdtemp(join(tmpdir(), 'mixdog-overlay-ipc-'));
   try {
     await Promise.all([
@@ -34,7 +34,11 @@ async function runFixture(name) {
         outfile: join(directory, 'preload/computer-overlay.js'),
       }),
     ]);
-    const env = { ...process.env, OVERLAY_TEST_DIRECTORY: directory };
+    const env = {
+      ...process.env,
+      OVERLAY_TEST_DIRECTORY: directory,
+      OVERLAY_SOFTWARE_RENDERING: softwareRendering ? '1' : '0',
+    };
     delete env.ELECTRON_RUN_AS_NODE;
     const run = await promisify(execFile)(electron, [join(directory, 'main/index.cjs')], {
       // A loaded hosted runner needs seconds for the native click's cold Add-Type alone, so
@@ -62,26 +66,29 @@ async function runFixture(name) {
 }
 
 // The overlay belongs to Computer Use, which ships on Windows only; the Linux CI lanes also have no display server.
-test('the sandboxed Stop control preserves native hit-testing, non-activation, preload IPC and its own face', {
-  timeout: 45000,
-  skip: process.platform !== 'win32',
-}, async () => {
-  const { result, clickMode } = await runFixture('electron-resume');
-  assert.equal(result.stopped, 3);
-  assert.equal(result.paused, 0);
-  assert.equal(result.visible, false);
-  assert.equal(result.font.covered, true);
-  // The native click must have run; a locked desktop session can only weaken its hit test.
-  assert.ok(['desktop-hit-test', 'locked-session'].includes(clickMode), `native click mode ${clickMode}`);
-  console.log('overlay IPC evidence', { ...result, clickMode });
-});
+for (const softwareRendering of [false, true]) {
+  const rendering = softwareRendering ? 'software' : 'GPU';
+  test(`the sandboxed Stop control preserves native hit-testing, non-activation, preload IPC and its own face (${rendering})`, {
+    timeout: 45000,
+    skip: process.platform !== 'win32',
+  }, async () => {
+    const { result, clickMode } = await runFixture('electron-resume', softwareRendering);
+    assert.equal(result.stopped, 3);
+    assert.equal(result.paused, 0);
+    assert.equal(result.visible, false);
+    assert.equal(result.font.covered, true);
+    // The native click must have run; a locked desktop session can only weaken its hit test.
+    assert.ok(['desktop-hit-test', 'locked-session'].includes(clickMode), `native click mode ${clickMode}`);
+    console.log('overlay IPC evidence', { ...result, clickMode });
+  });
 
-test('a frozen real renderer is retired and its replacement stays paused until its native Stop', {
-  timeout: 45000,
-  skip: process.platform !== 'win32',
-}, async () => {
-  const { result, clickMode } = await runFixture('electron-recovery');
-  assert.deepEqual(result, { retired: true, visible: true, inputBlocked: false, stopped: 1 });
-  assert.ok(['desktop-hit-test', 'locked-session'].includes(clickMode), `native click mode ${clickMode}`);
-  console.log('overlay renderer recovery evidence', { ...result, clickMode });
-});
+  test(`a frozen real renderer is retired and its replacement stays paused until its native Stop (${rendering})`, {
+    timeout: 45000,
+    skip: process.platform !== 'win32',
+  }, async () => {
+    const { result, clickMode } = await runFixture('electron-recovery', softwareRendering);
+    assert.deepEqual(result, { retired: true, visible: true, inputBlocked: false, stopped: 1 });
+    assert.ok(['desktop-hit-test', 'locked-session'].includes(clickMode), `native click mode ${clickMode}`);
+    console.log('overlay renderer recovery evidence', { ...result, clickMode });
+  });
+}

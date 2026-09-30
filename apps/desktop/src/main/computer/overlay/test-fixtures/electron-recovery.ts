@@ -6,7 +6,7 @@ import { computerUseCoordinator as coordinator } from '../../session/coordinator
 import { nativeOverlayClick } from './native-click';
 import { emit } from './process-output';
 
-app.disableHardwareAcceleration();
+if (process.env.OVERLAY_SOFTWARE_RENDERING === '1') app.disableHardwareAcceleration();
 app.setPath('userData', join(process.env.OVERLAY_TEST_DIRECTORY!, 'profile'));
 // Retiring the frozen renderer leaves this fixture with zero windows until the replacement
 // exists. Without this listener Electron's default quit-on-last-window-close runs the whole

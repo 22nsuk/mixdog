@@ -91,9 +91,6 @@ const api: DesktopApi = {
   setGitGlobalConfig: (key, value) => ipcRenderer.invoke(DESKTOP_IPC.setGitGlobalConfig, key, value),
   renameProject: (projectPath, alias) => ipcRenderer.invoke(DESKTOP_IPC.renameProject, projectPath, alias),
   removeProject: (projectPath) => ipcRenderer.invoke(DESKTOP_IPC.removeProject, projectPath),
-  readInstructions: (projectPath) => ipcRenderer.invoke(DESKTOP_IPC.readInstructions, projectPath),
-  writeInstructions: (projectPath, content, expectedContent) =>
-    ipcRenderer.invoke(DESKTOP_IPC.writeInstructions, projectPath, content, expectedContent),
   listProjectDir: (projectPath, relDir) => ipcRenderer.invoke(DESKTOP_IPC.listProjectDir, projectPath, relDir),
   // File.path was removed in modern Electron; webUtils resolves native drops.
   folderPathForFile: (file) => {
@@ -470,12 +467,18 @@ const api: DesktopApi = {
   setFast: (enabled, sessionId) => ipcRenderer.invoke(DESKTOP_IPC.setFast, enabled, sessionId),
   readSettings: () => ipcRenderer.invoke(DESKTOP_IPC.readSettings),
   updateSetting: (key, enabled) => ipcRenderer.invoke(DESKTOP_IPC.updateSetting, key, enabled),
+  readActivityRailPins: () => ipcRenderer.invoke(DESKTOP_IPC.readActivityRailPins),
+  updateActivityRailPins: (pins, initializeIfMissing) =>
+    ipcRenderer.invoke(DESKTOP_IPC.updateActivityRailPins, pins, initializeIfMissing),
+  subscribeActivityRailPins: (listener) => subscribeIpc(DESKTOP_IPC.activityRailPinsChanged, listener),
   getZoomFactor: () => ipcRenderer.invoke(DESKTOP_IPC.getZoomFactor),
   setZoomFactor: (factor) => ipcRenderer.invoke(DESKTOP_IPC.setZoomFactor, factor),
   applyTitleBarTheme: (theme, systemPreference) =>
     ipcRenderer.invoke(DESKTOP_IPC.applyTitleBarTheme, theme, systemPreference === true),
   setTitleBarDim: (dim) => ipcRenderer.invoke(DESKTOP_IPC.setTitleBarDim, dim),
   onZoomFactorChanged: (listener) => subscribeIpc(DESKTOP_IPC.zoomFactorChanged, listener),
+  onAppPrompt: (listener) => subscribeIpc(DESKTOP_IPC.appPrompt, listener),
+  answerAppPrompt: (id, state) => ipcRenderer.send(DESKTOP_IPC.appPromptAnswer, id, state),
   onBrowserOpenRequested: (listener) => subscribeIpc(DESKTOP_IPC.browserOpenRequested, listener),
   onBrowserSessionReleased: (listener) => subscribeIpc(DESKTOP_IPC.browserSessionReleased, listener),
   browserSetActiveGuest: (sessionId, webContentsId, active) =>

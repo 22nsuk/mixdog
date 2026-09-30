@@ -95,28 +95,35 @@ export function tabMenuAnchorAt(key: string, event: { clientX: number; clientY: 
 export function tabsWithClosingGhosts(
   tabs: WorkspaceTab[],
   previousTabs: { current: WorkspaceTab[] },
-  closingTabs: { current: Map<string, { tab: WorkspaceTab; index: number }> },
-  enteringKeys: { current: Set<string> }
+  closingTabs: { current: Map<string, { tab: WorkspaceTab; index: number; active: boolean }> },
+  enteringKeys: { current: Set<string> },
+  previousActiveKey: string | null = null
 ) {
   const previous = previousTabs.current;
   if (tabs.length < previous.length) {
     previous.forEach((tab, index) => {
       if (!tabs.some((entry) => entry.key === tab.key)) {
-        closingTabs.current.set(tab.key, { tab, index });
+        // The ghost keeps the look it closed with, so a closing active tab
+        // collapses as the selected plate an opening tab grows as.
+        closingTabs.current.set(tab.key, { tab, index, active: tab.key === previousActiveKey });
       }
     });
   } else if (tabs.length > previous.length) {
     const known = new Set(previous.map((tab) => tab.key));
     for (const tab of tabs) if (!known.has(tab.key)) enteringKeys.current.add(tab.key);
   }
-  const displayTabs = tabs.map((tab) => ({ tab, closing: false }));
+  const displayTabs = tabs.map((tab) => ({ tab, closing: false, active: false }));
   for (const ghost of [...closingTabs.current.values()].sort((left, right) => left.index - right.index)) {
     // A key that came back inside the beat is a live tab again, never a ghost.
     if (tabs.some((tab) => tab.key === ghost.tab.key)) {
       closingTabs.current.delete(ghost.tab.key);
       continue;
     }
-    displayTabs.splice(Math.min(ghost.index, displayTabs.length), 0, { tab: ghost.tab, closing: true });
+    displayTabs.splice(Math.min(ghost.index, displayTabs.length), 0, {
+      tab: ghost.tab,
+      closing: true,
+      active: ghost.active,
+    });
   }
   return displayTabs;
 }

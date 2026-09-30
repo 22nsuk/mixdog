@@ -301,11 +301,15 @@
      token. Dialog cards take the one-notch-larger card radius; everything
      that hangs off a control keeps the compact radius. */
   --mx-popup-bg: var(--mx-bg-base);
-  --mx-popup-border: 0.5px solid var(--mx-border-strong);
+  /* Popups are frameless: plate and drop only, no outline (user: 프레임리스로
+     최대한 팝업은 가는 게 좋아 보이고), one corner step rounder. */
+  --mx-popup-border: 0 solid transparent;
   /* The border owns the edge; elevation must not draw a second bright ring. */
-  --mx-popup-shadow: 0 12px 28px rgb(0 0 0 / 18%), 0 2px 6px rgb(0 0 0 / 12%);
-  --mx-popup-radius: var(--mx-radius-lg);
-  --mx-popup-radius-card: var(--mx-radius-xl);
+  /* Same reach as before (the toast lane's padding holds 0 12px 28px), only
+     a deeper ink. */
+  --mx-popup-shadow: 0 12px 28px rgb(0 0 0 / 28%), 0 2px 6px rgb(0 0 0 / 16%);
+  --mx-popup-radius: var(--mx-radius-xl);
+  --mx-popup-radius-card: var(--mx-radius-sheet);
   --mx-menu-inset: 6px;
   --mx-menu-row-height: 32px;
   /* Body-level stacking scale (fixed or portaled layers): modal scrims sit

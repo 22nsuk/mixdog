@@ -2,7 +2,6 @@ import type React from 'react';
 import { useCallback } from 'react';
 import { desktopFeatureEnabled } from '../desktop-feature-config';
 import { extensionSectionForSettings, type ExtensionsSection } from '../extension-sections';
-import { projectsSectionForSettings, type ProjectsSection } from '../project-sections';
 import type { SettingsSection as SlashSettingsSection } from '../slash-commands';
 import { loadSidebarPanelModule, warmSettingsView } from '../app-shell-components';
 import { useAppUiOpenRequest } from '../app-shell-ui-open-request';
@@ -22,8 +21,6 @@ export interface UseAppSettingsRouterOptions {
   focusedLeafIdRef: React.MutableRefObject<string>;
   setActiveSideViews: React.Dispatch<React.SetStateAction<ReturnType<typeof useAppSideDocks>['activeSideViews']>>;
   applySidebarOpen: (open: boolean, motion?: 'animated' | 'instant') => void;
-  setProjectsSection: (section: ProjectsSection) => void;
-  openProjects: () => void;
   setSettingsSection: ReturnType<typeof useAppShellPanels>['setSettingsSection'];
 
   uiOpenRequest: Snapshot['uiOpenRequest'];
@@ -43,8 +40,6 @@ export function useAppSettingsRouter({
   focusedLeafIdRef,
   setActiveSideViews,
   applySidebarOpen,
-  setProjectsSection,
-  openProjects,
   setSettingsSection,
   uiOpenRequest,
   sessionId,
@@ -70,12 +65,14 @@ export function useAppSettingsRouter({
         applySidebarOpen(true);
         return;
       }
-      const projectsTab = projectsSectionForSettings(section);
-      if (projectsTab) {
+      if (section === 'workflow' || section === 'websearch') {
         if (!desktopFeatureEnabled('projects')) return;
+        setSettingsOpen(false);
         setCommandSurface(null);
-        setProjectsSection(projectsTab);
-        openProjects();
+        mountSidebarPanel('workflows');
+        trackSidebarPanelModule('workflows', loadSidebarPanelModule.workflows());
+        setActiveSideViews((current) => (current.left === 'workflows' ? current : { ...current, left: 'workflows' }));
+        applySidebarOpen(true);
         return;
       }
       if (!desktopFeatureEnabled('settings')) return;
@@ -88,7 +85,6 @@ export function useAppSettingsRouter({
     [
       applySidebarOpen,
       mountSidebarPanel,
-      openProjects,
       paneSideDocks.open,
       trackSidebarPanelModule,
       workbenchSideLayout.sideOf,
@@ -96,7 +92,6 @@ export function useAppSettingsRouter({
       setSettingsOpen,
       setSettingsSection,
       setExtensionsSection,
-      setProjectsSection,
       setActiveSideViews,
       focusedLeafIdRef,
     ]

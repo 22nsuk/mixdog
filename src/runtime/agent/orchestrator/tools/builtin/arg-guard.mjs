@@ -174,6 +174,23 @@ function hasMultipleAbsoluteWindowsPaths(value) {
   return Array.isArray(matches) && matches.length > 1;
 }
 
+// A string that only lists absolute Windows paths ("C:\a C:\b", "C:\a,C:\b",
+// "[C:/a, C:/b]", '["C:/a", "D:/b"]') splits exactly: every piece starts at a
+// drive root, and no drive root can occur inside a Windows path, so spaces
+// within a path stay put. Any other text around the paths returns null.
+function splitListedAbsoluteWindowsPaths(value) {
+  const body = value
+    .trim()
+    .replace(/^\[([\s\S]*)\]$/, '$1')
+    .replace(/^[\s,;]+|[\s,;]+$/g, '');
+  const pieces = body
+    .split(/[\s,;]+(?=["']?[A-Za-z]:[\\/])/)
+    .map((piece) => piece.replace(/^(["'])(.*)\1$/, '$2'));
+  return pieces.every((piece) => /^[A-Za-z]:[\\/]/.test(piece) && !/[A-Za-z]:[\\/]/.test(piece.slice(3)))
+    ? pieces
+    : null;
+}
+
 function isFiniteInt(v) {
   return typeof v === 'number' && Number.isFinite(v) && Math.floor(v) === v;
 }
@@ -418,8 +435,17 @@ function guardGrep(a) {
       return `Error: grep arg "${k}" must be string (got ${describeType(a[k])})`;
     }
   }
-  // Independent explicit scopes share one request; no inferred path splitting.
+  // Independent explicit scopes share one request. A string that only lists
+  // absolute paths is those scopes; any other string holding several drive
+  // roots is refused rather than guessed at.
   for (const k of ['path', 'root']) {
+    if (hasOwn(a, k) && hasMultipleAbsoluteWindowsPaths(a[k])) {
+      const listed = splitListedAbsoluteWindowsPaths(a[k]);
+      if (!listed) {
+        return `Error: grep arg "${k}" contains multiple absolute paths in one string. Use one common parent path plus glob, or separate grep calls.`;
+      }
+      a[k] = listed;
+    }
     if (hasOwn(a, k) && Array.isArray(a[k])) {
       if (a[k].length === 0 || a[k].length > PUBLIC_PATH_BATCH_LIMIT || !a[k].every(isNonEmptyString)) {
         return `Error: grep arg "${k}" must contain 1-${PUBLIC_PATH_BATCH_LIMIT} non-empty path strings`;
@@ -428,9 +454,6 @@ function guardGrep(a) {
     }
     if (hasOwn(a, k) && !isString(a[k])) {
       return `Error: grep arg "${k}" must be string or string[] (got ${describeType(a[k])})`;
-    }
-    if (hasOwn(a, k) && hasMultipleAbsoluteWindowsPaths(a[k])) {
-      return `Error: grep arg "${k}" contains multiple absolute paths in one string. Use one common parent path plus glob, or separate grep calls.`;
     }
   }
   for (const k of ['head_limit', 'offset']) {

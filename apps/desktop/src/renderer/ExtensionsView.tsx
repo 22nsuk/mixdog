@@ -60,6 +60,7 @@ export function ExtensionsPane({
           active={active}
           label={t(CREATE_LABEL[section])}
           icon={Plus}
+          className="extensions-add"
           onClick={() => setCreateOpen((open) => !open)}
         />
         <SidebarSectionToolbar

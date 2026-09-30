@@ -5,7 +5,7 @@ import { computerUseOverlayPresentation } from '../overlay/model.ts';
 import { createSessionLifecycle } from './session-lifecycle.ts';
 import { createExecutionState } from './execution-state.ts';
 
-function fixture(runOverride) {
+function fixture(runOverride, hostOverrides = {}) {
   const coordinator = new ComputerUseCoordinator();
   const execution = createExecutionState();
   const released = [];
@@ -38,6 +38,7 @@ function fixture(runOverride) {
       return runOverride ? runOverride(command) : { text: '{"ok":true}' };
     },
     recaptureRequiredReply: async () => null,
+    ...hostOverrides,
   });
   coordinator.beginCommand({ sessionId: 'a', action: 'click', mode: 'foreground' });
   coordinator.pauseForUser('user_input_active');
@@ -98,15 +99,47 @@ test('cleanup and new takeover generations cannot be cleared by a stale resume c
   coordinator.reset();
 });
 
-test('failed cleanup remains blocked with visible guidance, including after reset', async () => {
+test('a failed cleanup leaves nothing on screen; the next command recovers it or fails with its reason', async () => {
+  let unconfirmed = true;
+  const { coordinator, lifecycle, commands } = fixture(undefined, {
+    hasUnconfirmedBackgroundInput: () => unconfirmed,
+  });
+  // A background sender stopped without a release receipt: the abort latches.
+  await assert.rejects(
+    lifecycle.abortComputerSession({ action: 'session_abort', session_id: 'a' }),
+    /computer_abort_cleanup_unconfirmed/
+  );
+  // The turn ended, so no task is left waiting on the pause.
+  coordinator.endExecution('a');
+  const state = computerUseOverlayPresentation(coordinator.snapshot(), 'ko');
+  assert.equal(coordinator.snapshot().cleanupState, 'failed');
+  assert.equal(state.visible, false);
+  await assert.rejects(lifecycle.resumeAfterTakeover(state.generation), /cleanup_pending/);
+  // Recovery still lacks its evidence: the command reports why, instead of a pill.
+  await assert.rejects(
+    lifecycle.executeSerialized({ action: 'capture', session_id: 'b' }),
+    /computer_background_cleanup_unconfirmed/
+  );
+  assert.equal(commands.includes('capture'), false);
+  // Once recovery succeeds, the same command runs and the host is clear again.
+  unconfirmed = false;
+  await lifecycle.executeSerialized({ action: 'capture', session_id: 'b' });
+  assert.equal(commands.at(-1), 'capture');
+  assert.equal(coordinator.snapshot().cleanupState, 'ready');
+  coordinator.reset();
+});
+
+test("the overlay's Resume recovers a latched cleanup before continuing the paused task", async () => {
   const { coordinator, lifecycle } = fixture();
   const finish = coordinator.beginCleanup('a');
   finish(false);
-  coordinator.reset();
   const state = computerUseOverlayPresentation(coordinator.snapshot(), 'ko');
   assert.equal(state.visible, true);
-  assert.equal(state.attention, true);
-  await assert.rejects(lifecycle.resumeAfterTakeover(state.generation), /cleanup_pending/);
+  assert.equal(state.resumable, true);
+  await lifecycle.resumeByUser(state.generation);
+  assert.equal(coordinator.snapshot().cleanupState, 'ready');
+  assert.equal(coordinator.snapshot().userControlActive, false);
+  coordinator.reset();
 });
 
 test('an interruption during the resume drain invalidates the pending request without releasing newer observations', async () => {

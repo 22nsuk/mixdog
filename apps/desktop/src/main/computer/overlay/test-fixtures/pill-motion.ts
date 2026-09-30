@@ -34,3 +34,44 @@ export async function checkOverlayPulse(contents: WebContents): Promise<void> {
     await emulateMotionPreference(contents, 'no-preference');
   }
 }
+
+/** Press feedback must not shrink the area that accepts the eventual release. */
+export async function checkOverlayControlHitTarget(
+  contents: WebContents,
+  selector: '#stop' | '#resume' = '#stop'
+): Promise<void> {
+  await contents.debugger.sendCommand('DOM.enable');
+  await contents.debugger.sendCommand('CSS.enable');
+  const { root } = await contents.debugger.sendCommand('DOM.getDocument');
+  const { nodeId } = await contents.debugger.sendCommand('DOM.querySelector', {
+    nodeId: root.nodeId,
+    selector,
+  });
+  const inspect = `(() => {
+    const button = document.querySelector(${JSON.stringify(selector)});
+    for (const animation of button.getAnimations({subtree:true})) animation.finish();
+    const rect = button.getBoundingClientRect();
+    return {x:rect.x,y:rect.y,width:rect.width,height:rect.height};
+  })()`;
+  const resting = await contents.executeJavaScript(inspect);
+  try {
+    await contents.debugger.sendCommand('CSS.forcePseudoState', {
+      nodeId,
+      forcedPseudoClasses: ['hover', 'active'],
+    });
+    const pressed = await contents.executeJavaScript(inspect);
+    assert.deepEqual(pressed, resting, `pressing ${selector} must not move or shrink its clickable bounds`);
+    const edgesReachable = await contents.executeJavaScript(`(() => {
+      const button = document.querySelector(${JSON.stringify(selector)});
+      const rect = ${JSON.stringify(resting)};
+      return [
+        [rect.x + rect.width / 2, rect.y + 1],
+        [rect.x + 1, rect.y + rect.height / 2],
+      ].every(([x,y]) => button.contains(document.elementFromPoint(x,y)));
+    })()`);
+    assert.equal(edgesReachable, true, `pressing ${selector} must keep its edges clickable`);
+  } finally {
+    await contents.debugger.sendCommand('CSS.forcePseudoState', { nodeId, forcedPseudoClasses: [] });
+    await contents.executeJavaScript(inspect);
+  }
+}

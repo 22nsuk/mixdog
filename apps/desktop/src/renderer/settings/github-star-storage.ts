@@ -1,3 +1,5 @@
+import type { DesktopApi } from '../../shared/contract';
+
 const STARRED_KEY = 'mixdog.desktop.github-starred.tribgames.mixdog';
 
 export function readGithubStarred(): boolean {
@@ -17,4 +19,14 @@ export function rememberGithubStarred(starred: boolean): boolean {
     }
   }
   return starred;
+}
+
+/** One gh star probe; a confirmed star is remembered so the next surface
+ *  paints "Starred" at once instead of flipping from "Star". */
+export async function probeGithubStarred(
+  host: Partial<Pick<DesktopApi, 'githubStarStatus'>> | undefined
+): Promise<{ available: boolean; starred: boolean } | null> {
+  const status = await host?.githubStarStatus?.();
+  if (!status) return null;
+  return { available: status.available === true, starred: rememberGithubStarred(status.starred === true) };
 }

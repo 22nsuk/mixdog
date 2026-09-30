@@ -464,7 +464,6 @@ const READ_ONLY_SETUP_ACTIONS = new Set([
   'list_models',
   'get_mcp_server',
   'read_definition',
-  'get_instructions',
   'search_local_models',
   'inspect_hf_model',
   'local_model_details',

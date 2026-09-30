@@ -15,7 +15,8 @@ export type SettingsSection =
   | 'skills'
   | 'memory'
   | 'voice'
-  | 'update';
+  | 'update'
+  | 'connection';
 
 // 'stats' has no slash command: it is reached from the usage flyout, which is
 // where the question "how much have I spent" already starts.

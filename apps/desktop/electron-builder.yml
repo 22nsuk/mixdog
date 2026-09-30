@@ -32,6 +32,9 @@ extraResources:
   # Windows taskbar rendering never depends on Explorer's embedded-icon cache.
   - from: build/mixdog.ico
     to: mixdog.ico
+  # Linux tray icon: Electron reads ICO only on Windows.
+  - from: build/mixdog.png
+    to: mixdog.png
   # Electron resolves modules directly from this archive. NSIS therefore
   # installs one runtime file instead of expanding thousands of dependencies.
   - from: .runtime/runtime.asar

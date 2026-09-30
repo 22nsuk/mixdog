@@ -21,6 +21,7 @@ import type {
   DesktopCapabilityResult,
 } from './contract-capabilities';
 import type { DesktopSettingKey, DesktopSettings } from './contract-settings';
+import type { ActivityRailPinsState } from './activity-rail-pins';
 import type {
   DesktopBrowserCredentialFillResult,
   DesktopBrowserCredentialSuggestion,
@@ -91,6 +92,7 @@ export * from './contract-ipc';
 export * from './contract-session';
 export * from './contract-capabilities';
 export * from './contract-settings';
+export * from './activity-rail-pins';
 export * from './contract-browser';
 export * from './contract-git';
 export * from './contract-workspace';
@@ -99,6 +101,20 @@ export type { GithubRequest, GithubResult } from '../../../../src/runtime/github
 
 /** Small, last-writer-wins UI projection shared by Electron and paired web
  * clients. Pane geometry remains local; `selection` is the first visual pane. */
+/** A main-process confirmation (close to background, quit while working)
+ *  drawn in the app's own dialog instead of a native message box. */
+export interface DesktopAppPrompt {
+  id: string;
+  title: string;
+  description: string;
+  confirmLabel: string;
+  danger: boolean;
+  /** A second answer in the cancel button's place; the X still cancels. */
+  alternateLabel?: string;
+}
+/** `shown` acknowledges receipt; the prompt then waits for its answer. */
+export type DesktopAppPromptState = 'shown' | 'confirm' | 'alternate' | 'cancel';
+
 export interface DesktopApi {
   /** Immutable process timeline identity injected before renderer modules run. */
   readonly bootContext?: DesktopBootContext;
@@ -150,17 +166,6 @@ export interface DesktopApi {
   setGitGlobalConfig?(key: DesktopGitGlobalConfigKey, value: string): Promise<DesktopGitGlobalConfig>;
   renameProject(projectPath: string, alias: string): Promise<void>;
   removeProject(projectPath: string): Promise<void>;
-  /** Instructions editor (Projects page). `projectPath: null` targets the
-   *  common instructions file (data/instructions.md → "# Common Instructions");
-   *  a project path targets `<project>/.mixdog/instructions.md`
-   *  ("# Project Instructions", injected at session start). Optional: the
-   *  remote shim omits both and the UI hides the editor. */
-  readInstructions?(projectPath: string | null): Promise<string>;
-  writeInstructions?(
-    projectPath: string | null,
-    content: string,
-    expectedContent?: string
-  ): Promise<{ backupPath: string } | void>;
   /** Dock Files tab: lazy per-directory listing. */
   listProjectDir?(projectPath: string, relDir: string): Promise<DesktopDirEntry[]>;
   /** Editor tab: project file IO (traversal-guarded in main). */
@@ -463,9 +468,16 @@ export interface DesktopApi {
   setFast(enabled: boolean, sessionId?: string): Promise<SessionSnapshot>;
   readSettings(): Promise<DesktopSettings>;
   updateSetting(key: DesktopSettingKey, enabled: boolean): Promise<DesktopSettings>;
+  readActivityRailPins(): Promise<ActivityRailPinsState | null>;
+  /** Only Electron seeds a missing shared value from its existing local pins. */
+  updateActivityRailPins(pins: string[], initializeIfMissing?: boolean): Promise<ActivityRailPinsState>;
+  subscribeActivityRailPins(listener: (state: ActivityRailPinsState) => void): () => void;
   getZoomFactor(): Promise<number>;
   setZoomFactor(factor: number): Promise<number>;
   onZoomFactorChanged(listener: (factor: number) => void): () => void;
+  /** Desktop only: main-process confirmations rendered as app dialogs. */
+  onAppPrompt?(listener: (prompt: DesktopAppPrompt) => void): () => void;
+  answerAppPrompt?(id: string, state: DesktopAppPromptState): void;
   /** Agent browser bridge (desktop host only): retain the owning session's
    *  Browser surface and optionally reveal its dock for a foreground call. */
   onBrowserOpenRequested?(listener: (request: DesktopBrowserOpenRequest) => void): () => void;

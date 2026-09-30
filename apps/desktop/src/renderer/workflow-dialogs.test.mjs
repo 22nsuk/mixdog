@@ -81,6 +81,38 @@ test('workflow editor contains only instructions and metadata, not delegation co
 });
 
 for (const editor of editors) {
+  test(`${editor.name} with no model waits for one before switching on or saving`, async (t) => {
+    const render = harness(t);
+    const toggles = [];
+    const base = editor.props(true);
+    const props = {
+      ...base,
+      ...(base.agent ? { agent: { ...base.agent, route: {} } } : { target: { ...base.target, route: {} } }),
+      models,
+      busy: false,
+      onCancel() {},
+      onSave() {},
+      onToggle(enabled) {
+        toggles.push(enabled);
+      },
+    };
+    await render(React.createElement(editor.component, props));
+    const dialog = document.querySelector('[role="dialog"]');
+    const save = [...dialog.querySelectorAll('button[type="submit"]')].at(-1);
+    // Off with no model: nothing to hold back.
+    assert.equal(save.disabled, false);
+    assert.equal(dialog.querySelector('.workflows-route-required'), null);
+    await act(async () => dialog.querySelector('input[type="checkbox"]').click());
+    // On with an empty model: no "on" write yet, and Save stays blocked.
+    assert.deepEqual(toggles, []);
+    assert.equal(save.disabled, true);
+    assert.match(dialog.querySelector('.workflows-route-required').textContent, /Pick a model/);
+    // Switching back off is written right away.
+    await act(async () => dialog.querySelector('input[type="checkbox"]').click());
+    assert.deepEqual(toggles, [false]);
+    assert.equal(save.disabled, false);
+  });
+
   for (const initiallyDisabled of [false, true]) {
     test(`${editor.name} keeps its model visible across toggles when initially ${initiallyDisabled ? 'off' : 'on'}`, async (t) => {
       const render = harness(t);

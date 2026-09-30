@@ -30,7 +30,7 @@ type SetupActionContext = {
   mutate: <T>(operation: () => Promise<T>) => Promise<T>;
   invoke: (capability: DesktopCapability, values?: unknown[]) => Promise<Values>;
   projects: () => ReturnType<DesktopApi['listProjects']>;
-  requireProject: (path: string | null, common?: boolean) => Promise<void>;
+  requireProject: (path: string | null) => Promise<void>;
   saved: (value: Values, appliesTo?: string) => Values;
 };
 
@@ -57,7 +57,10 @@ async function setDesktopSettingsAction({ args, api, mutate, saved }: SetupActio
   const input = record(args.desktop);
   const applied: string[] = [];
   for (const [key, value] of Object.entries(input)) {
-    if (!['keepAwake', 'usagePinned', 'computerObserveOnly'].includes(key) || typeof value !== 'boolean') {
+    if (
+      !['keepAwake', 'runInBackground', 'usagePinned', 'computerObserveOnly'].includes(key) ||
+      typeof value !== 'boolean'
+    ) {
       throw new Error(`Unsupported Desktop setting: ${key}`);
     }
   }
@@ -138,21 +141,6 @@ async function removeProjectAction(context: SetupActionContext): Promise<Values>
   };
 }
 
-async function instructionsAction(action: string, context: SetupActionContext): Promise<Values> {
-  const { args, api, mutate, projectPath, requireProject, saved } = context;
-  await requireProject(projectPath, true);
-  const scope = projectPath === null ? 'common' : 'project';
-  if (action === 'get_instructions') {
-    return { projectPath, content: await api.readInstructions!(projectPath), scope };
-  }
-  const receipt = await mutate(() =>
-    api.writeInstructions!(projectPath, String(args.content), String(args.expectedContent))
-  );
-  const content = await api.readInstructions!(projectPath);
-  if (content !== args.content) throw new Error('Instructions changed again after saving; read them before retrying');
-  return { ...saved({ projectPath, content, ...record(receipt) }, 'new sessions'), scope };
-}
-
 async function revokeLinkedDeviceAction({ args, api, mutate, saved }: SetupActionContext): Promise<Values> {
   const id = String(args.name || '');
   const before = await api.getRemoteAccessInfo!();
@@ -186,8 +174,7 @@ export async function executeSetupDesktopAction(
       return record(receipt.value);
     },
     projects,
-    requireProject: async (path, common = false) => {
-      if (common && path === null) return;
+    requireProject: async (path) => {
       if (!path || !(await projects()).some((project) => project.path === path)) {
         throw new Error('Use an exact registered Project path from status projects.');
       }
@@ -214,9 +201,6 @@ export async function executeSetupDesktopAction(
       return saveProjectAction(context);
     case 'remove_project':
       return removeProjectAction(context);
-    case 'get_instructions':
-    case 'set_instructions':
-      return instructionsAction(action, context);
     case 'revoke_linked_device':
       return revokeLinkedDeviceAction(context);
     default:

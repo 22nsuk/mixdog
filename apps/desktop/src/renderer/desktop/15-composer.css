@@ -1223,12 +1223,12 @@
   background: var(--mx-bg-layer-1);
   box-shadow: var(--mx-button);
 }
+/* A bare chevron in muted ink, like every other select (polish pass: the
+   boxed up/down grabber read as a native stepper). */
 .mx-select-root[data-trigger-style="settings"] .mx-select-trigger svg {
   width: 16px;
-  height: 20px;
-  padding: 2px;
-  border-radius: var(--mx-radius-sm);
-  background: var(--mx-bg-layer-2);
+  height: 16px;
+  color: var(--mx-icon-muted);
 }
 .mx-select-trigger:hover:not(:disabled),
 .mx-select-trigger[aria-expanded="true"] {

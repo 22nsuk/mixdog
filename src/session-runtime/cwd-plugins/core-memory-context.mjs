@@ -24,7 +24,7 @@ export function createCoreMemoryContext({ getCurrentCwd, getConfig, bootProfile,
   async function loadCoreMemoryContext() {
     // User-curated core memory injects into new sessions by default. The
     // Memory toggle (settings → General) OFF skips ONLY this accumulated
-    // core-memory block — profile and Project Instructions inject regardless.
+    // core-memory block — the profile injects regardless.
     if (!(featureEnvOverride('MIXDOG_FEATURE_MEMORY') ?? memoryToolsEnabled(getConfig(), true))) {
       bootProfile('core-memory:disabled');
       return '';

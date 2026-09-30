@@ -181,6 +181,7 @@ test('new ids stay unique after completed rows are omitted and partial additions
     tasks: [{ text: 'Another follow-up', status: 'pending' }],
   });
   assert.equal(added.assigned_tasks[0].id, 'task_4');
+  assert.equal(added.goal.taskSlotsUsed, 3);
   assert.deepEqual(
     f.snapshot().tasks.map((task) => task.id),
     ['task_2', 'task_3', 'task_4']

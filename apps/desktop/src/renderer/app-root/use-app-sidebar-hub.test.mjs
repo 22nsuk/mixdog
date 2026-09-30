@@ -37,8 +37,6 @@ test('useAppSidebarHub wires sidebar surface, side views descriptors, and reorde
       selectedProjectPath: '',
       extensionsSection: 'plugins',
       setExtensionsSection: () => {},
-      projectsSection: 'projects',
-      setProjectsSection: () => {},
       closeSidebarForNavigation: () => {},
       startTask: () => {},
       openStudioTab: () => {},

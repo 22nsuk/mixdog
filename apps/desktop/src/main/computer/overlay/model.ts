@@ -8,6 +8,8 @@ export interface ComputerUseOverlayPresentation {
   title: string;
   accent: string;
   paused: boolean;
+  /** Paused by the user or the environment: the pill offers Resume next to Stop. */
+  resumable: boolean;
   generation: number;
   attention: boolean;
 }
@@ -69,38 +71,36 @@ export function computerUseOverlayPresentation(
       snapshot.attentionRequired?.sessionId || '',
     ]),
   ].filter(Boolean);
-  const paused = snapshot.userControlActive;
-  const failed = snapshot.cleanupState === 'failed' || control.error === 'cleanup';
-  const confirmation =
-    failed ||
-    Boolean(snapshot.attentionRequired) ||
-    Boolean(control.error) ||
-    ['input_observation_unavailable', 'input_recovery_unconfirmed', 'input_cleanup_unconfirmed'].includes(
-      snapshot.takeoverReason || ''
-    );
+  // Three states only: working, paused (Resume or Stop), or gone. Stop closes
+  // the pill with the press — the task ends and reports the failure itself —
+  // and nothing outlives the work: a cleanup Stop could not confirm is retried
+  // by the next command instead of holding an undismissable pill on screen.
+  const stopping = snapshot.userControlActive && snapshot.takeoverReason === 'user_stop';
+  const paused = snapshot.userControlActive && !stopping;
+  const attention = Boolean(snapshot.attentionRequired) || Boolean(control.error);
   // A command runs for a few hundred milliseconds, so a held target (the grace
   // period after the last command) keeps the controls reachable between
   // commands. Thinking without a hold is not using the computer: a turn that
-  // moved on to other work must not leave the pill up until it ends.
+  // moved on to other work must not leave the pill up until it ends. A pause
+  // lasts while any task it paused is still waiting on it; one whose tasks
+  // all ended is not the user's to resolve.
   const working = snapshot.activities.some((entry) => entry.phase !== 'thinking');
   const holding = (snapshot.targetLeases ?? []).length > 0;
+  const waiting = paused && (snapshot.pausedSessionIds ?? []).length > 0;
   let title = ko ? '컴퓨터 사용 중' : 'Computer in use';
-  if (confirmation) title = ko ? '확인 필요' : 'Check';
-  else if (paused && snapshot.takeoverReason === 'user_stop') title = ko ? '중단 중' : 'Stopping';
+  if (attention) title = ko ? '확인 필요' : 'Check';
   else if (paused) title = ko ? '일시정지' : 'Paused';
   return {
-    // A pending cleanup with no session, pause, or failure behind it is a
-    // no-op release (idle worker reap, deferred session release) and stays
-    // hidden; a failed cleanup always surfaces.
-    visible: working || holding || Boolean(snapshot.attentionRequired) || paused || failed,
+    visible: !stopping && (working || holding || waiting || Boolean(snapshot.attentionRequired)),
     sessionIds,
     title,
     // Per-session colours only carry meaning while several agents work at once;
     // a lone session keeps the standard accent instead of a hash-picked one.
     accent: activity && snapshot.activities.length > 1 ? sessionColor(activity.sessionId) : SESSION_COLORS[0],
     paused,
+    resumable: paused,
     generation: snapshot.takeoverGeneration ?? 0,
-    attention: confirmation,
+    attention,
   };
 }
 

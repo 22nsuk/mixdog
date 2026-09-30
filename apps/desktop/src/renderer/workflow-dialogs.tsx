@@ -195,6 +195,9 @@ export function AgentEditorDialog({
   const [route, setRoute] = useState<RecordValue>(() => record(agent?.route));
   const [enabled, setEnabled] = useState(() => record(agent).disabled !== true);
   const [formError, setFormError] = useState('');
+  // An agent is either off or pinned to a model: switching it on waits for
+  // one, and an on agent with an empty model cannot be saved.
+  const needsModel = enabled && !(route.provider && route.model);
   return (
     <SidebarDialogLayer onClose={onCancel}>
       <section
@@ -212,7 +215,7 @@ export function AgentEditorDialog({
               disabled={busy}
               onChange={(next) => {
                 setEnabled(next);
-                if (editing) onToggle?.(next, route);
+                if (editing && !(next && !(route.provider && route.model))) onToggle?.(next, route);
               }}
             />
             <button type="button" aria-label={t('Close agent editor')} onClick={onCancel}>
@@ -278,6 +281,9 @@ export function AgentEditorDialog({
                 onChange={(selection) => setRoute(selection as unknown as RecordValue)}
               />
             </div>
+            {needsModel && (
+              <small className="workflows-route-required">{t('Pick a model to turn this agent on.')}</small>
+            )}
           </div>
           <label className="schedules-field workflows-md-field">
             <span data-i18n-skip>AGENT.md</span>
@@ -296,6 +302,7 @@ export function AgentEditorDialog({
             busy={busy}
             onCancel={onCancel}
             onDelete={deletable ? onDelete : undefined}
+            saveDisabled={needsModel}
           />
         </form>
       </section>
@@ -323,6 +330,10 @@ export function RouteEditorDialog({
   const [route, setRoute] = useState<RecordValue>(() => target.route);
   const [enabled, setEnabled] = useState(() => target.disabled !== true);
   const usageEditable = target.modelKind === 'agent';
+  const routeSet = Boolean(route.provider && route.model);
+  // Same rule as the agent editor: on means a model, so an empty one blocks
+  // both the switch-on write and Save.
+  const needsModel = usageEditable && enabled && !routeSet;
   return (
     <SidebarDialogLayer onClose={onCancel}>
       <section
@@ -341,7 +352,7 @@ export function RouteEditorDialog({
                 disabled={busy}
                 onChange={(next) => {
                   setEnabled(next);
-                  onToggle?.(next, route);
+                  if (!next || routeSet) onToggle?.(next, route);
                 }}
               />
             )}
@@ -377,8 +388,11 @@ export function RouteEditorDialog({
                 onChange={(selection) => setRoute(selection as unknown as RecordValue)}
               />
             </div>
+            {needsModel && (
+              <small className="workflows-route-required">{t('Pick a model to turn this agent on.')}</small>
+            )}
           </div>
-          <EditorDialogFooter error={error} busy={busy} onCancel={onCancel} />
+          <EditorDialogFooter error={error} busy={busy} onCancel={onCancel} saveDisabled={needsModel} />
         </form>
       </section>
     </SidebarDialogLayer>

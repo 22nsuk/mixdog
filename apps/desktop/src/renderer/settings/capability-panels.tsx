@@ -300,12 +300,15 @@ function ContextPanel({ data, pending, run }: PanelContext) {
 function DesktopPowerGroup() {
   const api = (window as unknown as { mixdogDesktop?: Partial<DesktopApi> }).mixdogDesktop;
   const [keepAwake, setKeepAwake] = useState<boolean | null>(null);
+  const [runInBackground, setRunInBackground] = useState(true);
   useEffect(() => {
     let live = true;
     void api
       ?.readSettings?.()
       .then((settings) => {
-        if (live) setKeepAwake(settings.keepAwake !== false);
+        if (!live) return;
+        setKeepAwake(settings.keepAwake !== false);
+        setRunInBackground(settings.runInBackground !== false);
       })
       .catch(() => {});
     return () => {
@@ -324,6 +327,14 @@ function DesktopPowerGroup() {
         onChange={(enabled) => {
           setKeepAwake(enabled);
           void api.updateSetting?.('keepAwake', enabled).catch(() => {});
+        }}
+      />
+      <ToggleRow
+        title="Keep running when the window is closed"
+        checked={runInBackground}
+        onChange={(enabled) => {
+          setRunInBackground(enabled);
+          void api.updateSetting?.('runInBackground', enabled).catch(() => {});
         }}
       />
     </Group>

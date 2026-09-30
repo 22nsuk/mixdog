@@ -1,11 +1,12 @@
 /**
  * The subscription meter as a line over the selected period: what it read,
- * the stretches nobody measured, the forecast to run-out and an even-pace
- * diagonal, the time still to come shaded, with one hover card per time slot.
+ * each model's share stacked as a coloured area under it, the stretches
+ * nobody measured, the forecast to run-out and an even-pace diagonal, the
+ * time still to come shaded, with one hover card per time slot.
  * The plot is a stretched viewBox with non-scaling strokes; every label is
  * HTML laid over it, so text never stretches with the plot.
  */
-import { useId, useState, type CSSProperties } from 'react';
+import { useId, type CSSProperties } from 'react';
 import { t, uiFormatLocale } from './i18n';
 import { modelDisplayName } from './provider-display';
 import { quotaClock, quotaPercent } from './quota-usage-model';
@@ -89,7 +90,13 @@ function lineValue(list: Array<[number, number]>, time: number): number {
   if (next <= 0) return list[next < 0 ? list.length - 1 : 0][1];
   const [fromTime, fromValue] = list[next - 1];
   const [toTime, toValue] = list[next];
+  if (toTime === fromTime) return toValue;
   return fromValue + ((toValue - fromValue) * (time - fromTime)) / (toTime - fromTime);
+}
+
+/** A model's share at `time`: nothing before its first reading, then its line. */
+function shareAt(list: Array<[number, number]>, time: number): number {
+  return !list.length || time < list[0][0] ? 0 : lineValue(list, time);
 }
 
 /** The instants in [from, to) on a step's boundaries — whole hours, local
@@ -141,8 +148,7 @@ export function QuotaTrend({
   seriesInk: (model: string) => string;
   loading: boolean;
 }) {
-  const [split, setSplit] = useState(false);
-  const detail = useTrendDetail([data, split]);
+  const detail = useTrendDetail([data]);
   const areaFill = useId();
   const domain = record(data.domain);
   const from = statsNumber(domain.fromMs);
@@ -198,32 +204,55 @@ export function QuotaTrend({
     : rows(data.peaks).filter(
         (row) => statsNumber(row.peak) > 0 && statsNumber(row.peakAt) >= from && statsNumber(row.peakAt) <= to
       );
-  // Each model's line runs up to now; the rest of the slot running now is
-  // still to come, so it is only sketched.
-  const runningEnd = statsNumber(
-    slots.find((slot) => statsNumber(slot.fromMs) < now && now < statsNumber(slot.toMs))?.toMs
-  );
-  const splitLines = rows(data.modelSeries).map((entry) => {
+  // Each model's share is stacked on the ones before it, so the layers fill
+  // the area under the meter by model and their top edge is the meter itself
+  // (user: 모델별로 영역 색칠하는 스타일로, 모델별 합계 따로 가지 말고).
+  // Every model's line runs up to now, and so do the layers.
+  const models = rows(data.modelSeries).map((entry) => {
     const key = String(entry.key ?? '');
-    const list = pointList(entry.points).map(([time, value]): [number, number] => [time, value]);
-    const last = list.at(-1);
     return {
       key,
       ink: key ? seriesInk(key) : 'outside',
       label: key ? modelDisplayName(key, provider) : t('Outside Mixdog'),
-      path: line(list),
-      ahead: runningEnd && last ? line([last, [runningEnd, last[1]]]) : '',
+      list: pointList(entry.points).map(([time, value]): [number, number] => [time, value]),
     };
   });
-  // Only the lines that need a word are named: the meter, the limit and now
-  // read for themselves.
-  const legend: LegendItem[] = split
-    ? splitLines.map((entry) => ({ key: `series:${entry.key}`, label: entry.label, series: entry.ink }))
-    : [
-        ...(forecastPath ? [{ key: 'forecast', label: t('Forecast'), legend: 'forecast' }] : []),
-        ...(pacePath ? [{ key: 'pace', label: t('Even pace'), legend: 'pace' }] : []),
-        ...(paths.unmeasured ? [{ key: 'unmeasured', label: t('Not measured'), legend: 'unmeasured' }] : []),
-      ];
+  // The models are read sparsely and the meter densely, so each instant's
+  // shares are scaled to the meter there: the stack's top IS the meter line,
+  // step for step, instead of a straight run between model readings cutting
+  // across its steps (user: 좀 안 이쁜데).
+  const meter = points.map(([time, value]): [number, number] => [time, value]);
+  const modelEnd = Math.max(0, ...models.map((entry) => entry.list.at(-1)?.[0] ?? 0));
+  const stackTimes = [
+    ...new Set([...models.flatMap((entry) => entry.list.map(([time]) => time)), ...meter.map(([time]) => time)]),
+  ]
+    .filter((time) => time <= modelEnd)
+    .sort((a, b) => a - b);
+  const scale = stackTimes.map((time) => {
+    const total = models.reduce((sum, entry) => sum + shareAt(entry.list, time), 0);
+    return total > 0 && meter.length ? shareAt(meter, time) / total : 1;
+  });
+  let below = stackTimes.map(() => 0);
+  const stacks = models.map((entry) => {
+    const top = stackTimes.map((time, index) => below[index] + shareAt(entry.list, time) * scale[index]);
+    const upper = stackTimes.map((time, index): [number, number] => [time, top[index]]);
+    const floor = stackTimes
+      .map((time, index) => `L${coordinate(x(time))},${coordinate(y(below[index]))}`)
+      .reverse()
+      .join('');
+    below = top;
+    const edge = stackTimes.length ? line(upper) : '';
+    return { ...entry, edge, area: edge ? `${edge}${floor}Z` : '' };
+  });
+  const stacked = stacks.some((entry) => entry.area);
+  // The models are named, and the lines that need a word: the meter, the
+  // limit and now read for themselves.
+  const legend: LegendItem[] = [
+    ...(stacked ? stacks.map((entry) => ({ key: `series:${entry.key}`, label: entry.label, series: entry.ink })) : []),
+    ...(forecastPath ? [{ key: 'forecast', label: t('Forecast'), legend: 'forecast' }] : []),
+    ...(pacePath ? [{ key: 'pace', label: t('Even pace'), legend: 'pace' }] : []),
+    ...(paths.unmeasured ? [{ key: 'unmeasured', label: t('Not measured'), legend: 'unmeasured' }] : []),
+  ];
   const axis = axisTicks(from, to);
   const axisFormat = new Intl.DateTimeFormat(
     uiFormatLocale(),
@@ -263,23 +292,6 @@ export function QuotaTrend({
       <header>
         {/* The chart names itself; the heading stays for assistive technology. */}
         <h4 className="sr-only">{t('Trend')}</h4>
-        <div className="stats-ranges stats-grains" role="group" aria-label={t('Metric')}>
-          {[false, true].map((option) => (
-            <button
-              key={String(option)}
-              type="button"
-              className={`stats-range ${option === split ? 'is-active' : ''}`}
-              aria-pressed={option === split}
-              disabled={loading}
-              onClick={() => {
-                detail.popover.close();
-                setSplit(option);
-              }}
-            >
-              {option ? t('By model') : t('Total')}
-            </button>
-          ))}
-        </div>
         {windowView && rate > 0 && <span>{t('Rate {{rate}} per hour', { rate: quotaPercent(rate) })}</span>}
       </header>
       {loading ? (
@@ -315,35 +327,22 @@ export function QuotaTrend({
               ))}
               <line className="quota-chart-limit" x1="0" x2={WIDTH} y1={coordinate(y(100))} y2={coordinate(y(100))} />
               {pacePath && <path className="quota-chart-pace" d={pacePath} />}
-              {!split && paths.area && (
+              {!stacked && paths.area && (
                 <path className="quota-chart-area" d={paths.area} style={{ fill: `url(#${areaFill})` }} />
               )}
-              {!split && paths.unmeasured && <path className="quota-chart-unmeasured" d={paths.unmeasured} />}
-              {!split && paths.measured && <path className="quota-chart-line" d={paths.measured} />}
-              {!split && forecastPath && <path className="quota-chart-forecast" d={forecastPath} />}
-              {split &&
-                splitLines.map(
-                  (entry) =>
-                    entry.path && (
-                      <path key={entry.key} className="quota-chart-series" data-series={entry.ink} d={entry.path} />
-                    )
-                )}
-              {split &&
-                splitLines.map(
-                  (entry) =>
-                    entry.ahead && (
-                      <path
-                        key={`ahead:${entry.key}`}
-                        className="quota-chart-series-ahead"
-                        data-series={entry.ink}
-                        d={entry.ahead}
-                      />
-                    )
-                )}
+              {stacks.map(
+                (entry) =>
+                  entry.area && (
+                    <path key={entry.key} className="quota-chart-stack" data-series={entry.ink} d={entry.area} />
+                  )
+              )}
+              {paths.unmeasured && <path className="quota-chart-unmeasured" d={paths.unmeasured} />}
+              {paths.measured && <path className="quota-chart-line" d={paths.measured} />}
+              {forecastPath && <path className="quota-chart-forecast" d={forecastPath} />}
               {nowX !== null && (
                 <line className="quota-chart-now" x1={coordinate(nowX)} x2={coordinate(nowX)} y1="0" y2={HEIGHT} />
               )}
-              {!split && marker && (
+              {marker && (
                 <line
                   className="quota-chart-dot"
                   x1={coordinate(x(marker.time))}
@@ -358,13 +357,12 @@ export function QuotaTrend({
                 {`${value}%`}
               </span>
             ))}
-            {!split && marker && (
+            {marker && (
               <span className="quota-chart-marker" style={{ left: left(marker.time), top: `${y(100)}%` }}>
                 {marker.label}
               </span>
             )}
-            {!split &&
-              peaks.length <= PEAK_LABEL_LIMIT &&
+            {peaks.length <= PEAK_LABEL_LIMIT &&
               peaks.map((row) => (
                 <span
                   key={String(row.key)}

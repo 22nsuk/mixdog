@@ -19,12 +19,16 @@ export function portaledMenuOpen(dialog: HTMLElement | null): boolean {
   });
 }
 
-/** Makes every body child that `isBackground` accepts inert (the toast region stays live); returns the restore. */
+/** Makes every body child that `isBackground` accepts inert (the toast region
+ *  and layers marked `data-modal-above`, like the guided tour that points
+ *  INTO a dialog, stay live); returns the restore. */
 export function inertBackground(isBackground: (element: HTMLElement) => boolean): () => void {
   const background = Array.from(document.body.children)
     .filter(
       (element): element is HTMLElement =>
-        element instanceof HTMLElement && !element.matches('.mx-toast-region') && isBackground(element)
+        element instanceof HTMLElement &&
+        !element.matches('.mx-toast-region, [data-modal-above]') &&
+        isBackground(element)
     )
     .map((element) => ({
       element,

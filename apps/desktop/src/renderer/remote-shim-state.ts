@@ -10,6 +10,7 @@ import type {
   SessionSnapshot,
 } from '../shared/contract';
 import type { RelayE2EEChannel, RelayE2EEPairingMaterial } from '../shared/remote-e2ee';
+import type { ActivityRailPinsState } from '../shared/activity-rail-pins';
 import { createKeyedListDeltaDecoder } from '../shared/list-delta';
 import { createRemoteCatalog } from '../shared/remote-catalog';
 import { createRemoteRosterCache, createIndexedDbRosterStorage } from '../shared/remote-roster-cache';
@@ -132,6 +133,7 @@ export interface RemoteShimCollaborators {
   sessionInbox: ReturnType<typeof createRemoteSessionInbox>;
   termListeners: Set<(event: { id: string; data: string }) => void>;
   folderChangeListeners: Set<(dir: string) => void>;
+  activityRailPinsListeners: Set<(state: ActivityRailPinsState) => void>;
   lspDiagnosticsListeners: Set<(event: DesktopLspDiagnosticEvent) => void>;
   lspStatusListeners: Set<(event: DesktopLspStatusEvent) => void>;
   // Push lanes this browser actually reads. Terminal output, diagnostics and
@@ -338,6 +340,7 @@ export const createRemoteShimContext = (): RemoteShimContext => {
     sessionInbox: createRemoteSessionInbox({ onGap: () => ctx.requestResync() }),
     termListeners: new Set(),
     folderChangeListeners: new Set(),
+    activityRailPinsListeners: new Set(),
     lspDiagnosticsListeners: new Set(),
     lspStatusListeners: new Set(),
     activeLanes: new Set(),

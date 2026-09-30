@@ -215,7 +215,7 @@ test('between commands the controls stay only while the session holds its window
   }
 });
 
-test('a cleanup with no session, pause, or failure behind it stays hidden', () => {
+test('a cleanup with no session or pause behind it stays hidden, even when it fails', () => {
   const coordinator = new ComputerUseCoordinator();
   try {
     const finish = coordinator.beginCleanup('session-idle-release');
@@ -225,11 +225,13 @@ test('a cleanup with no session, pause, or failure behind it stays hidden', () =
     finish(true);
     assert.equal(computerUseOverlayPresentation(coordinator.snapshot(), 'ko-KR').visible, false);
 
+    // No work is left to control: the next command retries the recovery and
+    // reports its failure, so nothing undismissable stays on screen.
     const failing = coordinator.beginCleanup('session-idle-failure');
     failing(false);
     const failed = computerUseOverlayPresentation(coordinator.snapshot(), 'ko-KR');
-    assert.equal(failed.visible, true);
-    assert.equal(failed.attention, true);
+    assert.equal(coordinator.snapshot().cleanupState, 'failed');
+    assert.equal(failed.visible, false);
   } finally {
     coordinator.reset();
   }

@@ -25,6 +25,11 @@ import { isSessionId } from './desktop-state';
 import { SessionTransport } from './session-transport';
 import { readDesktopModelBootstrapSnapshot } from './model-bootstrap';
 import { AgentAwakeService } from './agent-awake';
+import { createAppPrompt } from './app-prompt';
+import { createBackgroundWindow } from './background-window';
+import { createDesktopTray, type DesktopTray } from './desktop-tray';
+import { createQuitConfirmation } from './quit-confirmation';
+import { loginShellOverrides, readLoginShellEnvironment } from './login-shell-environment';
 import { createTurnAttention, type TurnAttention } from './turn-attention';
 import { createIdleReclaim, purgeRendererMemory, type IdleReclaim } from './idle-reclaim';
 import { watchCrashHandler } from './crash-handler-watch';
@@ -338,8 +343,31 @@ function desktopServiceModuleUrl(): string {
 
 let diagnostics: DesktopDiagnostics | null = null;
 const earlyDiagnostics: Array<{ event: string; entry: Record<string, unknown>; at: string }> = [];
+function writeBootDiagnostic(event: string, entry: Record<string, unknown>): void {
+  if (diagnostics) diagnostics.write(event, entry);
+  else earlyDiagnostics.push({ event, entry, at: new Date().toISOString() });
+}
+// Resolved at once for the instance that quits on the single-instance lock.
+let loginShellEnvironmentReady: Promise<void> = Promise.resolve();
+/** Adopt the user's login-shell environment (macOS/Linux GUI launches lack
+ *  it) before the daemon, which inherits process.env at spawn, exists. */
+function adoptLoginShellEnvironment(): Promise<void> {
+  const startedAt = Date.now();
+  return readLoginShellEnvironment().then(({ environment, failures }) => {
+    const overrides = environment ? loginShellOverrides(process.env, environment) : {};
+    Object.assign(process.env, overrides);
+    if (process.platform === 'win32') return;
+    writeBootDiagnostic('login-shell-environment', {
+      durationMs: Date.now() - startedAt,
+      adopted: Boolean(environment),
+      changedCount: Object.keys(overrides).length,
+      failures,
+    });
+  });
+}
 const serviceClient = new DesktopServiceClient({
-  connect: () => new SessionTransport(desktopServiceModuleUrl(), process.cwd()),
+  connect: () =>
+    new SessionTransport(desktopServiceModuleUrl(), process.cwd(), null, loginShellEnvironmentReady),
   sessionOptions: () => ({
     userDataPath: app.getPath('userData'),
     packaged: app.isPackaged,
@@ -365,8 +393,7 @@ const serviceClient = new DesktopServiceClient({
     // The daemon handshake starts before app.whenReady opens the sink: its
     // first phases (client import, discovery probe, spawn) are exactly the
     // ones a boot investigation needs, so they wait here and flush in order.
-    if (diagnostics) diagnostics.write(event, entry);
-    else earlyDiagnostics.push({ event, entry, at: new Date().toISOString() });
+    writeBootDiagnostic(event, entry);
     console.error(`[mixdog] ${event}`, data);
   },
   onServiceReady: ({ generation }) => {
@@ -490,6 +517,8 @@ let unsubscribeAwake: (() => void) | null = null;
 let unsubscribeServiceSettings: (() => void) | null = null;
 const applyDesktopSettings = (settings: DesktopSettings): void => {
   awakeService.setEnabled(settings.keepAwake !== false);
+  runInBackground = settings.runInBackground !== false;
+  syncDesktopTray();
   applyComputerControlSetting(settings.computerControl === true);
   applyComputerObserveOnlySetting(settings.computerObserveOnly === true);
   browserControlEnabled = settings.browserControl === true;
@@ -558,6 +587,62 @@ unsubscribeServiceSettings = serviceClient.subscribeDesktopEvents(({ name, value
   }
 });
 let quitAfterDispose = false;
+// Last-known runInBackground setting; the window's close listener reads it live.
+let runInBackground = true;
+// A quit that was confirmed or needs no question (relaunch, failed start, OS
+// session end): windows close for real and before-quit stops asking.
+let quitApproved = false;
+let desktopTray: DesktopTray | null = null;
+// Close and quit questions render as app dialogs while the window is up; a
+// hidden window (tray quit) keeps the native box.
+const appPrompt = createAppPrompt({
+  getWindow: () => mainWindow,
+  ipcMain,
+  fallback: (options) => dialog.showMessageBox(options),
+});
+const quitConfirmation = createQuitConfirmation({
+  inspect: async () => (await host.listSessions()).some((session) => session.working === true),
+  show: (options) => appPrompt.show(options),
+  nativeT,
+});
+const backgroundWindow = createBackgroundWindow({
+  enabled: () => runInBackground,
+  quitting: () => quitApproved || quitAfterDispose,
+  noticeMarkerPath: join(app.getPath('userData'), 'background-notice-acknowledged'),
+  quitInstead: () => {
+    void settingsStore
+      .update('runInBackground', false)
+      .then(applyDesktopSettings)
+      .catch((error: unknown) => console.warn('Mixdog could not turn off running in the background:', error))
+      .finally(() => app.quit());
+  },
+  showNotice: (options) => appPrompt.show(options),
+  nativeT,
+});
+
+function trayIconPath(): string | null {
+  const name = process.platform === 'win32' ? 'mixdog.ico' : 'mixdog.png';
+  return (
+    [...(app.isPackaged ? [join(process.resourcesPath, name)] : []), join(app.getAppPath(), 'build', name)].find(
+      (candidate) => existsSync(candidate)
+    ) ?? null
+  );
+}
+
+/** Windows and Linux carry a tray icon while closing hides the window; macOS
+ *  has its Dock icon. */
+function syncDesktopTray(): void {
+  if (!runInBackground || quitApproved || process.platform === 'darwin' || !app.isReady()) {
+    desktopTray?.dispose();
+    desktopTray = null;
+    return;
+  }
+  if (desktopTray) return;
+  const iconPath = trayIconPath();
+  if (!iconPath) return;
+  desktopTray = createDesktopTray({ iconPath, open: activatePrimaryWindow, quit: () => app.quit() });
+}
+
 let disposalPromise: Promise<void> | null = null;
 const DESKTOP_DISPOSE_TIMEOUT_MS = 4_000;
 let windowState: ReturnType<typeof persistWindowState> | null = null;
@@ -839,6 +924,7 @@ function handleGpuChildCrash(reason: string, exitCode: number): void {
         return;
       }
       diagnostics?.write('gpu-fallback-restart');
+      quitApproved = true;
       app.relaunch();
       app.quit();
     })
@@ -1200,6 +1286,9 @@ async function createWindow(): Promise<void> {
       {
         // Control-renderer recovery pauses input without cancelling the task.
         pause: async () => overlayComputerHost.takeOver('user_pause'),
+        // The user's Resume, for the pause they saw; an ordinary input pause
+        // also resumes by itself after the configured quiet interval.
+        resume: (generation) => overlayComputerHost.resumeByUser(generation),
         configureIdleResume: (seconds) => overlayComputerHost.configureIdleResume(seconds),
         // Stop native input immediately, independently of the daemon's turn
         // cancellation reply. Only both confirmations may clear the pause.
@@ -1266,6 +1355,11 @@ async function createWindow(): Promise<void> {
     idleReclaim?.onFocus();
   });
   window.on('blur', () => idleReclaim?.onBlur());
+  window.on('close', (event) => backgroundWindow.onClose(event, () => window.hide()));
+  // Windows logoff/shutdown: the OS ends the session, nobody is asked.
+  window.on('session-end', () => {
+    quitApproved = true;
+  });
   // Apply the persisted zoom BEFORE the first paint. It used to be applied by
   // the renderer's lazy getZoomFactor call a beat after the window appeared,
   // which rescaled the page and the titlebar overlay height in quick
@@ -1315,6 +1409,7 @@ async function createWindow(): Promise<void> {
   window.webContents.on('dom-ready', () => {
     void refreshNativeUiLanguage(window).then(() => {
       if (!window.isDestroyed()) installDesktopMenu();
+      desktopTray?.relabel();
     });
     diagnostics?.write('renderer-dom-ready', {
       totalMs: Date.now() - startupStartedAt,
@@ -1379,6 +1474,7 @@ if (!app.requestSingleInstanceLock()) {
         'Close the running app, or set MIXDOG_DESKTOP_USER_DATA to run an isolated profile.'
     );
   }
+  quitApproved = true;
   app.quit();
 } else {
   app.on('second-instance', () => {
@@ -1390,7 +1486,9 @@ if (!app.requestSingleInstanceLock()) {
   // and the fork queued behind window creation and the renderer load (215ms
   // for a 25ms import), and the data lane finished a full second after the
   // window had shown (user: 부팅 속도). Nothing here needs Electron ready:
-  // the transport is plain Node and the daemon is a separate process.
+  // the transport is plain Node and the daemon is a separate process. The
+  // transport holds the daemon spawn until the login-shell read settles.
+  loginShellEnvironmentReady = adoptLoginShellEnvironment();
   startDaemonService();
 
   void app
@@ -1453,6 +1551,10 @@ if (!app.requestSingleInstanceLock()) {
         .catch(() => {
           /* default stays enabled */
         });
+      // macOS/Linux shutdown or logoff: the OS ends the session, nobody is asked.
+      powerMonitor.on('shutdown', () => {
+        quitApproved = true;
+      });
       powerMonitor.on('resume', () => {
         // The blocker may have been dropped across sleep; re-assert it, and
         // redial the relay leg instead of waiting for the ping cycle.
@@ -1532,7 +1634,14 @@ if (!app.requestSingleInstanceLock()) {
       await createWindow();
       if (pendingPrimaryActivation) activatePrimaryWindow();
       installDesktopMenu();
+      // The settings read may have landed before the app was ready to host a tray.
+      syncDesktopTray();
       app.on('activate', () => {
+        // A Dock click brings back a window hidden by close-to-background.
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          activatePrimaryWindow();
+          return;
+        }
         if (BrowserWindow.getAllWindows().length === 0) {
           void createWindow().catch((error: unknown) => {
             console.error('Failed to recreate the Mixdog desktop window:', error);
@@ -1549,14 +1658,29 @@ if (!app.requestSingleInstanceLock()) {
             : '',
       });
       console.error('Failed to initialize the Mixdog desktop window:', error);
+      quitApproved = true;
       app.quit();
     });
 }
 
 app.on('before-quit', (event) => {
+  // Every ordinary quit entry (menu, tray, Cmd+Q, last window) asks first when
+  // it would interrupt working agents; the installer restart sets
+  // quitAfterDispose and never asks.
+  if (!quitAfterDispose && !quitApproved) {
+    event.preventDefault();
+    void quitConfirmation.confirm().then((approved) => {
+      if (!approved) return;
+      quitApproved = true;
+      app.quit();
+    });
+    return;
+  }
   // The handler outlives a quitting main process; its normal exit is not a loss.
   stopCrashHandlerWatch?.();
   stopCrashHandlerWatch = null;
+  desktopTray?.dispose();
+  desktopTray = null;
   if (quitAfterDispose) return;
   event.preventDefault();
   removeIpc?.();

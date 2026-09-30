@@ -88,7 +88,16 @@
 }
 .activity-rail {
   --mx-rail-tile-hover: color-mix(in srgb, var(--mx-text) 6%, transparent);
+  /* Neutral selection — no blue in the chrome (user: 메뉴 선택 시 파란색은
+     쓰지 말자, 좀 더 모던풍이 좋아). */
   --mx-rail-tile-active: color-mix(in srgb, var(--mx-text) 11%, transparent);
+}
+/* The tile's z-index:-1 stays inside its own button. Isolating the whole
+   rail instead trapped the usage flyout (a fixed child of the rail) in the
+   rail's layer, under the side panel (user: 유즈에이지는 왜 색 자체가
+   날라가버렸냐). */
+.activity-rail > button,
+.workbench-side-icon-bar.is-vertical > button {
   isolation: isolate;
 }
 .activity-rail > button:hover::before,

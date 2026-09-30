@@ -90,6 +90,13 @@ export function useTrendDetail(dependencies: readonly unknown[]) {
     /** Spread on the element that holds the buckets and the card. */
     hostProps: {
       ...popover.hostProps,
+      // Only a bucket opens the card. Crossing the chart's frame on the way
+      // in or out used to reopen the last bucket's card, so a stale date
+      // flashed whenever the pointer left the plot (user: 호버 영역 벗어나면
+      // 바로 날짜가 잠시 뜨네); entering the frame now only keeps an open card.
+      onMouseEnter: () => {
+        if (popover.open) popover.hostProps.onMouseEnter();
+      },
       onKeyDownCapture: (event: KeyboardEvent<HTMLElement>) => {
         if (popover.open && event.key === 'Escape') {
           event.stopPropagation();
@@ -99,6 +106,9 @@ export function useTrendDetail(dependencies: readonly unknown[]) {
     },
     /** Spread on the control of one bucket. */
     interaction: (key: string) => ({
+      // The card IS this bucket's hint: the shared tooltip layer would echo
+      // its accessible name in a second bubble under the chart.
+      'data-tooltip': '',
       onMouseEnter: (event: MouseEvent<HTMLElement>) => activate(key, event.currentTarget, 'hover'),
       onFocus: (event: FocusEvent<HTMLElement>) => activate(key, event.currentTarget, 'focus'),
       onClick: (event: MouseEvent<HTMLElement>) => activate(key, event.currentTarget, 'click'),

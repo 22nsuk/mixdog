@@ -17,6 +17,19 @@ test('failure rows keep read file_path and the full size of clipped path batches
   );
 });
 
+test('edit misses stay runtime failures whatever words the quoted file text holds', () => {
+  const excerpt =
+    '\ncurrent file excerpt lines 15-24 (use exact current text for retry):\n' +
+    "import { readTopLevelLifecycleRecord, isLifecycleUnreadable } from './lifecycle.mjs';\n" +
+    '// a timeout or permission denied here is retried';
+  for (const head of [
+    "Error: edit failed (old_string not found; nearest match on line 18: import { probe } from './store/fs-probe.mjs';)",
+    'Error: edit failed (old_string found 2 times; pass replace_all:true or extend old_string)',
+  ]) {
+    assert.equal(classifyToolFailure(`${head}${excerpt}`, 'edit'), 'runtime/failure');
+  }
+});
+
 test('emitted input errors, upstream HTTP failures and user cancellations have distinct categories', () => {
   const rows = [
     ['goal', 'Error: new Goal tasks must omit ids; use updates for existing tasks', 'schema/args'],

@@ -21,11 +21,20 @@ export function usePaneFileDrop(onOpenDroppedPaths?: (leafId: string, paths: str
   const [fileDropLeafId, setFileDropLeafId] = useState('');
   useEffect(() => {
     const clear = () => setFileDropLeafId('');
+    // An OS drag (Explorer) never sends this window its dragend, and Chromium
+    // can skip the dragleave when the pointer exits the window fast, which
+    // left the drop frame drawn around the pane after the drag was long gone
+    // (user: 메인 패널 테두리 버그냐). No pointer event is dispatched while a
+    // drag is in flight, so the first one proves the drag is over.
     window.addEventListener('drop', clear, true);
     window.addEventListener('dragend', clear, true);
+    window.addEventListener('pointermove', clear, true);
+    window.addEventListener('pointerdown', clear, true);
     return () => {
       window.removeEventListener('drop', clear, true);
       window.removeEventListener('dragend', clear, true);
+      window.removeEventListener('pointermove', clear, true);
+      window.removeEventListener('pointerdown', clear, true);
     };
   }, []);
   const fileDropPropsFor = (leafId: string) => {

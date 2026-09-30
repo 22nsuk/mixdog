@@ -25,7 +25,7 @@ supported `setup` action, and read its result as the change receipt.
   arguments and the transcript. Open the Providers surface and let the user
   enter them.
 - A mutation follows the active workflow's approval rules. Status, catalog,
-  definition, MCP-config and Instructions reads do not change persisted settings.
+  definition and MCP-config reads do not change persisted settings.
 - Most changes affect new sessions. Report `appliedToCurrentSession` and
   `appliesTo` exactly when the result supplies them.
 - This skill does not own source edits, builds, installation deployment,
@@ -78,9 +78,6 @@ that a call returned without transport error.
 - Read definitions before editing them; use skill-creator when authoring a
   skill. Setup persists the supported definition fields. Workflow and agent
   ids are stable identities, distinct from their display names.
-- Read Instructions before replacing them and pass the returned text as
-  `expectedContent`. `projectPath:null` means Common Instructions; otherwise
-  use an exact registered Project root. Keep the returned backup.
 - MCP servers and plugins are machine-global integrations whose visibility may
   be scoped to selected Projects.
 - User skills are machine-global. Enabled plugin skills and built-in skills are

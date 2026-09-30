@@ -187,6 +187,9 @@
 .mobile-tab-card-close:active {
   background: var(--mx-pressed);
 }
+/* Panels keep one hairline between them — the plate step alone read weaker
+   than the ChatGPT desktop's divided panes (user: 패널과 패널 사이에는
+   윤곽선 있는 게 나아 보이는데). */
 .workbench-side-panel[data-side="left"] {
   border-right: 1px solid var(--mx-border-structure);
 }

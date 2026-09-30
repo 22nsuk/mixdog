@@ -13,8 +13,10 @@
   margin: 20px 0;
   overflow: hidden;
   border-radius: var(--mx-radius-lg);
+  /* Frameless card (user: 프레임리스로 최대한): the plate step off the sheet
+     is the edge, and the language row runs on into the code with no seam. */
   background: var(--mx-bg-base);
-  box-shadow: 0 0 0 0.5px var(--mx-border-muted);
+  box-shadow: none;
 }
 .markdown-code > header {
   min-height: 28px;
@@ -22,7 +24,7 @@
   align-items: center;
   justify-content: space-between;
   padding: 0 6px 0 12px;
-  border-bottom: 0.5px solid var(--mx-border-muted);
+  border-bottom: 0;
   color: var(--mx-text-faint);
   /* A language label is metadata, and the shell's caption tier is 13/16 — at
      14px it sat above the code it was describing. */
@@ -1052,6 +1054,10 @@ html[data-mixdog-mobile-tabs] .jump-to-latest::before {
 /* Tool card subject that names a file: same affordance as a chat link, but a
    span (it sits inside the header button). */
 .tool-path-link {
+  /* The row's own quiet ink: a blue link was the one coloured run in an
+     otherwise grey operational line (user: no blue emphasis text). The
+     underline carries the affordance, as in chat links. */
+  color: inherit;
   cursor: pointer;
   text-decoration: underline;
   text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);

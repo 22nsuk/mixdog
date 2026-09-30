@@ -228,11 +228,14 @@ export function ActionButton({
 
 export function SettingsConfirmDialog({ options, onClose }: { options: SettingsConfirmation; onClose(): void }) {
   const cancelRef = useRef<HTMLButtonElement>(null);
+  const confirmRef = useRef<HTMLButtonElement>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+  const alternate = options.alternateLabel !== undefined;
+  // Two real answers: Enter takes the primary one, not the alternate.
   useEffect(() => {
-    cancelRef.current?.focus();
-  }, []);
+    (alternate ? confirmRef : cancelRef).current?.focus();
+  }, [alternate]);
   // Fullscreen scrim: the native caption controls dim with it.
   useEffect(() => acquireTitleBarDim(), []);
   useEffect(() => registerMobileBack(() => onCloseRef.current()), []);
@@ -263,10 +266,26 @@ export function SettingsConfirmDialog({ options, onClose }: { options: SettingsC
         </header>
         <p id="settings-confirm-description">{t(options.description)}</p>
         <footer>
-          <button ref={cancelRef} type="button" onClick={onClose}>
-            {t('Cancel')}
+          <button
+            ref={cancelRef}
+            type="button"
+            onClick={
+              alternate
+                ? () => {
+                    onClose();
+                    options.onAlternate?.();
+                  }
+                : onClose
+            }
+          >
+            {alternate ? t(options.alternateLabel as string) : t('Cancel')}
           </button>
-          <button type="button" className={options.danger ? 'danger' : 'primary'} onClick={accept}>
+          <button
+            ref={confirmRef}
+            type="button"
+            className={options.danger ? 'danger' : 'primary'}
+            onClick={accept}
+          >
             {options.confirmLabel ? t(options.confirmLabel) : t('Continue')}
           </button>
         </footer>

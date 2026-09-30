@@ -38,12 +38,17 @@ html[data-window-material="mica"] {
      포커스 전환 시 풀려버려 코덱스는 전혀 풀리지 않는데). Solid, only the
      frame and the side panel's glint change. One step deeper than the panel. */
   --mx-mica-layer: #18181b;
+  /* The side panel's composited tone, solid: the right dock lives on the
+     opaque workspace, where no Mica can show through, yet it should read as
+     the same panel as the left one (user: 오른쪽도 왼쪽처럼). */
+  --mx-mica-panel-solid: #1c1c1f;
 }
 /* Paper runs the same ladder toward white over its #f3f3f3 fallback. */
 html[data-window-material="mica"][data-mixdog-theme="light"] {
   --mx-mica-frame: rgb(243 243 243 / 50%);
   --mx-mica-panel: rgb(247 247 250 / 88%);
   --mx-mica-layer: #fbfbfc;
+  --mx-mica-panel-solid: #f7f7fa;
 }
 html[data-window-material="mica"] body {
   background: var(--mx-mica-frame);
@@ -81,6 +86,23 @@ html[data-window-material="mica"] .workbench-side-panel[data-side="left"],
 html[data-window-material="mica"] .app-shell.sidebar-collapsed .main-panel {
   border-top-left-radius: 8px;
   box-shadow: inset 1px 1px 0 var(--mx-border-structure);
+}
+/* The per-pane right dock is ONE plate, header and body alike: its body used
+   to take the translucent side-panel layer while the header stayed clear, so
+   the step between them drew a seam across and down the panel. */
+html[data-window-material="mica"] .pane-side-dock {
+  background: var(--mx-mica-panel-solid);
+}
+/* The workspace's top hairline runs on across the docked panel: the opaque
+   plate covered it, so the line stopped where the dock began (user: 오른쪽
+   사이드 패널 헤더 쪽 테두리 처리가 살짝 잘리는데). A dock floating over a
+   narrow pane keeps its own overlay shadow. */
+html[data-window-material="mica"] .pane-side-dock:not([data-overlay="true"]) {
+  box-shadow: inset 0 1px 0 var(--mx-border-structure);
+}
+html[data-window-material="mica"] .pane-side-dock .workbench-side-panel {
+  background: transparent;
+  box-shadow: none;
 }
 html[data-window-material="mica"] .send-button:not(.stop):not(:disabled) {
   color: var(--mx-sheet-ink);

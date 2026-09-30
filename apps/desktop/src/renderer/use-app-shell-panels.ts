@@ -16,6 +16,7 @@ import {
   createProjectsPane,
   createSchedulesPane,
   createWebhooksPane,
+  createWorkflowsPane,
   loadSidebarPanelModule,
   type SidebarPanelKey,
 } from './app-shell-components';
@@ -269,6 +270,7 @@ export function useAppShellPanels(activeBottomPanelPaneId: string) {
     schedules: createSchedulesPane(),
     webhooks: createWebhooksPane(),
     projects: createProjectsPane(),
+    workflows: createWorkflowsPane(),
     extensions: createExtensionsPane(),
   }));
   const markSidebarPanelFailed = useCallback((panel: SidebarPanelKey) => {
@@ -284,6 +286,7 @@ export function useAppShellPanels(activeBottomPanelPaneId: string) {
         if (panel === 'schedules') return { ...current, schedules: createSchedulesPane() };
         if (panel === 'webhooks') return { ...current, webhooks: createWebhooksPane() };
         if (panel === 'projects') return { ...current, projects: createProjectsPane() };
+        if (panel === 'workflows') return { ...current, workflows: createWorkflowsPane() };
         return { ...current, extensions: createExtensionsPane() };
       });
       setFailedSidebarPanels((current) => {

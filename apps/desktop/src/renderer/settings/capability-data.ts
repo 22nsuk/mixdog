@@ -92,6 +92,9 @@ export interface SettingsConfirmation {
   confirmLabel?: string;
   danger?: boolean;
   onConfirm(): void | Promise<void>;
+  /** A second answer in the Cancel button's place; the X still just closes. */
+  alternateLabel?: string;
+  onAlternate?(): void;
 }
 
 // Ordered by what the user sees first, cheapest first: the sweep runs in

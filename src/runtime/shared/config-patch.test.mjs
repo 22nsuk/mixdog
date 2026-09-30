@@ -44,6 +44,12 @@ test('config patches compare object contents rather than key order and copy queu
   assert.deepEqual(applyConfigPatch({}, changes), { values: [{ label: 'saved' }] });
 });
 
+test('a seed-only change fills a missing field and never overwrites a stored one', () => {
+  const seed = [{ path: ['disabledAgents'], value: ['maintainer'], ifAbsent: true }];
+  assert.deepEqual(applyConfigPatch({ theme: 'x' }, seed), { theme: 'x', disabledAgents: ['maintainer'] });
+  assert.deepEqual(applyConfigPatch({ disabledAgents: ['worker'] }, seed), { disabledAgents: ['worker'] });
+});
+
 test('literal prototype-looking config keys remain own data properties', () => {
   const after = JSON.parse('{"__proto__":{"enabled":false},"constructor":{"prototype":{"enabled":false}}}');
   const saved = applyConfigPatch({}, diffConfig({}, after));

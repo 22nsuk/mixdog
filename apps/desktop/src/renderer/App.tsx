@@ -5,7 +5,6 @@ import { DesktopTitlebar, type NavigationSelection } from './navigation';
 import { usePaneWorkspace } from './pane-workspace-state';
 import { defaultSessionLaneStore, useSessionLane } from './session-lane-store';
 import type { ExtensionsSection } from './extension-sections';
-import type { ProjectsSection } from './project-sections';
 import type { WorkbenchQuickAccessMode } from './workbench-overlays-loader';
 
 import { desktopBootPrerequisitesReady, markBootStage } from './boot-metrics';
@@ -130,9 +129,6 @@ export function App() {
     closePaneRightRegion,
   } = sideDocks;
   const [extensionsSection, setExtensionsSection] = useState<ExtensionsSection>('plugins');
-  // Projects panel section (Project | Workflow): owned here like the
-  // Extensions one so /workflow and /websearch can land on the Workflow tab.
-  const [projectsSection, setProjectsSection] = useState<ProjectsSection>('projects');
   const projectCatalog = useAppProjectCatalog(snapshot);
   const {
     projects,
@@ -408,7 +404,6 @@ export function App() {
     ...sideDocks,
     setExtensionsSection,
     focusedLeafIdRef,
-    setProjectsSection,
     uiOpenRequest: snapshot.uiOpenRequest,
     sessionId: snapshot.sessionId,
     setupUiRequest: snapshot.setupUiRequest,
@@ -627,8 +622,6 @@ export function App() {
     selectedProjectPath,
     extensionsSection,
     setExtensionsSection,
-    projectsSection,
-    setProjectsSection,
     closeSidebarForNavigation,
     startTask,
     openStudioTab,
@@ -770,6 +763,7 @@ export function App() {
         <div className="desktop-body">
           <AppSidebarDrawer
             {...shellPanels}
+            onboardingActive={onboardingOpen || !onboardingReady}
             closeSidebarForNavigation={closeSidebarForNavigation}
             openSettings={openSettings}
             workbenchSideLayout={workbenchSideLayout}

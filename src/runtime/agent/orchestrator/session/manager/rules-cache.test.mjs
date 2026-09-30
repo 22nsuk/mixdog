@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
@@ -32,18 +32,6 @@ async function fixture(t) {
   const rules = await import('./rules-cache.mjs');
   return { root, write, rules };
 }
-
-test('legacy instruction files never enter the memory-only prompt path', async (t) => {
-  const { write, rules } = await fixture(t);
-  write('data/user-workflow.md', 'LEGACY_FALLBACK');
-  const current = write('data/instructions.md', 'DELETED_INSTRUCTION', '2031-01-01');
-
-  assert.doesNotMatch(rules._buildLeadMetaContext(), /DELETED_INSTRUCTION|LEGACY_FALLBACK/);
-  unlinkSync(current);
-  const after = rules._buildLeadMetaContext();
-  assert.doesNotMatch(after, /DELETED_INSTRUCTION/);
-  assert.doesNotMatch(after, /LEGACY_FALLBACK/);
-});
 
 test('every rules layer detects edits hidden by newer sources and timestamp rollback', async (t) => {
   const { write, rules } = await fixture(t);
@@ -81,7 +69,7 @@ test('every rules layer detects edits hidden by newer sources and timestamp roll
 
 test('unchanged source variants stay warm and failed builds remain retryable', async (t) => {
   const { write } = await fixture(t);
-  const source = write('data/instructions.md', 'stable policy');
+  const source = write('data/policy.md', 'stable policy');
   const cache = createRulesSourceCache();
   const builds = new Map();
   const get = (variant, fail = false) =>

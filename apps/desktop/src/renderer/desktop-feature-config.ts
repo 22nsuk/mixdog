@@ -32,7 +32,7 @@ const DESKTOP_FEATURES: Readonly<Record<DesktopFeatureId, boolean>> = {
   pullRequests: false,
 };
 
-type DesktopSidebarDestination = 'sessions' | 'projects' | 'extensions' | 'schedules' | 'webhooks';
+type DesktopSidebarDestination = 'sessions' | 'projects' | 'workflows' | 'extensions' | 'schedules' | 'webhooks';
 
 export type DesktopUtilityDockTab = 'agents' | 'search' | 'source-control' | 'pull-requests';
 
@@ -50,7 +50,7 @@ export function desktopFeatureEnabled(feature: DesktopFeatureId): boolean {
 }
 
 export function desktopSidebarDestinationEnabled(destination: DesktopSidebarDestination): boolean {
-  return desktopFeatureEnabled(destination);
+  return desktopFeatureEnabled(destination === 'workflows' ? 'projects' : destination);
 }
 
 export function desktopUtilityDockTabEnabled(tab: DesktopUtilityDockTab): boolean {

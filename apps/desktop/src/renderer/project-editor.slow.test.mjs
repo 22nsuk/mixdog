@@ -14,20 +14,44 @@ test('project memory opens from one catalog, survives tabs and refreshes all sco
         import { createRoot } from 'react-dom/client';
         import { flushSync } from 'react-dom';
         import { ProjectsPane } from './ProjectsView';
+        import { WorkflowsPane } from './WorkflowsView';
+        import { ActivityRailNavigation } from './activity-rail-navigation';
+        import { Folder, Layers3 } from 'lucide-react';
         const requests = [];
         const reads = [];
         const writes = [];
         window.fixture = { requests, reads, writes };
+        let railPins = { pins: ['sessions', 'agents', 'schedules'], revision: 1 };
+        const railPinListeners = new Set();
         window.mixdogDesktop = {
           rendererDiagnostic() {}, setTitleBarDimmed() {},
+          readActivityRailPins: async () => railPins,
+          updateActivityRailPins: async pins => {
+            railPins = { pins, revision: railPins.revision + 1 };
+            for (const listener of railPinListeners) listener(railPins);
+            return railPins;
+          },
+          subscribeActivityRailPins: listener => {
+            railPinListeners.add(listener);
+            return () => railPinListeners.delete(listener);
+          },
           invokeCapability: async () => ({ value: [] }),
         };
         const root = createRoot(document.getElementById('root'));
+        window.localStorage.setItem('mixdog.desktop.activity-rail-pins.v1', JSON.stringify(['sessions', 'agents', 'schedules']));
         function Fixture() {
           const [section, setSection] = useState('projects');
-          window.fixture.setSection = setSection;
-          return <ProjectsPane
-            section={section} onSectionChange={setSection}
+          return <>
+          <style>{'.activity-rail-navigation { display:flex; flex-direction:column; width:48px } .activity-rail-navigation > button { width:48px; height:44px; flex-shrink:0 }'}</style>
+          <ActivityRailNavigation
+            entries={[
+              { id: 'projects', label: 'Projects', icon: Folder },
+              { id: 'workflows', label: 'Workflow', icon: Layers3 },
+            ]}
+            activeId={section} onSelect={setSection}
+          />
+          <div hidden={section !== 'projects'}><ProjectsPane
+            active={section === 'projects'}
             projects={[{ path: 'a', name: 'Alpha' }, { path: 'b', name: 'Beta' }, { path: 'empty', name: 'Empty' }]}
             selectedProjectPath="a"
             onChooseFolder={async () => null} onCreateProject={async () => {}}
@@ -40,7 +64,9 @@ test('project memory opens from one catalog, survives tabs and refreshes all sco
               writes.push(input);
               return Promise.resolve('core saved');
             }}
-          />;
+          /></div>
+          <div hidden={section !== 'workflows'}><WorkflowsPane active={section === 'workflows'} /></div>
+          </>;
         }
         flushSync(() => root.render(<Fixture />));
       `,
@@ -70,6 +96,55 @@ test('project memory opens from one catalog, survives tabs and refreshes all sco
   );
   await page.goto('http://mixdog.test');
   await page.addScriptTag({ content: bundle.outputFiles[0].text });
+  await page.click('[data-activity-more]');
+  await page.waitForFunction(() => document.activeElement?.dataset.actionId === 'projects');
+  await page.keyboard.press('ArrowDown');
+  assert.equal(await page.evaluate(() => document.activeElement.dataset.pinId), 'projects');
+  await page.keyboard.press('Enter');
+  assert.equal(await page.$eval('[data-activity-more]', (button) => button.previousElementSibling.dataset.sideView), 'projects');
+  assert.equal(await page.$eval('[data-pin-id="projects"]', (button) => button.getAttribute('aria-checked')), 'true');
+  await page.keyboard.press('Escape');
+  await page.waitForSelector('[role="menu"]', { hidden: true });
+  assert.equal(await page.$eval('[data-activity-more]', (button) => button === document.activeElement), true);
+  await page.click('[data-activity-more]');
+  await page.click('[data-pin-id="workflows"]');
+  await page.click('[data-activity-more]');
+  await page.evaluate(() => {
+    window.fixture.dragEvents = [];
+    for (const type of ['dragstart', 'dragover', 'drop', 'dragend']) {
+      document.addEventListener(type, (event) => {
+        window.fixture.dragEvents.push({
+          type,
+          id: event.target.closest('[data-side-view]')?.dataset.sideView,
+          clientY: event.clientY,
+          types: [...event.dataTransfer.types],
+          accepted: event.defaultPrevented,
+        });
+      });
+    }
+  });
+  const source = await page.$eval('[data-side-view="workflows"]', (button) => {
+    const rect = button.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  });
+  const target = await page.$eval('[data-side-view="projects"]', (button) => {
+    const rect = button.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + 4 };
+  });
+  await page.setDragInterception(true);
+  await page.mouse.dragAndDrop(source, target);
+  await page.setDragInterception(false);
+  await page.waitForFunction(() => document.querySelector('.activity-rail-navigation > button')?.dataset.sideView === 'workflows', { timeout: 5000 }).catch(async (error) => {
+    const state = await page.evaluate(() => ({
+      order: [...document.querySelectorAll('.activity-rail-navigation > [data-side-view]')].map((button) => button.dataset.sideView),
+      events: window.fixture.dragEvents.slice(-20),
+    }));
+    throw new Error(`${error.message}; drag state: ${JSON.stringify(state)}`, { cause: error });
+  });
+  assert.deepEqual(await page.$$eval('.activity-rail-navigation > [data-side-view]', (buttons) => buttons.map((button) => button.dataset.sideView)), ['workflows', 'projects']);
+  assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('mixdog.desktop.activity-rail-pins.v1'))), ['sessions', 'agents', 'schedules', 'workflows', 'projects']);
+  assert.equal(await page.$eval('[data-activity-more]', (button) => button === button.parentElement.lastElementChild), true);
+  assert.equal(await page.$eval('.projects-pane', (panel) => panel.getAttribute('data-surface-active')), 'true');
   // All rows, including a row clicked during warm-up, share this one read.
   await page
     .waitForFunction(() => window.fixture?.reads.length === 1, { timeout: 5000 })
@@ -140,11 +215,12 @@ test('project memory opens from one catalog, survives tabs and refreshes all sco
   await close();
   await open('Alpha');
   assert.equal(await page.evaluate(() => window.fixture.reads.length), 1);
-  // Switching sections closes the portal but retains the warmed catalog.
-  await page.evaluate(() => window.fixture.setSection('workflows'));
+  // Switching destinations closes the portal but retains the warmed catalog.
+  await page.click('[data-activity-more]');
+  await page.click('[data-action-id="workflows"]');
   await page.waitForSelector('.projects-edit-dialog', { hidden: true });
-  await page.waitForSelector('.projects-pane > .schedules-page > div[hidden]');
-  await page.evaluate(() => window.fixture.setSection('projects'));
+  await page.waitForSelector('.projects-pane[data-surface-active="false"]');
+  await page.click('[data-side-view="projects"]');
   await page.waitForFunction(() => window.fixture.reads.length === 2);
   await open('Alpha');
   assert.equal(

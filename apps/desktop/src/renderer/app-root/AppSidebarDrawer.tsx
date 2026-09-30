@@ -1,13 +1,13 @@
 import type React from 'react';
 import { ActivityRail } from '../ActivityRail';
 import {
-  WorkbenchSideIconBar,
   WorkbenchSidePanel,
   type WorkbenchSide,
   type WorkbenchSideTitleDragProps,
   type WorkbenchSideViewId,
 } from '../workbench-side-view-layout';
 import { SidebarDiffColumn } from '../sidebar-diff-column';
+import { StarterGuide } from '../StarterGuide';
 import { warmSettingsView } from '../app-shell-components';
 import type { useAppShellPanels } from '../use-app-shell-panels';
 import type { useAppSideDocks } from '../use-app-side-docks';
@@ -19,6 +19,9 @@ export interface AppSidebarDrawerProps {
   sidebarOpen: boolean;
   sidebarMotion: ReturnType<typeof useAppShellPanels>['sidebarMotion'];
   settingsOpen: boolean;
+  setSettingsOpen: (open: boolean) => void;
+  /** Onboarding is open or still deciding whether to open. */
+  onboardingActive: boolean;
   closeSidebarForNavigation: (motion?: 'animated' | 'instant') => void;
   openSettings: ReturnType<typeof useAppSettingsRouter>['openSettings'];
   setCommandSurface: ReturnType<typeof useAppShellPanels>['setCommandSurface'];
@@ -45,6 +48,8 @@ export function AppSidebarDrawer({
   sidebarOpen,
   sidebarMotion,
   settingsOpen,
+  setSettingsOpen,
+  onboardingActive,
   closeSidebarForNavigation,
   openSettings,
   setCommandSurface,
@@ -73,22 +78,12 @@ export function AppSidebarDrawer({
         }}
         onOpenUsageStats={() => setCommandSurface('stats')}
         onPrefetchSettings={warmSettingsView}
-        navigationItems={workbenchSideLayout.layout.left.flatMap((group) => {
-          const descriptor = sideViewDescriptors.get(group[0]);
-          return descriptor ? [{ id: group[0], label: descriptor.tooltip || descriptor.label }] : [];
+        navigationItems={workbenchSideLayout.layout.left.flat().flatMap((id) => {
+          const descriptor = sideViewDescriptors.get(id);
+          return descriptor ? [descriptor] : [];
         })}
-        primaryNavigation={
-          <WorkbenchSideIconBar
-            side="left"
-            groups={workbenchSideLayout.layout.left}
-            activeRoot={activeSideViews.left}
-            descriptors={sideViewDescriptors}
-            orientation="vertical"
-            onSelect={selectWorkbenchSideView}
-            onMoveGroup={moveWorkbenchSideGroup}
-            onMoveView={moveWorkbenchSideView}
-          />
-        }
+        activeNavigationId={sidebarOpen ? activeSideViews.left : null}
+        onSelectNavigation={selectWorkbenchSideView}
       />
       <WorkbenchSidePanel
         side="left"
@@ -100,6 +95,18 @@ export function AppSidebarDrawer({
         onMoveGroup={moveWorkbenchSideGroup}
         onMoveView={moveWorkbenchSideView}
         renderView={(id, active, titleDragProps) => renderWorkbenchSideView('left', id, active, titleDragProps)}
+        footer={
+          <StarterGuide
+            descriptors={sideViewDescriptors}
+            onboardingActive={onboardingActive}
+            onOpenView={selectWorkbenchSideView}
+            onOpenSettings={(section) => {
+              closeSidebarForNavigation('instant');
+              openSettings(section);
+            }}
+            onCloseSettings={() => setSettingsOpen(false)}
+          />
+        }
       />
       <SidebarDiffColumn
         diff={sidebarDiff?.diff ?? null}

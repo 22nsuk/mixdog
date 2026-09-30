@@ -88,7 +88,10 @@ export class SessionTransport implements DesktopTransport {
   constructor(
     private readonly moduleUrl: string,
     private readonly cwd = process.cwd(),
-    private readonly loadClientModule: SessionClientLoader | null = null
+    private readonly loadClientModule: SessionClientLoader | null = null,
+    /** Settles once this process's environment is final: a daemon spawned
+     *  here inherits it for its whole life. */
+    private readonly environmentReady: Promise<unknown> = Promise.resolve()
   ) {}
 
   on(event: string, listener: (...args: any[]) => void): unknown {
@@ -171,6 +174,7 @@ export class SessionTransport implements DesktopTransport {
   private async initialize(message: Extract<DesktopServiceInbound, { kind: 'init' }>): Promise<void> {
     if (this.initializing) return this.initializing;
     this.initializing = (async () => {
+      await this.environmentReady;
       const daemonModule = await this.measureBootPhase('session-client-import', async () =>
         this.loadClientModule
           ? await this.loadClientModule(message.options)

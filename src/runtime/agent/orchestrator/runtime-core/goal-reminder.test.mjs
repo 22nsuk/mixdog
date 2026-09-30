@@ -20,6 +20,19 @@ const goal = (overrides = {}) => ({
   ...overrides,
 });
 
+test('the Goal snapshot counts completed and dropped rows in its task slots', () => {
+  const text = goalStateReminder(
+    goal({
+      tasks: [
+        { id: 'task_1', text: 'Implement result', status: 'completed' },
+        { id: 'task_2', text: 'Verify result', status: 'in_progress' },
+        { id: 'task_3', text: 'Superseded plan', status: 'dropped' },
+      ],
+    })
+  );
+  assert.match(text, /Status: active · tasks 1\/2 · task slots used 3\/20\n/);
+});
+
 test('post-compaction Goal reminder renders durable state once and clears on acceptance', () => {
   const session = { id: 'sess_goal_reminder' };
   // Ordinary turns carry no marker, so no Goal state is injected and no

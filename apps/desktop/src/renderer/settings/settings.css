@@ -329,7 +329,9 @@
   flex-direction: column;
   padding: 28px 16px 16px;
   overflow: hidden;
-  border-right: 0.5px solid var(--mx-border);
+  /* The plate step alone divides rail from page, as the popups divide by
+     plate and shadow (user: 프레임리스로 최대한). */
+  border-right: 0;
   background: var(--mx-bg-layer-1);
 }
 .mixdog-settings__rail nav {
@@ -352,9 +354,10 @@
   gap: 10px;
   padding: 0 10px;
   border: 0;
-  border-radius: var(--mx-radius-md);
-  /* Category rail: 15/400 full ink, same size as panel/section heads. */
-  color: var(--mx-text);
+  border-radius: var(--mx-radius-lg);
+  /* Category rail: 15/400, idle rows one ink step under the selected one so
+     the current category reads at a glance (polish pass). */
+  color: var(--mx-text-soft);
   font-size: var(--mx-font-body);
   font-weight: var(--mx-weight-regular);
   background: transparent;
@@ -372,7 +375,8 @@
 .mixdog-settings__rail-group button.active {
   color: var(--mx-text);
   background: var(--mx-pressed);
-  box-shadow: inset 0 0 0 0.5px var(--mx-border-muted);
+  box-shadow: none;
+  font-weight: var(--mx-weight-medium);
 }
 .mixdog-settings__rail-group button svg {
   color: inherit;

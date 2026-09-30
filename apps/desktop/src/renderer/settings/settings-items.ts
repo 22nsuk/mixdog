@@ -53,6 +53,8 @@ export const SETTINGS_ITEMS = [
   // default; the shared config key remains editable from the TUI).
   { value: 'developer', label: 'Developer options', description: 'Developer-only options.', kind: 'open' },
   { value: 'update', label: 'Update', description: 'Check version and update mixdog.', kind: 'open' },
+  // Desktop-only: lets the getting-started guide deep-link to remote pairing.
+  { value: 'connection', label: 'Connection', description: 'Pair a remote', kind: 'open' },
 ] as const satisfies ReadonlyArray<SettingsItem>;
 
 type SettingsItemValue = (typeof SETTINGS_ITEMS)[number]['value'];
@@ -150,7 +152,7 @@ export const SETTINGS_CATEGORIES = [
     value: 'connection',
     label: 'Connection',
     group: 'Integrations',
-    items: [],
+    items: ['connection'],
   },
   // Desktop-only surface: repo/star/issue links (Settings → About).
   {

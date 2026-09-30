@@ -28,7 +28,7 @@ function getBackupRoot() {
   return process.env.MIXDOG_USER_DATA_BACKUP_ROOT || join(mixdogConfigBaseDir(), 'backups', 'user-data');
 }
 
-const USER_DATA_FILES = ['mixdog-config.json', 'instructions.md', 'user-workflow.md'];
+const USER_DATA_FILES = ['mixdog-config.json'];
 
 const USER_DATA_DIRS = ['schedules', 'webhooks', 'workflows'];
 

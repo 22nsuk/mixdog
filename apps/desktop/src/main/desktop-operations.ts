@@ -20,8 +20,10 @@ import * as workspaceSearch from './workspace-search';
 import { createDocumentPreviewOperations } from './document-preview';
 import type { DocumentPreviewModule } from './document-preview';
 
+import { ACTIVITY_RAIL_PINS_EVENT } from '../shared/activity-rail-pins';
+
 interface DesktopOperationEvent {
-  name: 'folder-changed' | 'lsp-diagnostics' | 'lsp-status' | 'terminal-data';
+  name: 'folder-changed' | 'lsp-diagnostics' | 'lsp-status' | 'terminal-data' | typeof ACTIVITY_RAIL_PINS_EVENT;
   value: unknown;
 }
 
@@ -313,6 +315,15 @@ export function createDesktopOperations({
       );
     }
     if (name === 'readSettings') return settingsStore.read();
+    if (name === 'readActivityRailPins') return settingsStore.readActivityRailPins();
+    if (name === 'updateActivityRailPins') {
+      if (args[1] !== undefined && typeof args[1] !== 'boolean') {
+        throw new TypeError('initializeIfMissing must be a boolean.');
+      }
+      const saved = await settingsStore.updateActivityRailPins(args[0], args[1] === true);
+      emit({ name: ACTIVITY_RAIL_PINS_EVENT, value: saved });
+      return saved;
+    }
     if (name === 'updateSetting') {
       return settingsStore.update(args[0] as Parameters<DesktopSettingsStore['update']>[0], args[1] === true);
     }
@@ -322,19 +333,6 @@ export function createDesktopOperations({
     if (name === 'starGithub') return starGithub();
     if (name === 'installLibreOffice') {
       return libreoffice.installLibreOffice({ packaged, resourcesPath, appPath });
-    }
-    if (name === 'readInstructions') {
-      const [file, legacyFile] = args.map((value) => String(value || ''));
-      return (await import('./instructions-file')).readInstructionsText(file, legacyFile);
-    }
-    if (name === 'writeInstructions') {
-      const [file, content, expected, legacyFile] = args;
-      return (await import('./instructions-file')).writeInstructionsText(
-        String(file || ''),
-        String(content ?? ''),
-        typeof expected === 'string' ? expected : undefined,
-        String(legacyFile || '')
-      );
     }
     if (name === 'lspDocument') {
       return languageServers.document(

@@ -24,6 +24,11 @@ export function createSessionStop(
 ) {
   const { host, coordinator, execution, cleanupJobs } = context;
   const { activeExecutionsBySession, commandChainsBySession } = execution;
+  // A Stop that could not confirm its cleanup leaves nothing on screen: the
+  // pill closed with the press. The next command retries that recovery once
+  // and fails with its reason if it still cannot.
+  let stopUnconfirmed = false;
+  let recovering: Promise<void> | undefined;
 
   function takeOverComputer(reason = 'user_takeover'): void {
     const queuedOrActiveSessionIds = new Set([...commandChainsBySession.keys(), ...activeExecutionsBySession.keys()]);
@@ -107,8 +112,45 @@ export function createSessionStop(
     };
     // Daemon cancellation cannot serialize or bypass native cleanup. Either
     // failure keeps the pause latched, including late replies after a timeout.
-    await Promise.all([stopNative(), turnsStopped]);
-    if (resume) coordinator.resumeAfterUserTakeover(generation);
+    try {
+      await Promise.all([stopNative(), turnsStopped]);
+    } catch (error) {
+      if (resume) stopUnconfirmed = true;
+      throw error;
+    }
+    if (resume) {
+      stopUnconfirmed = false;
+      coordinator.resumeAfterUserTakeover(generation);
+    }
+  }
+
+  /** Before a new command: an unconfirmed Stop, or a failed cleanup no paused
+   *  task is waiting on, gets one more verified recovery. `null` when there is
+   *  nothing to recover, so the command queues in the same tick as before. */
+  function recoverBeforeCommand(): Promise<void> | null {
+    const unattended = (snapshot: ReturnType<typeof coordinator.snapshot>) =>
+      snapshot.activities.length === 0 && (snapshot.pausedSessionIds ?? []).length === 0;
+    const snapshot = coordinator.snapshot();
+    const orphanedFailure = snapshot.cleanupState === 'failed' && unattended(snapshot);
+    if (!stopUnconfirmed && !orphanedFailure) return null;
+    recovering ??= (async () => {
+      await recoverLatchedCleanup();
+      stopUnconfirmed = false;
+      const current = coordinator.snapshot();
+      if (current.userControlActive && unattended(current)) {
+        coordinator.resumeAfterUserTakeover(current.takeoverGeneration);
+      }
+    })().finally(() => {
+      recovering = undefined;
+    });
+    return recovering;
+  }
+
+  /** The overlay's Resume: a latched cleanup gets its verified recovery first,
+   *  then the paused task continues from the generation the user saw. */
+  async function resumeByUser(generation: number): Promise<void> {
+    if (coordinator.snapshot().cleanupState === 'failed') await recoverLatchedCleanup();
+    await resumeAfterTakeover(generation);
   }
 
   async function resumeAfterTakeover(
@@ -142,5 +184,12 @@ export function createSessionStop(
     return results.every((result) => result.status === 'fulfilled');
   }
 
-  return { takeOverComputer, stopAllComputerSessions, resumeAfterTakeover, waitForCleanup };
+  return {
+    takeOverComputer,
+    stopAllComputerSessions,
+    resumeAfterTakeover,
+    resumeByUser,
+    recoverBeforeCommand,
+    waitForCleanup,
+  };
 }

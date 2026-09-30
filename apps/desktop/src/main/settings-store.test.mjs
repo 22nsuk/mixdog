@@ -27,6 +27,7 @@ test('desktop settings read the canonical agent section and desktop defaults', (
     autoClear: true,
     autoCompact: true,
     keepAwake: true,
+    runInBackground: true,
     usagePinned: false,
     computerControl: false,
     computerObserveOnly: false,
@@ -40,12 +41,13 @@ test('desktop settings read the canonical agent section and desktop defaults', (
         autoClear: { enabled: false },
         compaction: { auto: false },
       },
-      desktop: { keepAwake: false },
+      desktop: { keepAwake: false, runInBackground: false },
     }),
     {
       autoClear: false,
       autoCompact: false,
       keepAwake: false,
+      runInBackground: false,
       usagePinned: false,
       computerControl: false,
       computerObserveOnly: false,
@@ -119,12 +121,14 @@ test('writes are atomic core updates that retain unrelated config and nested fie
 
   await store.update('autoClear', false);
   await store.update('keepAwake', false);
+  await store.update('runInBackground', false);
   const result = await store.update('autoCompact', true);
 
   assert.deepEqual(result, {
     autoClear: false,
     autoCompact: true,
     keepAwake: false,
+    runInBackground: false,
     usagePinned: false,
     computerControl: false,
     computerObserveOnly: false,
@@ -144,7 +148,7 @@ test('writes are atomic core updates that retain unrelated config and nested fie
   });
   assert.equal(value.autoClear, undefined);
   assert.equal(value.compaction, undefined);
-  assert.deepEqual(value.desktop, { keepAwake: false });
+  assert.deepEqual(value.desktop, { keepAwake: false, runInBackground: false });
   assert.deepEqual(value.unrelated, { retained: true });
 });
 
@@ -152,6 +156,7 @@ test('IPC accepts only the runtime-backed setting keys', () => {
   assert.equal(requiredDesktopSettingKey('autoClear'), 'autoClear');
   assert.equal(requiredDesktopSettingKey('autoCompact'), 'autoCompact');
   assert.equal(requiredDesktopSettingKey('keepAwake'), 'keepAwake');
+  assert.equal(requiredDesktopSettingKey('runInBackground'), 'runInBackground');
   assert.equal(requiredDesktopSettingKey('computerControl'), 'computerControl');
   assert.equal(requiredDesktopSettingKey('computerObserveOnly'), 'computerObserveOnly');
   assert.equal(requiredDesktopSettingKey('browserControl'), 'browserControl');

@@ -1,7 +1,10 @@
 export interface ComputerUseOverlayControls {
   stop(sessionIds: string[]): Promise<void>;
+  /** Continue the task paused at `generation`; a newer pause makes it stale. */
+  resume?(generation: number): Promise<void>;
   /** Pause input without ending the task when the control surface is lost. */
   pause?(): Promise<void>;
+  /** Quiet seconds after which an ordinary input pause resumes; 0 is manual. */
   configureIdleResume?(seconds: number): void;
 }
 
@@ -27,19 +30,21 @@ function withControlDeadline(work: Promise<void>): Promise<void> {
   ]).finally(() => clearTimeout(timer));
 }
 
-/** Trusted overlay only: never exported as a model/bridge command. Stop is the
- *  pill's one control; Pause belongs to a lost control surface alone. A
- *  failure outlives the takeover generation Stop itself advances, or the user
- *  would see nothing. */
+type OverlayAction = 'stop' | 'pause' | 'resume';
+
+/** Trusted overlay only: never exported as a model/bridge command. The pill
+ *  offers Stop, plus Resume while paused; Pause belongs to a lost control
+ *  surface alone. A failure outlives the takeover generation Stop itself
+ *  advances, or the user would see nothing. */
 export function createComputerOverlayController(controls: ComputerUseOverlayControls, changed: () => void) {
   let busy = false;
   let error: ComputerOverlayControlError = '';
   let pending: object | undefined;
   let stopping: Promise<void> | undefined;
-  const run = async (action: 'stop' | 'pause', sessionIds: string[]): Promise<void> => {
-    // A lost surface pauses only when no control is already taking over; Stop
-    // is never refused, because it is the user's way out.
-    if (busy && action === 'pause') return;
+  const run = async (action: OverlayAction, sessionIds: string[], generation: number): Promise<void> => {
+    // Pause and Resume wait for a running control; Stop is never refused,
+    // because it is the user's way out.
+    if (busy && action !== 'stop') return;
     const request = {};
     pending = request;
     busy = true;
@@ -49,6 +54,9 @@ export function createComputerOverlayController(controls: ComputerUseOverlayCont
       if (action === 'pause') {
         if (!controls.pause) throw new Error('Pause unavailable');
         await withControlDeadline(controls.pause());
+      } else if (action === 'resume') {
+        if (!controls.resume) throw new Error('Resume unavailable');
+        await withControlDeadline(controls.resume(generation));
       } else await withControlDeadline(controls.stop(sessionIds));
     } catch (reason) {
       if (pending !== request) return;
@@ -69,11 +77,11 @@ export function createComputerOverlayController(controls: ComputerUseOverlayCont
     state() {
       return { busy, error };
     },
-    invoke(action: 'stop' | 'pause', sessionIds: string[]): Promise<void> {
-      if (action !== 'stop') return run(action, sessionIds);
+    invoke(action: OverlayAction, sessionIds: string[], generation = 0): Promise<void> {
+      if (action !== 'stop') return run(action, sessionIds, generation);
       // A repeated press joins the same stop; it must not advance the takeover
       // generation while the original cleanup is still confirming that generation.
-      stopping ??= run(action, sessionIds).finally(() => {
+      stopping ??= run(action, sessionIds, generation).finally(() => {
         stopping = undefined;
       });
       return stopping;

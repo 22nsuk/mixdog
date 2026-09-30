@@ -646,13 +646,18 @@
 }
 /* ONE unit-wide header line (user: 헤더 한 줄) — just the child icons,
    spanning [diff | panel], height matched to the PANE tab strip. */
+/* Same title band as the left side panel (user: 오른쪽 패널도 왼쪽 사이드
+   레일 패널처럼): the roomy 52px band, flowing into its list with no hairline
+   under it. */
 .pane-side-dock-header {
-  flex: 0 0 35px;
-  height: 35px;
+  flex: 0 0 var(--mx-rail-panel-band);
+  height: var(--mx-rail-panel-band);
   min-width: 0;
   display: flex;
   align-items: center;
-  border-bottom: 1px solid var(--mx-border-muted);
+  border-bottom: 0;
+  /* Continues the embedded panel's left hairline up through the header, so
+     the divider runs the dock's full height. */
   border-left: 1px solid var(--mx-border-structure);
 }
 /* The header names the showing child only (user: 독 헤더는 뷰 이름 + X); the
@@ -662,10 +667,12 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 0 10px;
+  /* The left panel's title tier on its 12px box line. */
+  padding: 0 12px;
   color: var(--mx-text);
-  font-size: var(--mx-font-minor);
+  font-size: var(--mx-rail-panel-title);
   font-weight: var(--mx-weight-semibold);
+  line-height: var(--mx-line-emphasis);
   white-space: nowrap;
   overflow: hidden;
 }
@@ -738,6 +745,13 @@
   width: 1px;
   background: var(--mx-border-structure);
   pointer-events: none;
+}
+/* The divider is the header's and panel's own left border, which runs the
+   dock's full height; this resize edge covers only the panel body, so its
+   resting line stopped short of the header (user: 변경 사항 왼쪽 윤곽선
+   잘리는 거). It shows only while grabbed. The diff column keeps its line. */
+.pane-side-dock .workbench-side-panel-resize::after {
+  background: transparent;
 }
 .pane-side-dock .workbench-side-panel-resize:is(:hover, :active)::after,
 .pane-dock-diff-resize:is(:hover, :active)::after {

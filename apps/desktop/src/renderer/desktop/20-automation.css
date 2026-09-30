@@ -163,6 +163,14 @@
   line-height: var(--mx-line-ui);
   resize: none;
 }
+/* The card is the one frame: the dialog's generic field ring also landed on
+   this textarea, boxing it inside the card with a seam over the footer. */
+.schedules-dialog .schedules-composer textarea,
+.schedules-dialog .schedules-composer textarea:hover,
+.schedules-dialog .schedules-composer textarea:focus {
+  border-radius: 0;
+  box-shadow: none;
+}
 /* Composer-footer clone inside the editor card: same 44px control bar, with
    the select chips spaced like the chat composer tools (workflow-control
    owns the right-edge push, exactly like the chat composer). */
@@ -659,9 +667,10 @@
   max-height: min(60vh, 640px);
   overflow-y: auto;
   padding: 0 16px;
-  border-radius: var(--mx-radius-md);
+  /* The Settings group card exactly: 10px corner, plate, 6% outline. */
+  border-radius: var(--mx-radius-lg);
   background: var(--mx-bg-layer-1);
-  box-shadow: inset 0 0 0 0.5px var(--mx-border-muted);
+  box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--mx-text) 6%, transparent);
 }
 .projects-memory-viewport.is-empty {
   min-height: 96px;
@@ -1015,8 +1024,8 @@
 .settings-oauth-dialog > footer {
   display: flex;
   justify-content: flex-end;
-  padding: 12px 16px;
-  border-top: 0.5px solid var(--mx-border);
+  padding: 4px 16px 16px;
+  border-top: 0;
   background: var(--mx-bg-base);
 }
 .settings-oauth-dialog > footer button:hover:not(:disabled),
@@ -1101,8 +1110,10 @@
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  padding: 12px 16px;
-  border-top: 0.5px solid var(--mx-border);
+  /* No seam over the buttons: the card is one frameless plate (user: 아래
+     선 하나 굳이 넣어야 되냐 — 프레임리스로). */
+  padding: 4px 16px 16px;
+  border-top: 0;
   background: var(--mx-bg-base);
 }
 .settings-confirm-dialog > footer button {
@@ -1158,6 +1169,13 @@
 .settings-confirm-dialog > header button:focus-visible {
   outline: 2px solid var(--mx-focus);
   outline-offset: 2px;
+}
+
+/* An agent switched on without a model: the note under the picker says why
+   Save is held back. */
+.schedules-field > small.workflows-route-required {
+  margin-top: 6px;
+  color: var(--mx-warning);
 }
 
 /* Built-in agent editor: the fixed "when to use" reads as a sentence under its

@@ -33,26 +33,34 @@ test('a pointer press is recorded without invoking any control', async () => {
     stop: async () => calls.push('stop'),
   });
   assert.deepEqual(await invoke({ action: 'press', control: 'stop' }), { accepted: true });
-  for (const control of ['resume', 'other']) {
-    await assert.rejects(invoke({ action: 'press', control }), /Invalid overlay request/);
-  }
-  const [record] = readComputerRunRecords('a', 20)
+  assert.deepEqual(await invoke({ action: 'press', control: 'resume' }), { accepted: true });
+  await assert.rejects(invoke({ action: 'press', control: 'other' }), /Invalid overlay request/);
+  const records = readComputerRunRecords('a', 20)
     .filter((entry) => entry.action === 'overlay_press')
-    .slice(-1);
-  assert.deepEqual([record.control, record.generation], ['stop', 1]);
+    .slice(-2);
+  assert.deepEqual(
+    records.map((record) => [record.control, record.generation]),
+    [
+      ['stop', 1],
+      ['resume', 1],
+    ]
+  );
   assert.deepEqual(calls, []);
 });
 
-test('Stop is the only control the overlay accepts', async () => {
+test('Stop and Resume are the only controls the overlay accepts', async () => {
   const calls = [];
   const invoke = fixture({
     pause: async () => calls.push('pause'),
+    resume: async (generation) => calls.push(`resume:${generation}`),
     stop: async () => calls.push('stop'),
   });
   assert.deepEqual(await invoke({ action: 'stop', generation: 1 }), { accepted: true, busy: false, error: '' });
-  // Pausing belongs to the user's own input; that pause resumes by itself or ends with Stop.
-  for (const action of ['resume', 'pause']) {
+  // Resume carries the generation the user saw, not the current one.
+  assert.deepEqual(await invoke({ action: 'resume', generation: 4 }), { accepted: true, busy: false, error: '' });
+  // Pausing belongs to the user's own input, never to a control.
+  for (const action of ['pause', 'dismiss']) {
     await assert.rejects(invoke({ action, generation: 1 }), /Invalid overlay request/);
   }
-  assert.deepEqual(calls, ['stop']);
+  assert.deepEqual(calls, ['stop', 'resume:4']);
 });

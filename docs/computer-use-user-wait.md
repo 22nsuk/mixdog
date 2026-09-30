@@ -1,5 +1,15 @@
 # Computer Use user wait and quiet resume
 
+> **Current overlay behavior.** The pill has three states — working (Stop),
+> paused (Resume and Stop), or gone. Resume continues the paused generation,
+> recovering a latched cleanup first; the quiet-interval auto-resume below still
+> applies to ordinary input pauses. Stop closes the pill with the press and
+> cancels the task, which reports the stop as a failure. A cleanup Stop could
+> not confirm, or a failed cleanup no paused task is waiting on, never keeps the
+> pill on screen: the next input command retries that recovery once and returns
+> its reason if it still fails. Overlay details in the later sections that
+> predate this (a Stop-only pill, a pill held up by failed cleanup) are history.
+
 ## Contract
 
 - `computer({ action: "wait_for_user", input: { timeout_ms: 60000 } })`

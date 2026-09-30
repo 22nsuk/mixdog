@@ -49,19 +49,20 @@ export function bindComputerOverlayControls(
     if (
       request.action === 'press' &&
       Object.keys(request).every((key) => ['action', 'control'].includes(key)) &&
-      request.control === 'stop'
+      (request.control === 'stop' || request.control === 'resume')
     ) {
-      // The pointer went down on Stop. Next to the overlay_stop record it
-      // separates a press this window never received from one that never
-      // became a click.
+      // The pointer went down on a control. Next to the overlay_stop/resume
+      // record it separates a press this window never received from one that
+      // never became a click.
       const current = presentation();
       recordOverlayPress(current.sessionIds, 'press', current.generation, { control: request.control });
       return { accepted: true };
     }
     if (
-      // Stop is the overlay's only control: pausing is the user's own input,
-      // and that pause resumes by itself or ends with Stop.
-      request.action !== 'stop' ||
+      // Stop ends the task; Resume continues a pause (an ordinary input pause
+      // may also resume by itself after the quiet interval). Nothing else is a
+      // control.
+      (request.action !== 'stop' && request.action !== 'resume') ||
       Object.keys(request).some((key) => !['action', 'generation'].includes(key)) ||
       !Number.isSafeInteger(request.generation) ||
       request.generation < 0
@@ -69,9 +70,10 @@ export function bindComputerOverlayControls(
       throw new Error('Invalid overlay request');
     }
     const current = presentation();
-    // A repeated press joins the running Stop, so every press is applied.
-    await controller.invoke('stop', current.sessionIds);
-    recordOverlayPress(current.sessionIds, 'stop', request.generation, { ...controller.state(), ok: true });
+    // A repeated Stop press joins the running Stop, so every press is applied.
+    // Resume carries the generation the user saw, so a newer pause makes it stale.
+    await controller.invoke(request.action, current.sessionIds, request.generation);
+    recordOverlayPress(current.sessionIds, request.action, request.generation, { ...controller.state(), ok: true });
     return { accepted: true, ...controller.state() };
   });
 }

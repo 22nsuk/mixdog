@@ -227,28 +227,86 @@ test('a finished GitHub sign-in shows the account at once instead of offering Si
   assert.match(document.querySelector('.onboarding-card-title').textContent, /tester/);
 });
 
-test('Git identity failure is visible, never reports ready, and can be retried', async (t) => {
-  let fail = true;
+async function settle() {
+  await act(async () => {
+    for (let index = 0; index < 5; index += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+async function mountSignedInGit(t, { config, fail = false }) {
   const writes = [];
   const account = { login: 'tester', name: 'Test User', email: 'test@example.com' };
   await mount(t, {
     step: 2,
     githubCliStatus: async () => ({ installed: true, authenticated: true, login: 'tester' }),
     githubCliAccount: async () => account,
-    gitGlobalConfig: async () => ({ name: '', email: '', defaultBranch: '' }),
+    gitGlobalConfig: async () => config,
     setGitGlobalConfig: async (key, value) => {
       writes.push([key, value]);
-      if (key === 'user.email' && fail) throw new Error('Git config denied');
+      if (fail) throw new Error('Git config denied');
       return { name: account.name, email: account.email, defaultBranch: '' };
     },
   });
-  assert.doesNotMatch(document.body.textContent, /Commits and pull requests are ready to go/);
-  await click(button('Set up commit identity'));
+  await settle();
+  return writes;
+}
+
+test('the commit identity follows the connected account without an identity step', async (t) => {
+  const writes = await mountSignedInGit(t, { config: { name: '', email: '', defaultBranch: '' } });
+  assert.deepEqual(writes, [
+    ['user.name', 'Test User'],
+    ['user.email', 'test@example.com'],
+  ]);
+  assert.match(document.body.textContent, /Commits and pull requests are ready to go/);
+  assert.ok(![...document.querySelectorAll('button')].some((entry) => /commit identity/i.test(entry.textContent)));
+});
+
+test('an existing commit identity is left alone', async (t) => {
+  const writes = await mountSignedInGit(t, { config: { name: 'Me', email: 'me@example.com', defaultBranch: '' } });
+  assert.deepEqual(writes, []);
+  assert.match(document.body.textContent, /Commits and pull requests are ready to go/);
+});
+
+test('a failed automatic identity is visible and never reports ready', async (t) => {
+  await mountSignedInGit(t, { config: { name: '', email: '', defaultBranch: '' }, fail: true });
   assert.match(document.body.textContent, /Git config denied/);
   assert.doesNotMatch(document.body.textContent, /Commits and pull requests are ready to go/);
-  fail = false;
-  await click(button('Set up commit identity'));
-  assert.match(document.body.textContent, /Commits and pull requests are ready to go/);
-  assert.doesNotMatch(document.body.textContent, /Git config denied/);
-  assert.equal(writes.length, 4);
+});
+
+for (const [name, github, git, installs] of [
+  ['GitHub connected and system Git present', { installed: true, authenticated: true }, { installed: true }, true],
+  ['GitHub signed out', { installed: true, authenticated: false }, { installed: true }, false],
+  ['no system Git', { installed: true, authenticated: true }, { installed: false }, false],
+]) {
+  test(`moving past the Git step with ${name} ${installs ? 'installs' : 'leaves'} the Git built-in`, async (t) => {
+    const account = { login: 'tester', name: 'Test User', email: 'test@example.com' };
+    const { calls } = await mount(t, {
+      step: 2,
+      githubCliStatus: async () => github,
+      gitCliStatus: async () => git,
+      githubCliAccount: async () => account,
+      gitGlobalConfig: async () => ({ name: account.name, email: account.email, defaultBranch: '' }),
+    });
+    await settle();
+    await click(button('Next'));
+    await settle();
+    assert.deepEqual(
+      calls.filter((call) => call.capability === 'setBuiltinToolEnabled').map((call) => call.args),
+      installs ? [['git', true]] : []
+    );
+  });
+}
+
+test('a star confirmed while earlier steps are open shows Starred at once on the last step', async (t) => {
+  let probes = 0;
+  await mount(t, {
+    githubStarStatus: async () => {
+      probes += 1;
+      return { available: true, starred: true };
+    },
+  });
+  await settle();
+  await go(3);
+  assert.ok(button('Starred').disabled);
+  assert.equal(probes, 1);
 });

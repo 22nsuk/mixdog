@@ -3,11 +3,11 @@
 import { uiFormatLocale } from './i18n';
 import { localDayKey } from './usage-stats-model';
 
-/** A meter reading or a share of the limit: tenths below 10 %, whole above. */
+/** A meter reading or a share of the limit, rounded to a whole percent. */
 export function quotaPercent(value: unknown): string {
   const amount = Number(value);
   if (value === null || value === undefined || value === '' || !Number.isFinite(amount)) return '—';
-  const rounded = Math.abs(amount) < 10 ? Math.round(amount * 10) / 10 : Math.round(amount);
+  const rounded = Math.round(amount);
   return `${rounded.toLocaleString(uiFormatLocale())}%`;
 }
 

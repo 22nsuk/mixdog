@@ -127,6 +127,49 @@ test('code-graph disk invalidation retries only once and releases both slots', a
   assert.equal(releases, 2);
 });
 
+test('code-graph answers from the last finished graph when files keep changing, without caching it', async () => {
+  let starts = 0;
+  let cacheWrites = 0;
+  const graph = await _retryCodeGraphBuildAfterInvalidation(async () => {
+    const attempt = starts++;
+    return _spawnCodeGraphWorker(process.cwd(), process.cwd(), attempt, null, () => {}, null, null, {
+      createWorker() {
+        const worker = new FakeWorker();
+        queueMicrotask(() => worker.emit('message', { ok: true, graph: { attempt }, signature: `sig-${attempt}` }));
+        return worker;
+      },
+      // Every build finishes after another edit bumped the generation.
+      getGeneration: () => attempt + 1,
+      setMemoryCache: () => {
+        cacheWrites += 1;
+      },
+      setDiskCache: () => {
+        cacheWrites += 1;
+      },
+    });
+  });
+  assert.deepEqual(graph, { attempt: 1 });
+  assert.equal(starts, 2);
+  assert.equal(cacheWrites, 0);
+
+  let validations = 0;
+  const diskGraph = await _retryCodeGraphBuildAfterInvalidation(() =>
+    _runDiskCodeGraphFastPath({
+      graphCwd: process.cwd(),
+      diskProbe: { isFastPathEligible: true, maxFiles: 7 },
+      genAtStart: 0,
+      loadDiskEntry: () => ({ maxFiles: 7 }),
+      acquireSlot: async () => () => {},
+      validateDiskHit: async () => ({ invalidated: true, graph: { disk: ++validations } }),
+      spawnWorker: () => {
+        throw new Error('worker must not start for an invalidated disk hit');
+      },
+      maxFiles: 7,
+    })
+  );
+  assert.deepEqual(diskGraph, { disk: 2 });
+});
+
 test('sentinel-free aggregate anchors adopt only their explicit bounded cwd', () => {
   const root = mkdtempSync(join(tmpdir(), 'mixdog-codegraph-bounded-'));
   const outside = mkdtempSync(join(tmpdir(), 'mixdog-codegraph-outside-'));

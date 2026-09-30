@@ -2,6 +2,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import type { DesktopSettingKey, DesktopSettings } from '../shared/contract';
+import { normalizeActivityRailPins, readActivityRailPinsState, type ActivityRailPinsState } from '../shared/activity-rail-pins';
 import { packagedRuntimeSourceRoot } from './runtime-layout';
 
 export interface MixdogConfigModule {
@@ -48,6 +49,7 @@ export function desktopSettingsFromConfig(value: unknown): DesktopSettings {
     autoClear: autoClear.enabled !== false,
     autoCompact: compaction.auto !== false && compaction.enabled !== false,
     keepAwake: desktop.keepAwake !== false,
+    runInBackground: desktop.runInBackground !== false,
     usagePinned: desktop.usagePinned === true,
     computerControl: desktop.computerControl === true,
     computerObserveOnly: desktop.computerObserveOnly === true,
@@ -62,6 +64,7 @@ export function desktopSettingsFromConfig(value: unknown): DesktopSettings {
  *  field to reconcile. */
 const DESKTOP_FLAG_KEYS: ReadonlySet<DesktopSettingKey> = new Set([
   'keepAwake',
+  'runInBackground',
   'usagePinned',
   'computerObserveOnly',
   'computerInstalled',
@@ -88,6 +91,29 @@ export class DesktopSettingsStore {
   async read(): Promise<DesktopSettings> {
     const config = await this.loadConfig();
     return desktopSettingsFromConfig(config.readConfig());
+  }
+
+  async readActivityRailPins(): Promise<ActivityRailPinsState | null> {
+    const config = await this.loadConfig();
+    return readActivityRailPinsState(record(record(config.readConfig()).desktop).activityRailPins);
+  }
+
+  async updateActivityRailPins(value: unknown, initializeIfMissing = false): Promise<ActivityRailPinsState> {
+    const pins = normalizeActivityRailPins(value);
+    if (!pins) throw new TypeError('Activity rail pins must be an array of supported destinations.');
+    if (typeof initializeIfMissing !== 'boolean') throw new TypeError('initializeIfMissing must be a boolean.');
+    const config = await this.loadConfig();
+    const saved = await config.updateConfigAsync((current) => {
+      const desktop = record(current.desktop);
+      const previous = readActivityRailPinsState(desktop.activityRailPins);
+      if (initializeIfMissing && previous) return current;
+      const revision = (previous?.revision ?? 0) + 1;
+      if (!Number.isSafeInteger(revision)) throw new RangeError('Activity rail pin revision is exhausted.');
+      return { ...current, desktop: { ...desktop, activityRailPins: { pins, revision } } };
+    });
+    const state = readActivityRailPinsState(record(record(saved).desktop).activityRailPins);
+    if (!state) throw new TypeError('The config write did not return valid activity rail pins.');
+    return state;
   }
 
   async update(key: DesktopSettingKey, enabled: boolean): Promise<DesktopSettings> {

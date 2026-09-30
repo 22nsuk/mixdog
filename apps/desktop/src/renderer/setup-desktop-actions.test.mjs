@@ -14,10 +14,6 @@ function fixture() {
   let clients = [
     { id: 'phone', name: 'Phone', platform: 'mobile', browser: 'Browser', createdAt: 1, lastSeenAt: 2, online: true },
   ];
-  const instructions = new Map([
-    [null, 'Common'],
-    ['/project', 'Project'],
-  ]);
   const writes = [];
   const api = {
     readSettings: async () => ({ ...settings }),
@@ -35,12 +31,6 @@ function fixture() {
     },
     removeProject: async (path) => {
       projects = projects.filter((project) => project.path !== path);
-    },
-    readInstructions: async (path) => instructions.get(path),
-    writeInstructions: async (path, content, expected) => {
-      assert.equal(instructions.get(path), expected);
-      instructions.set(path, content);
-      return { backupPath: '/retained-backup/previous.md' };
     },
     getRemoteAccessInfo: async () => ({
       relayBrowserUrl: 'credential-canary',
@@ -62,7 +52,7 @@ function fixture() {
     read: async () => ({ theme: 'dark' }),
     write: async (next) => ({ ...next, saved: true, requiresReload: true, appliesTo: 'next window reload' }),
   };
-  return { api, writes, instructions, run: (args) => executeSetupDesktopAction(args, api, preferences, 'session') };
+  return { api, writes, run: (args) => executeSetupDesktopAction(args, api, preferences, 'session') };
 }
 
 test('every persisted Desktop setting is classified and points to a real setup action', () => {
@@ -168,25 +158,6 @@ test('Project registration, alias and removal do not expose a file-deletion oper
     false
   );
   assert.match(removed.recovery, /files remain/);
-});
-
-test('Instructions distinguish Common from Project and forward the exact concurrency precondition', async () => {
-  const { run, instructions } = fixture();
-  const before = await run({ action: 'get_instructions', projectPath: null });
-  assert.equal(before.scope, 'common');
-  const saved = await run({
-    action: 'set_instructions',
-    projectPath: null,
-    expectedContent: before.content,
-    content: 'New Common',
-  });
-  assert.equal(saved.content, 'New Common');
-  assert.equal(saved.backupPath, '/retained-backup/previous.md');
-  assert.equal(instructions.get('/project'), 'Project');
-  await assert.rejects(
-    run({ action: 'set_instructions', projectPath: '/unknown', expectedContent: '', content: 'x' }),
-    /exact registered/
-  );
 });
 
 test('Connection reads and revocation never return pairing URLs or QR credentials', async () => {

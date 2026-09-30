@@ -34,6 +34,7 @@ const PANE_BOUND_RIGHT_MIGRATION_KEY = 'mixdog.desktop.workbench-side-view-layou
 const ALL_VIEW_IDS: readonly WorkbenchSideViewId[] = [
   'sessions',
   'projects',
+  'workflows',
   'extensions',
   'schedules',
   'webhooks',
@@ -56,6 +57,7 @@ const DEFAULT_WORKBENCH_SIDE_VIEW_LAYOUT: WorkbenchSideViewLayout = {
     ['agents'],
     ['schedules'],
     ['projects'],
+    ['workflows'],
     ['extensions'],
     ['source-control'],
     ['search'],

@@ -100,7 +100,9 @@ export function buildDefaultConfig(options = {}) {
   providers['mixdog-local'] = { enabled: false };
   return {
     providers,
-    disabledAgents: [...DEFAULT_DISABLED_AGENT_IDS],
+    // The Maintainer also starts off: background upkeep spends model calls, so
+    // it runs only once the user turns it on and picks its model.
+    disabledAgents: [...DEFAULT_DISABLED_AGENT_IDS, 'maintainer'],
     workflow: { active: 'default' },
     orchestrationMode: 'none',
   };
@@ -272,6 +274,11 @@ export function loadConfig(options = {}) {
     recap: { enabled: true },
     developer: {},
     modules: {},
+    // No stored section at all is a brand-new profile: its built-ins start
+    // uninstalled. The defaults above carry presets/recap/modules, which
+    // would otherwise read as a pre-section profile and be grandfathered.
+    // A stored section that failed to parse proves nothing and keeps that path.
+    ...(hasKeys(sectionRaw) ? {} : { builtins: {} }),
   };
 }
 /** In-lock patch of `skills.disabled` only (avoids whole-config lost-update). */

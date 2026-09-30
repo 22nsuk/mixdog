@@ -562,17 +562,37 @@ test('grep pattern shapes, packed paths, and context lead policy', async () => {
     );
   }
 
-  const multiGrepPathArgs = {
-    pattern: 'providerStatus',
-    path: 'C:\\Project\\mixdog\\src\\tui C:\\Project\\mixdog\\src\\mixdog-session-runtime.mjs',
-  };
-  const multiGrepPathErr = validateBuiltinArgs('grep', multiGrepPathArgs);
+  // A string that only lists absolute paths splits into them; prose holding
+  // several drive roots is still refused unchanged.
+  const packedGrepPaths = [
+    [
+      'C:\\Project\\mixdog\\src\\tui C:\\Project\\mixdog\\src\\mixdog-session-runtime.mjs',
+      ['C:\\Project\\mixdog\\src\\tui', 'C:\\Project\\mixdog\\src\\mixdog-session-runtime.mjs'],
+    ],
+    [
+      'C:\\Project\\mixdog\\apps,C:\\Project\\mixdog\\scripts',
+      ['C:\\Project\\mixdog\\apps', 'C:\\Project\\mixdog\\scripts'],
+    ],
+    ['[C:/Project/refs/a.md, C:/Project/refs/b.md]', ['C:/Project/refs/a.md', 'C:/Project/refs/b.md']],
+    ['["C:/Program Files/a.txt", "D:/b.txt"]', ['C:/Program Files/a.txt', 'D:/b.txt']],
+  ];
+  for (const [path, expected] of packedGrepPaths) {
+    const args = { pattern: 'providerStatus', path };
+    const err = validateBuiltinArgs('grep', args);
+    if (err || JSON.stringify(args.path) !== JSON.stringify(expected)) {
+      throw new Error(
+        `grep packed absolute-path list must split into its paths: err=${err} path=${JSON.stringify(args.path)}`
+      );
+    }
+  }
+  const proseGrepPathArgs = { pattern: 'providerStatus', path: 'under C:\\Project\\a and C:\\Project\\b' };
+  const proseGrepPathErr = validateBuiltinArgs('grep', proseGrepPathArgs);
   if (
-    !/contains multiple absolute paths/.test(String(multiGrepPathErr)) ||
-    typeof multiGrepPathArgs.path !== 'string'
+    !/contains multiple absolute paths/.test(String(proseGrepPathErr)) ||
+    typeof proseGrepPathArgs.path !== 'string'
   ) {
     throw new Error(
-      `grep packed multi-path string must be rejected without array coercion: err=${multiGrepPathErr} path=${JSON.stringify(multiGrepPathArgs.path)}`
+      `grep prose with several drive roots must be refused unchanged: err=${proseGrepPathErr} path=${JSON.stringify(proseGrepPathArgs.path)}`
     );
   }
 

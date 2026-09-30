@@ -25,6 +25,8 @@ function applyField(current, path, change) {
   const next = isPlainObject(current) ? { ...current } : {};
   const [key, ...rest] = path;
   if (change.remove && rest.length && !Object.hasOwn(next, key)) return next;
+  // Seed-only field: written where it is missing, never over a stored value.
+  if (change.ifAbsent && !rest.length && Object.hasOwn(next, key)) return next;
   if (!rest.length && change.remove) {
     delete next[key];
   } else {

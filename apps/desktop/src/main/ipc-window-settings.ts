@@ -17,7 +17,7 @@ import type { IpcHandle as Handle } from './ipc';
 interface WindowSettingsIpcOptions {
   window: BrowserWindow;
   app: Pick<App, 'quit'>;
-  host: Pick<DesktopService, 'invokeCapability' | 'readCapabilities' | 'getSnapshot' | 'dispose'>;
+  host: Pick<DesktopService, 'invokeCapability' | 'readCapabilities' | 'getSnapshot'>;
   handle: Handle;
   invokeDesktopOperation: <T>(method: string, args: unknown[]) => Promise<T>;
   settingsStore?: Pick<DesktopSettingsStore, 'read' | 'update' | 'readZoom' | 'updateZoom'>;
@@ -34,13 +34,16 @@ export function registerWindowSettingsIpc({
   settingsStore,
   onDesktopSettingsChanged,
 }: WindowSettingsIpcOptions): void {
-  let quitPromise: Promise<void> | null = null;
   const applyZoom = (factor: number) => {
     window.webContents.setZoomFactor(factor);
     setDesktopTitleBarZoom(window, factor);
   };
 
   handle(DESKTOP_IPC.readSettings, () => settingsStore?.read() ?? invokeDesktopOperation('readSettings', []));
+  handle(DESKTOP_IPC.readActivityRailPins, () => invokeDesktopOperation('readActivityRailPins', []));
+  handle(DESKTOP_IPC.updateActivityRailPins, (_event, pins, initializeIfMissing) =>
+    invokeDesktopOperation('updateActivityRailPins', [pins, initializeIfMissing])
+  );
   handle(DESKTOP_IPC.updateSetting, (_event, key, enabled) => {
     if (typeof enabled !== 'boolean') throw new TypeError('enabled must be a boolean.');
     const settingKey = requiredDesktopSettingKey(key);
@@ -102,14 +105,9 @@ export function registerWindowSettingsIpc({
   handle(DESKTOP_IPC.readCapabilities, (_event, input) =>
     host.readCapabilities(requiredDesktopCapabilityReadRequests(input))
   );
+  // before-quit owns the confirmation and the host teardown: disposing the
+  // host here first would leave a cancelled quit with a dead service.
   handle(DESKTOP_IPC.quit, () => {
-    quitPromise ??= (async () => {
-      try {
-        await host.dispose();
-      } finally {
-        app.quit();
-      }
-    })();
-    return quitPromise;
+    app.quit();
   });
 }

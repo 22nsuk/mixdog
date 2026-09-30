@@ -11,7 +11,6 @@ import type { useAppProjectCatalog } from '../use-app-project-catalog';
 import type { useDesktopUpdater } from '../use-desktop-updater';
 import type { WorkbenchQuickAccessMode } from '../workbench-overlays-loader';
 import type { ExtensionsSection } from '../extension-sections';
-import type { ProjectsSection } from '../project-sections';
 import type { PaneLeaf } from '../pane-layout';
 import type { usePaneTabClose } from '../use-pane-tab-close';
 import type { useAppTaskLifecycle } from './use-app-task-lifecycle';
@@ -37,8 +36,6 @@ export interface UseAppSidebarHubOptions {
   selectedProjectPath: string;
   extensionsSection: ExtensionsSection;
   setExtensionsSection: (section: ExtensionsSection) => void;
-  projectsSection: ProjectsSection;
-  setProjectsSection: (section: ProjectsSection) => void;
   closeSidebarForNavigation: (motion?: 'animated' | 'instant') => void;
   startTask: ReturnType<typeof useAppTaskLifecycle>['startTask'];
   openStudioTab: (leafId?: string) => void;
@@ -99,8 +96,6 @@ export function useAppSidebarHub({
   selectedProjectPath,
   extensionsSection,
   setExtensionsSection,
-  projectsSection,
-  setProjectsSection,
   closeSidebarForNavigation,
   startTask,
   openStudioTab,
@@ -155,8 +150,6 @@ export function useAppSidebarHub({
       selectedProjectPath,
       extensionsSection,
       onExtensionsSectionChange: setExtensionsSection,
-      projectsSection,
-      onProjectsSectionChange: setProjectsSection,
       closeSidebarForNavigation,
       startTask,
       openStudio: openStudioTab,

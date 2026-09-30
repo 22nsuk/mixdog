@@ -1,11 +1,12 @@
 import { overlayStyles } from './content-styles';
 import { loadOverlayFont } from './font-asset';
 
-export const OVERLAY_WIDTH = 224;
-export const OVERLAY_HEIGHT = 62;
+export const OVERLAY_WIDTH = 285;
+export const OVERLAY_HEIGHT = 74;
 
 const STOP_ICON_PATH =
   'M8.5 6h7a2.5 2.5 0 0 1 2.5 2.5v7a2.5 2.5 0 0 1-2.5 2.5h-7A2.5 2.5 0 0 1 6 15.5v-7A2.5 2.5 0 0 1 8.5 6z';
+const RESUME_ICON_PATH = 'M9 6.8v10.4a1 1 0 0 0 1.5.86l8.3-5.2a1 1 0 0 0 0-1.72l-8.3-5.2A1 1 0 0 0 9 6.8z';
 // The Mixdog mark (design/brand): three arcs that turn while the agent works,
 // around a star drawn larger than the logo's so it still reads at 20px.
 const MARK_ARC_PATH = 'M116.2 61A68 68 0 0 1 191.9 104.7';
@@ -20,17 +21,17 @@ function overlayLabels(locale: string) {
   return {
     title: ko ? '컴퓨터 사용 중' : 'Computer in use',
     stop: ko ? '중단' : 'Stop',
+    resume: ko ? '재개' : 'Resume',
     stopping: ko ? '중단 중' : 'Stopping',
     failed: ko ? '실패' : 'Failed',
   };
 }
 
 /**
- * One control. Stop ends the task and is always present, pressable, and in the
- * same place: reaching for it can itself pause the agent (the user's own
- * input, which resumes once the user is idle), and nothing on the pill ever
- * changes what the press does. A latched cleanup or an unconfirmed request
- * never leaves the user with a dead pill.
+ * Stop ends the task and is always present, pressable, and in the same place:
+ * reaching for it can itself pause the agent (the user's own input), and
+ * nothing on the pill ever changes what the press does. A pause never ends by
+ * itself, so while paused Resume appears to Stop's left; Stop never moves.
  */
 export function overlayHtml(locale: string): string {
   const labels = overlayLabels(locale);
@@ -40,6 +41,7 @@ export function overlayHtml(locale: string): string {
 ${overlayStyles}</style></head><body><div id="pill">
 <svg id="mark" viewBox="44 44 168 168" aria-hidden="true"><g id="arcs" fill="none" stroke-width="24" stroke-linecap="round"><path d="${MARK_ARC_PATH}"/><path d="${MARK_ARC_PATH}" transform="rotate(120 128 128)"/><path d="${MARK_ARC_PATH}" transform="rotate(240 128 128)"/></g><polygon id="star" points="${MARK_STAR_POINTS}"/></svg>
 <div id="status" role="status"><div id="title">${labels.title}</div></div>
+<button id="resume" type="button" hidden aria-label="${labels.resume}" title="${labels.resume}"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="${RESUME_ICON_PATH}"/></svg></button>
 <button id="stop" type="button" aria-label="${labels.stop}" title="${labels.stop} (Ctrl+Alt+Esc)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="${STOP_ICON_PATH}"/></svg></button>
 </div></body></html>`;
 }
@@ -47,34 +49,37 @@ ${overlayStyles}</style></head><body><div id="pill">
 export function overlayScript(locale = 'en'): string {
   const labels = overlayLabels(locale);
   return `(() => {
-    let state = { paused:false, generation:0 };
-    let renderedRevision = -1, requestSequence = 0, pending = false, failed = false;
+    let state = { paused:false, resumable:false, generation:0 };
+    let renderedRevision = -1, requestSequence = 0, pending = '', failed = false;
     const stopControl = document.getElementById('stop');
+    const resumeControl = document.getElementById('resume');
     const title = document.getElementById('title');
-    // Evidence that the pointer reached Stop, recorded by the host next to the
-    // press outcome; delivery never affects the control itself.
-    const report = () => {
+    // Evidence that the pointer reached a control, recorded by the host next
+    // to the press outcome; delivery never affects the control itself.
+    const report = (control) => () => {
       void Promise.resolve()
-        .then(() => window.mixdogComputerControl({ action:'press', control:'stop' }))
+        .then(() => window.mixdogComputerControl({ action:'press', control }))
         .catch(() => {});
     };
     const render = () => {
       document.body.dataset.paused = String(Boolean(state.paused));
       document.body.dataset.error = String(failed || Boolean(state.attention));
       if (failed) title.textContent = ${JSON.stringify(labels.failed)};
-      else if (pending) title.textContent = ${JSON.stringify(labels.stopping)};
+      else if (pending === 'stop') title.textContent = ${JSON.stringify(labels.stopping)};
       else title.textContent = state.title || ${JSON.stringify(labels.title)};
-      // Never disabled: a running or failed Stop reports itself through the
+      resumeControl.hidden = !state.resumable;
+      // Never disabled: a running or failed request reports itself through the
       // wording and aria-busy only, so every press reaches the host.
-      stopControl.setAttribute('aria-busy', String(pending));
+      stopControl.setAttribute('aria-busy', String(pending === 'stop'));
+      resumeControl.setAttribute('aria-busy', String(pending === 'resume'));
     };
-    const stop = async () => {
+    const send = async (action) => {
       const sequence = ++requestSequence;
-      pending = true; failed = false; render();
+      pending = action; failed = false; render();
       let deadline;
       try {
         const reply = await Promise.race([
-          window.mixdogComputerControl({ action:'stop', generation:state.generation }),
+          window.mixdogComputerControl({ action, generation:state.generation }),
           new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('timeout')), 20000); }),
         ]);
         if (!reply?.accepted || reply.error) throw new Error('not accepted');
@@ -83,11 +88,13 @@ export function overlayScript(locale = 'en'): string {
         if (sequence === requestSequence) failed = true;
       } finally {
         clearTimeout(deadline);
-        if (sequence === requestSequence) { pending = false; render(); }
+        if (sequence === requestSequence) { pending = ''; render(); }
       }
     };
-    stopControl.onpointerdown = report;
-    stopControl.onclick = () => { void stop(); };
+    stopControl.onpointerdown = report('stop');
+    stopControl.onclick = () => { void send('stop'); };
+    resumeControl.onpointerdown = report('resume');
+    resumeControl.onclick = () => { void send('resume'); };
     window.mixdogComputerOverlay = (next) => {
       if (next.renderRevision < renderedRevision) return;
       renderedRevision = next.renderRevision;

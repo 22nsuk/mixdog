@@ -27,6 +27,33 @@ function runIsolatedConfigTest(prefix, source) {
   }
 }
 
+test('a profile with no stored config starts fresh: built-ins uninstalled, agents off, and saving keeps it so', () => {
+  runIsolatedConfigTest(
+    'mixdog-config-fresh-',
+    `
+    import assert from 'node:assert/strict';
+    import { createConfigPatch, loadConfig, saveConfigPatch } from './src/runtime/agent/orchestrator/config.mjs';
+    import { withGrandfatheredBuiltins } from './src/runtime/agent/orchestrator/runtime-core/builtin-features.mjs';
+
+    const fresh = withGrandfatheredBuiltins(loadConfig({ secrets: false }));
+    assert.deepEqual(fresh.builtins, {});
+    assert.ok(fresh.disabledAgents.includes('maintainer'));
+    // An unrelated first save, as onboarding makes, then a reload.
+    const next = { ...fresh, profile: { ...fresh.profile, title: 'New' } };
+    const changes = createConfigPatch(fresh, next);
+    saveConfigPatch([
+      ...changes,
+      { path: ['builtins'], value: fresh.builtins, ifAbsent: true },
+      { path: ['disabledAgents'], value: fresh.disabledAgents, ifAbsent: true },
+    ]);
+    const reloaded = withGrandfatheredBuiltins(loadConfig({ secrets: false }));
+    assert.deepEqual(reloaded.builtins, {});
+    assert.ok(reloaded.disabledAgents.includes('maintainer'));
+    assert.equal(reloaded.profile.title, 'New');
+    `
+  );
+});
+
 test('sync and async config writes preserve user fields without persisting secrets or probe failures', () => {
   runIsolatedConfigTest(
     'mixdog-config-persistence-',

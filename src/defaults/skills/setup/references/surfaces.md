@@ -38,8 +38,7 @@ An attached Desktop or TUI may navigate and return `opened:true`.
 - Extensions → Plugin → Git & GitHub: Git/GitHub CLI installation and connection.
 - Settings → Connection: web-app pairing and linked devices.
 - Settings → System: update, keep-awake, and Doctor.
-- Projects: Project registration, name, Instructions, Common Instructions, and
-  Core Memories.
+- Projects: Project registration, name, Project Memories, and Common Memory.
 - Workflows: workflow packs, Main and Web Search defaults, and agent editing.
 - Extensions → Plugin: Built-in cards and plugins.
 - Extensions → Skill: skills and MCP servers.
@@ -51,7 +50,7 @@ the user to Desktop.
 
 Setup can read and change Desktop appearance, keep-awake, usage pin,
 Computer observe-only, Browser/Computer/voice installation and toggles,
-Projects, Instructions, and linked-device revocation through the attached
+Projects, and linked-device revocation through the attached
 Desktop. A receipt identifies `scope:desktop-host`; appearance is not applied
 to the paired browser. No Desktop claimant means no confirmed change.
 

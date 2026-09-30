@@ -69,6 +69,7 @@ test('a corrupt or missing persisted layout falls back to the defaults', () => {
     ['agents'],
     ['schedules'],
     ['projects'],
+    ['workflows'],
     ['extensions'],
     ['source-control'],
     ['search'],

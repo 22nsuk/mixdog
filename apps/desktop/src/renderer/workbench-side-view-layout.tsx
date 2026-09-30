@@ -66,7 +66,7 @@ function dragPayload(event: ReactDragEvent<HTMLElement>): WorkbenchSideDragPaylo
   return isViewId(view) ? { type: 'view', id: view } : activeWorkbenchSideDrag;
 }
 
-function setWorkbenchSideIconDragImage(event: ReactDragEvent<HTMLButtonElement>): void {
+export function setWorkbenchSideIconDragImage(event: ReactDragEvent<HTMLButtonElement>): void {
   const dragImage = event.currentTarget.cloneNode(true) as HTMLButtonElement;
   const bounds = event.currentTarget.getBoundingClientRect();
   dragImage.className = 'workbench-side-icon-drag-image';
@@ -102,7 +102,7 @@ export function workbenchSideBarDropPlacement(point: number, previous: 'before' 
   return previous ?? (point <= 0.5 ? 'before' : 'after');
 }
 
-function workbenchSideBarDropTarget(
+export function workbenchSideBarDropTarget(
   items: readonly {
     root: WorkbenchSideViewId;
     start: number;
@@ -446,6 +446,7 @@ export function WorkbenchSidePanel({
   onMoveGroup,
   onMoveView,
   renderView,
+  footer,
 }: {
   side: WorkbenchSide;
   open: boolean;
@@ -481,6 +482,8 @@ export function WorkbenchSidePanel({
   onMoveGroup: Parameters<typeof WorkbenchSideIconBar>[0]['onMoveGroup'];
   onMoveView: Parameters<typeof WorkbenchSideIconBar>[0]['onMoveView'];
   renderView(id: WorkbenchSideViewId, active: boolean, titleDragProps: WorkbenchSideTitleDragProps): ReactNode;
+  /** Pinned under the shown destination, the same for every view. */
+  footer?: ReactNode;
 }) {
   const selectedGroup = groups.find((group) => activeRoot !== null && group.includes(activeRoot)) ?? groups[0] ?? [];
   const root = selectedGroup[0] ?? null;
@@ -782,6 +785,7 @@ export function WorkbenchSidePanel({
             </div>
           );
         })}
+        {footer}
         {surfaces && (
           <div className="workbench-side-panel-surfaces" data-active={surfacesActive ? 'true' : 'false'}>
             {surfaces}

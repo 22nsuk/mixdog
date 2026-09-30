@@ -27,30 +27,13 @@ function tokenBuckets(source: Row, names: string[]): number {
   return names.reduce((sum, name) => sum + nonNegativeNumber(record(source[name]).tokens), 0);
 }
 
-export function ContextBody({
-  status,
-  snapshot,
-  request: inspectRequest,
-  loading = false,
-}: {
-  status: unknown;
-  snapshot: unknown;
-  request?: ContextRequest;
-  /** The measured breakdown is still in flight. The headline comes from the
-   *  gauge's own snapshot, so only the category list waits. */
-  loading?: boolean;
-}) {
+/** The headline is measured input. Category estimates stay separate and are
+ *  never rescaled to look like provider-measured per-category token counts. */
+function contextDisplayUsage(status: unknown, snapshot: unknown) {
   const context = record(status);
   const state = record(snapshot);
-  const messages = record(context.messages);
-  const semantic = record(messages.semantic);
-  const request = record(context.request);
-  const schema = record(request.toolSchemaBreakdown);
   const compaction = record(context.compaction);
-  const inspection = context.inspection as ContextInspection | undefined;
-  // The headline is measured input. Category estimates stay separate and are
-  // never rescaled to look like provider-measured per-category token counts.
-  const usage = resolveContextDisplayUsage({
+  return resolveContextDisplayUsage({
     sessionId: state.sessionId || context.sessionId || (context.contextWindow ? 'context' : ''),
     stats:
       Object.hasOwn(record(state.stats), 'currentContextSource') ||
@@ -61,6 +44,47 @@ export function ContextBody({
     displayContextWindow: state.displayContextWindow || context.contextWindow,
     contextWindow: state.contextWindow || context.effectiveContextWindow || context.contextWindow,
   });
+}
+
+/** The reading on one line: what it is, then used / window and the share. */
+export function ContextReading({ status, snapshot }: { status: unknown; snapshot: unknown }) {
+  const usage = contextDisplayUsage(status, snapshot);
+  return (
+    <span className="context-reading">
+      <b>{t(contextMeasurementLabel(usage.source))}</b>
+      <span>
+        {usage.used == null ? '—' : compactTokens(usage.used)} / {compactTokens(usage.limit)}
+        {usage.percent != null ? ` · ${usage.percent}%` : ''}
+      </span>
+    </span>
+  );
+}
+
+export function ContextBody({
+  status,
+  snapshot,
+  request: inspectRequest,
+  loading = false,
+  readingInHeader = false,
+}: {
+  status: unknown;
+  snapshot: unknown;
+  request?: ContextRequest;
+  /** The measured breakdown is still in flight. The headline comes from the
+   *  gauge's own snapshot, so only the category list waits. */
+  loading?: boolean;
+  /** The dialog's title bar carries the reading (ContextReading), so the body
+   *  opens straight on the bar: one header, not a title over a second
+   *  headline (user: 헤더가 하나만 있으면 되지, 헤더 아래는 막대만). */
+  readingInHeader?: boolean;
+}) {
+  const context = record(status);
+  const messages = record(context.messages);
+  const semantic = record(messages.semantic);
+  const request = record(context.request);
+  const schema = record(request.toolSchemaBreakdown);
+  const inspection = context.inspection as ContextInspection | undefined;
+  const usage = contextDisplayUsage(status, snapshot);
   const used = usage.used;
   const windowTokens = usage.limit;
   const usedPercent = contextPercent(used, windowTokens) || 0;
@@ -145,14 +169,20 @@ export function ContextBody({
   return (
     <div className="context-surface-view">
       <div className="context-card">
-        <section className="context-usage-overview" aria-label={t('Context usage')}>
-          <div className="context-usage-heading">
-            <strong>{t(contextMeasurementLabel(usage.source))}</strong>
-            <span>
-              {used == null ? '—' : compactTokens(used)} / {compactTokens(windowTokens)}
-              {usage.percent != null ? ` · ${usage.percent}%` : ''}
-            </span>
-          </div>
+        <section
+          className="context-usage-overview"
+          aria-label={t('Context usage')}
+          data-reading={readingInHeader ? 'header' : undefined}
+        >
+          {!readingInHeader && (
+            <div className="context-usage-heading">
+              <strong>{t(contextMeasurementLabel(usage.source))}</strong>
+              <span>
+                {used == null ? '—' : compactTokens(used)} / {compactTokens(windowTokens)}
+                {usage.percent != null ? ` · ${usage.percent}%` : ''}
+              </span>
+            </div>
+          )}
           <div
             className="context-main-bar"
             role="img"

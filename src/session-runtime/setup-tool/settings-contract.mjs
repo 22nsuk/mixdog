@@ -30,8 +30,6 @@ export const SETUP_EXTENDED_ACTION_FIELDS = Object.freeze({
   set_appearance: 'appearance',
   save_project: 'project',
   remove_project: 'projectPath',
-  get_instructions: 'projectPath',
-  set_instructions: 'projectPath content expectedContent',
   revoke_linked_device: 'name',
 });
 
@@ -50,8 +48,6 @@ export const SETUP_DESKTOP_ACTIONS = Object.freeze([
   'set_appearance',
   'save_project',
   'remove_project',
-  'get_instructions',
-  'set_instructions',
   'revoke_linked_device',
 ]);
 export const SETUP_DESKTOP_DOMAINS = Object.freeze(['desktop', 'appearance', 'projects', 'connection']);
@@ -166,6 +162,7 @@ export const SETUP_EXTENDED_PROPERTIES = Object.freeze({
   }),
   desktop: object({
     keepAwake: boolean,
+    runInBackground: boolean,
     usagePinned: boolean,
     computerObserveOnly: boolean,
   }),
@@ -179,15 +176,7 @@ export const SETUP_EXTENDED_PROPERTIES = Object.freeze({
     zoom: { type: 'number', minimum: 0.5, maximum: 2 },
   }),
   project: object({ path: text, alias: text }, ['path']),
-  projectPath: {
-    type: ['string', 'null'],
-    description: 'Exact registered Project root; null means Common Instructions (instruction actions only).',
-  },
-  content: { ...text, description: 'Complete new Instructions content. Preserve unrelated instructions.' },
-  expectedContent: {
-    ...text,
-    description: 'Unchanged content returned by get_instructions; prevents overwriting a concurrent edit.',
-  },
+  projectPath: { ...text, description: 'Exact registered Project root.' },
 });
 
 export const SETUP_HANDOFFS = Object.freeze({

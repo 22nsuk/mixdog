@@ -3,7 +3,6 @@ import type { DesktopProjectSummary } from '../shared/contract';
 import { SidebarPanelBoundary } from './sidebar-panel-surface';
 import type { SidebarPanelKey } from './app-shell-components';
 import type { ExtensionsSection } from './extension-sections';
-import type { ProjectsSection } from './project-sections';
 import type { useAppShellPanels } from './use-app-shell-panels';
 import { useStableEvent } from './use-stable-event';
 import type { SidebarViewGroup } from './sidebar-view-layout';
@@ -15,6 +14,7 @@ const SIDEBAR_PANEL_TITLES: Record<SidebarPanelKey, string> = {
   schedules: 'Schedules',
   webhooks: 'Webhooks',
   projects: 'Projects',
+  workflows: 'Workflow',
   extensions: 'Extensions',
 };
 
@@ -36,8 +36,6 @@ export function useAppSidebarSurface({
   selectedProjectPath,
   extensionsSection,
   onExtensionsSectionChange,
-  projectsSection,
-  onProjectsSectionChange,
   closeSidebarForNavigation,
   startTask,
   openStudio,
@@ -63,8 +61,6 @@ export function useAppSidebarSurface({
   selectedProjectPath: string;
   extensionsSection: ExtensionsSection;
   onExtensionsSectionChange(section: ExtensionsSection): void;
-  projectsSection: ProjectsSection;
-  onProjectsSectionChange(section: ProjectsSection): void;
   closeSidebarForNavigation(): void;
   startTask(): unknown;
   /** Opens a Studio workspace tab in the focused pane. */
@@ -181,6 +177,7 @@ export function useAppSidebarSurface({
   const SchedulesPane = sidebarPanes.schedules;
   const WebhooksPane = sidebarPanes.webhooks;
   const ProjectsPane = sidebarPanes.projects;
+  const WorkflowsPane = sidebarPanes.workflows;
   const ExtensionsPane = sidebarPanes.extensions;
   const sidebarPanelTitle = presentedSidebarPanel ? SIDEBAR_PANEL_TITLES[presentedSidebarPanel] : '';
   // Stable sidebar handlers + memoised panel children: SessionSidebar, its
@@ -227,12 +224,23 @@ export function useAppSidebarSurface({
       content = (
         <ExtensionsPane active={active} section={extensionsSection} onSectionChange={onExtensionsSectionChange} />
       );
+    } else if (panel === 'workflows') {
+      content = (
+        <div
+          className="schedules-pane workflows-pane stable-surface-preserved stable-takeover-surface"
+          data-surface-active={active ? 'true' : 'false'}
+          inert={active ? undefined : true}
+          aria-hidden={active ? undefined : true}
+        >
+          <div className="schedules-page">
+            <WorkflowsPane active={active} />
+          </div>
+        </div>
+      );
     } else {
       content = (
         <ProjectsPane
           active={active}
-          section={projectsSection}
-          onSectionChange={onProjectsSectionChange}
           projects={projects}
           projectsReady={projectsReady}
           selectedProjectPath={selectedProjectPath}

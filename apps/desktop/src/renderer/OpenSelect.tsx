@@ -360,7 +360,9 @@ export function OpenSelect({
   else if (settingsStyle) triggerStyle = 'settings';
   let chevron = <MxIcon name="chevron-down" size={16} />;
   if (routeStyle) chevron = <MxIcon name="chevron-down" size={14} />;
-  else if (settingsStyle) chevron = <MxIcon name="chevron-grabber-vertical" size={14} />;
+  // Settings selects share the app's one chevron (polish pass: the up/down
+  // grabber read as a native stepper).
+  else if (settingsStyle) chevron = <MxIcon name="chevron-down" size={14} />;
 
   return (
     <div

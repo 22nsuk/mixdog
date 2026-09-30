@@ -24,10 +24,11 @@
 .mx-menu[data-trigger-style="settings"] {
   min-width: 160px;
 }
+/* The chosen option is a plain plate — no ring (polish pass). */
 .mx-menu-item[aria-selected="true"] {
   color: var(--mx-text);
   background: var(--mx-bg-layer-2);
-  box-shadow: inset 0 0 0 0.5px var(--mx-border);
+  box-shadow: none;
   font-weight: var(--mx-weight-regular);
 }
 .mx-menu-item[aria-selected="true"]:hover,

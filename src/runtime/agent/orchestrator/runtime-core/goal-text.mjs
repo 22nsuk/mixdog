@@ -3,6 +3,7 @@
 // No filesystem, no runtime coupling — values in, text out.
 
 import { goalTaskProgress } from './goal-tasks.mjs';
+import { MAX_GOAL_TASKS } from './goal-tool-defs.mjs';
 
 function escapeGoalPromptText(value) {
   return String(value ?? '')
@@ -214,7 +215,7 @@ export function goalStateReminder(goal, { reason = '' } = {}) {
   }
   if (reason === 'deadline-reached' && goal.status === 'active') return '';
   const tasks = Array.isArray(goal.tasks) ? goal.tasks : [];
-  const { tasksCompleted, tasksTotal } = goalTaskProgress(tasks);
+  const { tasksCompleted, tasksTotal, taskSlotsUsed } = goalTaskProgress(tasks);
   // Event-specific steering: what the model could not have learned from its own
   // tool results. Standing rules stay in the cached tool description.
   let lead = 'Current durable Goal snapshot:';
@@ -233,7 +234,7 @@ export function goalStateReminder(goal, { reason = '' } = {}) {
     ...(goal.status === 'blocked' ? [BLOCKED_LINE] : []),
     '',
     `Objective: ${escapeGoalPromptText(goal.objective)}`,
-    `Status: ${escapeGoalPromptText(goal.status)} · tasks ${tasksCompleted}/${tasksTotal}`,
+    `Status: ${escapeGoalPromptText(goal.status)} · tasks ${tasksCompleted}/${tasksTotal} · task slots used ${taskSlotsUsed}/${MAX_GOAL_TASKS}`,
     ...(goal.blocker ? [`Waiting or stop reason: ${escapeGoalPromptText(goal.blocker)}`] : []),
     ...(goal.revision ? [`Revision: ${goal.revision}`] : []),
     ...goalTimeLines(goal),

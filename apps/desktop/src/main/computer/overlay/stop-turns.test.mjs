@@ -62,13 +62,15 @@ test('repeated Stop shares one completion and a failed Stop can be retried', asy
   fail(new Error('computer_stop_unconfirmed'));
   await Promise.all([first, second]);
   assert.deepEqual(controller.state(), { busy: false, error: 'stop' });
+  // Stop closes the pill with the press, even when its cleanup is unconfirmed:
+  // the next command retries that recovery instead of an undismissable pill.
   const presentation = computerUseOverlayPresentation(
     {
       revision: 1,
       userControlActive: true,
       takeoverReason: 'user_stop',
       takeoverGeneration: 3,
-      cleanupState: 'ready',
+      cleanupState: 'failed',
       pausedSessionIds: ['fixture'],
       activities: [],
       cursors: [],
@@ -77,8 +79,7 @@ test('repeated Stop shares one completion and a failed Stop can be retried', asy
     'ko',
     controller.state()
   );
-  assert.equal(presentation.attention, true);
-  assert.equal(presentation.visible, true);
+  assert.equal(presentation.visible, false);
   await controller.invoke('stop', ['fixture']);
   assert.equal(calls, 2);
   assert.deepEqual(controller.state(), { busy: false, error: '' });
@@ -104,6 +105,47 @@ test('a session holding the user window keeps the controls on screen between com
   // Releasing the target ends the hold, and nothing is left on screen.
   const released = computerUseOverlayPresentation({ ...snapshot, targetLeases: [] }, 'ko');
   assert.equal(released.visible, false);
+});
+
+test('a pause offers Resume while its task lives, and nothing stays once the work is gone', () => {
+  const paused = {
+    revision: 1,
+    userControlActive: true,
+    takeoverReason: 'user_input_active',
+    takeoverGeneration: 2,
+    cleanupState: 'failed',
+    pausedSessionIds: ['a'],
+    activities: [{ sessionId: 'a', action: 'click', target: '', mode: 'background', phase: 'paused_user_takeover' }],
+    cursors: [],
+    keystrokes: [],
+    targetLeases: [],
+  };
+  const live = computerUseOverlayPresentation(paused, 'ko');
+  assert.equal(live.visible, true);
+  assert.equal(live.resumable, true);
+  assert.equal(live.title, '일시정지');
+  // The turn ended: a latched cleanup alone never keeps the pill on screen.
+  const ended = computerUseOverlayPresentation({ ...paused, activities: [], pausedSessionIds: [] }, 'ko');
+  assert.equal(ended.visible, false);
+});
+
+test('Resume carries the paused generation and a refusal is reported, not swallowed', async () => {
+  const resumed = [];
+  const controller = createComputerOverlayController(
+    {
+      stop: async () => {},
+      resume: async (generation) => {
+        resumed.push(generation);
+        if (generation === 9) throw new Error('computer_resume_stale');
+      },
+    },
+    () => {}
+  );
+  await controller.invoke('resume', ['a'], 8);
+  assert.deepEqual(controller.state(), { busy: false, error: '' });
+  await controller.invoke('resume', ['a'], 9);
+  assert.deepEqual(resumed, [8, 9]);
+  assert.equal(controller.state().error, 'failed');
 });
 
 test('target-local cleanup failure is reported as a cleanup error', async () => {

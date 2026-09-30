@@ -102,8 +102,18 @@ export function createConfigLifecycle({
     const adopted = adoptConfig(nextConfig, { hasSecrets });
     const changes = cfgMod.createConfigPatch(configSaveBaseline, adopted);
     configSaveBaseline = structuredClone(adopted);
-    if (changes.length) writers.queueConfigChanges(changes);
+    if (changes.length) writers.queueConfigChanges([...changes, ...seedChanges(adopted, changes)]);
     return adopted;
+  }
+
+  // A fresh profile's install markers (an empty `builtins`) and off-by-default
+  // agents equal the defaults, so no diff ever carries them — yet on disk
+  // their absence reads as a grandfathered profile with every agent on. The
+  // first write seeds them where the stored section lacks them.
+  function seedChanges(config, changes) {
+    return ['builtins', 'disabledAgents']
+      .filter((key) => config[key] !== undefined && !changes.some((change) => change.path[0] === key))
+      .map((key) => ({ path: [key], value: structuredClone(config[key]), ifAbsent: true }));
   }
 
   function scheduleSkillsSave(names) {

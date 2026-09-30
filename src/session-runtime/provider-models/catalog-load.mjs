@@ -4,6 +4,7 @@
 // catalog flattened into deduplicated rows with per-provider profiling.
 import { isSelectableLlmModel } from '../model-recency.mjs';
 import { sharedProviderCatalog } from '../provider-catalog-cache.mjs';
+import { NO_ENABLED_PROVIDERS } from '../../runtime/agent/orchestrator/providers/registry-errors.mjs';
 
 export function createCatalogLoader({
   caches,
@@ -36,7 +37,9 @@ export function createCatalogLoader({
    *  for. ensureProvidersReady starts the daemon-wide force refresh without
    *  blocking boot; a foreground full picker load must join that refresh,
    *  otherwise it can snapshot yesterday's provider cache moments before the
-   *  refresh invalidates it, leaving the UI on the stale first-open rows. */
+   *  refresh invalidates it, leaving the UI on the stale first-open rows.
+   *  Resolves false when no provider is enabled: a fresh install has nothing
+   *  to load, and the registry refuses an all-disabled init by design. */
   async function prepare({ forceRefresh, loadSecrets }) {
     if (loadSecrets) {
       const secretsStartedAt = performance.now();
@@ -45,7 +48,12 @@ export function createCatalogLoader({
       profile('secrets-ready', { ms: (performance.now() - secretsStartedAt).toFixed(1) });
     }
     const providersStartedAt = performance.now();
-    await ensureProvidersReady(config().providers || {});
+    try {
+      await ensureProvidersReady(config().providers || {});
+    } catch (error) {
+      if (error?.code === NO_ENABLED_PROVIDERS) return false;
+      throw error;
+    }
     profile('providers-ready', { ms: (performance.now() - providersStartedAt).toFixed(1) });
     const refreshStartedAt = performance.now();
     if (!forceRefresh && typeof reg().refreshProviderCatalogsOnStartup === 'function') {
@@ -55,6 +63,7 @@ export function createCatalogLoader({
       await reg().refreshCatalogs({ force: true });
     }
     profile('catalog-refresh-ready', { ms: (performance.now() - refreshStartedAt).toFixed(1) });
+    return true;
   }
 
   /** `request` ({ seq }) identifies the caller's load; `request.complete`
@@ -62,7 +71,13 @@ export function createCatalogLoader({
   return async function loadProviderModelsFresh({ forceRefresh = false, loadSecrets = true, request = null } = {}) {
     const startedAt = performance.now();
     profile('load:start', { forceRefresh, loadSecrets });
-    await prepare({ forceRefresh, loadSecrets });
+    // No enabled provider is an empty catalog, not a failure. The request
+    // stays incomplete so this answer is never cached: connecting a provider
+    // is picked up by the next read.
+    if (!(await prepare({ forceRefresh, loadSecrets }))) {
+      profile('load:done', { ms: (performance.now() - startedAt).toFixed(1), providers: 0, rows: 0 });
+      return [];
+    }
     const ownsLoad = request !== null && request.seq === caches.providerModelsLoadSeq;
     const revision = meta.syncCatalogRevision();
     // Preparation may legitimately refresh the catalog. Carry that revision

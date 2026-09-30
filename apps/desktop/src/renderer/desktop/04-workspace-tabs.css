@@ -154,7 +154,12 @@
     opacity: 0;
   }
 }
-.workspace-tab.closing {
+/* Closing mirrors opening: the collapsing cell clips its glyph, title and X
+   the way a growing one does, instead of spilling them over its neighbours
+   (user: 탭 열고 닫을 때 애니가 각각 달라 이상하다). */
+.workspace-tab.closing,
+.workspace-tab.closing.active {
+  overflow: clip;
   min-width: 0;
   max-width: 0;
   flex-basis: 0;
@@ -278,30 +283,33 @@
 .workspace-tab:focus-within::before {
   opacity: 0;
 }
-/* The selection keeps BOTH seams — its own right hairline and the left
-   neighbor's — so the divider pair stays put even while either tab is
-   hovered; the pair is the selection's boundary, not a hover affordance. */
+/* The selection's own plate is its boundary, so the seams on either side of
+   it step aside like they do for a hovered cell. */
 .workspace-tab.active::before,
 .workspace-tab:has(+ .workspace-tab.active)::before {
-  opacity: 1;
+  opacity: 0;
 }
 .workspace-tab:active {
   cursor: grabbing;
 }
+/* Selected vs idle reads by a PLATE, Codex/Chrome style (user: 탭 쪽 UI —
+   선택하고 미선택하고): the strip and the sheet became one surface under
+   Mica, so the old sheet-coloured active cell stopped standing out and the
+   thin top band was all that told the tabs apart. The selected tab wears a
+   soft top-rounded plate; a hovered idle tab a fainter one of the same
+   shape. */
 .workspace-tab:hover,
 .workspace-tab:focus-within {
   --workspace-tab-surface: var(--mx-tab-pill, var(--mx-bg-layer-1));
   color: var(--mx-text);
-  background: var(--workspace-tab-surface);
+  border-radius: var(--mx-radius-lg) var(--mx-radius-lg) 0 0;
+  background: color-mix(in srgb, var(--mx-text) 4%, transparent);
 }
-/* The active tab merges with the sheet. Focus ownership is communicated by
-   one inset accent only — never by a second outline around the whole pane. */
 .workspace-tab.active {
   --workspace-tab-surface: var(--mx-window-band);
   color: var(--mx-text);
-  background: var(--workspace-tab-surface);
-  /* Foreground and focused selection share the top-band grammar below.
-     Avoid a side contour: boxing the label fights the pane hairlines. */
+  border-radius: var(--mx-radius-lg) var(--mx-radius-lg) 0 0;
+  background: color-mix(in srgb, var(--mx-text) 7%, transparent);
 }
 /* PANE strips: ONE body with the content (user: VS코드처럼 라벨쪽과 패널
    사이에 줄 없고 배경색 구분도 없이 일체) — the strip band and the active
@@ -333,10 +341,16 @@
      pane only recolors it, so the strip never shifts weight on focus. */
   height: 2px;
   border-radius: 0;
-  background: var(--mx-border-strong);
+  /* The plate marks the selection now; the band only names the FOCUSED pane
+     once the workspace is split into several (one pane is always focused). */
+  background: transparent;
   pointer-events: none;
 }
-.workspace-tabs-shell[data-focused="true"] .workspace-tab.active::after {
+.pane-split .workspace-tabs-shell[data-focused="true"] .workspace-tab.active::after {
+  /* Inset past the plate's rounded corners. */
+  left: var(--mx-radius-lg);
+  right: var(--mx-radius-lg);
+  border-radius: 0 0 var(--mx-radius-hair) var(--mx-radius-hair);
   background: var(--mx-accent);
 }
 /* Keep the close affordance fully opaque for active and interaction states. */
@@ -344,6 +358,14 @@
 .workspace-tab:hover .workspace-tab-close,
 .workspace-tab:focus-within .workspace-tab-close {
   opacity: 1;
+}
+/* An idle tab shows its X only under the pointer or keyboard, keeping its
+   slot so the label never shifts; unsaved work keeps its dot visible. */
+.workspace-tab-close {
+  transition: opacity var(--mx-motion-ink);
+}
+.workspace-tab:not(.active):not(:hover):not(:focus-within):not(.dirty) .workspace-tab-close {
+  opacity: 0;
 }
 .workspace-tab:focus-within {
   outline: 0;

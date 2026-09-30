@@ -15,6 +15,7 @@ import { markCompactPayload } from './remote-compact-frames';
 import { VIEW_BASELINE_EVENT } from '../shared/remote-view-baseline';
 import { takeRemoteConnectionTimeline, reportRemoteConnectionIssue } from './remote-connection-state';
 import type { RemoteShimContext } from './remote-shim-state';
+import { ACTIVITY_RAIL_PINS_EVENT, readActivityRailPinsState } from '../shared/activity-rail-pins';
 
 export const installRemoteDispatch = (ctx: RemoteShimContext): void => {
   /** Fan a push out to one lane's listeners. A faulting renderer listener
@@ -191,6 +192,10 @@ export const installRemoteDispatch = (ctx: RemoteShimContext): void => {
           })
         );
       }
+    } else if (message.event === ACTIVITY_RAIL_PINS_EVENT) {
+      if (!authenticated) return;
+      const state = readActivityRailPinsState(message.payload);
+      if (state) fanOut(ctx.activityRailPinsListeners, state);
     } else if (message.event === 'termData') {
       const payload = (message.payload ?? {}) as { id?: unknown; data?: unknown };
       fanOut(ctx.termListeners, { id: String(payload.id || ''), data: String(payload.data ?? '') });

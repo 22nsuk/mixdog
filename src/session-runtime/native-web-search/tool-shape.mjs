@@ -17,6 +17,18 @@ export function normalizeWebSearchAllowedDomain(site) {
   }
 }
 
+// A site filter may name several domains the way a search box takes them
+// ("a.com OR b.com", "a.com, b.com", "site:a.com site:b.com"); each becomes its
+// own allowed domain instead of one invalid combined entry.
+export function normalizeWebSearchAllowedDomains(site) {
+  const domains = clean(site)
+    .split(/[\s,|]+/)
+    .filter((part) => part && part.toUpperCase() !== 'OR')
+    .map((part) => normalizeWebSearchAllowedDomain(part.replace(/^site:/i, '')))
+    .filter(Boolean);
+  return [...new Set(domains)];
+}
+
 export function nativeWebSearchUserLocation(locale) {
   if (!locale || typeof locale !== 'object' || Array.isArray(locale)) return null;
   const location = { type: 'approximate' };
@@ -28,7 +40,7 @@ export function nativeWebSearchUserLocation(locale) {
 }
 
 export function nativeWebSearchTool(args = {}, toolType = 'web_search', providerName = '') {
-  const domain = normalizeWebSearchAllowedDomain(args.site);
+  const domains = normalizeWebSearchAllowedDomains(args.site);
   const type = clean(toolType) || 'web_search';
   const location = nativeWebSearchUserLocation(args.locale);
   if (providerName === 'gemini') {
@@ -40,19 +52,19 @@ export function nativeWebSearchTool(args = {}, toolType = 'web_search', provider
       name: 'web_search',
       max_uses: Math.max(1, Math.min(10, Number(args.maxResults) || 5)),
     };
-    if (domain) tool.allowed_domains = [domain];
+    if (domains.length) tool.allowed_domains = domains;
     if (location) tool.user_location = location;
     return tool;
   }
   if (providerName === 'grok-oauth' || providerName === 'xai') {
     const tool = { type };
-    if (domain) tool.filters = { allowed_domains: [domain] };
+    if (domains.length) tool.filters = { allowed_domains: domains };
     return tool;
   }
   const tool = { type };
   if (type === 'web_search') {
     tool.search_context_size = clean(args.contextSize) || 'low';
-    if (domain) tool.filters = { allowed_domains: [domain] };
+    if (domains.length) tool.filters = { allowed_domains: domains };
     if (location) tool.user_location = location;
   }
   return tool;

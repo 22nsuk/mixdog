@@ -1244,19 +1244,13 @@
   stroke-dasharray: 6 4;
   opacity: 0.8;
 }
-.quota-chart-series {
-  stroke: var(--quota-ink);
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-/* The rest of the slot running now: not yet happened, so only sketched. */
-.quota-chart-series-ahead {
-  stroke: var(--quota-ink);
-  stroke-width: 1.5;
-  stroke-dasharray: 2 4;
-  stroke-linecap: round;
-  opacity: 0.6;
+/* Each model's layer of the area under the meter, flat in its mix ink: the
+   colours alone part the layers, and only the meter line strokes the top
+   (per-layer edges stacked a tangle of lines under it). */
+.quota-chart-plot .quota-chart-stack {
+  fill: var(--quota-ink);
+  fill-opacity: 0.55;
+  stroke: none;
 }
 /* Now: a hairline, with the time still to come faintly shaded after it. */
 .quota-chart-now {

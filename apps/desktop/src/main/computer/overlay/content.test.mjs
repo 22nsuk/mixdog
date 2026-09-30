@@ -44,21 +44,22 @@ test('a silent status mark follows the pause state the stylesheet rests it on', 
   }
 });
 
-test('Stop is the only control in every state: an icon with a spoken name, never disabled', async (t) => {
+test('Stop is in every state, an icon with a spoken name, never disabled; Resume joins it only while paused', async (t) => {
   for (const locale of ['ko', 'en']) {
     const f = fixture(t, locale);
     const label = locale === 'ko' ? '중단' : 'Stop';
     const states = [
-      { title: 'Running', paused: false },
-      { title: 'Paused', paused: true },
-      { title: 'Check', paused: true, attention: true },
+      { title: 'Running', paused: false, resumable: false },
+      { title: 'Paused', paused: true, resumable: true },
+      { title: 'Check', paused: true, resumable: true, attention: true },
     ];
     for (const [index, state] of states.entries()) {
       f.publish({ ...state, generation: 7, renderRevision: index + 1 });
       assert.deepEqual(
-        [...f.document.querySelectorAll('button')].map((button) => button.id),
-        ['stop']
+        [...f.document.querySelectorAll('button')].filter((button) => !button.hidden).map((button) => button.id),
+        state.resumable ? ['resume', 'stop'] : ['stop']
       );
+      assert.equal(f.document.getElementById('resume').getAttribute('aria-label'), locale === 'ko' ? '재개' : 'Resume');
       assert.equal(f.stop.getAttribute('aria-label'), label);
       assert.equal(f.stop.textContent, '');
       assert.equal(f.stop.disabled, false);
@@ -116,6 +117,21 @@ test('a rejected Stop remains visible even though Stop moves the generation', as
   assert.equal(f.title(), '실패');
   assert.equal(f.document.body.dataset.error, 'true');
   assert.equal(f.stop.getAttribute('aria-busy'), 'false');
+  assert.equal(f.stop.disabled, false);
+});
+
+test('Resume sends the generation the user saw, and a refusal says so while the pill stays usable', async (t) => {
+  const f = fixture(t);
+  f.publish({ title: '일시정지', paused: true, resumable: true, generation: 5, renderRevision: 1 });
+  const resume = f.document.getElementById('resume');
+  resume.click();
+  await settle();
+  assert.deepEqual(f.calls, [{ action: 'resume', generation: 5 }]);
+  f.window.mixdogComputerControl = async () => ({ accepted: true, error: 'failed' });
+  resume.click();
+  await settle();
+  assert.equal(f.title(), '실패');
+  assert.equal(resume.disabled, false);
   assert.equal(f.stop.disabled, false);
 });
 

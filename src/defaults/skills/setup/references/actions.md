@@ -68,8 +68,6 @@ Read this when choosing a `setup` mutation.
 | Desktop theme, display language, side panels, or zoom | `set_appearance` |
 | Register a Project and optionally set its display alias | `save_project` |
 | Unregister a Project without deleting its files | `remove_project` |
-| Read Project/Common Instructions before editing | `get_instructions` |
-| Replace unchanged Project/Common Instructions and retain a backup | `set_instructions` |
 | Revoke one linked device; re-pairing restores access | `revoke_linked_device` |
 | Managed local model context allocation; null restores automatic | `set_local_context` |
 

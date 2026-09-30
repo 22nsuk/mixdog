@@ -42,7 +42,8 @@ async function estimateTaskBytes(entry, workDir) {
   if (!st?.isFile()) return Infinity;
   const lines = Math.max(1, st.size / AVG_LINE_BYTES);
   let need = st.size + st.size / MIN_LINE_BYTES * LINE_PREFIX_BYTES;
-  const limit = Number(entry?.limit);
+  // A coalesced entry reads its whole union window, not only its own slot.
+  const limit = Number(readEntryCoalescedDiskWindow(entry)?.limit ?? entry?.limit);
   if (Number.isFinite(limit) && limit > 0) need *= Math.min(1, limit / lines);
   return Math.ceil(need) + READ_RENDER_SLACK_BYTES;
 }

@@ -1,0 +1,250 @@
+/* Getting-started spotlight tour and welcome card. The layer sits above
+   dialogs (Settings is one of the tour's stops) and below menus. */
+.starter-tour {
+  position: fixed;
+  inset: 0;
+  z-index: calc(var(--mx-toast-z-index) + 50);
+  pointer-events: none;
+  --starter-tour-scrim: rgb(0 0 0 / 55%);
+}
+/* While a lazy target is still mounting the layer only blocks input. */
+.starter-tour:not([data-ready]) > :not(.starter-tour-shield) {
+  visibility: hidden;
+}
+/* Input shield: blocks the app; an action stop clips the hole out of it. */
+.starter-tour-shield {
+  position: absolute;
+  inset: 0;
+  pointer-events: auto;
+}
+.starter-tour-scrim {
+  position: absolute;
+  inset: 0;
+  background: var(--starter-tour-scrim);
+}
+/* The hole: its own giant shadow is the scrim, so the control underneath
+   stays lit while everything around it dims. */
+.starter-tour-hole {
+  position: fixed;
+  border-radius: var(--mx-radius-lg);
+  box-shadow:
+    0 0 0 9999px var(--starter-tour-scrim),
+    0 0 0 1.5px var(--mx-focus);
+  pointer-events: none;
+  transition:
+    top 220ms var(--mx-ease-standard),
+    left 220ms var(--mx-ease-standard),
+    width 220ms var(--mx-ease-standard),
+    height 220ms var(--mx-ease-standard);
+}
+/* A live control pulses so "click here" reads without words. */
+.starter-tour-hole[data-live="true"] {
+  box-shadow:
+    0 0 0 9999px var(--starter-tour-scrim),
+    0 0 0 2px var(--mx-success);
+  animation: starter-tour-pulse 1.6s var(--mx-ease-standard) infinite;
+}
+@keyframes starter-tour-pulse {
+  0%,
+  100% {
+    outline: 0 solid color-mix(in srgb, var(--mx-success) 45%, transparent);
+    outline-offset: 0;
+  }
+  50% {
+    outline: 6px solid color-mix(in srgb, var(--mx-success) 0%, transparent);
+    outline-offset: 4px;
+  }
+}
+
+.starter-tour-card,
+.starter-welcome {
+  position: fixed;
+  box-sizing: border-box;
+  pointer-events: auto;
+  color: var(--mx-text);
+  background: var(--mx-popup-bg);
+  border-radius: var(--mx-radius-lg);
+  box-shadow:
+    var(--mx-popup-shadow),
+    inset 0 0 0 0.5px var(--mx-border);
+  font-size: var(--mx-font-ui);
+  line-height: var(--mx-line-ui);
+}
+.starter-tour-card {
+  width: 320px;
+  max-width: calc(100vw - 24px);
+  padding: 16px 18px 14px;
+  outline: none;
+  transition:
+    top 220ms var(--mx-ease-standard),
+    left 220ms var(--mx-ease-standard);
+}
+/* Arrow back to the spotlight: a rotated square on the facing edge, placed
+   at --starter-tour-arrow along it. */
+.starter-tour-card::before {
+  content: "";
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  background: var(--mx-popup-bg);
+  transform: rotate(45deg);
+}
+.starter-tour-card[data-side="right"]::before {
+  top: calc(var(--starter-tour-arrow) - 5px);
+  left: -5px;
+}
+.starter-tour-card[data-side="left"]::before {
+  top: calc(var(--starter-tour-arrow) - 5px);
+  right: -5px;
+}
+.starter-tour-card[data-side="below"]::before {
+  top: -5px;
+  left: calc(var(--starter-tour-arrow) - 5px);
+}
+.starter-tour-card[data-side="above"]::before {
+  bottom: -5px;
+  left: calc(var(--starter-tour-arrow) - 5px);
+}
+.starter-tour-card[data-side="center"]::before {
+  display: none;
+}
+.starter-tour-card .starter-tour-try {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--mx-success);
+  font-weight: var(--mx-weight-semibold);
+}
+.starter-tour-count {
+  color: var(--mx-text-faint);
+  font-size: var(--mx-font-meta);
+  font-variant-numeric: tabular-nums;
+}
+.starter-tour-card h2,
+.starter-welcome h2 {
+  margin: 4px 0 0;
+  font-size: 15px;
+  font-weight: var(--mx-weight-semibold);
+  line-height: 1.35;
+}
+.starter-tour-card p,
+.starter-welcome p {
+  margin: 6px 0 0;
+  color: var(--mx-text-muted);
+}
+.starter-tour-card footer,
+.starter-welcome footer {
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.starter-tour-card footer > div {
+  display: flex;
+  gap: 6px;
+}
+.starter-tour-card button,
+.starter-welcome button {
+  min-height: 30px;
+  padding: 0 11px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  border-radius: var(--mx-radius-md);
+  color: var(--mx-text);
+  background: var(--mx-popup-action-bg);
+  box-shadow: var(--mx-popup-action-ring);
+  font: inherit;
+  cursor: pointer;
+}
+.starter-tour-card button:hover,
+.starter-welcome button:hover {
+  background: var(--mx-hover);
+}
+.starter-tour-card button.primary,
+.starter-welcome button.primary {
+  color: var(--mx-grey-100);
+  background: var(--mx-bg-contrast);
+  box-shadow: var(--mx-button-contrast);
+  font-weight: var(--mx-weight-semibold);
+}
+.starter-tour-card button.primary:hover,
+.starter-welcome button.primary:hover {
+  background: var(--mx-flat-hover-contrast);
+}
+.starter-tour-card button.starter-tour-skip,
+.starter-welcome button.starter-tour-skip {
+  padding: 0 4px;
+  color: var(--mx-text-muted);
+  background: transparent;
+  box-shadow: none;
+}
+.starter-tour-card button:focus-visible,
+.starter-welcome button:focus-visible {
+  outline: 1px solid var(--mx-focus);
+  outline-offset: 0;
+}
+
+.starter-welcome {
+  top: 50%;
+  left: 50%;
+  width: 420px;
+  max-width: calc(100vw - 24px);
+  padding: 24px 24px 18px;
+  transform: translate(-50%, -50%);
+  /* Arrives right as setup closes: a short beat lets the setup card leave
+     first, then the welcome rises and settles instead of cutting in. */
+  animation: starter-welcome-in var(--mx-motion-slow) var(--mx-ease-emphasized) 120ms both;
+}
+/* The welcome's own dim fades up with it rather than snapping dark. */
+.starter-tour-scrim:has(+ .starter-welcome) {
+  animation: mx-scrim-in var(--mx-motion-slow) var(--mx-ease-standard) both;
+}
+@keyframes starter-welcome-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, calc(-50% + 12px)) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%);
+  }
+}
+.starter-welcome-icon {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--mx-bg-layer-2);
+  box-shadow: inset 0 0 0 0.5px var(--mx-border);
+}
+.starter-welcome h2 {
+  margin-top: 14px;
+  font-size: 18px;
+}
+.starter-welcome ol {
+  margin: 14px 0 0;
+  padding: 12px 14px 12px 32px;
+  display: grid;
+  gap: 6px;
+  border-radius: var(--mx-radius-md);
+  background: var(--mx-bg-layer-2);
+}
+.starter-welcome li::marker {
+  color: var(--mx-text-faint);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .starter-tour-hole,
+  .starter-tour-card {
+    transition: none;
+  }
+  .starter-tour-hole[data-live="true"],
+  .starter-welcome,
+  .starter-tour-scrim:has(+ .starter-welcome) {
+    animation: none;
+  }
+}

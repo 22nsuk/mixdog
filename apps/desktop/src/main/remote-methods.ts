@@ -45,7 +45,6 @@ import {
   requiredToolApprovalDecision,
   sessionDisplayName,
   requiredGitGlobalConfigKey,
-  requiredInstructionsContent,
   requiredLspDocumentInput,
   requiredLspRequestInput,
   requiredTextFileContent,
@@ -55,7 +54,6 @@ import {
   requiredWorkspaceTextWrites,
 } from './ipc-validation';
 import { absoluteLocalPath } from './local-files';
-import { instructionsFilesFor } from './instructions-file';
 import { MAX_SELECTED_FILE_GRANTS, owningProject, sameGrantedPath, selectedFileGrantKey } from './selected-file-grants';
 import {
   requiredCommitHash,
@@ -467,7 +465,7 @@ function projectEntryRemoteMethods(host: DesktopService): Record<string, RemoteM
 }
 
 /** The editor's own lanes: writes, scoped settings, crash backups,
- *  instructions, workspace search and the language servers. Everything here
+ *  workspace search and the language servers. Everything here
  *  resolves a project-relative path first — through a selected-file grant when
  *  the surface holds one, otherwise through the project directory. */
 function editorRemoteMethods(deps: {
@@ -487,8 +485,6 @@ function editorRemoteMethods(deps: {
     if (!userDataPath) throw new Error('Editor backup storage is unavailable.');
     return userDataPath;
   };
-  const instructionsFiles = (projectPath: unknown) =>
-    instructionsFilesFor(projectPath, (project) => host.projectDirectory(requiredString(project, 'projectPath')));
   return {
     writeProjectFile: ([projectPath, relPath, content, expectedContent, accessToken, encoding]) => {
       const text = requiredTextFileContent(content, 'file content');
@@ -543,16 +539,6 @@ function editorRemoteMethods(deps: {
       const file = await editorFilePath(projectPath, relPath, accessToken);
       await invokeDesktopOperation('deleteEditorBackup', [userDataPath, file]);
       return null;
-    },
-    readInstructions: async ([projectPath]) => {
-      const { file, legacyFile } = await instructionsFiles(projectPath);
-      return invokeDesktopOperation('readInstructions', [file, legacyFile]);
-    },
-    writeInstructions: async ([projectPath, content, expectedContent]) => {
-      const text = requiredInstructionsContent(content);
-      const { file, legacyFile } = await instructionsFiles(projectPath);
-      const expected = expectedContent === undefined ? undefined : requiredInstructionsContent(expectedContent);
-      return invokeDesktopOperation('writeInstructions', [file, text, expected, legacyFile]);
     },
     saveWorkspace: ([workspaceFile, rawFolders]) => {
       const folders = requiredWorkspaceFolders(rawFolders);
@@ -629,6 +615,9 @@ export function createRemoteMethods({
   const grants = createSelectedFileGrants();
   const { grantedFile, grantedIf } = grants;
   const methods: Record<string, RemoteMethod> = {
+    readActivityRailPins: () => invokeDesktopOperation('readActivityRailPins', []),
+    // A web client writes normally; it never initializes from its local cache.
+    updateActivityRailPins: ([pins]) => invokeDesktopOperation('updateActivityRailPins', [pins]),
     startProject: ([projectPath]) => host.startProject(requiredString(projectPath, 'projectPath')),
     startProjectTask: ([projectPath]) => host.startProjectTask(requiredString(projectPath, 'projectPath')),
     startTask: () => host.startTask(),

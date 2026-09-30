@@ -72,12 +72,15 @@ export function EditorDialogFooter({
   onCancel,
   onDelete,
   children,
+  saveDisabled = false,
 }: {
   error: string;
   busy: boolean;
   onCancel(): void;
   onDelete?(): void;
   children?: ReactNode;
+  /** The form is incomplete (e.g. an agent switched on with no model). */
+  saveDisabled?: boolean;
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   return (
@@ -103,7 +106,7 @@ export function EditorDialogFooter({
       <button type="button" className="secondary" disabled={busy} onClick={onCancel}>
         {t('Cancel')}
       </button>
-      <button type="submit" disabled={busy}>
+      <button type="submit" disabled={busy || saveDisabled}>
         {t('Save')}
       </button>
     </footer>

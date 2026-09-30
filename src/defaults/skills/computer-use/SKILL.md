@@ -115,18 +115,19 @@ GNOME with the Window Calls extension); prefer accessibility refs there.
   of the shared desktop. If that surface is unavailable, use semantic refs or
   report `pixel_unavailable`; do not substitute a screen grab.
 - If the user intervenes, preserve their cursor and focus. Worker termination
-  and input cleanup must finish before resuming; a failed cleanup is not cleared
-  by a resume request. Ask the user to press `Ctrl+Alt+Esc`, or the overlay's
-  Stop control, for verified cleanup recovery.
-  If target-local release remains unconfirmed, the user must inspect/recover
-  that window; restarting the host alone does not prove release. Obtain a new
-  observation after an interruption.
-  Use `wait_for_user` to keep the task waiting without sending input. The host
-  may resume ordinary physical-input interruptions after its configured quiet
-  interval; renewed input resets that interval. Explicit pauses/stops and
-  uncertain observation/cleanup never auto-resume. The overlay's only control
-  is Stop, which cancels the task. Never operate it or the recovery controls,
-  or change the idle policy, on the user's behalf.
+  and input cleanup must finish before resuming. The user's Resume on the
+  overlay continues a pause; an ordinary physical-input pause may also resume
+  after the host's configured quiet interval (renewed input resets it), while
+  explicit pauses, stops and uncertain cleanup never auto-resume. Stop (or
+  `Ctrl+Alt+Esc`) cancels the task, which then reports the stop as a failure.
+  A cleanup that could not be confirmed is retried before the next input
+  command; if it still fails, that command returns the reason — relay it to
+  the user. If target-local release remains unconfirmed, the user must
+  inspect/recover that window; restarting the host alone does not prove
+  release. Obtain a new observation after an interruption.
+  Use `wait_for_user` to keep the task waiting without sending input. Never
+  operate Resume, Stop or the recovery controls, or change the idle policy, on
+  the user's behalf.
   While paused, only `list`, `diagnose` and `wait_for_user` are available.
   Chat text alone does not clear the host. After `resumed`, capture fresh state;
   after `timeout` or `cancelled`, no input is authorized. Never replay the

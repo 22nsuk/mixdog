@@ -233,7 +233,7 @@ export const OrchestrationModeSelect = memo(function OrchestrationModeSelect({
       {selected ? (
         <OpenSelect
           variant="route"
-          className="context-pill-select"
+          className="context-pill-select orchestration-mode-select"
           ariaLabel={t('Orchestration Mode')}
           tooltip={t('Delegation mode')}
           disabled={disabled || switching}

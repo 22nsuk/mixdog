@@ -83,9 +83,6 @@ export const createRemoteApi = (ctx: RemoteShimContext): DesktopApi => {
       call('writeEditorBackup', [projectPath, relPath, content, expectedContent, accessToken ?? null]),
     deleteEditorBackup: (projectPath, relPath, accessToken) =>
       call('deleteEditorBackup', [projectPath, relPath, accessToken ?? null]),
-    readInstructions: (projectPath) => call('readInstructions', [projectPath ?? null]),
-    writeInstructions: (projectPath, content, expectedContent) =>
-      call('writeInstructions', [projectPath ?? null, content, expectedContent]),
     codeGraphQuery: (projectPath, mode, query) => call('codeGraphQuery', [projectPath, mode, query]),
     searchWorkspaceText: (projectPath, options) => call('searchWorkspaceText', [projectPath, options]),
     replaceWorkspaceText: (projectPath, options, replacement, relPaths) =>
@@ -253,6 +250,12 @@ export const createRemoteApi = (ctx: RemoteShimContext): DesktopApi => {
     setFast: (enabled, sessionId) => call('setFast', [enabled, sessionId]),
     readSettings: () => call('readSettings'),
     updateSetting: (key, enabled) => call('updateSetting', [key, enabled]),
+    readActivityRailPins: () => call('readActivityRailPins'),
+    updateActivityRailPins: (pins) => call('updateActivityRailPins', [pins]),
+    subscribeActivityRailPins: (listener) => {
+      ctx.activityRailPinsListeners.add(listener);
+      return () => { ctx.activityRailPinsListeners.delete(listener); };
+    },
     invokeCapability: <T = unknown>(request: DesktopCapabilityRequest) =>
       call<DesktopCapabilityResult<T>>('invokeCapability', [request]),
     readCapabilities: (requests) => call('readCapabilities', [requests]),

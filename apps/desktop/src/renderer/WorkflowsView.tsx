@@ -31,7 +31,12 @@ function agentRouteSummary(route: RecordValue, models: DesktopModelOption[]): Ag
   const provider = String(route.provider || '');
   const model = String(route.model || '');
   const selected = models.find((entry) => entry.provider === provider && entry.model === model);
-  const modelLabel = model ? modelDisplayName(model, provider, selected?.display || '') : 'Default · follows Main';
+  // Web Search's default marker follows Main; an agent with no model shows
+  // none — it stays off until one is picked.
+  const followsMain = provider === 'default' && model === 'default';
+  let modelLabel = '';
+  if (followsMain) modelLabel = 'Default · follows Main';
+  else if (model) modelLabel = modelDisplayName(model, provider, selected?.display || '');
   const effortValue = String(route.effort || preferredModelEffort(selected) || '');
   const effortOption = selected?.effortOptions.find((entry) => entry.value === effortValue);
   const rawEffortLabel = effortOption?.label || effortValue;
@@ -46,6 +51,7 @@ function agentRouteSummary(route: RecordValue, models: DesktopModelOption[]): Ag
 }
 
 function AgentRouteSummaryView({ summary }: { summary: AgentRouteSummary }) {
+  if (!summary.model) return null;
   return (
     <small className="agent-route-summary route-trigger-copy">
       <ModelRouteLabel
@@ -84,9 +90,8 @@ const WORKFLOW_REFERENCE_KEYS = [
   'quickProviderModels',
 ] as const satisfies readonly SidebarReferenceKey[];
 
-// Workflow and agent configuration (Projects panel → Workflow tab). The
-// hosting ProjectsPane owns the surface wrapper and the section toolbar; this
-// section renders its lists and popup editors.
+// Workflow and agent configuration has its own rail destination. The sidebar
+// surface owns the panel wrapper; this body renders its lists and popup editors.
 export function WorkflowsPane({ api = window.mixdogDesktop, active = true }: { api?: WorkflowsApi; active?: boolean }) {
   // App pre-mounts rail destinations while idle, and boot prewarms these keys,
   // so a normal first click is already a warm, atomic reveal.
@@ -274,6 +279,7 @@ export function WorkflowsPane({ api = window.mixdogDesktop, active = true }: { a
       <button
         type="button"
         className="schedules-row utilities-row sidebar-resource-row workflows-agent-summary-row workflows-default-agent-summary-row"
+        data-agent-id={agent.id}
         data-enabled={disabled ? 'false' : 'true'}
         style={{ order: defaultAgentOrder.orderedIds.indexOf(agent.id) }}
         data-tooltip={t('Agent settings')}
@@ -364,9 +370,11 @@ export function WorkflowsPane({ api = window.mixdogDesktop, active = true }: { a
       {loading && <InitialSurface />}
       {!loading && (
         <>
-          <section className="workflows-models workflows-packs" aria-label={t('Workflows')}>
+          {/* The panel is titled Workflows already; the list under it is named
+          for what it holds (user: 워크플로우 두 개 붙어 있는 게 어색해서). */}
+          <section className="workflows-models workflows-packs" aria-label={t('Work rules')}>
             <div className="workflows-section-head">
-              <h2>{t('Workflows')}</h2>
+              <h2>{t('Work rules')}</h2>
               <button
                 type="button"
                 className="session-panel-action schedules-new"

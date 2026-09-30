@@ -6,11 +6,13 @@ import { clean } from '../../../shared/clean.mjs';
 // dropped on normalize rather than rejected.
 const TASK_ENTRY_FIELDS = ['id', 'text', 'status', 'kind'];
 
-// Dropped rows remain in the record but are no longer requested work.
+// Dropped rows remain in the record but are no longer requested work. Every
+// row, completed and dropped included, still fills one of the capped slots.
 export function goalTaskProgress(tasks) {
   return {
     tasksCompleted: tasks.filter((task) => task?.status === 'completed').length,
     tasksTotal: tasks.filter((task) => task?.status !== 'dropped').length,
+    taskSlotsUsed: tasks.length,
   };
 }
 
@@ -89,12 +91,18 @@ function taskInputRetains(entry, task) {
 }
 
 export function patchGoalTasks(previous, { updates, tasks } = {}) {
-  const patches = updates ?? [];
-  const additions = tasks ?? [];
-  if (!Array.isArray(patches) || !Array.isArray(additions)) throw new Error('goal updates and tasks must be arrays');
+  const requested = updates ?? [];
+  const entries = tasks ?? [];
+  if (!Array.isArray(requested) || !Array.isArray(entries)) throw new Error('goal updates and tasks must be arrays');
+  const byId = new Map(previous.map((task) => [task.id, { ...task }]));
+  // A new-task entry naming an id this Goal already has can only mean that
+  // task, so it is applied as the task's update. An id the Goal does not have
+  // is still refused below.
+  const addressesExisting = (entry) => byId.has(clean(entry?.id));
+  const patches = [...requested, ...entries.filter(addressesExisting)];
+  const additions = entries.filter((entry) => !addressesExisting(entry));
   if (!patches.length && !additions.length) throw new Error('goal update_tasks requires updates or new tasks');
   if (patches.length > MAX_GOAL_TASKS) throw new Error(`goal updates support at most ${MAX_GOAL_TASKS} entries`);
-  const byId = new Map(previous.map((task) => [task.id, { ...task }]));
   const seen = new Set();
   for (const patch of patches) {
     const id = clean(patch?.id);

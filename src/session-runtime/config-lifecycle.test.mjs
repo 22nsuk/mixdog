@@ -13,9 +13,15 @@ function deferred() {
   return { promise, resolve };
 }
 
-function fixture() {
-  let current = { builtins: {}, providers: { demo: { enabled: true } }, skills: { disabled: [] }, theme: 'old' };
-  let root = { agent: structuredClone(current), outputStyle: 'simple' };
+function fixture({ config = {}, disk } = {}) {
+  let current = {
+    builtins: {},
+    providers: { demo: { enabled: true } },
+    skills: { disabled: [] },
+    theme: 'old',
+    ...config,
+  };
+  let root = { agent: structuredClone(disk ?? current), outputStyle: 'simple' };
   let hasSecrets = false;
   let webSearchRoute = null;
   const writes = [];
@@ -73,6 +79,21 @@ function fixture() {
   });
   return { lifecycle, cfgMod, sharedCfgMod, writes, config: () => current, disk: () => root };
 }
+
+test('the first save seeds fresh-profile defaults no diff carries, never over stored values', async () => {
+  // A brand-new profile: defaults in memory, nothing of them on disk yet.
+  const f = fixture({ config: { disabledAgents: ['maintainer', 'worker'] }, disk: { theme: 'old' } });
+  f.lifecycle.saveConfigAndAdopt({ ...f.config(), theme: 'next' });
+  await f.lifecycle.flushAllConfigSavesAsync();
+  assert.deepEqual(f.disk().agent.builtins, {});
+  assert.deepEqual(f.disk().agent.disabledAgents, ['maintainer', 'worker']);
+  // Once stored, the user's own value wins over every later seed.
+  f.disk().agent.disabledAgents = ['worker'];
+  f.lifecycle.saveConfigAndAdopt({ ...f.config(), theme: 'again' });
+  await f.lifecycle.flushAllConfigSavesAsync();
+  assert.deepEqual(f.disk().agent.disabledAgents, ['worker']);
+  assert.equal(f.disk().agent.theme, 'again');
+});
 
 test('synchronous reload cannot overtake an older asynchronous config write', async () => {
   const f = fixture();

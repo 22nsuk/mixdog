@@ -21,7 +21,8 @@ import {
   type UsageApi,
 } from './usage-dashboard-store';
 import { displayUsagePercent, usageToneClass } from './usage-percent';
-import { useDockVisibilityMenu, type DockIconEntry } from './dock-icon-visibility';
+import { ActivityRailNavigation } from './activity-rail-navigation';
+import type { WorkbenchSideViewDescriptor, WorkbenchSideViewId } from './workbench-side-view-layout';
 
 // The flyout body loads in the post-boot warm-up lane, on hover/focus intent,
 // or on the open itself — not with the rail; its data is already warm in the
@@ -64,8 +65,9 @@ export function ActivityRail({
   onOpenUsageStats,
   onPrefetchSettings,
   usageApi,
-  primaryNavigation,
   navigationItems,
+  activeNavigationId,
+  onSelectNavigation,
 }: {
   /** The settings surface is open, so the rail-foot button reads selected. */
   settingsOpen: boolean;
@@ -76,29 +78,15 @@ export function ActivityRail({
   onPrefetchSettings?(): void;
   /** Overridable only for tests; the rail warms usage through the host API. */
   usageApi?: UsageApi;
-  /** The left side-view icon bar: every rail destination, Sessions first. It
-   *  owns its own drag reorder, including the gaps between its buttons. */
-  primaryNavigation: React.ReactNode;
-  /** Visibility-menu entries for the destinations above. */
-  navigationItems: readonly DockIconEntry[];
+  navigationItems: readonly WorkbenchSideViewDescriptor[];
+  activeNavigationId: WorkbenchSideViewId | null;
+  onSelectNavigation(id: WorkbenchSideViewId): void;
 }) {
   // Subscription usage moved off the session panel (user decision): the rail
   // hosts an account toggle and the panel stays a pure session
   // list. Only the dashboard MARKUP is flyout-scoped; its data lives in the
   // shared store below so the first open never starts from nothing.
   const [usageOpen, setUsageOpen] = useState(false);
-  const { isVisible, menuProps, menu } = useDockVisibilityMenu(
-    [
-      ...navigationItems,
-      ...(desktopFeatureEnabled('usage') ? [{ id: 'usage', label: 'Usage' }] : []),
-      ...(desktopFeatureEnabled('settings') ? [{ id: 'settings', label: 'Settings' }] : []),
-    ],
-    'Activity Bar'
-  );
-  const usageVisible = isVisible('usage');
-  useEffect(() => {
-    if (!usageVisible) setUsageOpen(false);
-  }, [usageVisible]);
   // ABB: the usage flyout closes on hardware back.
   useMobileBack(usageOpen, () => setUsageOpen(false));
   const usageSnapshot = useSyncExternalStore(subscribeUsageDashboard, getUsageDashboardSnapshot);
@@ -189,12 +177,12 @@ export function ActivityRail({
       }
     : undefined;
   return (
-    <aside className="activity-rail" aria-label={t('Activity Bar')} ref={railRef} {...menuProps}>
+    <aside className="activity-rail" aria-label={t('Activity Bar')} ref={railRef}>
       <nav className="sidebar-primary-nav" aria-label={t('Sidebar')} ref={navRef}>
-        {primaryNavigation}
+        <ActivityRailNavigation entries={navigationItems} activeId={activeNavigationId} onSelect={onSelectNavigation} />
       </nav>
       <div className="activity-rail-spacer" />
-      {desktopFeatureEnabled('usage') && usageVisible && (
+      {desktopFeatureEnabled('usage') && (
         <button
           type="button"
           className={`sidebar-usage-toggle ${usageOpen ? 'is-active' : ''}${usagePinRows.length ? ' is-pinned' : ''}`}
@@ -228,7 +216,7 @@ export function ActivityRail({
           {usagePinGlyph(usagePinRows, usagePinLoading)}
         </button>
       )}
-      {desktopFeatureEnabled('settings') && isVisible('settings') && (
+      {desktopFeatureEnabled('settings') && (
         <button
           type="button"
           ref={settingsRef}
@@ -280,7 +268,6 @@ export function ActivityRail({
           )}
         </div>
       )}
-      {menu}
     </aside>
   );
 }

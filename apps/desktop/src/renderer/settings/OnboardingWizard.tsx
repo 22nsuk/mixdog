@@ -27,7 +27,7 @@ import { OAuthControl } from './CapabilitySettings';
 import { FOCUSABLE_SELECTOR, inertBackground, portaledMenuOpen, trapTab } from './dialog-modality';
 import { getCachedGitPanelInfo, patchCachedGitPanelInfo, preloadGitPanelInfo } from './git-panel-info';
 import { useGithubLoginPolling } from './github-login-polling';
-import { rememberGithubStarred } from './github-star-storage';
+import { probeGithubStarred, readGithubStarred, rememberGithubStarred } from './github-star-storage';
 import '../desktop/21-onboarding.css';
 
 type RecordValue = Record<string, unknown>;
@@ -127,6 +127,12 @@ export function OnboardingWizard({ api, onDone }: { api: DesktopApi; onDone(): v
   // The wizard's fullscreen scrim cannot cover the NATIVE caption controls —
   // hold the titlebar dim claim while the wizard is mounted.
   useEffect(() => acquireTitleBarDim(), []);
+  // Warm the Git and Star steps while the first steps are on screen, so
+  // entering them paints the finished card instead of popping in.
+  useEffect(() => {
+    void preloadGitPanelInfo(api);
+    if (!readGithubStarred()) void probeGithubStarred(api).catch(() => undefined);
+  }, [api]);
 
   // Resume: remember the furthest UI position; the marker clears on close.
   useEffect(() => {
@@ -248,11 +254,27 @@ export function OnboardingWizard({ api, onDone }: { api: DesktopApi; onDone(): v
     void finish();
   };
 
+  // Moving on past the Git step with GitHub connected installs the Git
+  // built-in — the same activation as its Extensions card — so the git and
+  // github tools work from the first task. Skipping, no system Git, or a
+  // failed write leaves the card to install from; it never blocks setup.
+  const activateGit = async () => {
+    const github = await api.githubCliStatus?.();
+    if (github?.authenticated !== true) return;
+    const git = await api.gitCliStatus?.();
+    if (git?.installed !== true) return;
+    await run('setBuiltinToolEnabled', ['git', true], 'git-builtin', false, true);
+  };
+  const goToStep = (next: number) => {
+    if (STEPS[step].id === 'git' && next > step) void activateGit().catch(() => undefined);
+    setStep(next);
+  };
+
   advanceRef.current = () => {
     // Commit the title before a keyboard shortcut unmounts its input.
     if (document.activeElement instanceof HTMLInputElement) document.activeElement.blur();
     if (loading || capabilityPendingRef.current) return;
-    if (step < STEPS.length - 1) setStep(step + 1);
+    if (step < STEPS.length - 1) goToStep(step + 1);
     else void finish();
   };
 
@@ -336,7 +358,7 @@ export function OnboardingWizard({ api, onDone }: { api: DesktopApi; onDone(): v
                   aria-label={t('Go to step {{step}}: {{label}}', { step: index + 1, label: entry.label() })}
                   aria-current={index === step ? 'step' : undefined}
                   disabled={Boolean(pending)}
-                  onClick={() => setStep(index)}
+                  onClick={() => goToStep(index)}
                 />
               ))}
               <span className="onboarding-progress-count">
@@ -625,10 +647,10 @@ function GitStep({ api }: { api: DesktopApi }) {
   const [flow, setFlow] = useState<DesktopGithubCliLoginFlow | null>(null);
   const [busy, setBusy] = useState('');
   const [gitError, setGitError] = useState('');
-  const [identityReady, setIdentityReady] = useState(false);
   const [identityBusy, setIdentityBusy] = useState(false);
   const [avatarFailed, setAvatarFailed] = useState(false);
   const identityFlow = useRef('');
+  const identityAdopted = useRef(false);
 
   const refresh = useCallback(async () => {
     if (!api.githubCliStatus) return;
@@ -677,29 +699,11 @@ function GitStep({ api }: { api: DesktopApi }) {
     };
   }, [api, authenticated, supported]);
 
-  useEffect(() => {
-    if (!authenticated) {
-      setIdentityReady(false);
-      return;
-    }
-    if (flowId) return;
-    let live = true;
-    void api
-      .gitGlobalConfig?.()
-      .then((config) => {
-        if (live) setIdentityReady(Boolean(config.name && config.email));
-      })
-      .catch((reason) => {
-        if (live) setGitError(reason instanceof Error ? reason.message : String(reason));
-      });
-    return () => {
-      live = false;
-    };
-  }, [api, authenticated, flowId]);
-
+  // No identity UI (same rule as Settings → Git, user decision: 연동하면
+  // 자동으로): the commit identity follows the connected account — on a
+  // machine with no identity yet, and after every sign-in completed here.
   const syncIdentity = useCallback(async () => {
     setIdentityBusy(true);
-    setIdentityReady(false);
     setGitError('');
     try {
       if (!api.githubCliAccount || !api.setGitGlobalConfig) {
@@ -715,7 +719,6 @@ function GitStep({ api }: { api: DesktopApi }) {
       if (config.name !== next.name || config.email !== next.email) {
         throw new Error(t('The setting could not be saved.'));
       }
-      setIdentityReady(true);
     } catch (reason) {
       setGitError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -729,6 +732,24 @@ function GitStep({ api }: { api: DesktopApi }) {
     identityFlow.current = flowId;
     void syncIdentity();
   }, [flowId, flowState, syncIdentity]);
+
+  useEffect(() => {
+    if (!authenticated || flowId || identityAdopted.current) return undefined;
+    let live = true;
+    void api
+      .gitGlobalConfig?.()
+      .then((config) => {
+        if (!live || identityAdopted.current || config.name || config.email) return;
+        identityAdopted.current = true;
+        void syncIdentity();
+      })
+      .catch((reason) => {
+        if (live) setGitError(reason instanceof Error ? reason.message : String(reason));
+      });
+    return () => {
+      live = false;
+    };
+  }, [api, authenticated, flowId, syncIdentity]);
 
   if (!supported) {
     return (
@@ -753,9 +774,6 @@ function GitStep({ api }: { api: DesktopApi }) {
   const pill = githubPill(loading, Boolean(status?.installed), authenticated);
   const login = String(status?.login || account?.name || '');
   const showAvatar = authenticated && Boolean(login) && !avatarFailed;
-  let connectedNote = t('GitHub is connected. Set up your commit identity to finish Git setup.');
-  if (identityBusy) connectedNote = t('Saving…');
-  else if (identityReady) connectedNote = t('Commits and pull requests are ready to go.');
   const connectHint =
     !status?.installed && !loading
       ? t('Mixdog installs the GitHub CLI and signs you in — one click, no terminal needed.')
@@ -779,15 +797,15 @@ function GitStep({ api }: { api: DesktopApi }) {
           {authenticated && Boolean(account?.email) && <span className="onboarding-card-meta">{account?.email}</span>}
         </div>
       </div>
-      <p className="onboarding-card-text">{authenticated ? connectedNote : connectHint}</p>
+      {/* A failed automatic identity shows its error instead of "ready". */}
+      {!(authenticated && gitError) && (
+        <p className="onboarding-card-text">
+          {authenticated ? t('Commits and pull requests are ready to go.') : connectHint}
+        </p>
+      )}
       {authenticated && (
         <div className="onboarding-card-actions">
           <small>{t('Manage in Settings → Git.')}</small>
-          {!identityReady && (
-            <button type="button" disabled={busyAny} onClick={() => void syncIdentity()}>
-              {t('Set up commit identity')}
-            </button>
-          )}
         </div>
       )}
       {!authenticated && (
@@ -896,16 +914,18 @@ function starLabel(starred: boolean, busy: boolean): string {
 // otherwise) framed as the closing ask before Finish.
 function StarStep({ api }: { api: DesktopApi }) {
   const [ghReady, setGhReady] = useState(false);
-  const [starred, setStarred] = useState(false);
+  // A remembered star paints at once (the About panel's rule) and skips the
+  // probe; otherwise the probe fills in gh availability.
+  const [starred, setStarred] = useState(readGithubStarred);
   const [busy, setBusy] = useState(false);
   useEffect(() => {
+    if (readGithubStarred()) return undefined;
     let live = true;
-    void api
-      .githubStarStatus?.()
-      ?.then((status) => {
+    void probeGithubStarred(api)
+      .then((status) => {
         if (!live || !status) return;
-        setGhReady(status.available === true);
-        setStarred(status.starred === true);
+        setGhReady(status.available);
+        setStarred(status.starred);
       })
       .catch(() => {
         /* the button stays a plain repo link */

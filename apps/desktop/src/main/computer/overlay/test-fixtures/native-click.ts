@@ -103,8 +103,12 @@ public static class OverlayClickFixture {
       throw new Exception("fixture must accept a click without activation: WM_MOUSEACTIVATE=" + activation.ToUInt64());
     IntPtr packed = new IntPtr((point.Y << 16) | (point.X & 65535));
     if (!PostMessage(target, 0x0200, IntPtr.Zero, packed)
-        || !PostMessage(target, 0x0201, new IntPtr(1), packed)
-        || !PostMessage(target, 0x0202, IntPtr.Zero, packed))
+        || !PostMessage(target, 0x0201, new IntPtr(1), packed))
+      throw new Exception("fixture mouse press failed");
+    // A person's press spans frames. Back-to-back messages hide an :active
+    // animation that moves the hit target away before the button is released.
+    Thread.Sleep(200);
+    if (!PostMessage(target, 0x0202, IntPtr.Zero, packed))
       throw new Exception("fixture mouse delivery failed");
     if (GetForegroundWindow() != foreground) throw new Exception("fixture changed foreground");
     return mode;

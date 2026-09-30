@@ -88,15 +88,20 @@ const { createComputerUseOverlay } = await import('./index.ts');
 const { computerUseCoordinator: coordinator } = await import('../session/coordinator.ts');
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
-test('Stop and the emergency shortcut end a paused task, and the overlay offers no other control', async () => {
+test('Resume continues and Stop or the emergency shortcut ends a paused task; nothing else is a control', async () => {
   fault = '';
   const start = windows.length;
   let paused = 0,
-    stopped = 0;
+    stopped = 0,
+    resumed = 0;
   const overlay = createComputerUseOverlay({
     pause: async () => {
       paused++;
       coordinator.pauseForUser('user_pause');
+    },
+    resume: async (generation) => {
+      resumed++;
+      coordinator.resumeAfterUserTakeover(generation);
     },
     stop: async () => {
       stopped++;
@@ -116,7 +121,7 @@ test('Stop and the emergency shortcut end a paused task, and the overlay offers 
         },
         { action, generation }
       );
-    for (const action of ['dismiss', 'cancel', 'pause', 'resume']) {
+    for (const action of ['dismiss', 'cancel', 'pause', 'configure']) {
       await assert.rejects(invoke(action, 0), /Invalid overlay request/);
     }
     // Reaching for the pill is the user's own input: it pauses without any control.
@@ -126,7 +131,13 @@ test('Stop and the emergency shortcut end a paused task, and the overlay offers 
     assert.ok(coordinator.snapshot().pausedSessionIds.includes('toggle-fixture'));
     await settle();
     assert.equal(window.isVisible(), true);
-    // The paused pill's one control ends the task and hands the desktop back.
+    // Only the user's Resume ends the pause.
+    assert.equal((await invoke('resume', coordinator.snapshot().takeoverGeneration)).accepted, true);
+    assert.equal(resumed, 1);
+    assert.equal(coordinator.snapshot().userControlActive, false);
+    coordinator.pauseForUser('user_input_active');
+    await settle();
+    // Stop ends the task and hands the desktop back.
     assert.equal((await invoke('stop', coordinator.snapshot().takeoverGeneration)).accepted, true);
     assert.equal(stopped, 1);
     assert.equal(coordinator.snapshot().userControlActive, false);
@@ -179,7 +190,7 @@ test('an unresponsive control window is retired and its replacement keeps input 
     await settle();
     const hung = windows[start];
     hung.webContents.executeJavaScript = () => new Promise(() => {});
-    coordinator.pauseForUser('input_observation_unavailable');
+    coordinator.pauseForUser('user_takeover');
     await settle();
     hung.emit('unresponsive');
     await settle();

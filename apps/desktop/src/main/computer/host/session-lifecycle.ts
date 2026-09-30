@@ -9,11 +9,13 @@ import type { createCaptureEngine } from '../observation/capture';
 import { computerUseCoordinator as defaultCoordinator, type ComputerUseCoordinator } from '../session/coordinator';
 import type { createSessionState } from '../session/state';
 import type { ComputerCommand, ComputerCommandResult } from '../shared/types';
+import { isComputerLifecycleControl } from './action-sets';
 import { createComputerCommandQueue } from './command-queue';
 import type { ExecutionState, InputRecoveryState } from './execution-state';
 import { createSessionAbort } from './lifecycle-abort';
 import { createSessionStop } from './lifecycle-stop';
 import { claimComputerTargets } from './lifecycle-target-leases';
+import { isComputerRecoveryRead } from './recovery-reads';
 import { createWorkerReclaim } from './lifecycle-worker-reclaim';
 
 type WorkerPool = ReturnType<typeof createWorkerPool>;
@@ -83,7 +85,14 @@ export function createSessionLifecycle(host: SessionLifecycleHost) {
     abortComputerSession: abort.abortComputerSession,
     takeOverComputer: stop.takeOverComputer,
     stopAllComputerSessions: stop.stopAllComputerSessions,
-    executeSerialized: queue.executeSerialized,
+    resumeByUser: stop.resumeByUser,
+    executeSerialized(command: ComputerCommand): Promise<ComputerCommandResult> {
+      const recovery =
+        isComputerLifecycleControl(command) || isComputerRecoveryRead(String(command.action || ''))
+          ? null
+          : stop.recoverBeforeCommand();
+      return recovery ? recovery.then(() => queue.executeSerialized(command)) : queue.executeSerialized(command);
+    },
   };
 }
 

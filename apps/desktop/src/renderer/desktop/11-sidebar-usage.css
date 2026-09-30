@@ -51,10 +51,6 @@
 .sidebar-usage-heading.session-panel-header::after {
   display: none;
 }
-/* Diagonal pushpin (user: 대각핀): a tilted pin reading. */
-.sidebar-usage-heading .sidebar-usage-pin svg {
-  transform: rotate(45deg);
-}
 .sidebar-usage-heading .sidebar-usage-pin.is-active {
   color: var(--mx-text-accent);
 }

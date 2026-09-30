@@ -13,10 +13,10 @@ test('Desktop setup waits for a matching, single-use receipt; snapshot metadata 
       return true;
     },
   });
-  const args = { action: 'set_instructions', content: 'private instructions' };
+  const args = { action: 'save_project', project: { path: '/private-project', alias: 'private alias' } };
   const pending = broker.request(args);
   assert.equal(event.meta.kind, 'setup-ui');
-  assert.doesNotMatch(JSON.stringify(event), /private instructions/);
+  assert.doesNotMatch(JSON.stringify(event), /private-project|private alias/);
   assert.deepEqual(resolveTuiRuntimeNotificationDelivery(event, event.content), {
     action: 'setup-ui',
     id: event.meta.id,

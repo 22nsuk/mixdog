@@ -1925,7 +1925,7 @@ test('computer errors return one deterministic recovery instead of permission gu
     code: 'computer_user_control_active',
     next: 'wait_for_user',
     guidance:
-      'Computer Use yielded to the user. Call wait_for_user for bounded waiting. Ordinary physical input may resume after the host-configured quiet interval (default 5 seconds); explicit stops and uncertain cleanup/observation require the user. Timeout does not authorize input. After resumed, capture fresh state; never replay interrupted input. Manual Resume is also available on the overlay.',
+      "Computer Use yielded to the user. Call wait_for_user for bounded waiting. The user's Resume on the overlay continues the pause, and ordinary physical input may also resume after the host-configured quiet interval (default 5 seconds); explicit stops and uncertain cleanup/observation require the user. Stop cancels the task. Timeout does not authorize input. After resumed, capture fresh state; never replay interrupted input.",
   });
   assert.match(
     formatComputerToolError('foreground_changed: user switched windows'),

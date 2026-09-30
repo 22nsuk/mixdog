@@ -11,6 +11,7 @@ import { createPortal } from 'react-dom';
 
 import { t } from './i18n';
 import { useMobileBack } from './mobile-back';
+import { RailPinIcon } from './RailPinIcon';
 
 const ENABLED_MENU_ITEM_SELECTOR =
   "[role='menuitem']:not(:disabled), [role='menuitemradio']:not(:disabled), [role='menuitemcheckbox']:not(:disabled)";
@@ -28,6 +29,11 @@ export interface ScmContextMenuItem {
   checkRole?: 'menuitemradio' | 'menuitemcheckbox';
   /** Tooltip; on a DISABLED item this is the reason it cannot run yet. */
   title?: string;
+  icon?: React.ReactNode;
+  active?: boolean;
+  pinned?: boolean;
+  /** A separate pin control keeps the destination menu open. */
+  onTogglePin?(): void;
 }
 
 /** Item tooltip: the blocking reason when there is one, else the missing-channel note for an unsupported action. */
@@ -61,7 +67,15 @@ export function isContextMenuKey(event: { key: string; shiftKey: boolean }): boo
   return event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey);
 }
 
-export function ScmContextMenu({ state, onClose }: { state: ScmContextMenuState | null; onClose(): void }) {
+export function ScmContextMenu({
+  state,
+  onClose,
+  anchorRef,
+}: {
+  state: ScmContextMenuState | null;
+  onClose(): void;
+  anchorRef?: React.RefObject<HTMLElement | null>;
+}) {
   const panel = useRef<HTMLDivElement>(null);
   const [style, setStyle] = useState<React.CSSProperties>({ position: 'fixed', left: 0, top: 0 });
   const open = Boolean(state);
@@ -94,7 +108,7 @@ export function ScmContextMenu({ state, onClose }: { state: ScmContextMenuState 
     const previous = document.activeElement as HTMLElement | null;
     queueMicrotask(() => panel.current?.querySelector<HTMLButtonElement>(ENABLED_MENU_ITEM_SELECTOR)?.focus());
     const dismiss = (event: Event) => {
-      if (panel.current?.contains(event.target as Node)) return;
+      if (panel.current?.contains(event.target as Node) || anchorRef?.current?.contains(event.target as Node)) return;
       onClose();
     };
     const keydown = (event: KeyboardEvent) => {
@@ -116,7 +130,7 @@ export function ScmContextMenu({ state, onClose }: { state: ScmContextMenuState 
       window.removeEventListener('scroll', close, true);
       if (previous?.isConnected) previous.focus?.();
     };
-  }, [onClose, open]);
+  }, [onClose, open, anchorRef]);
 
   // ABB: hardware back closes the menu instead of leaving the PWA.
   useMobileBack(open, onClose);
@@ -150,15 +164,16 @@ export function ScmContextMenu({ state, onClose }: { state: ScmContextMenuState 
       onKeyDown={onMenuKeyDown}
       onContextMenu={(event) => event.preventDefault()}
     >
-      {state.items.map((item) => (
-        <button
+      {state.items.map((item) => {
+        const action = <button
           type="button"
           key={item.id}
           data-action-id={item.id}
           role={item.checked === undefined ? 'menuitem' : (item.checkRole ?? 'menuitemradio')}
           aria-checked={item.checked}
+          aria-current={item.active ? 'page' : undefined}
           className={
-            [item.danger ? 'danger' : '', item.separatorBefore ? 'menu-separator' : ''].filter(Boolean).join(' ') ||
+            [item.danger ? 'danger' : '', item.separatorBefore ? 'menu-separator' : '', item.active ? 'active' : ''].filter(Boolean).join(' ') ||
             undefined
           }
           disabled={item.disabled}
@@ -168,10 +183,30 @@ export function ScmContextMenu({ state, onClose }: { state: ScmContextMenuState 
             item.onSelect?.();
           }}
         >
-          <span className="dock-scm-context-check">{item.checked && <Check size={12} aria-hidden="true" />}</span>
+          <span className={`dock-scm-context-check${item.icon ? ' is-icon' : ''}`}>
+            {item.icon ?? (item.checked && <Check size={12} aria-hidden="true" />)}
+          </span>
           <span className="dock-scm-context-label">{t(item.label)}</span>
-        </button>
-      ))}
+        </button>;
+        if (!item.onTogglePin) return action;
+        return (
+          <div className="dock-scm-context-menu-row" role="none" key={item.id}>
+            {action}
+            <button
+              type="button"
+              className="dock-scm-context-pin"
+              data-pin-id={item.id}
+              role="menuitemcheckbox"
+              aria-checked={item.pinned}
+              aria-label={`${t(item.pinned ? 'Unpin' : 'Pin')}: ${t(item.label)}`}
+              title={t(item.pinned ? 'Unpin' : 'Pin')}
+              onClick={item.onTogglePin}
+            >
+              <RailPinIcon pinned={Boolean(item.pinned)} size={14} />
+            </button>
+          </div>
+        );
+      })}
     </div>,
     document.body
   );

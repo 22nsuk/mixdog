@@ -323,17 +323,17 @@
     transition: none;
   }
 }
-/* Level 3: a call's detail is a framed box starting at its row's title column
-   (16px icon + 7px gap), never a second rail that would read as another list
-   level. */
+/* Level 3: a call's detail starts at its row's title column (16px icon + 7px
+   gap), never a second rail that would read as another list level. It is
+   frameless: inside the group's guide rail an outlined box doubled the frame
+   (user: 프레임리스로 최대한), so only the terminal plate is tinted and the
+   rest sits on the transcript. */
 .tool-activity-item-body {
   min-width: 0;
   min-height: 0;
   margin: 0 0 0 23px;
   overflow: hidden;
-  padding: 8px 10px;
-  border-radius: var(--mx-radius-sm);
-  box-shadow: inset 0 0 0 1px var(--mx-border-muted);
+  padding: 6px 0 8px;
   color: var(--mx-text-muted);
 }
 .tool-activity-targets {
@@ -366,7 +366,9 @@
 .tool-activity-item-meta {
   margin: 0 0 6px;
   color: var(--mx-text-faint);
-  font-family: var(--mx-font-mono);
+  /* A status line in words ("실행 중 · job_…"), not code: the mono face
+     spread Korean labels apart. */
+  font-family: var(--mx-font-sans);
   font-size: var(--mx-font-meta);
   line-height: var(--mx-line-meta);
   overflow-wrap: anywhere;
@@ -420,6 +422,7 @@
   display: block;
   margin-bottom: 4px;
   color: var(--mx-text-faint);
+  font-family: var(--mx-font-sans);
   font-size: var(--mx-font-meta);
   font-weight: var(--mx-weight-regular);
   line-height: var(--mx-line-meta);
@@ -694,12 +697,23 @@
 .tool-title b {
   font-weight: var(--mx-weight-medium);
 }
+/* The transcript tool NAME stays in the sans face its own rule above sets
+   (the mono pair just before outranked it by order, so Korean labels spread
+   out in the code face). */
+.tool-title.tool-activity-item-title b {
+  font-family: var(--mx-font-sans);
+  font-size: var(--mx-font-ui);
+}
 /* Narrow windows: the title must ellipsize instead of shoving the elapsed
    readout/chevron sideways (user: fully narrowed, text invades the side).
-   The subtitle absorbs shrink first (999), the bold label only after. */
+   The subtitle gives way entirely; the label never shrinks while it fits.
+   A shrinkable label lost a sub-pixel sliver to every long subtitle and
+   ellipsized mid-word ("내용 검…"); capped at the row instead, it only
+   truncates once the label alone is wider than the row. */
 .tool-title b {
   min-width: 0;
-  flex: 0 1 auto;
+  max-width: 100%;
+  flex: 0 0 auto;
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;

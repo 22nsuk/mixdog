@@ -1,4 +1,5 @@
-import { Info, Pin, Plus } from 'lucide-react';
+import { Info, Plus } from 'lucide-react';
+import { RailPinIcon } from './RailPinIcon';
 import { useEffect, useState, useSyncExternalStore, type KeyboardEvent } from 'react';
 
 import { PaneSurfaceGate } from './PaneSurfaceGate';
@@ -439,8 +440,7 @@ export function SidebarUsage({
               data-tooltip={pinned ? t('Unpin usage from the rail') : t('Pin usage to the rail')}
               onClick={onTogglePin}
             >
-              {/* Diagonal pushpin; the tilt comes from the CSS rotate. */}
-              <Pin size={16} aria-hidden="true" />
+              <RailPinIcon pinned={pinned} />
             </button>
           )}
           {onOpenStats && (

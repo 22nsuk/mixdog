@@ -16,7 +16,7 @@ const taskFields = {
     type: 'string',
     minLength: 1,
     maxLength: MAX_GOAL_TASK_TEXT_LENGTH,
-    description: 'Required work or verification outcome.',
+    description: 'Brief work/check; results go in reply.',
   },
   status: {
     type: 'string',

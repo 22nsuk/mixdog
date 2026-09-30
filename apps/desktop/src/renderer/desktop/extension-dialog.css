@@ -30,19 +30,20 @@
   --mx-dialog-max-height: 720px;
 }
 
-/* Identity glyph on the title line: the list row's plate, so the card opens
-   as a continuation of the row that was clicked. */
+/* Identity glyph on the title line, bare: the boxed tile made these cards
+   read unlike the Settings and confirm dialogs, which title with text alone
+   (user: 사이드레일 쪽 팝업도 옵션 쪽이랑 스타일 맞추자). */
 .extensions-dialog > header > .extensions-dialog-icon {
-  width: 30px;
+  width: 20px;
   height: 30px;
-  flex: 0 0 30px;
+  flex: 0 0 20px;
   display: grid;
   place-items: center;
-  margin-right: -2px;
-  border-radius: var(--mx-radius-md);
-  color: var(--mx-text);
-  background: var(--mx-rail-item-surface);
-  box-shadow: inset 0 0 0 0.5px var(--mx-rail-item-outline);
+  margin-right: -4px;
+  border-radius: 0;
+  color: var(--mx-icon-muted);
+  background: transparent;
+  box-shadow: none;
 }
 .extensions-dialog > header > .extensions-dialog-icon > svg {
   width: 18px;
@@ -119,7 +120,10 @@
   justify-content: space-between;
   gap: 12px;
 }
-.extensions-section-head > div {
+/* The title/note block only: a head action is often a div too (the project
+   editor's Refresh + Add group), and matching every div stacked those
+   buttons into a column. */
+.extensions-section-head > div:first-child {
   min-width: 0;
   display: grid;
   gap: 6px;
@@ -399,9 +403,12 @@
   margin: 0;
   display: grid;
   padding: 0 16px;
-  border-radius: var(--mx-radius-md);
+  /* The Settings group card exactly (17-settings.css .settings-group-body):
+     10px corner, plate, a 6% whisper of outline (user: 옵션 쪽이랑 스타일
+     맞추자). */
+  border-radius: var(--mx-radius-lg);
   background: var(--mx-bg-layer-1);
-  box-shadow: inset 0 0 0 0.5px var(--mx-border-muted);
+  box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--mx-text) 6%, transparent);
 }
 .extensions-dialog-facts > div {
   min-width: 0;

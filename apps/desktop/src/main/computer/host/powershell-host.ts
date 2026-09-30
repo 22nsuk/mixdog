@@ -68,6 +68,8 @@ export interface PowerShellComputerHost {
   takeOver(reason?: string): void;
   /** Allow new Computer Use commands after an explicit user takeover. */
   resumeAfterTakeover(generation: number, signal?: AbortSignal): Promise<void>;
+  /** The overlay's Resume: recover a latched cleanup, then continue the paused task. */
+  resumeByUser(generation: number): Promise<void>;
   configureIdleResume(seconds: number): void;
   /** Stop one session and perform its normal input-state cleanup. */
   abortSession(sessionId: string): Promise<void>;
@@ -305,6 +307,7 @@ export function createPowerShellComputerHost(
       lifecycle.takeOverComputer(reason);
     },
     resumeAfterTakeover: lifecycle.resumeAfterTakeover,
+    resumeByUser: lifecycle.resumeByUser,
     configureIdleResume: userWait.configure,
     async abortSession(sessionId: string): Promise<void> {
       userWait.cancel(sessionId);

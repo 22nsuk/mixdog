@@ -105,9 +105,9 @@
    them to nothing and painted bare text on the card. The card declares the
    same three values, so a rail row and its dialog twin read as one surface. */
 .schedules-dialog {
-  --mx-rail-item-surface: color-mix(in srgb, var(--mx-text) 4%, transparent);
-  --mx-rail-item-outline: color-mix(in srgb, var(--mx-text) 10%, transparent);
-  --mx-rail-item-outline-active: color-mix(in srgb, var(--mx-text) 20%, transparent);
+  --mx-rail-item-surface: color-mix(in srgb, var(--mx-text) 4.5%, transparent);
+  --mx-rail-item-outline: color-mix(in srgb, var(--mx-text) 6%, transparent);
+  --mx-rail-item-outline-active: color-mix(in srgb, var(--mx-text) 18%, transparent);
 }
 .sidebar-loading-dialog {
   --mx-editor-width: 520px;

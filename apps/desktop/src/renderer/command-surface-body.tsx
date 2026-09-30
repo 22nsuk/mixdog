@@ -50,6 +50,7 @@ export function SurfaceBody({
         snapshot={commandSurfaceDisplaySnapshot(data, snapshot)}
         request={request}
         loading={loading}
+        readingInHeader
       />
     );
   }

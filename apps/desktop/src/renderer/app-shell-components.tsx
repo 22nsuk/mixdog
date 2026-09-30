@@ -96,9 +96,10 @@ export const paneUtilitySurfaceSlotId = (leafId: string, key: string): string =>
 const loadSchedulesViewModule = () => import('./SchedulesView');
 const loadWebhooksViewModule = () => import('./WebhooksView');
 const loadProjectsViewModule = () => import('./ProjectsView');
+const loadWorkflowsViewModule = () => import('./WorkflowsView');
 const loadExtensionsViewModule = () => import('./ExtensionsView');
 
-export type SidebarPanelKey = 'schedules' | 'webhooks' | 'projects' | 'extensions';
+export type SidebarPanelKey = 'schedules' | 'webhooks' | 'projects' | 'workflows' | 'extensions';
 type SidebarPanelLoaderGate = (panel: SidebarPanelKey) => Promise<unknown>;
 
 function gateSidebarPanelModule<T>(panel: SidebarPanelKey, load: () => Promise<T>): Promise<T> {
@@ -114,6 +115,7 @@ export const loadSidebarPanelModule = {
   schedules: () => gateSidebarPanelModule('schedules', loadSchedulesViewModule),
   webhooks: () => gateSidebarPanelModule('webhooks', loadWebhooksViewModule),
   projects: () => gateSidebarPanelModule('projects', loadProjectsViewModule),
+  workflows: () => gateSidebarPanelModule('workflows', loadWorkflowsViewModule),
   extensions: () => gateSidebarPanelModule('extensions', loadExtensionsViewModule),
 } as const;
 
@@ -124,6 +126,8 @@ export const createWebhooksPane = () =>
   lazy(() => loadSidebarPanelModule.webhooks().then((module) => ({ default: module.WebhooksPane })));
 export const createProjectsPane = () =>
   lazy(() => loadSidebarPanelModule.projects().then((module) => ({ default: module.ProjectsPane })));
+export const createWorkflowsPane = () =>
+  lazy(() => loadSidebarPanelModule.workflows().then((module) => ({ default: module.WorkflowsPane })));
 export const createExtensionsPane = () =>
   lazy(() => loadSidebarPanelModule.extensions().then((module) => ({ default: module.ExtensionsPane })));
 

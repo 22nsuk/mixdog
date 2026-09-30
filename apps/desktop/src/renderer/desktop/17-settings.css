@@ -21,7 +21,11 @@
   place-items: center;
   padding: var(--settings-layer-safe-top) 16px var(--settings-layer-safe-bottom);
   box-sizing: border-box;
+  /* The dialog system's scrim, blur included (30-dialogs.css): Settings was
+     the one modal whose backdrop stayed sharp behind it (user: 팝업들
+     스타일 중구난방). */
   background: var(--mx-scrim);
+  backdrop-filter: blur(2px);
 }
 /* Closed-but-mounted (idle prewarm keeps the ~330ms dialog tree alive):
    display:none is the one hiding primitive no descendant can override, so
@@ -73,7 +77,9 @@
   min-height: 48px;
   flex: 0 0 48px;
   padding: 0 12px 0 16px;
-  border-bottom: 0.5px solid var(--mx-border);
+  /* No seam under the title: the page runs on one plate (user: 프레임리스로
+     최대한). */
+  border-bottom: 0;
   background: var(--mx-bg-base);
 }
 .mixdog-settings__header-title {
@@ -90,9 +96,12 @@
   color: var(--mx-text);
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: var(--mx-font-body);
+  /* The panel-title tier every other title uses — rail panels and the editor
+     cards are 16px; these dialog titles sat a step under them at 15px (user:
+     헤더 폰트 사이즈 너무 작은 거 아니냐). */
+  font-size: var(--mx-font-panel-title);
   font-weight: var(--mx-weight-semibold);
-  line-height: var(--mx-line-ui);
+  line-height: var(--mx-line-emphasis);
 }
 .mixdog-settings__close {
   width: 24px;
@@ -157,13 +166,15 @@
   font-weight: var(--mx-weight-regular);
   line-height: var(--mx-line-meta);
 }
+/* Polish pass: the group card rounds with the rail cards and reads by its
+   plate; the outline and row seams only whisper. */
 .settings-group-body {
   padding: 0 20px;
   border: 0;
-  border-radius: var(--mx-radius-md);
+  border-radius: var(--mx-radius-lg);
   color: var(--mx-text);
   background: var(--mx-bg-layer-1);
-  box-shadow: inset 0 0 0 0.5px var(--mx-border-muted);
+  box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--mx-text) 6%, transparent);
 }
 .mixdog-settings__row,
 .settings-form-row,
@@ -171,7 +182,7 @@
   min-height: 0;
   padding: 20px 0;
   gap: 16px;
-  border-bottom: 0.5px solid var(--mx-border);
+  border-bottom: 0.5px solid var(--mx-border-muted);
 }
 .mixdog-settings-v2 .mixdog-settings__row {
   display: grid;
@@ -361,6 +372,7 @@
 }
 .settings-form-controls input,
 .core-memory-edit input,
+.settings-provider-secret input,
 .settings-oauth-code input,
 .settings-oauth-url textarea {
   box-sizing: border-box;
@@ -382,16 +394,19 @@
   padding-block: 8px;
   line-height: var(--mx-line-ui);
 }
-.settings-form-controls input:hover {
+.settings-form-controls input:hover,
+.settings-provider-secret input:hover {
   background: linear-gradient(var(--mx-hover), var(--mx-hover)), var(--mx-bg-base);
 }
 .settings-form-controls input:focus,
-.core-memory-edit input:focus {
+.core-memory-edit input:focus,
+.settings-provider-secret input:focus {
   outline-color: var(--mx-focus);
   box-shadow: none;
 }
 .settings-form-controls button,
 .settings-action,
+.settings-provider-secret button,
 .core-memory-edit button {
   min-height: 28px;
   padding: 0 11px;
@@ -405,6 +420,7 @@
 }
 .settings-form-controls button:hover:not(:disabled),
 .settings-action:hover:not(:disabled),
+.settings-provider-secret button:hover:not(:disabled),
 .core-memory-edit button:hover:not(:disabled) {
   color: var(--mx-text);
   background: linear-gradient(var(--mx-hover), var(--mx-hover)), var(--mx-bg-base);
@@ -423,7 +439,8 @@
   background: var(--mx-flat-press-danger);
   box-shadow: none;
 }
-.settings-action:disabled {
+.settings-action:disabled,
+.settings-provider-secret button:disabled {
   opacity: var(--mx-op-disabled);
   cursor: default;
 }
@@ -431,10 +448,11 @@
   min-width: 0;
   padding: 14px 20px;
   border: 0;
-  border-radius: var(--mx-radius-md);
+  /* Same card as .settings-group-body above. */
+  border-radius: var(--mx-radius-lg);
   color: var(--mx-text);
   background: var(--mx-bg-layer-1);
-  box-shadow: inset 0 0 0 0.5px var(--mx-border-muted);
+  box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--mx-text) 6%, transparent);
 }
 .core-memory-edit {
   display: grid;

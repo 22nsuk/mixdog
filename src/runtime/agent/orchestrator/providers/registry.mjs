@@ -4,6 +4,7 @@ import { refreshCatalog as refreshMetadataCatalog } from './model-catalog.mjs';
 import { wrapProviderAdmission } from './admission-scheduler.mjs';
 import { createAccountPoolProvider } from './account-pool.mjs';
 import { isInclusiveProvider } from '../../../shared/llm/cost.mjs';
+import { noEnabledProvidersError } from './registry-errors.mjs';
 // OpenAI-compat provider names are self-declared by openai-compat-presets.mjs via
 // OPENAI_COMPAT_PRESETS. No parallel list maintained here.
 const providers = new Map();
@@ -223,7 +224,7 @@ async function _initProvidersUnsynchronized(config, signal = null) {
   // here preserves whatever was already registered.
   const entries = Object.entries(config || {});
   if (entries.length === 0) {
-    throw new Error('[provider] initProviders called with empty config — refusing to clear registry');
+    throw noEnabledProvidersError('[provider] initProviders called with empty config — refusing to clear registry');
   }
   const next = new Map();
   const nextSignatures = new Map();
@@ -258,7 +259,7 @@ async function _initProvidersUnsynchronized(config, signal = null) {
   // Second guard: every entry was disabled. Same reasoning — keep the
   // existing registry rather than going dark.
   if (next.size === 0) {
-    throw new Error('[provider] all providers disabled in config — refusing to clear registry');
+    throw noEnabledProvidersError('[provider] all providers disabled in config — refusing to clear registry');
   }
   // OAuth preservation guard. anthropic-oauth / openai-oauth are NOT stored
   // in mixdog-config.json — buildDefaultConfig injects them at runtime by

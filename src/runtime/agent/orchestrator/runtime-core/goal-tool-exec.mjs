@@ -22,6 +22,7 @@ function toolReply(ctx, id, goal, { full = false, previousIds = null } = {}) {
       status: goal.status,
       tasksCompleted: goal.tasksCompleted,
       tasksTotal: goal.tasksTotal,
+      taskSlotsUsed: goal.taskSlotsUsed,
       tasksUpdatedAt: goal.tasksUpdatedAt,
       timeUsedMs: goal.timeUsedMs,
     };

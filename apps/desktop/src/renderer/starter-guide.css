@@ -1,0 +1,208 @@
+/* Getting-started guide pinned to the left side panel's foot: a quiet pill
+   that unfolds its checklist upward, so the panel's list above only shrinks
+   while the guide is open. */
+.starter-guide {
+  /* The rail card values (10-rail-pages.css): the guide sits at the panel
+     foot, outside the sidebar scopes that declare them. */
+  --mx-rail-item-surface: color-mix(in srgb, var(--mx-text) 4.5%, transparent);
+  --mx-rail-item-outline: color-mix(in srgb, var(--mx-text) 6%, transparent);
+  flex: none;
+  margin: 8px 10px 10px;
+  display: grid;
+  gap: 6px;
+}
+.starter-guide button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.starter-guide button:focus-visible {
+  outline: 1px solid var(--mx-focus);
+  outline-offset: 0;
+}
+
+/* Checklist card: the rail's own card surface and outline, so the guide reads
+   as one more card in the panel above it (user: 온보딩 UI도 너무 튄다 —
+   다른 레이아웃이랑 같이). */
+.starter-guide-list {
+  margin: 0;
+  padding: 4px;
+  display: grid;
+  gap: 2px;
+  list-style: none;
+  border-radius: var(--mx-radius-md);
+  background: var(--mx-rail-item-surface);
+  box-shadow: inset 0 0 0 0.5px var(--mx-rail-item-outline);
+}
+.starter-guide-step {
+  width: 100%;
+  padding: 8px 10px;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  border-radius: var(--mx-radius-md);
+  text-align: left;
+  transition: background-color var(--mx-motion-ink);
+}
+/* Hover is the only plate: the next step already stands out by carrying its
+   explanation, so a second resting highlight read as a stuck selection. */
+.starter-guide-step:hover {
+  background: var(--mx-hover);
+}
+/* Marks are bare glyphs in the rail's icon ink: no ringed circle, no green
+   disc — a done step is a quiet check (user: 체크박스 원이랑 아이콘도 너무
+   튄다). */
+.starter-guide-step-mark {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  color: var(--mx-icon-muted);
+}
+.starter-guide-step[data-done="true"] .starter-guide-step-mark {
+  color: var(--mx-text-faint);
+}
+.starter-guide-step-text {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.starter-guide-step-text b {
+  color: var(--mx-text);
+  font-size: var(--mx-font-ui);
+  font-weight: var(--mx-weight-semibold);
+  line-height: 20px;
+}
+.starter-guide-step[data-done="true"] .starter-guide-step-text b {
+  color: var(--mx-text-faint);
+  font-weight: var(--mx-weight-medium);
+}
+.starter-guide-step-text small {
+  color: var(--mx-text-faint);
+  font-size: var(--mx-font-meta);
+  line-height: var(--mx-line-meta);
+}
+
+/* Completion notice: pops above the pill the moment a step completes, over
+   every layer (Settings included), positioned from the pill's box. */
+.starter-guide-toast {
+  position: fixed;
+  z-index: calc(var(--mx-toast-z-index) + 60);
+  box-sizing: border-box;
+  min-width: 200px;
+  padding: 7px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: var(--mx-radius-pill);
+  /* A plain popup: only the check keeps the success ink. */
+  color: var(--mx-success);
+  background: var(--mx-popup-bg);
+  box-shadow:
+    var(--mx-popup-shadow),
+    inset 0 0 0 0.5px var(--mx-border);
+  font-size: var(--mx-font-ui);
+  animation: starter-guide-toast-in 220ms var(--mx-ease-standard);
+}
+.starter-guide-toast span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--mx-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.starter-guide-toast b {
+  margin-left: auto;
+  color: var(--mx-text-muted);
+  font-weight: var(--mx-weight-medium);
+}
+@keyframes starter-guide-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+/* The pill itself */
+.starter-guide-pill {
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  border-radius: var(--mx-radius-pill);
+  background: var(--mx-rail-item-surface);
+  box-shadow: inset 0 0 0 0.5px var(--mx-rail-item-outline);
+}
+.starter-guide-toggle {
+  min-width: 0;
+  min-height: 32px;
+  flex: 1;
+  padding: 0 6px 0 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: var(--mx-radius-pill);
+  font-size: var(--mx-font-ui);
+}
+/* Hovering the toggle lights the whole pill, so the plate follows the pill's
+   own outline instead of a second capsule that stops short of X. */
+.starter-guide-pill {
+  transition: background-color var(--mx-motion-ink);
+}
+.starter-guide-pill:has(> .starter-guide-toggle:hover) {
+  background: linear-gradient(var(--mx-hover), var(--mx-hover)), var(--mx-rail-item-surface);
+}
+.starter-guide-title {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: var(--mx-weight-semibold);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.starter-guide-count {
+  margin-left: auto;
+  flex: none;
+  color: var(--mx-text-muted);
+  font-size: var(--mx-font-meta);
+}
+.starter-guide-meter {
+  width: 32px;
+  height: 3px;
+  flex: none;
+  overflow: hidden;
+  border-radius: var(--mx-radius-pill);
+  background: color-mix(in srgb, var(--mx-text-muted) 28%, transparent);
+}
+.starter-guide-meter > span {
+  height: 100%;
+  display: block;
+  border-radius: inherit;
+  /* Progress carries the accent (user: 강조색도 써야 하는 곳은 쓰고) — the
+     one bit of colour in the pill; not success green, it is not an alert. */
+  background: var(--mx-accent);
+  transition: width 300ms var(--mx-ease-standard);
+}
+.starter-guide-close {
+  width: 24px;
+  height: 24px;
+  margin-right: 4px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--mx-text-muted);
+}
+.starter-guide-close:hover {
+  color: var(--mx-text);
+  background: var(--mx-hover);
+}
+@media (prefers-reduced-motion: reduce) {
+  .starter-guide-meter > span {
+    transition: none;
+  }
+  .starter-guide-toast {
+    animation: none;
+  }
+}

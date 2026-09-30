@@ -33,7 +33,9 @@ export function sliceReadBodyByLines(body, origOffset, origLimit, readOffsetBase
       if (ln < minSeen) minSeen = ln;
       if (ln > maxSeen) maxSeen = ln;
       if (ln >= firstLine && ln <= lastLine) kept.push(line);
-    } else if (kept.length === 0 && footerIdx === -1) {
+    } else if (kept.length === 0 && footerIdx === -1 && !Number.isFinite(maxSeen)) {
+      // Only a preamble before the first numbered row; a blank line or a
+      // truncation marker after the rows is not this slot's content.
       kept.push(line);
     }
   }

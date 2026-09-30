@@ -5,6 +5,7 @@ import {
   GitCompare,
   Github,
   Globe,
+  Layers3,
   MessageSquare,
   Package,
   PanelsTopLeft,
@@ -24,6 +25,10 @@ export function createAppSideViewDescriptors(
     [
       'projects',
       { id: 'projects', label: t('Projects'), icon: PanelsTopLeft, onPrefetch: () => onPrefetch('projects') },
+    ],
+    [
+      'workflows',
+      { id: 'workflows', label: t('Workflow'), icon: Layers3, onPrefetch: () => onPrefetch('workflows') },
     ],
     [
       'extensions',

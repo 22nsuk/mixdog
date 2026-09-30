@@ -5,11 +5,12 @@ import { overlayHtml, overlayScript, OVERLAY_WIDTH, OVERLAY_HEIGHT } from '../co
 import { computerUseOverlayPresentation } from '../model';
 import { createComputerOverlayController } from '../controls';
 import { bindComputerOverlayControls } from '../ipc-controls';
-import { checkOverlayPulse, emulateMotionPreference } from './pill-motion';
+import { checkOverlayControlHitTarget, checkOverlayPulse, emulateMotionPreference } from './pill-motion';
 import { nativeOverlayClick } from './native-click';
 import { emit } from './process-output';
+import { overlayWindowOptions } from '../cursor-surface';
 
-app.disableHardwareAcceleration();
+if (process.env.OVERLAY_SOFTWARE_RENDERING === '1') app.disableHardwareAcceleration();
 app.setPath('userData', join(process.env.OVERLAY_TEST_DIRECTORY!, 'profile'));
 // This fixture owns its only window; Electron's default quit-on-last-window-close would
 // otherwise end the process the moment a failing step reaches the finally-block destroy.
@@ -18,18 +19,12 @@ void app
   .whenReady()
   .then(async () => {
     const window = new BrowserWindow({
+      ...overlayWindowOptions(),
       width: OVERLAY_WIDTH,
       height: OVERLAY_HEIGHT,
-      show: false,
-      focusable: false,
-      transparent: true,
-      frame: false,
       alwaysOnTop: true,
-      skipTaskbar: true,
       webPreferences: {
-        sandbox: true,
-        contextIsolation: true,
-        nodeIntegration: false,
+        ...overlayWindowOptions().webPreferences,
         preload: join(process.env.OVERLAY_TEST_DIRECTORY!, 'preload/computer-overlay.js'),
       },
     });
@@ -54,6 +49,7 @@ void app
       let paused = 0,
         stopped = 0,
         seconds = 5;
+      const resumed: number[] = [];
       let stopReceived: (() => void) | undefined;
       const controls = {
         async pause() {
@@ -62,6 +58,9 @@ void app
         async stop() {
           stopped++;
           stopReceived?.();
+        },
+        async resume(generation: number) {
+          resumed.push(generation);
         },
         configureIdleResume(value: number) {
           seconds = value;
@@ -124,14 +123,15 @@ void app
     `);
       await clickStop(1);
       assert.equal(stopped, 1);
-      // Stop is the only control: an icon whose name is spoken, never shown.
+      // While working, Stop is the only control: an icon whose name is spoken, never shown.
       const running = await window.webContents.executeJavaScript(`
-      window.mixdogComputerOverlay({paused:false,generation:7,renderRevision:2});
+      window.mixdogComputerOverlay({paused:false,resumable:false,generation:7,renderRevision:2});
       ({ label: document.getElementById('stop').getAttribute('aria-label'),
          text: document.getElementById('stop').textContent,
-         buttons: document.querySelectorAll('button').length })`);
+         buttons: [...document.querySelectorAll('button')].filter((button) => !button.hidden).length })`);
       assert.deepEqual(running, { label: '중단', text: '', buttons: 1 });
       await checkOverlayPulse(window.webContents);
+      await checkOverlayControlHitTarget(window.webContents);
       // Unlike button.click(), native hit-testing exercises a non-activating
       // transparent window and mouse down/up while takeover changes its layout.
       const workArea = screen.getPrimaryDisplay().workArea;
@@ -148,7 +148,7 @@ void app
           button.getBoundingClientRect();
         }, {once:true});
         const rect=button.getBoundingClientRect();
-        resolve({x:Math.round(rect.x+rect.width/2),y:Math.round(rect.y+4)});
+        resolve({x:Math.round(rect.x+rect.width/2),y:Math.round(rect.y+1)});
       })))
     `);
       const [windowX, windowY] = window.getPosition();
@@ -206,7 +206,7 @@ void app
             pillWidth:document.getElementById('pill').getBoundingClientRect().width,
             stopBounds:(() => { const r=document.getElementById('stop').getBoundingClientRect();
               return {x:r.x,y:r.y,width:r.width,height:r.height}; })(),
-            buttons:document.querySelectorAll('button').length,
+            buttons:[...document.querySelectorAll('button')].filter((button) => !button.hidden).length,
             label:document.getElementById('stop').getAttribute('aria-label'),
             disabled:document.getElementById('stop').disabled,
             text:document.body.textContent.replace(/\\s+/g,' ').trim(),
@@ -225,14 +225,15 @@ void app
           assert.equal(observed.moving, !presentation.paused);
           assert.equal(observed.fits, true, `${locale}/${reason} overflows`);
           assert.equal(observed.pillWidth, OVERLAY_WIDTH - 20, `${locale}/${reason} must keep the same compact width`);
-          // Stop is the only control, in every state and in the same place.
-          assert.equal(observed.buttons, 1);
+          // Stop is in every state and in the same place; Resume joins it only while paused.
+          assert.equal(observed.buttons, presentation.resumable ? 2 : 1);
           assert.equal(observed.label, label);
           assert.equal(observed.disabled, false);
           stopBounds ??= observed.stopBounds;
           assert.deepEqual(observed.stopBounds, stopBounds, `${locale}/${reason} moved the Stop hit target`);
           layout.push({ locale, reason, ...observed });
         }
+        await checkOverlayControlHitTarget(window.webContents, '#resume');
       }
       await window.webContents.executeJavaScript(`window.mixdogComputerControl({action:'configure',seconds:10})`);
       assert.equal(seconds, 10);
@@ -242,7 +243,10 @@ void app
         ),
         true
       );
-      for (const action of ['resume', 'pause', 'cancel', 'dismiss']) {
+      // Resume carries the generation the user saw; nothing else is a control.
+      await window.webContents.executeJavaScript(`window.mixdogComputerControl({action:'resume',generation:7})`);
+      assert.deepEqual(resumed, [7]);
+      for (const action of ['pause', 'cancel', 'dismiss']) {
         assert.equal(
           await window.webContents.executeJavaScript(
             `window.mixdogComputerControl({action:${JSON.stringify(action)},generation:7}).then(()=>false,()=>true)`
@@ -256,7 +260,7 @@ void app
       assert.equal(window.isVisible(), false);
       await emit(
         process.stdout,
-        `OVERLAY_RESULT ${JSON.stringify({ stopped, paused, seconds, font, layout, visible: false })}\n`
+        `OVERLAY_RESULT ${JSON.stringify({ stopped, paused, resumed, seconds, font, layout, visible: false })}\n`
       );
     } finally {
       window.destroy();

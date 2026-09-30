@@ -261,6 +261,11 @@ if (mixdogInstalledApp) {
     'error',
     (event) => {
       var target = event.target;
+      // Only a shell chunk (script or stylesheet) failing says the boot broke.
+      // A media thumbnail that cannot load (Studio's mixdog-media assets) is
+      // the page's own business: counting each one as a "missing chunk"
+      // reloaded the window once per image, forever (user: 무한으로 깜빡).
+      if (target && target !== window && target.tagName !== 'SCRIPT' && target.tagName !== 'LINK') return;
       if (target && target !== window && (target.src || target.href)) {
         errors.push('failed to load: ' + (target.src || target.href));
         // The worker answers this document from its last copy, so a launch that

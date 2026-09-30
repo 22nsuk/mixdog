@@ -82,16 +82,13 @@ test('closing one retained side tab resets only its navigation, not drafts or co
   for (const field of ui.host.querySelectorAll('textarea')) assert.equal(field.value, 'unsaved text');
 });
 
-for (const kind of ['projects', 'extensions']) {
+for (const kind of ['extensions']) {
   test(`${kind} reopens at its own first menu without resetting another mounted tab`, async (t) => {
     const ui = await mount(t);
-    const Component =
-      kind === 'projects'
-        ? (await import('./ProjectsView.tsx')).ProjectsPane
-        : (await import('./ExtensionsView.tsx')).ExtensionsPane;
-    const initial = kind === 'projects' ? 'projects' : 'plugins';
-    const detail = kind === 'projects' ? 'Workflow' : 'Skill';
-    const home = kind === 'projects' ? 'Project' : 'Plugin';
+    const Component = (await import('./ExtensionsView.tsx')).ExtensionsPane;
+    const initial = 'plugins';
+    const detail = 'Skill';
+    const home = 'Plugin';
     function Panel({ active, id }) {
       const [section, onSectionChange] = useState(initial);
       return React.createElement(
@@ -130,6 +127,26 @@ for (const kind of ['projects', 'extensions']) {
     assert.equal(menu('second', detail).getAttribute('aria-pressed'), 'true');
   });
 }
+
+test('Projects remains a separate destination without a Workflow sub-tab', async (t) => {
+  const ui = await mount(t);
+  const { ProjectsPane } = await import('./ProjectsView.tsx');
+  const props = {
+    projects: [{ path: 'project-a', name: 'Project A' }],
+    selectedProjectPath: 'project-a',
+    onChooseFolder: async () => null,
+    onCreateProject: async () => {},
+    onRename() {},
+    onRemove() {},
+  };
+  await ui.render(React.createElement(ProjectsPane, { ...props, active: true }));
+  assert.match(ui.host.textContent, /Project A/);
+  assert.equal(ui.host.querySelector('.sidebar-section-toolbar'), null);
+  await ui.render(React.createElement(ProjectsPane, { ...props, active: false }));
+  await ui.render(React.createElement(ProjectsPane, { ...props, active: true }));
+  assert.match(ui.host.textContent, /Project A/);
+  assert.equal(ui.host.querySelector('.workflows-packs'), null);
+});
 
 test('Source Control returns to Changes while retaining the commit message', async (t) => {
   const ui = await mount(t);

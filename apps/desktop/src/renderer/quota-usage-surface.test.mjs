@@ -206,8 +206,11 @@ test('the usage dialog header switches to subscription usage and opens there nex
   // The forecast stops where it runs out, at 16:20.
   assert.match(document.querySelector('.quota-chart-forecast').getAttribute('d'), /L666\.7,0\.0$/);
   assert.ok(document.querySelector('.quota-chart-pace'));
-  // Only the lines that need a word are named; the axis ticks whole hours and names now.
-  assert.deepEqual(texts('.quota-legend li'), [t('Forecast'), t('Even pace'), t('Not measured')]);
+  // The models stacked under the meter are named, then only the lines that
+  // need a word; the axis ticks whole hours and names now.
+  assert.equal(document.querySelectorAll('.quota-chart-stack').length, 2);
+  assert.deepEqual(texts('.quota-legend li').slice(-3), [t('Forecast'), t('Even pace'), t('Not measured')]);
+  assert.equal(document.querySelectorAll('.quota-legend li > i[data-series]').length, 2);
   const axis = [...document.querySelectorAll('.quota-chart-axis span')];
   assert.deepEqual(
     axis.map((node) => Math.round(Number.parseFloat(node.style.left))),
@@ -314,14 +317,17 @@ test('a hovered slot names who moved the meter in it', async (context) => {
   const detail = document.querySelector('.stats-trend-detail');
   assert.ok(detail);
   assert.equal(slot.getAttribute('aria-expanded'), 'true');
+  assert.equal(slot.getAttribute('data-tooltip'), '', 'the card is the hint; no second bubble');
   assert.equal(detail.querySelector('dd').textContent, '10% → 30%');
   assert.deepEqual(
     [...detail.querySelectorAll('li > b')].map((node) => node.textContent),
     ['+20%']
   );
-  await act(async () => button('By model').click());
-  assert.equal(document.querySelector('.stats-trend-detail'), null, 'switching the lines closes the card');
-  assert.equal(document.querySelectorAll('.quota-chart-series').length, 2);
+  // Leaving the slots and crossing back into the chart's frame reopens nothing.
+  const chart = document.querySelector('.quota-chart');
+  await act(async () => document.querySelector('.stats-trend-detail button').click());
+  await act(async () => chart.dispatchEvent(new window.MouseEvent('mouseover', { bubbles: true })));
+  assert.equal(document.querySelector('.stats-trend-detail'), null, 'the frame alone never reopens the card');
 });
 
 test('the running slot keeps its whole span, read up to now and forecast after', async (context) => {
@@ -350,16 +356,14 @@ test('the running slot keeps its whole span, read up to now and forecast after',
     running.nextElementSibling.dispatchEvent(new window.MouseEvent('mouseover', { bubbles: true }))
   );
   assert.equal(document.querySelector('.stats-trend-detail'), null);
-  // Each model's line runs up to now; the rest of the slot is only sketched.
-  await act(async () => button('By model').click());
-  const nowAt = document.querySelector('.quota-chart-now').getAttribute('x1');
+  // Each model's layer runs up to now.
+  const nowAt = Number(document.querySelector('.quota-chart-now').getAttribute('x1'));
   assert.deepEqual(
-    [...document.querySelectorAll('.quota-chart-series')].map(
-      (path) => path.getAttribute('d').split('L').at(-1).split(',')[0]
+    [...document.querySelectorAll('.quota-chart-stack')].map((path) =>
+      Math.max(...[...path.getAttribute('d').matchAll(/[ML](-?[\d.]+),/g)].map((match) => Number(match[1])))
     ),
     [nowAt, nowAt]
   );
-  assert.equal(document.querySelectorAll('.quota-chart-series-ahead').length, 2);
 });
 
 test('the window history pages ten windows at a time and opens the one clicked', async (context) => {

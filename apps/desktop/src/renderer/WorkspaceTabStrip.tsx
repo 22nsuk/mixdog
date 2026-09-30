@@ -185,9 +185,15 @@ function workspaceMobileTabPill({
 
 /** The same node the open tab had, stripped of its handlers and its width: it
  *  collapses and fades while the neighbours glide. */
-function closingTabGhost(tab: WorkspaceTab) {
+function closingTabGhost(tab: WorkspaceTab, active: boolean) {
   return (
-    <div key={tab.key} className="workspace-tab closing" aria-hidden="true" data-tab-key={tab.key} data-closing="true">
+    <div
+      key={tab.key}
+      className={`workspace-tab closing ${active ? 'active' : ''}`}
+      aria-hidden="true"
+      data-tab-key={tab.key}
+      data-closing="true"
+    >
       <button type="button" className="workspace-tab-main" tabIndex={-1}>
         {tabGlyph(tab)}
         <span>{tab.title}</span>
@@ -554,13 +560,15 @@ export function WorkspaceTabStrip({
   // it is inserted. A same-length change (a draft promoted to its session)
   // animates nothing — that is a replacement, not an add or a close.
   const previousTabs = useRef(tabs);
-  const closingTabs = useRef(new Map<string, { tab: WorkspaceTab; index: number }>());
+  const previousActiveKey = useRef(activeKey);
+  const closingTabs = useRef(new Map<string, { tab: WorkspaceTab; index: number; active: boolean }>());
   const enteringKeys = useRef(new Set<string>());
   const [, settleTabMotion] = useReducer((count: number) => count + 1, 0);
-  const displayTabs = tabsWithClosingGhosts(tabs, previousTabs, closingTabs, enteringKeys);
+  const displayTabs = tabsWithClosingGhosts(tabs, previousTabs, closingTabs, enteringKeys, previousActiveKey.current);
   useLayoutEffect(() => {
     previousTabs.current = tabs;
-  }, [tabs]);
+    previousActiveKey.current = activeKey;
+  }, [tabs, activeKey]);
   // One beat after the last change the ghosts unmount and the entering marks
   // drop; a change inside the beat restarts it so every tab settles together.
   useEffect(() => {
@@ -750,8 +758,8 @@ export function WorkspaceTabStrip({
           onDrop={handleNativeDrop}
           onDragEnd={finishNativeDrag}
         >
-          {displayTabs.map(({ tab, closing }) => {
-            if (closing) return closingTabGhost(tab);
+          {displayTabs.map(({ tab, closing, active: closedActive }) => {
+            if (closing) return closingTabGhost(tab, closedActive);
             const index = tabs.indexOf(tab);
             const active = tab.key === activeKey;
             const dropLeft = draggingKey && dropIndex !== null && tabs[dropIndex - 1]?.key === tab.key;

@@ -19,6 +19,11 @@ test('useAppSettingsRouter handles openSettings and UI requests routing', async 
 
   let settingsOpen = false;
   let settingsSection = null;
+  let activeSideViews = { left: 'projects', right: null };
+  let sidebarOpen = false;
+  let mountedPanel = null;
+  let loadedPanel = null;
+  window.__mixdogSidebarPanelLoader = () => new Promise(() => {});
 
   let hookResult = null;
   function TestHarness() {
@@ -29,14 +34,12 @@ test('useAppSettingsRouter handles openSettings and UI requests routing', async 
         settingsOpen = open;
       },
       setCommandSurface: () => {},
-      mountSidebarPanel: () => {},
-      trackSidebarPanelModule: () => {},
+      mountSidebarPanel: (panel) => { mountedPanel = panel; },
+      trackSidebarPanelModule: (panel) => { loadedPanel = panel; },
       paneSideDocks: { open: () => {} },
       focusedLeafIdRef: { current: 'leaf-1' },
-      setActiveSideViews: () => {},
-      applySidebarOpen: () => {},
-      setProjectsSection: () => {},
-      openProjects: () => {},
+      setActiveSideViews: (update) => { activeSideViews = update(activeSideViews); },
+      applySidebarOpen: (open) => { sidebarOpen = open; },
       setSettingsSection: (s) => {
         settingsSection = s;
       },
@@ -62,6 +65,16 @@ test('useAppSettingsRouter handles openSettings and UI requests routing', async 
   });
   assert.equal(settingsOpen, true);
   assert.equal(settingsSection, 'theme');
+
+  for (const section of ['workflow', 'websearch']) {
+    activeSideViews = { left: 'projects', right: null };
+    await act(async () => hookResult.openSettings(section));
+    assert.equal(settingsOpen, false);
+    assert.equal(activeSideViews.left, 'workflows');
+    assert.equal(sidebarOpen, true);
+    assert.equal(mountedPanel, 'workflows');
+    assert.equal(loadedPanel, 'workflows');
+  }
 
   await act(async () => {
     root.unmount();

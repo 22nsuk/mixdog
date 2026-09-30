@@ -100,9 +100,12 @@ function _throwIfAborted(signal) {
   if (signal?.aborted) throw new Error('aborted');
 }
 
-function codeGraphBuildInvalidatedError() {
+// `graph` is the build that finished anyway: the tree as of its own manifest,
+// never cached as current. The last retry answers from it instead of failing.
+function codeGraphBuildInvalidatedError(graph = null) {
   const error = new Error('code-graph build invalidated during prewarm');
   error.code = 'ERR_CODE_GRAPH_BUILD_INVALIDATED';
+  if (graph) error.graph = graph;
   return error;
 }
 
@@ -115,7 +118,12 @@ export async function _retryCodeGraphBuildAfterInvalidation(run, { signal = null
     try {
       return await run(attempt);
     } catch (error) {
-      if (signal?.aborted || !isCodeGraphBuildInvalidatedError(error) || attempt === 1) {
+      if (signal?.aborted || !isCodeGraphBuildInvalidatedError(error)) throw error;
+      // Files kept changing through the retry too (another session editing
+      // the same tree). The finished graph is a consistent snapshot a few
+      // seconds old; answer this query from it rather than fail it.
+      if (attempt === 1) {
+        if (error.graph) return error.graph;
         throw error;
       }
     }
@@ -159,7 +167,7 @@ async function _validateDiskCodeGraphHit({
   if (diskEntry.signature !== signature) return { graph: null, manifest, signature };
   const graph = deserializeGraph(graphCwd, diskEntry);
   if (!graph) return { graph: null, manifest, signature };
-  if (getGeneration(graphCwd) !== genAtStart) return { invalidated: true };
+  if (getGeneration(graphCwd) !== genAtStart) return { invalidated: true, graph };
   setMemoryCache(graphCwd, { ts: now, signature, graph });
   return { graph, manifest, signature };
 }
@@ -195,7 +203,7 @@ export async function _runDiskCodeGraphFastPath({
     _throwIfAborted(signal);
     const hit = await validateDiskHit({ graphCwd, diskEntry, genAtStart, signal });
     _throwIfAborted(signal);
-    if (hit?.invalidated) throw codeGraphBuildInvalidatedError();
+    if (hit?.invalidated) throw codeGraphBuildInvalidatedError(hit.graph);
     if (hit?.graph) return hit.graph;
     _throwIfAborted(signal);
     const workerPromise = spawnWorker(release, hit?.manifest || null, hit?.signature || null);
@@ -463,7 +471,7 @@ export function _spawnCodeGraphWorker(
               // manifest lock.
               setDiskCache(graphCwd, msg.graph, { persist: false });
             }
-            settle(genStillCurrent ? msg.graph : codeGraphBuildInvalidatedError());
+            settle(genStillCurrent ? msg.graph : codeGraphBuildInvalidatedError(msg.graph));
           } else {
             settle(_codeGraphWorkerFailure(msg));
           }

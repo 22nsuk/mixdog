@@ -835,6 +835,7 @@ export function requiredDesktopSettingKey(value: unknown): DesktopSettingKey {
     value === 'autoClear' ||
     value === 'autoCompact' ||
     value === 'keepAwake' ||
+    value === 'runInBackground' ||
     value === 'usagePinned' ||
     value === 'computerControl' ||
     value === 'computerObserveOnly' ||
@@ -878,13 +879,6 @@ export function requiredTextFileEncoding(value: unknown): DesktopTextFileEncodin
     return value;
   }
   throw new TypeError('file encoding is invalid.');
-}
-
-export function requiredInstructionsContent(value: unknown): string {
-  if (typeof value !== 'string' || value.length > 65_536) {
-    throw new TypeError('instructions content is invalid.');
-  }
-  return value;
 }
 
 export function requiredLspDocumentInput(value: unknown): DesktopLspDocumentInput {
