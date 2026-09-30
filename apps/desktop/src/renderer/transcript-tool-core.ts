@@ -7,7 +7,7 @@ import { aggregateToolCategoryEntry, classifyToolCategory, formatToolSurface, to
 // @ts-expect-error The shared runtime module is plain ESM and has no declaration file.
 import { parseMcpToolName, titleCaseMcpServer } from '../../../../src/runtime/shared/tool-primitives.mjs';
 // @ts-expect-error The shared runtime module is plain ESM and has no declaration file.
-import { deriveToolOutcomeTone } from '../../../../src/runtime/shared/tool-card-model.mjs';
+import { deriveToolOutcomeTone, resultTerminalStatus } from '../../../../src/runtime/shared/tool-card-model.mjs';
 
 export interface ToolCardModel {
   pending: boolean;
@@ -90,7 +90,11 @@ export function toolActivityItemTone(item: TranscriptItem): 'error' | 'warning' 
     groupCount: count,
     callFailedCount,
     exitFailedCount,
-    terminalStatus: isHookApprovalDenialToolItem(item) ? 'denied' : '',
+    terminalStatus: isHookApprovalDenialToolItem(item)
+      ? 'denied'
+      : resultTerminalStatus(item.result ?? item.rawResult) === 'cancelled'
+        ? 'cancelled'
+        : '',
     partialMutation,
   });
   return tone === 'error' || tone === 'warning' ? tone : 'neutral';

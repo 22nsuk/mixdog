@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { tokenizeDirectArgv } from './shell-direct-exe.mjs';
+import { GIT_DIFF_EXIT_SIGNAL_FLAGS } from './bash-tool/benign-exit.mjs';
 import { withBuiltinPathLocks } from './path-locks.mjs';
 import { withAdvisoryLocks } from './advisory-lock.mjs';
 import { withGitRepoReadLock, withGitRepoWriteLock } from './git-repo-rw-lock.mjs';
@@ -154,8 +155,13 @@ function commandResult(plan, result, limit) {
   const output = capOutput(appendText(String(result.stdout || ''), String(result.stderr || '')), limit);
   if (succeeded(result)) return { text: output, failed: false };
   const processError = result.error || result.timedOut || result.aborted || result.overflow || result.exitCode == null;
+  // An exit signal is still a non-zero exit, so a command array stops on it;
+  // the outcome line only keeps the card from reporting a failure.
+  const exitHeader = exitSignal(plan, result)
+    ? `exit ${result.exitCode}\n[outcome: no-match]`
+    : `exit ${result.exitCode}`;
   return {
-    text: appendText(processError ? fail(gitFailureReason(plan, result)) : `exit ${result.exitCode}`, output),
+    text: appendText(processError ? fail(gitFailureReason(plan, result)) : exitHeader, output),
     failed: true,
   };
 }
@@ -335,6 +341,18 @@ async function runProcess(program, argv, { cwd, signal, maxBytes = MAX_CAPTURE_B
 
 function succeeded(result) {
   return result?.exitCode === 0 && !result.error && !result.timedOut && !result.aborted && !result.overflow;
+}
+
+// `git grep` exits 1 for no match and `git diff --exit-code/--quiet/--check`
+// exits 1 to report a difference; the shell tool marks the same exits as
+// signals, so the git tool does too.
+function exitSignal(plan, result) {
+  if (result.exitCode !== 1 || String(result.stderr || '').trim()) return false;
+  if (plan.operation === 'grep') return true;
+  if (plan.operation !== 'diff') return false;
+  const separator = plan.args.indexOf('--');
+  const options = separator === -1 ? plan.args : plan.args.slice(0, separator);
+  return options.some((arg) => GIT_DIFF_EXIT_SIGNAL_FLAGS.has(arg));
 }
 
 // ENOENT from the spawn itself is a capability fact, not a git error: the
@@ -780,8 +798,26 @@ function splitChainedGitCommands(command) {
   return commands.length > 1 ? commands : null;
 }
 
-export async function executeGitTool(input, workDir, options = {}) {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) return fail('git requires an arguments object');
+// The tool only runs git, so a submitted command that omits the leading `git`
+// ("status --short") gets it instead of a rejection. Only whole submitted
+// commands are prefixed; a `&&` piece after the first still has to be a full
+// git command, so non-git chain segments stay refused.
+function withGitPrefix(command) {
+  if (typeof command !== 'string') return command;
+  const text = String(unwrapQuotedCommand(command)).trim();
+  const first = text ? tokenizeDirectArgv(text)?.[0] : '';
+  if (!first || /(^|[\\/])git(?:\.exe)?$/i.test(first)) return command;
+  return `git ${text}`;
+}
+
+export async function executeGitTool(rawInput, workDir, options = {}) {
+  if (!rawInput || typeof rawInput !== 'object' || Array.isArray(rawInput))
+    return fail('git requires an arguments object');
+  const input = {
+    ...rawInput,
+    command: Array.isArray(rawInput.command) ? rawInput.command.map(withGitPrefix) : withGitPrefix(rawInput.command),
+  };
+  if (rawInput.command === undefined) delete input.command;
   const action = input.action ?? 'command';
   if (action === 'stage') {
     if (input.command !== undefined || input.include_stage_ids !== undefined) {

@@ -3,7 +3,11 @@
  * session runtime.
  */
 import { stripShellExitHeader, toolErrorDisplay } from './tool-result-text.mjs';
-import { normalizeToolTerminalStatus, toolResultTerminalStatus } from '../../../../shared/tool-status.mjs';
+import {
+  hasBenignExitOutcome,
+  normalizeToolTerminalStatus,
+  toolResultTerminalStatus,
+} from '../../../../shared/tool-status.mjs';
 import { isReadOnlyNavigationMiss } from '../result-classification.mjs';
 import { formatAggregateDetail, summarizeToolResult, toolLoadingTargets } from '../../../../shared/tool-surface.mjs';
 import { normalizeToolName } from '../../../../shared/tool-primitives.mjs';
@@ -43,7 +47,7 @@ export function shellCommandExitCode(text) {
 export function toolCallOutcome(message, rawText) {
   if (normalizeToolName(message?.toolName || message?.name) === 'git') {
     const exitCode = gitResultExitCode(rawText);
-    if (exitCode !== null) return { isCallError: false, isExitError: true, exitCode };
+    if (exitCode !== null) return { isCallError: false, isExitError: !hasBenignExitOutcome(rawText), exitCode };
     if (gitResultError(rawText)) return { isCallError: true, isExitError: false, exitCode: null };
   }
   const exitCode = shellCommandExitCode(rawText);
@@ -51,7 +55,7 @@ export function toolCallOutcome(message, rawText) {
     // Every completed shell result carries `[exit code: N]` — including 0.
     // A non-zero code is a command failure unless execution marked a known
     // successful no-match/no-change outcome.
-    const benignExit = exitCode !== 0 && /^\[outcome:\s*(?:no-match|no-change)\]\s*$/im.test(String(rawText || ''));
+    const benignExit = exitCode !== 0 && hasBenignExitOutcome(rawText);
     return { isCallError: false, isExitError: exitCode !== 0 && !benignExit, exitCode };
   }
   if (isReadOnlyNavigationMiss(message?.toolName || message?.name, rawText)) {

@@ -8,7 +8,8 @@ import { agentTerminalDetail, isAgentTool } from './agent-surface.mjs';
 import { backgroundTaskElapsed, backgroundTaskFailureDetail, isBackgroundTaskTool } from './background-task.mjs';
 import { shellDisplayStatus } from './shell-surface.mjs';
 import { normalizeTerminalStatus, resultTerminalStatus, shellResultElapsed } from './terminal-status.mjs';
-import { gitResultError, gitResultExitCode } from './git-result.mjs';
+import { gitTerminalStatus } from './git-result.mjs';
+import { isUserControlCancellation } from '../tool-status.mjs';
 
 function shellFragments(base, display, isShellSurface) {
   if (!isShellSurface) return { shellStatus: '', shellElapsed: '' };
@@ -59,16 +60,17 @@ export function deriveCardStatus(base, { normalizedName, parsedArgs, isShellSurf
     !pending && isAgentTool(normalizedName) && !agentHeaderFailure
       ? agentTerminalDetail(parsedArgs?.status, isError, elapsed, parsedArgs?.error)
       : '';
-  const gitFailed =
-    normalizedName === 'git' &&
-    (gitResultExitCode(display.displayedResultText) !== null || Boolean(gitResultError(display.displayedResultText)));
-  const failedOrCompleted = isError || failedCount > 0 || gitFailed ? 'failed' : 'completed';
+  const gitStatus = normalizedName === 'git' ? gitTerminalStatus(display.displayedResultText) : '';
+  const failedOrCompleted = isError || failedCount > 0 ? 'failed' : 'completed';
   const terminalStatus = pending
     ? 'running'
     : shellStatus ||
+      gitStatus ||
       normalizeTerminalStatus(display.backgroundMeta?.status) ||
       normalizeTerminalStatus(parsedArgs?.status) ||
       resultTerminalStatus(display.displayedResultText) ||
+      // A one-line error body is hidden from display, so read the raw result.
+      (isUserControlCancellation(base.rt) ? 'cancelled' : '') ||
       failedOrCompleted;
   return {
     shellStatus,

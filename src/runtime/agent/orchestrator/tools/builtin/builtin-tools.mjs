@@ -58,6 +58,7 @@ export const BUILTIN_TOOLS = [
             {
               type: 'array',
               minItems: 1,
+              maxItems: PUBLIC_PATH_BATCH_LIMIT,
               items: {
                 anyOf: [
                   { type: 'string' },

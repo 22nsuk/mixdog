@@ -571,7 +571,12 @@ export async function executeTidyTool(args = {}, { cwd = process.cwd(), signal =
       return tidyToolResult(await rulesAction({ cwd, signal, startedAt }));
     }
     if (action === 'results') {
-      return tidyToolResult(await resultsAction({ args, cwd, sessionId, engineFilter, pathFilter: scope, startedAt }));
+      // Paging a stored run succeeds even when that run was incomplete; the
+      // report's ok/status still describe the run itself.
+      return tidyToolResult(
+        await resultsAction({ args, cwd, sessionId, engineFilter, pathFilter: scope, startedAt }),
+        false
+      );
     }
     return tidyToolResult(
       await runAction({

@@ -4,6 +4,7 @@ import { countJsonNextCalls } from './tools/next-call-utils.mjs';
 import { parseGrepContextHeader, splitGrepLinePrefix } from './tools/builtin/grep-formatting.mjs';
 import { isReadOnlyNavigationMiss } from './session/result-classification.mjs';
 import { nonNegativeInt } from '../../shared/numbers.mjs';
+import { isUserControlCancellation } from '../../shared/tool-status.mjs';
 import {
   appendAgentTrace,
   normalizeSessionId,
@@ -128,7 +129,7 @@ function traceAgentCompact({
 }
 
 const TOOL_ARG_KEYS = {
-  read: ['path', 'offset', 'limit', 'line', 'context'],
+  read: ['file_path', 'path', 'offset', 'limit', 'line', 'context'],
   grep: ['pattern', 'path', 'glob', 'output_mode', 'head_limit', 'offset'],
   glob: ['pattern', 'path', 'head_limit', 'offset', 'sort'],
   find: ['query', 'path', 'head_limit'],
@@ -211,11 +212,10 @@ function summarizeToolArgs(toolName, args) {
   for (const key of keys) {
     if (Object.hasOwn(args, key)) out[key] = compactTraceArgValue(args[key], key);
   }
-  for (const countKey of ['edits', 'writes']) {
+  // Arrays are clipped to 6 entries above; the count keeps batch-limit
+  // failures (more than 10 read/grep targets) diagnosable.
+  for (const countKey of ['edits', 'writes', 'file_path', 'path']) {
     if (Array.isArray(args[countKey])) out[`${countKey}_count`] = args[countKey].length;
-  }
-  if (toolName === 'read' && Array.isArray(args.path)) {
-    out.path_count = args.path.length;
   }
   return Object.keys(out).length ? out : null;
 }
@@ -414,17 +414,12 @@ function classifyToolFailure(resultText, toolName) {
   if (/\[tool-input-validation\]/.test(text)) return 'schema/args';
   // These are emitted validation/cancellation contracts, not keywords found
   // somewhere in a quoted document, command output, or error preview.
-  if (
-    /^(?:Browser command interrupted by local user input\.|computer_session_aborted: queued command was cancelled before execution|computer_user_control_active:)/i.test(
-      leading
-    )
-  )
-    return 'expected-cancellation';
+  if (isUserControlCancellation(leading)) return 'expected-cancellation';
   if (
     /^The arguments provided to `[^`]+` are invalid JSON and could not be parsed:/i.test(leading) ||
     /^new Goal tasks must omit ids; use updates for existing tasks$/i.test(leading) ||
     /^goal task exceeds \d+ characters$/i.test(leading) ||
-    /^goal (?:tasks|updates) support at most \d+ entries$/i.test(leading) ||
+    /^goal (?:tasks|updates) support at most \d+ entries(?:$|;)/i.test(leading) ||
     /^goal arguments contain unknown fields:/i.test(leading) ||
     /^Unsupported field for GitHub [\w.]+\.$/i.test(leading) ||
     /^browser action "[^"]+" (?:does not accept input field|requires input\.|accepts only one input target form|fields must be inside input:|input\.[^\n]*(?:must be|requires|accepts at most))/i.test(

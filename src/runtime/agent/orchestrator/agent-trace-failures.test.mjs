@@ -4,7 +4,18 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { classifyToolFailure } from './agent-trace-format.mjs';
+import { classifyToolFailure, summarizeToolArgs } from './agent-trace-format.mjs';
+
+test('failure rows keep read file_path and the full size of clipped path batches', () => {
+  const many = Array.from({ length: 12 }, (_, index) => `f${index}.mjs`);
+  assert.deepEqual(summarizeToolArgs('read', { file_path: 'a.mjs', limit: 5 }), { file_path: 'a.mjs', limit: 5 });
+  assert.equal(summarizeToolArgs('read', { file_path: many }).file_path_count, 12);
+  assert.equal(summarizeToolArgs('grep', { pattern: 'x', path: many }).path_count, 12);
+  assert.equal(
+    classifyToolFailure('Error: goal tasks support at most 20 entries; completed and dropped tasks count', 'goal'),
+    'schema/args'
+  );
+});
 
 test('emitted input errors, upstream HTTP failures and user cancellations have distinct categories', () => {
   const rows = [

@@ -236,7 +236,7 @@ test('git tool answers semantic exits and keeps literal operator characters', as
 
   // Exit codes stay visible even for probes with no stdout.
   assert.equal(parseOk(await git(repo, 'grep -n base -- base.txt')), 'base.txt:1:base\n');
-  assert.equal(await git(repo, 'grep -n mixdog-absent-token'), 'exit 1');
+  assert.equal(await git(repo, 'grep -n mixdog-absent-token'), 'exit 1\n[outcome: no-match]');
 
   // diff reports through the exit code for --quiet and --check.
   assert.equal(parseOk(await git(repo, 'diff --quiet')), '');
@@ -247,7 +247,7 @@ test('git tool answers semantic exits and keeps literal operator characters', as
   assert.equal(await git(repo, 'rev-parse --verify --quiet refs/heads/missing'), 'exit 1');
   assert.equal(parseOk(await git(repo, 'merge-base --is-ancestor HEAD HEAD')), '');
   writeFileSync(join(repo, 'base.txt'), 'base\ntrailing   \n');
-  assert.equal(await git(repo, 'diff --quiet'), 'exit 1');
+  assert.equal(await git(repo, 'diff --quiet'), 'exit 1\n[outcome: no-match]');
   const check = await git(repo, 'diff --check');
   assert.match(check, /^exit 2\n/);
   assert.match(check, /trailing whitespace/);
@@ -356,6 +356,22 @@ test('git renders process output verbatim with stderr and numeric exits', () => 
   assert.equal(render('  text \r\n\n', 'warning\rprogress\n').text, '  text \r\n\nwarning\rprogress\n');
   assert.deepEqual(render('partial', 'fatal: boom\n', 128), { text: 'exit 128\npartial\nfatal: boom\n', failed: true });
   assert.deepEqual(render('exit 1\n', ''), { text: 'exit 1\n', failed: false });
+});
+
+test('git diff exit-code signals are marked as outcomes, not failures', () => {
+  const { commandResult } = _gitCommandInternals;
+  const diff = (args, exitCode, stderr = '') =>
+    commandResult({ operation: 'diff', args }, { stdout: 'a.txt\n', stderr, exitCode }, 50);
+  assert.deepEqual(diff(['--quiet'], 1), { text: 'exit 1\n[outcome: no-match]\na.txt\n', failed: true });
+  assert.match(diff(['--exit-code', '--', 'a.txt'], 1).text, /^exit 1\n\[outcome: no-match\]\n/);
+  for (const text of [
+    diff(['--', '--quiet'], 1).text,
+    diff(['--quiet'], 1, 'fatal: bad\n').text,
+    diff(['--quiet'], 128).text,
+    diff(['--stat'], 1).text,
+  ]) {
+    assert.doesNotMatch(text, /\[outcome:/);
+  }
 });
 
 test('git exposes command and selected staging in one compact contract', () => {
@@ -478,7 +494,7 @@ test('git command arrays run in order, allow mutations, and stop at the first fa
     )
   );
   assert.equal([...mutations.matchAll(/^## git /gm)].length, 2);
-  assert.match(mutations, /\nexit 1\nerror: command failed:/);
+  assert.match(mutations, /\nexit 1\n\[outcome: no-match\]\nerror: command failed:/);
   parseOk(await git(repo, 'reset -q -- base.txt'));
 
   // Fail-fast: a failed step stops the array and reports what was skipped.
@@ -563,10 +579,25 @@ test('git runs a fully quoted command and keeps refusing quoted shell syntax', a
     String(await executeGitTool({ command: '"git status && git log"' }, repo)),
     /^error: git command must not contain shell operators/
   );
-  assert.match(
-    String(await executeGitTool({ command: '"status --short"' }, repo)),
-    /^error: command must begin with git/
+  assert.equal(parseOk(await executeGitTool({ command: '"status --short"' }, repo)), plain);
+});
+
+test('git adds an omitted leading git to submitted commands but not to chain pieces', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'mixdog-git-prefix-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const repo = join(root, 'repo');
+  parseOk(await executeGitTool({ command: `git init ${quote(repo)}` }, root));
+  const plain = parseOk(await git(repo, 'status --short'));
+  assert.equal(parseOk(await executeGitTool({ command: `-C ${quote(repo)} status --short` }, root)), plain);
+  const array = parseOk(
+    await executeGitTool({ command: [`-C ${quote(repo)} status --short`, `git -C ${quote(repo)} status --short`] }, root)
   );
+  assert.equal([...array.matchAll(/^## git /gm)].length, 2);
+  assert.match(
+    String(await executeGitTool({ command: `-C ${quote(repo)} status && echo x` }, root)),
+    /^error: git command 2: command must begin with git/
+  );
+  assert.match(String(await executeGitTool({ command: 'status | head' }, root)), /^error: git command must not contain shell operators/);
 });
 
 // git dispatches any `git-*` executable on PATH as a subcommand, so a finite

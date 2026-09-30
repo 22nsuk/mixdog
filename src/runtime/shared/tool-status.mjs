@@ -23,15 +23,48 @@ export function normalizeToolTerminalStatus(value) {
   return '';
 }
 
+// Status markers live in the result's leading block: the cancel marker, the
+// shell exit header, a background-task header, a task/agent status line.
+// Command output and fetched documents follow a blank line and can carry
+// `status:` text of their own, which says nothing about the tool call.
+export function leadingResultBlock(text) {
+  const lines = String(text || '').split('\n');
+  let index = 0;
+  if (/^\[tool output offloaded:/i.test(String(lines[0] || '').trim())) {
+    index = 1;
+    while (index < lines.length && !lines[index].trim()) index += 1;
+  }
+  const block = [];
+  for (; index < lines.length && lines[index].trim(); index += 1) block.push(lines[index]);
+  return block.join('\n');
+}
+
+// The user taking over the browser/desktop, or the session cancelling a
+// computer command, stops the call on purpose; it is not a failed invocation.
+const USER_CONTROL_CANCELLATION_RE =
+  /^(?:Error:\s*)?(?:Browser command interrupted by local user input\.|computer_session_aborted:|computer_user_control_active:)/i;
+
+export function isUserControlCancellation(text) {
+  return USER_CONTROL_CANCELLATION_RE.test(String(text || '').trimStart());
+}
+
+// A non-zero exit the tool itself marked as a signal (search no-match, a
+// `git diff --exit-code` difference) rather than a command failure.
+export function hasBenignExitOutcome(text) {
+  return /^\[outcome:\s*(?:no-match|no-change)\]\s*$/im.test(String(text || ''));
+}
+
 export function toolResultTerminalStatus(text) {
   const body = String(text || '');
   const tagged = body.match(/<status[^>]*>([\s\S]*?)<\/status>/i)?.[1]?.trim();
   if (tagged) return normalizeToolTerminalStatus(tagged);
-  const bracketed = body.match(/^\[status:\s*([^\]]*)\]/im)?.[1]?.trim();
+  const head = leadingResultBlock(body);
+  const bracketed = head.match(/^\[status:\s*([^\]]*)\]/im)?.[1]?.trim();
   if (bracketed) return normalizeToolTerminalStatus(bracketed);
-  const inline = body.match(/^(?:status|state):\s*([^\s·,;]+)/im)?.[1]?.trim();
+  const inline = head.match(/^(?:status|state):\s*([^\s·,;]+)/im)?.[1]?.trim();
   const fromInline = normalizeToolTerminalStatus(inline);
   if (fromInline) return fromInline;
+  if (isUserControlCancellation(body)) return 'cancelled';
   // Bare control bodies written on cancel/crash (current + legacy).
   const trimmed = body.trim();
   if (/^(?:cancelled|canceled)$/i.test(trimmed)) return 'cancelled';

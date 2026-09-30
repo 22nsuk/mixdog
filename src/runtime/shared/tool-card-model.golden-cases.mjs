@@ -16,7 +16,8 @@ export const GIT_GOLDEN_CASES = [
     summary: 'diff --git a/a.txt b/a.txt',
     status: 'completed',
   },
-  { result: 'exit 128\nfatal: missing ref\n', summary: 'Exit 128', status: 'failed' },
+  { result: 'exit 128\nfatal: missing ref\n', summary: 'Exit 128', status: 'exit' },
+  { result: 'exit 1\n[outcome: no-match]\ndiff --git a/a.txt b/a.txt\n', summary: 'Exit 1', status: 'completed' },
   {
     result: '## git show missing\nexit 128\nfatal: missing\nerror: command failed: git show missing',
     summary: 'Exit 128',

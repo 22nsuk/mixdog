@@ -116,6 +116,8 @@ const BENIGN = [
   'grep -n foo file',
   'findstr foo file.txt',
   'git diff --check',
+  'git grep -n foo',
+  'git -C . grep foo',
 ];
 const NOT_BENIGN = [
   'grep x file && echo done', // multi-segment chain → ambiguous

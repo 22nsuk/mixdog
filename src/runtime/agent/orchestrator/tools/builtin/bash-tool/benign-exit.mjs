@@ -14,6 +14,8 @@ import {
 // shared shell tokenizers, so quoted/commented `;` `|` `grep` can never
 // masquerade as a connector/command and hide a real failure.
 const _SEARCH_HEADS = new Set(['select-string', 'sls', 'grep', 'egrep', 'fgrep', 'findstr']);
+// `git diff` flags whose exit 1 reports a difference, not a failure.
+export const GIT_DIFF_EXIT_SIGNAL_FLAGS = new Set(['--exit-code', '--quiet', '--check']);
 const _GIT_GLOBAL_VALUE_OPTS = new Set([
   '-c',
   '-C',
@@ -75,12 +77,14 @@ export function _isBenignSearchExitOne(command, exitCode, signal, stderr) {
   const head = _normalizeHead(tokens[0]);
   if (_SEARCH_HEADS.has(head)) return true;
   if (head !== 'git') return false;
-  // `git [global-opts] diff ...` only — exact `diff` subcommand, never
-  // diff-index/diff-files/difftool — with exit-code semantics.
+  // `git [global-opts] grep ...` (no match), or `git [global-opts] diff ...`
+  // only — exact `diff` subcommand, never diff-index/diff-files/difftool —
+  // with exit-code semantics.
   let i = 1;
   while (i < tokens.length && tokens[i].startsWith('-')) {
     i += _GIT_GLOBAL_VALUE_OPTS.has(tokens[i]) && !tokens[i].includes('=') ? 2 : 1;
   }
+  if (tokens[i] === 'grep') return true;
   if (tokens[i] !== 'diff') return false;
-  return tokens.slice(i + 1).some((t) => t === '--exit-code' || t === '--quiet' || t === '--check');
+  return tokens.slice(i + 1).some((t) => GIT_DIFF_EXIT_SIGNAL_FLAGS.has(t));
 }

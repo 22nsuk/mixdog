@@ -11,10 +11,10 @@ const FILE_LIST_CAP = 25;
 export const RESULTS_PAGE_MAX = 100;
 const TRIM_STEPS = [8, 3, 0];
 
-export function tidyToolResult(value, isError = false) {
+export function tidyToolResult(value, isError = value?.ok === false) {
   return {
     content: [{ type: 'text', text: JSON.stringify(value) }],
-    ...(isError || value?.ok === false ? { isError: true } : {}),
+    ...(isError ? { isError: true } : {}),
   };
 }
 

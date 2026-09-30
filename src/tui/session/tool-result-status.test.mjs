@@ -17,10 +17,89 @@ import {
   withCancelledResultMarker,
 } from './tool-result-status.mjs';
 import {
+  deriveToolCardModel,
   deriveToolOutcomeTone,
   displayTerminalStatus,
   shellDisplayStatus,
 } from '../../runtime/shared/tool-card-model.mjs';
+
+function settledCard(name, args, result) {
+  const outcome = toolCallOutcome({ name, toolKind: /^error:/i.test(result) ? 'error' : 'normal' }, result);
+  const callFailedCount = outcome.isCallError ? 1 : 0;
+  const exitFailedCount = outcome.isExitError ? 1 : 0;
+  const model = deriveToolCardModel({
+    name,
+    args,
+    result,
+    rawResult: result,
+    isError: outcome.isCallError,
+    callErrorCount: callFailedCount,
+    exitErrorCount: exitFailedCount,
+    count: 1,
+    completedCount: 1,
+    completedAt: 1,
+    nowMs: 2,
+  });
+  const tone = deriveToolOutcomeTone({
+    groupCount: 1,
+    callFailedCount,
+    exitFailedCount,
+    terminalStatus: model.terminalStatus,
+  });
+  return { model, tone };
+}
+
+test('status words inside command output or fetched text do not set the card status', () => {
+  const shell = settledCard('shell', { command: 'gh run view' }, '[exit code: 0]\n\nstatus: running\nstatus: failed\n');
+  assert.equal(shell.model.terminalStatus, 'completed');
+  assert.equal(shell.tone, 'success');
+  const page = settledCard('web_fetch', { url: 'https://example.com' }, '# Page\n\nstatus: cancelled\n');
+  assert.equal(page.model.terminalStatus, 'completed');
+  const background = settledCard(
+    'shell',
+    { command: 'npm test' },
+    'background task\ntask_id: t1\nstatus: running\nstarted: 1\n\nstatus: failed\n'
+  );
+  assert.equal(background.model.terminalStatus, 'running');
+});
+
+test('user takeover and session cancellation render as cancelled, not failed', () => {
+  for (const [name, result] of [
+    ['computer', 'Error: computer_user_control_active: Computer Use is paused while the user has control'],
+    ['computer', 'Error: computer_session_aborted: queued command was cancelled before execution'],
+    ['browser', 'Error: Browser command interrupted by local user input. An earlier action may have completed.'],
+  ]) {
+    const { model, tone } = settledCard(name, {}, result);
+    assert.equal(model.terminalStatus, 'cancelled');
+    assert.equal(model.detailLine, 'Cancelled');
+    assert.equal(tone, 'warning');
+  }
+  assert.equal(settledCard('browser', {}, 'Error: navigation failed: timed out').tone, 'error');
+});
+
+test('git exits render like shell exits and diff exit-code signals stay successful', () => {
+  const exit = settledCard('git', { command: 'git show missing' }, 'exit 128\nfatal: missing ref\n');
+  assert.equal(exit.model.terminalStatus, 'exit');
+  assert.equal(exit.tone, 'warning');
+  const signal = settledCard('git', { command: 'git diff --quiet' }, 'exit 1\n[outcome: no-match]\n');
+  assert.equal(signal.model.terminalStatus, 'completed');
+  assert.equal(signal.tone, 'success');
+});
+
+test('graph file misses and out-of-range reads are empty results, not failures', () => {
+  const graph = settledCard('code_graph', { mode: 'callers' }, 'Error: callers: file not found: a.mjs');
+  assert.equal(graph.tone, 'success');
+  const symbol = settledCard(
+    'code_graph',
+    { mode: 'references' },
+    'Error: code_graph references: symbol "run" not found in src/a.mjs'
+  );
+  assert.equal(symbol.tone, 'success');
+  const gitGrep = settledCard('git', { command: 'git grep absent' }, 'exit 1\n[outcome: no-match]\n');
+  assert.equal(gitGrep.tone, 'success');
+  const read = settledCard('read', { file_path: 'a.mjs' }, '(no lines in range; file has 10 lines)');
+  assert.equal(read.model.resultSummary, '0 lines');
+});
 
 test('the aggregate raw result numbers each resolved member output exactly as before', () => {
   const big = `${'line of tool output\n'.repeat(20_000)}tail`;

@@ -325,6 +325,22 @@ test('structural file chunks never collapse a large scope to an unfiltered walk'
   assert.deepEqual(chunks.flat(), files);
 });
 
+test('paging an incomplete stored run succeeds while reporting the run status', async () => {
+  resetTidyResultCache();
+  const cwd = process.cwd();
+  const sessionId = 'tidy-results-incomplete';
+  rememberTidyRun(cwd, sessionId, {
+    scope: ['.'],
+    engines: [{ id: 'eslint', kind: ['lint'] }],
+    results: [{ id: 'eslint', filesChecked: 1, diagnostics: [], filesChanged: [], truncated: true }],
+  });
+  const page = await executeTidyTool({ action: 'results' }, { cwd, sessionId });
+  const report = parseResult(page);
+  assert.equal(page.isError, undefined);
+  assert.equal(report.ok, false);
+  assert.equal(report.status, 'failed');
+});
+
 test('results without a stored run fails closed', async () => {
   resetTidyResultCache();
   const result = await executeTidyTool({ action: 'results' }, { cwd: process.cwd(), sessionId: 'tidy-results-empty' });

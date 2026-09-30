@@ -34,7 +34,18 @@ export function optionalGoalTaskChanges({ tasks, updates } = {}) {
 export function normalizeGoalTasks(input, previous = [], { strict = false } = {}) {
   if (input == null) return previous.map((task) => ({ ...task }));
   if (!Array.isArray(input)) throw new Error('goal tasks must be an array');
-  if (input.length > MAX_GOAL_TASKS) throw new Error(`goal tasks support at most ${MAX_GOAL_TASKS} entries`);
+  if (input.length > MAX_GOAL_TASKS) {
+    // Settled rows count toward the cap; set_tasks may omit them (only
+    // unfinished tasks must be retained), which is how a long Goal makes room.
+    const settled = previous.some((task) => GOAL_TASK_SETTLED.includes(task?.status));
+    throw new Error(
+      `goal tasks support at most ${MAX_GOAL_TASKS} entries${
+        settled
+          ? '; completed and dropped tasks count, so to add more send set_tasks with only the unfinished tasks plus the new ones'
+          : ''
+      }`
+    );
+  }
   const previousByText = new Map(previous.map((task) => [clean(task?.text), task]));
   const reservedIds = new Set([...previous, ...input].map((task) => clean(task?.id)).filter(Boolean));
   let nextId = 1;

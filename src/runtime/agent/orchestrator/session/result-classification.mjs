@@ -61,7 +61,7 @@ const ZERO_MATCH_PREFIXES = [
 const READ_ONLY_NAVIGATION_TOOLS = new Set(['find', 'glob', 'grep', 'list', 'read', 'code_graph']);
 
 const NAVIGATION_MISS_RE =
-  /\b(?:enoent|enotdir)\b|path does not exist|directory does not exist|no such (?:file|path)|not found at this path|file not found in graph/i;
+  /\b(?:enoent|enotdir)\b|path does not exist|directory does not exist|no such (?:file|path)|not found at this path|file not found\b|symbol "[^"\n]*" not found in /i;
 
 export function isReadOnlyNavigationMiss(toolName, result) {
   if (!READ_ONLY_NAVIGATION_TOOLS.has(String(toolName || '').toLowerCase())) return false;

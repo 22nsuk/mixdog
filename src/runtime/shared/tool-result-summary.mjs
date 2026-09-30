@@ -312,6 +312,7 @@ function summarizeLineCount({ text, trimmed }, { zero, singular, plural }) {
 function summarizeReadResult({ text, trimmed }) {
   if (/^\[image:/i.test(trimmed)) return 'Image';
   if (!trimmed) return null;
+  if (trimmed.startsWith('(no lines in range')) return '0 lines';
   const n = text.split('\n').length;
   return `${n} ${pluralize(n, 'line')}`;
 }
