@@ -55,7 +55,8 @@
 }
 /* Resource rows reserve one fixed leading column for a semantic icon or live
    status, so labels and trailing chevrons share the same axes across panels. */
-.session-sidebar-panels .sidebar-resource-icon {
+.session-sidebar-panels .sidebar-resource-icon,
+.utility-dock .agent-activity-page .sidebar-resource-icon {
   width: 16px;
   height: 16px;
   flex: 0 0 16px;
@@ -63,6 +64,16 @@
   display: grid;
   place-items: center;
   color: var(--mx-icon-muted);
+}
+/* The mark stays centred on the row's full height, both lines (user: 아이콘
+   상하 중앙 정렬도 해야 해), and opens on the panel title's line; only the
+   hover wash reaches 6px past it (user: 좌측 패딩이 너무 넓은 거 아님?). */
+.session-sidebar-panels .schedules-row.utilities-row.utilities-row,
+.utility-dock .agent-activity-page .schedules-row.schedules-row {
+  width: calc(100% + 6px);
+  max-width: none;
+  margin-left: -6px;
+  padding-left: 6px;
 }
 /* Search fields share rail-controls.css with Search and Source Control. */
 /* The page's rail gap (8px) alone spaces search → filters → list on one
@@ -84,9 +95,11 @@
 .session-sidebar,
 .session-sidebar-panels,
 .utility-dock {
-  /* Polish pass: the card reads by its plate, the outline only whispers. */
-  --mx-rail-item-surface: color-mix(in srgb, var(--mx-text) 4.5%, transparent);
-  --mx-rail-item-outline: color-mix(in srgb, var(--mx-text) 6%, transparent);
+  /* Rail lists are flat rows, ChatGPT-desktop style (user: 프레임을 다
+     아이템에 써서 부하고 답답해 보이나): no plate and no outline at rest — the
+     hover wash and the selected fill are the only surfaces a row wears. */
+  --mx-rail-item-surface: transparent;
+  --mx-rail-item-outline: transparent;
   --mx-rail-item-outline-active: color-mix(in srgb, var(--mx-text) 18%, transparent);
 }
 .session-sidebar-panels .schedules-list {
@@ -152,7 +165,7 @@
 }
 .session-sidebar-panels .schedules-row.selected {
   background: var(--mx-pressed);
-  box-shadow: inset 0 0 0 0.5px var(--mx-rail-item-outline-active);
+  box-shadow: none;
 }
 /* Projects open editors; the current path is not a persistent selection.
    Hover still acknowledges that the row can be opened. */
@@ -260,6 +273,12 @@
      12px gutter edge (which left it 20px in). */
   margin-right: calc(var(--mx-rail-trailing-center) - var(--mx-rail-gutter) - 8px);
   color: var(--mx-text-faint);
+  /* A flat row names its affordance under the pointer only. */
+  opacity: 0;
+  transition: opacity var(--mx-motion-ink);
+}
+.session-sidebar-panels .utilities-row:is(:hover, :focus-visible, :focus-within) .utilities-row-chevron {
+  opacity: 1;
 }
 .session-sidebar-panels .sidebar-resource-running {
   width: 16px;
@@ -470,7 +489,7 @@
   gap: 2px;
 }
 .utility-dock .agent-activity-page .schedules-list {
-  gap: 6px;
+  gap: var(--mx-rail-list-gap);
 }
 .utility-dock .agent-activity-page .schedules-row {
   gap: 8px;
@@ -517,7 +536,7 @@
   font-weight: var(--mx-weight-regular);
 }
 .utility-dock .agent-activity-page .schedules-row-copy small {
-  color: var(--mx-text-faint);
+  color: var(--mx-row-meta-ink);
   font-size: var(--mx-font-supporting);
 }
 /* Workflow settings sub-sections read as sidebar section headings on the 6px line,
@@ -817,12 +836,23 @@
      a boxed field (user: 프레임리스로 최대한). */
   box-shadow: none;
 }
-/* Idle titles rest one ink step under the selected row's full ink. */
+/* Idle titles rest one ink step under the selected row's full ink — the
+   shared list-row roles (01-tokens.css). */
 .session-sidebar .session-row-copy b {
-  color: var(--mx-text-soft);
+  color: var(--mx-row-title-ink);
 }
-.session-sidebar .session-row.selected .session-row-copy b {
-  color: var(--mx-text);
+.session-sidebar .session-row:is(.selected, :hover) .session-row-copy b {
+  color: var(--mx-row-title-ink-active);
+}
+/* Every other rail list walks the same roles: title, then its supporting
+   line (description, path, model) one step under it. */
+.session-sidebar-panels .schedules-row-copy b,
+.utility-dock .agent-activity-page .schedules-row-copy b {
+  color: var(--mx-row-title-ink);
+}
+.session-sidebar-panels .schedules-row:is(.selected, :hover, :focus-visible) .schedules-row-copy b,
+.utility-dock .agent-activity-page .schedules-row:is(:hover, :focus-visible) .schedules-row-copy b {
+  color: var(--mx-row-title-ink-active);
 }
 /* Light rows: translucent hover/pressed backgrounds under OPAQUE action
    gradients rendered a visible rectangle around the row actions. Use opaque

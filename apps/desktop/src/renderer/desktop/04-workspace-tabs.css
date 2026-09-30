@@ -279,37 +279,54 @@
   background: var(--mx-border-muted);
   pointer-events: none;
 }
-.workspace-tab:hover::before,
-.workspace-tab:focus-within::before {
-  opacity: 0;
-}
-/* The selection's own plate is its boundary, so the seams on either side of
-   it step aside like they do for a hovered cell. */
-.workspace-tab.active::before,
+/* The selection's own plate is its boundary, so the seam just before it steps
+   aside; the cell's own seam becomes the plate below. */
 .workspace-tab:has(+ .workspace-tab.active)::before {
   opacity: 0;
 }
 .workspace-tab:active {
   cursor: grabbing;
 }
-/* Selected vs idle reads by a PLATE, Codex/Chrome style (user: 탭 쪽 UI —
-   선택하고 미선택하고): the strip and the sheet became one surface under
-   Mica, so the old sheet-coloured active cell stopped standing out and the
-   thin top band was all that told the tabs apart. The selected tab wears a
-   soft top-rounded plate; a hovered idle tab a fainter one of the same
-   shape. */
+/* Selected vs idle reads by a PLATE (user: 탭 쪽 UI — 선택하고 미선택하고).
+   Under Mica the strip and the sheet are one surface, so a Chrome-style
+   top-rounded plate had nothing to join below and read as a slab cut off at
+   the strip floor (user: 탭 이거 너무 어색한데 선택시). The selected tab is a
+   raised card inset from the strip edges instead (Firefox Proton style,
+   picked over a flat pill, a softer pill and text-only), drawn on the cell's
+   seam pseudo so the cell box, its width math and its hit area stay as they
+   were; a hovered idle tab wears a flat, fainter plate of the same shape. A
+   drop-target cell hands the pseudo back to the insertion line. */
 .workspace-tab:hover,
-.workspace-tab:focus-within {
-  --workspace-tab-surface: var(--mx-tab-pill, var(--mx-bg-layer-1));
-  color: var(--mx-text);
-  border-radius: var(--mx-radius-lg) var(--mx-radius-lg) 0 0;
-  background: color-mix(in srgb, var(--mx-text) 4%, transparent);
-}
+.workspace-tab:focus-within,
 .workspace-tab.active {
-  --workspace-tab-surface: var(--mx-window-band);
+  isolation: isolate;
   color: var(--mx-text);
-  border-radius: var(--mx-radius-lg) var(--mx-radius-lg) 0 0;
-  background: color-mix(in srgb, var(--mx-text) 7%, transparent);
+}
+.workspace-tab:is(:hover, :focus-within, .active):not(.drop-target-right)::before {
+  top: 4px;
+  right: 2px;
+  bottom: 4px;
+  left: 2px;
+  width: auto;
+  z-index: -1;
+  border-radius: var(--mx-radius-md);
+  background: var(--mx-plate-hover);
+}
+/* The card: a lifted fill, a soft drop shadow in the theme's shadow tint and
+   a hairline of light along its top edge. */
+.workspace-tab.active:not(.drop-target-right)::before {
+  background: color-mix(in srgb, var(--mx-text) 11%, transparent);
+  box-shadow:
+    0 1px 3px color-mix(in srgb, var(--mx-shadow-tint) 50%, transparent),
+    inset 0 0.5px 0 color-mix(in srgb, var(--mx-text) 10%, transparent);
+}
+/* On light an ink-tinted fill sits BELOW the strip and reads pressed, not
+   raised: the card is white there, edged by a hairline ring instead. */
+:root[data-mixdog-theme="light"] .workspace-tab.active:not(.drop-target-right)::before {
+  background: var(--mx-bg-base);
+  box-shadow:
+    0 1px 3px color-mix(in srgb, var(--mx-shadow-tint) 50%, transparent),
+    0 0 0 0.5px color-mix(in srgb, var(--mx-text) 10%, transparent);
 }
 /* PANE strips: ONE body with the content (user: VS코드처럼 라벨쪽과 패널
    사이에 줄 없고 배경색 구분도 없이 일체) — the strip band and the active
@@ -347,9 +364,10 @@
   pointer-events: none;
 }
 .pane-split .workspace-tabs-shell[data-focused="true"] .workspace-tab.active::after {
-  /* Inset past the plate's rounded corners. */
-  left: var(--mx-radius-lg);
-  right: var(--mx-radius-lg);
+  /* Rides the card's top edge, inset past its rounded corners. */
+  top: 4px;
+  left: 8px;
+  right: 8px;
   border-radius: 0 0 var(--mx-radius-hair) var(--mx-radius-hair);
   background: var(--mx-accent);
 }

@@ -53,7 +53,7 @@ export function localFileMimeTypeForPath(path: string): string {
   return Object.hasOwn(MIME_TYPES, extension) ? MIME_TYPES[extension] : 'application/octet-stream';
 }
 
-// Binary documents and media that only an OS-associated app can show. Chat
+// Documents and media that chat links open in an OS-associated app. Chat
 // output is untrusted, so this is the ONLY set that may launch another
 // program; everything else (source, markdown, data files) opens in Mixdog's
 // own editor, which never executes anything.
@@ -77,6 +77,7 @@ const OS_DOCUMENT_EXTENSIONS = new Set([
   'gif',
   'webp',
   'avif',
+  'svg',
   'bmp',
   'tif',
   'tiff',

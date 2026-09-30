@@ -7,9 +7,10 @@ import { TranscriptList } from '../../src/renderer/TranscriptList';
 import type { TranscriptRowModel } from '../../src/renderer/transcript-rows';
 import { runConversationSubmitProbe } from './submit';
 import { runTranscriptMotionProbe } from './transcript-motion';
+import { runHeightChangesProbe } from './height-changes';
+import { frame } from './probe-support';
 
 const root = createRoot(document.getElementById('root')!);
-const frame = () => new Promise<void>((done) => requestAnimationFrame(() => done()));
 const settle = async () => {
   for (let n = 0; n < 8; n++) await frame();
 };
@@ -130,6 +131,9 @@ function geometry() {
   };
 }
 (window as any).runComposerLayoutProbe = async (mode = 'all') => {
+  // Exercise visible-surface effects in the hidden, isolated test window.
+  Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
+  if (mode === 'height') return runHeightChangesProbe(root);
   if (mode === 'motion') return runTranscriptMotionProbe(root);
   if (mode === 'submit') return runConversationSubmitProbe(root);
   const transitions = [];
@@ -190,5 +194,13 @@ function geometry() {
   check(!document.getElementById('probe-palette'), 'inactive surface has no orphan popup');
   flushSync(() => root.render(null));
   const submit = mode === 'all' ? await runConversationSubmitProbe(root) : null;
-  return { failures: [...failures, ...(submit?.failures || [])], transitions, submit };
+  const motion = mode === 'all' ? await runTranscriptMotionProbe(root) : null;
+  const height = mode === 'all' ? await runHeightChangesProbe(root) : null;
+  return {
+    failures: [...failures, ...(submit?.failures || []), ...(motion?.failures || []), ...(height?.failures || [])],
+    transitions,
+    submit,
+    motion,
+    height,
+  };
 };

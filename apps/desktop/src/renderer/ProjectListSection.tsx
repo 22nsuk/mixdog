@@ -815,6 +815,9 @@ export function ProjectListSection({
             className="schedules-row utilities-row projects-row"
             onClick={() => openEdit(null, t('Common Memory'))}
           >
+            <span className="sidebar-resource-icon" aria-hidden="true">
+              <FileText size={16} />
+            </span>
             <span className="schedules-row-copy utilities-row-copy">
               <b>{t('Common Memory')}</b>
               <small>{t('Used for every project.')}</small>
@@ -839,6 +842,9 @@ export function ProjectListSection({
                 onClick={() => openEdit(project.path, title)}
                 {...projectOrder.getReorderProps(project.path)}
               >
+                <span className="sidebar-resource-icon" aria-hidden="true">
+                  <Folder size={16} />
+                </span>
                 <span className="schedules-row-copy utilities-row-copy projects-row-label">
                   <b>{title}</b>
                   <small>{project.path}</small>

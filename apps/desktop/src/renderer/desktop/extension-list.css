@@ -52,7 +52,7 @@
    would draw a second box around the whole list. */
 .extensions-pane .settings-group-body {
   display: grid;
-  gap: var(--mx-rail-gap);
+  gap: var(--mx-rail-list-gap);
   padding: 0;
   border-radius: 0;
   background: transparent;

@@ -14,7 +14,7 @@ import {
 } from '../shared/agent-activity';
 import { sessionSummaryTitle } from '../shared/session-title.mjs';
 import { t } from './i18n';
-import { modelDisplayName, ModelRouteLabel } from './provider-display';
+import { modelDisplayName, ModelRouteLabel, ProviderIcon } from './provider-display';
 import { formatWorkElapsed, timeMs } from './transcript-primitives';
 import { TextShimmer } from './transcript-primitives';
 import {
@@ -189,6 +189,11 @@ function AgentPoolRow({
         else onOpenSession?.(sessionId, tabTitle, ownerSessionId);
       }}
     >
+      {/* The brand of the model the agent runs on marks the row, as in the
+      Workflows panel (user: 에이전트 창은 이번 적용 안 된 거?). */}
+      <span className="sidebar-resource-icon" aria-hidden="true">
+        {agent.provider ? <ProviderIcon provider={String(agent.provider)} width={16} height={16} /> : <Bot size={16} />}
+      </span>
       <span className="schedules-row-copy">
         <span className="agent-pool-heading">
           <b className="agent-pool-name">{name}</b>

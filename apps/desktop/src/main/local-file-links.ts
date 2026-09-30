@@ -52,7 +52,7 @@ function localLinkPath(href: unknown): string {
 }
 
 // Chat output is untrusted. A folder opens in the file manager and only
-// binary document/media types may launch an associated app; every other
+// allowlisted document/media types may launch an associated app; every other
 // file (source, text, data — and executables, scripts, shortcuts or
 // macro-enabled formats) is handed back for Mixdog's editor, which never
 // launches anything.

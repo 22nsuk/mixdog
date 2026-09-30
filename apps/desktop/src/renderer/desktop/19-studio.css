@@ -776,8 +776,6 @@
    text selection, and focus rings follow the app ink instead of the OS blue. */
 :root {
   accent-color: var(--mx-text);
-  /* Focus ring token feeds every :focus-visible shadow in the shell. */
-  --mx-focus: var(--mx-border-strong);
 }
 ::selection {
   color: var(--mx-bg-base);

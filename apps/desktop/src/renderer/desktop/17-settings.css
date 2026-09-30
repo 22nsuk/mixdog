@@ -96,12 +96,13 @@
   color: var(--mx-text);
   text-overflow: ellipsis;
   white-space: nowrap;
-  /* The panel-title tier every other title uses — rail panels and the editor
-     cards are 16px; these dialog titles sat a step under them at 15px (user:
-     헤더 폰트 사이즈 너무 작은 거 아니냐). */
-  font-size: var(--mx-font-panel-title);
+  /* Page title: Settings and the large command dialogs are pages, one step
+     over the 16px panel/editor-card titles (user: 헤더 폰트 사이즈 너무 작은
+     거 아니냐 · 폰트 위계도 조사해 봐). */
+  font-size: var(--mx-font-page-title);
   font-weight: var(--mx-weight-semibold);
-  line-height: var(--mx-line-emphasis);
+  line-height: var(--mx-line-page-title);
+  letter-spacing: var(--mx-tracking-tight);
 }
 .mixdog-settings__close {
   width: 24px;
@@ -174,7 +175,7 @@
   border-radius: var(--mx-radius-lg);
   color: var(--mx-text);
   background: var(--mx-bg-layer-1);
-  box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--mx-text) 6%, transparent);
+  box-shadow: var(--mx-card-outline);
 }
 .mixdog-settings__row,
 .settings-form-row,
@@ -265,10 +266,12 @@
   border-radius: 50%;
   background: currentColor;
 }
-.settings-status--positive {
-  border-color: color-mix(in srgb, var(--mx-success) 35%, transparent);
-  color: var(--mx-success);
-  background: color-mix(in srgb, var(--mx-success) 10%, transparent);
+/* Healthy is the resting state: a neutral pill whose dot alone carries the
+   green — one green pill per account made the providers page read as a wall
+   of badges (user: 색감 점검). Warning and danger keep their full tint because
+   they ask for action. */
+.settings-status--positive i {
+  background: var(--mx-success);
 }
 .settings-status--warning {
   border-color: color-mix(in srgb, var(--mx-warning) 35%, transparent);
@@ -290,7 +293,7 @@
 .settings-resource b {
   color: var(--mx-text);
   font-size: var(--mx-font-ui);
-  font-weight: var(--mx-weight-semibold);
+  font-weight: var(--mx-weight-label);
   /* line-height:1 clipped the text box to the em square, so the label rode
      HIGH against a centered row (user: settings label is not vertically
      centered). A 20px box balances the half-leading. */
@@ -425,7 +428,11 @@
   color: var(--mx-text);
   background: linear-gradient(var(--mx-hover), var(--mx-hover)), var(--mx-bg-base);
 }
-.settings-action.danger {
+/* Destructive actions rest neutral and turn red on intent: a red label on
+   every account row put five alarms on one page (user: 색감 점검). The
+   confirmation dialog still states the danger in full. */
+.settings-action.danger:hover:not(:disabled),
+.settings-action.danger:focus-visible {
   color: var(--mx-danger);
 }
 .settings-action:active:not(:disabled) {
@@ -452,7 +459,7 @@
   border-radius: var(--mx-radius-lg);
   color: var(--mx-text);
   background: var(--mx-bg-layer-1);
-  box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--mx-text) 6%, transparent);
+  box-shadow: var(--mx-card-outline);
 }
 .core-memory-edit {
   display: grid;

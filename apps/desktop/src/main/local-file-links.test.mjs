@@ -64,7 +64,7 @@ async function fixture(t) {
 
 test('chat file IPC opens relative, absolute and file URLs with decoded document names', async (t) => {
   const f = await fixture(t);
-  const names = ['제안서 100% #1.pptx', 'preview.pdf', 'verification-summary.docx'];
+  const names = ['제안서 100% #1.pptx', 'preview.pdf', 'verification-summary.docx', '도표 #1.svg', 'Chart.SVG'];
   for (const name of names) {
     const file = join(f.project, 'output', name);
     await writeFile(file, 'sample');
@@ -74,7 +74,7 @@ test('chat file IPC opens relative, absolute and file URLs with decoded document
       pathToFileURL(file).href,
       file.replace(/\\/g, '/').replace(/%/g, '%25').replace(/#/g, '%23'),
     ]) {
-      await f.invoke(href);
+      assert.equal(await f.invoke(href), 'file');
       assert.equal(f.opened.at(-1), canonical);
     }
   }

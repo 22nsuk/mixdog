@@ -168,7 +168,7 @@
 .github-logs {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font-size: 11px;
+  font-size: var(--mx-font-micro);
   max-height: 65vh;
   overflow: auto;
 }

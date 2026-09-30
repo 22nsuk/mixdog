@@ -17,20 +17,6 @@
   flex-wrap: wrap;
   gap: 6px;
   margin-bottom: 6px;
-  transition:
-    max-height var(--mx-motion-chrome),
-    opacity var(--mx-motion-chrome),
-    margin-bottom var(--mx-motion-chrome),
-    min-height var(--mx-motion-chrome);
-}
-/* Promotion exit: collapse instead of an instant unmount (composer jerk). */
-.composer-context-bar-collapsing {
-  min-height: 0;
-  max-height: 0;
-  margin-bottom: 0;
-  opacity: 0;
-  overflow: hidden;
-  pointer-events: none;
 }
 /* Project / workflow pills: one shared ghost-chip grammar. At rest the chip
    paints no plate or ring (it reads as part of the prompt area, not a second
@@ -1111,18 +1097,21 @@
   font-size: var(--mx-font-ui);
   font-weight: var(--mx-weight-regular);
 }
+/* Queued follow-ups ride the same material as the changes bar above them —
+   the prompt card's fill, 12px corner and raised edge, a gap apart — instead
+   of an outlined 6px tab tucked under the card (user: 스티어링 메시지도 좀
+   어색하네). */
 .queue-list {
   position: relative;
   z-index: 0;
   max-height: 168px;
-  margin-bottom: -10px;
-  padding-bottom: 10px;
+  margin-bottom: 8px;
   overflow: hidden;
-  border: 0.5px solid var(--mx-border-muted);
-  border-bottom: 0;
-  border-radius: var(--mx-radius-md) var(--mx-radius-md) 0 0;
+  border: 0;
+  border-radius: var(--mx-radius-xl);
   color: var(--mx-text);
-  background: var(--mx-bg-layer-1);
+  background: var(--mx-composer-surface);
+  box-shadow: var(--mx-raised);
 }
 .queue-items {
   max-height: 130px;

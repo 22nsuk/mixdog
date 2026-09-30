@@ -159,7 +159,7 @@
   overflow-wrap: anywhere;
 }
 .mobile-tab-card-state {
-  font-size: 11px;
+  font-size: var(--mx-font-micro);
   font-weight: var(--mx-weight-medium);
 }
 .mobile-tab-card-state.is-working {

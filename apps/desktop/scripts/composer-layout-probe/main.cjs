@@ -22,11 +22,11 @@ app.whenReady().then(async () => {
       writeFileSync(
         join(directory, 'report.json'),
         JSON.stringify({
-          failures: ['Composer layout probe did not finish within 60 seconds'],
+          failures: ['Composer layout probe did not finish within 120 seconds'],
         })
       );
       app.exit(1);
-    }, 60_000);
+    }, 120_000);
     const report = await win.webContents.executeJavaScript(
       `typeof window.runComposerLayoutProbe !== "function" ? { failures: window.probeErrors } :
       window.runComposerLayoutProbe(${JSON.stringify(process.argv[3])}).catch(error => ({

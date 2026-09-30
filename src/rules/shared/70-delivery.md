@@ -7,6 +7,9 @@
   absolute path, optionally `:line[:column]` (`deliverables/report.docx`,
   `src/app.ts:42`); never a bare name, a path relative to another folder, or a
   `file://` URI.
+- Deliver requested visual artifacts (SVG, diagrams, HTML pages) as saved files
+  and give their path; never paste their source as the answer unless the user
+  asks for the code.
 
 <!-- tools: git -->
 - A commit request includes selecting and staging its changes; a stage-only

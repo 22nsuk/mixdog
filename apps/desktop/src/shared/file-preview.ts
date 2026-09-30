@@ -68,8 +68,9 @@ export function filePreviewTypeForPath(path: string): DesktopFilePreviewType | n
   return extension && Object.hasOwn(FILE_PREVIEW_TYPES, extension) ? FILE_PREVIEW_TYPES[extension] : null;
 }
 
-/** Keep native previews inside; use the safe OS allowlist for everything else.
+/** Open SVG externally; keep other native previews inside and use the OS allowlist otherwise.
  *  Unknown binaries, executables and macro-enabled documents never auto-launch. */
 export function editorFileOpener(path: string): 'editor' | 'os' {
+  if (fileExtension(path) === 'svg') return 'os';
   return filePreviewTypeForPath(path) ? 'editor' : localFileOpener(path);
 }

@@ -71,7 +71,6 @@ test('the review slot takes no space until the review bar actually renders, incl
     const props = {
       goalSubmissionId: '',
       showProjectSelector: false,
-      softCollapseContextBar: { current: false },
       reviewActive: true,
       reviewSessionId: sessionId,
       reviewCwd: 'C:/work',
@@ -131,7 +130,6 @@ test('a transcript tail without its prompt row keeps the turn review of that tur
         React.createElement(ComposerDock, {
           goalSubmissionId: '',
           showProjectSelector: false,
-          softCollapseContextBar: { current: false },
           reviewActive: true,
           reviewBusy: false,
           reviewSessionId: sessionId,

@@ -63,11 +63,11 @@ test('desktop document clicks launch the default app without tabs, reads or navi
     openFilePath: async (...args) => external.push(args),
     readProjectFile: async (...args) => reads.push(args),
   });
-  for (const rel of ['deck.pptx', 'legacy.ppt', 'report.docx', 'sheet.xlsx', 'image.tiff', 'movie.mkv']) {
+  for (const rel of ['deck.pptx', 'legacy.ppt', 'report.docx', 'sheet.xlsx', 'image.tiff', 'movie.mkv', 'chart.svg', 'Chart.SVG']) {
     await act(async () => view.current.value.openFileTab(' C:/Project/demo ', `docs\\${rel}`, undefined, 'grant'));
     assert.deepEqual(external.at(-1), ['C:/Project/demo', `docs/${rel}`, 'grant']);
   }
-  assert.equal(external.length, 6);
+  assert.equal(external.length, 8);
   assert.deepEqual(reads, []);
   assert.deepEqual(view.tabs, []);
   assert.deepEqual(view.opened, []);
@@ -84,7 +84,7 @@ test('a failed external launch reports the error without opening a blank editor'
       throw new Error('No application is associated with this file.');
     },
   });
-  await act(async () => view.current.value.openFileTab('C:/Project/demo', 'deck.pptx'));
+  await act(async () => view.current.value.openFileTab('C:/Project/demo', 'chart.svg'));
   assert.equal(notices.length, 1);
   assert.equal(notices[0].tone, 'error');
   assert.match(notices[0].text, /No application is associated/);

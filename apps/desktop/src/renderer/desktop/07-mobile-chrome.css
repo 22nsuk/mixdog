@@ -858,9 +858,6 @@ html[data-mixdog-mobile-tabs] .command-surface[data-surface="context"] .context-
   flex-direction: row;
   gap: 10px;
 }
-html[data-mixdog-mobile-tabs] .command-surface[data-surface="context"] .context-usage-heading strong {
-  font-size: 20px;
-}
 html[data-mixdog-mobile-tabs] .command-surface[data-surface="context"] .context-mix {
   gap: 10px;
   padding: 14px 16px 16px;

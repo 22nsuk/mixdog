@@ -1,4 +1,10 @@
-import { defaultRangeExtractor, elementScroll, useVirtualizer, type Virtualizer } from '@tanstack/react-virtual';
+import {
+  defaultRangeExtractor,
+  elementScroll,
+  observeElementRect,
+  useVirtualizer,
+  type Virtualizer,
+} from '@tanstack/react-virtual';
 import {
   useCallback,
   useEffect,
@@ -312,6 +318,15 @@ export function TranscriptList({
     // the visible horizontal tear. Top-position writes still land in the same
     // direct pre-paint transaction, without per-row compositor surfaces.
     directDomUpdatesMode: 'position',
+    // The viewport and the rows share one geometry owner. Request the pin
+    // AFTER the core accepts the new height, including its first observation;
+    // a separate observer could read the previous height and skip the pin.
+    observeElementRect: (instance, cb) =>
+      observeElementRect(instance, (rect) => {
+        const previous = instance.scrollRect?.height;
+        cb(rect);
+        if (rect.height !== previous) endPin.request();
+      }),
     // virtual-core's own offset observer reports, once scrolling idles, the
     // offset its LAST scroll event read (a debounced callback over a captured
     // value). A write this list made in between — a landing's anchor restore,
@@ -472,7 +487,6 @@ export function TranscriptList({
         getViewport: () => viewport.current,
         getSpacer: () => spacer.current,
         getMaxScrollTop: maxScrollTop,
-        getScrollTop: () => domTop.current,
         hasReaderGesture: () => hasScrollGestureRef.current(),
         markProgrammaticScroll: (top, intended) => {
           domTop.current = top;

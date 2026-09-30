@@ -58,8 +58,8 @@ export {
  * The hook owns userScrolled, the 250ms gesture window, the 10px return band,
  * and the content ResizeObserver. TranscriptList owns EVERY scroll write:
  * virtual row geometry, append following, and measured-size anchoring.
- * This hook asks for scrollToEnd only on an explicit resume or a viewport
- * resize that the core cannot see.
+ * This hook asks for scrollToEnd only when follow resumes. The timeline owns
+ * viewport resizing as well as row geometry.
  */
 interface TranscriptFollow {
   following: boolean;
@@ -690,26 +690,10 @@ export function useTranscriptFollow({
         }
         return;
       }
-      // A width-only viewport resize (pane sash / window edge drag) belongs to
-      // the virtual timeline: its end anchor absorbs every rewrap delta
-      // pre-paint. Writing scrollTop here too made two scroll authorities race
-      // mid-drag — exactly the up/down bounce while narrowing.
-      // Content growth while following is followOnAppend + wasAtEnd. A second
-      // scrollToEnd here raced the core. Viewport height (composer/pane) is
-      // the one change the core does not own.
-      if (!viewportHeightChanged) return;
-      // Mid-gesture height writes fight native motion: a touch fling colliding
-      // with a URL-bar/keyboard/composer height step gets its offset
-      // overwritten mid-ramp and visibly bounces up/down (mobile report).
-      // Hold the pin until the gesture lands; the idle delivery then takes the
-      // bottom in one write.
-      if (hasGesture()) return;
-      scrollToBottom(false);
+      // Both viewport resizing and content growth are pinned by the timeline
+      // after its geometry is current, never by a second observer here.
     });
-    // Virtual-core still owns append and measured-row anchoring; the guard
-    // above keeps this observer silent for every growth the core follows on
-    // its own. Watching the viewport as well re-pins a composer or
-    // bottom-panel resize in the same pre-paint transaction.
+    // This observer only maintains follow intent and its growth baseline.
     observer.observe(element);
     observer.observe(target);
     return () => observer.disconnect();

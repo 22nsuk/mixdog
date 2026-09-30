@@ -206,10 +206,10 @@ test('the usage dialog header switches to subscription usage and opens there nex
   // The forecast stops where it runs out, at 16:20.
   assert.match(document.querySelector('.quota-chart-forecast').getAttribute('d'), /L666\.7,0\.0$/);
   assert.ok(document.querySelector('.quota-chart-pace'));
-  // The models stacked under the meter are named, then only the lines that
-  // need a word; the axis ticks whole hours and names now.
+  // The legend names only the models stacked under the meter; the axis ticks
+  // whole hours and names now.
   assert.equal(document.querySelectorAll('.quota-chart-stack').length, 2);
-  assert.deepEqual(texts('.quota-legend li').slice(-3), [t('Forecast'), t('Even pace'), t('Not measured')]);
+  assert.equal(document.querySelectorAll('.quota-legend li').length, 2);
   assert.equal(document.querySelectorAll('.quota-legend li > i[data-series]').length, 2);
   const axis = [...document.querySelectorAll('.quota-chart-axis span')];
   assert.deepEqual(

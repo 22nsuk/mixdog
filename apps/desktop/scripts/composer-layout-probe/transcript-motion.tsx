@@ -8,8 +8,8 @@ import type { SessionSnapshot } from '../../src/shared/contract';
 import { parseStreamingMarkdownAst } from '../../src/renderer/markdown-worker-client';
 import { rememberAgentReviews } from '../../src/renderer/turn-review-cache';
 import { turnReviewScope } from '../../src/renderer/renderer-logic.mjs';
+import { editPrompt, frame, waitFor } from './probe-support';
 
-const frame = () => new Promise<void>((done) => requestAnimationFrame(() => done()));
 const noop = () => {};
 type Sample = ReturnType<typeof geometry>;
 
@@ -202,6 +202,11 @@ export async function runTranscriptMotionProbe(root: Root) {
       flushSync(() => publish(snapshot));
       frames.push(...(await samples()));
     }
+    const deadline = performance.now() + 5_000;
+    while ((!frames.at(-1)?.shown || frames.at(-1)?.session !== session) && performance.now() < deadline) {
+      frames.push(...(await samples(1)));
+    }
+    frames.push(...(await samples(6)));
     cases.push(inspect(name, frames, session));
   };
   try {
@@ -221,9 +226,7 @@ export async function runTranscriptMotionProbe(root: Root) {
       await enter(`prepare-submit-${reading ? 'reading' : 'tail'}`, snapshot);
       const input = document.querySelector<HTMLTextAreaElement>('.composer textarea')!;
       const prompt = 'Motion next prompt\nSecond line\nThird line\nFourth line';
-      input.focus({ preventScroll: true });
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, prompt);
-      input.dispatchEvent(new Event('input', { bubbles: true }));
+      editPrompt(input, prompt);
       await samples(3);
       if (reading) {
         const viewport = document.querySelector<HTMLElement>('.transcript')!;
@@ -303,24 +306,16 @@ export async function runTranscriptMotionProbe(root: Root) {
       tasks: [],
     };
     (chrome as any).goal = goal;
-    // The probe window is hidden; the review bar only asks its worker on a
-    // visible document, so the entry must look visible to exercise the late
-    // result. Restored before the root unmounts.
-    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
     let resolved = false;
     let requests = 0;
     capability = () =>
       new Promise((done) => {
         requests += 1;
-        // Land strictly AFTER the transcript is on screen: the late result is
-        // the case under test, not a read that beats the reveal.
-        let shownFrames = 0;
-        const tick = () => {
-          if (geometry()?.shown) shownFrames += 1;
-          if (shownFrames < 3) {
-            requestAnimationFrame(tick);
-            return;
-          }
+        // Entry waits for its authoritative review. Resolve the delayed
+        // worker independently; waiting for reveal here deadlocked the fixture
+        // until the production entry timeout. Late visible review is covered
+        // separately by completion-review-appears below.
+        window.setTimeout(() => {
           resolved = true;
           done({
             value: {
@@ -332,15 +327,16 @@ export async function runTranscriptMotionProbe(root: Root) {
               agents: [],
             },
           });
-        };
-        requestAnimationFrame(tick);
+        }, 60);
       });
     session = String(chrome.sessionId);
     reviewActive = true;
     publish(chrome);
     flushSync(render);
-    const chromeFrames = await samples(24);
-    const chromeEntry = inspectDock('async-chrome-entry', chromeFrames, session, 2);
+    const chromeFrames = await samples(3);
+    await waitFor(() => resolved && Boolean(geometry()?.shown), 'delayed review entry');
+    chromeFrames.push(...(await samples(12)));
+    const chromeEntry = inspectDock('async-chrome-entry', chromeFrames, session, 1);
     if (!resolved) chromeEntry.failures.push(`review worker never resolved (requests=${requests})`);
     if (!document.querySelector('.turn-review-bar'))
       chromeEntry.failures.push('review bar missing after worker resolution');
@@ -486,7 +482,6 @@ export async function runTranscriptMotionProbe(root: Root) {
       cases,
     };
   } finally {
-    delete (document as { visibilityState?: unknown }).visibilityState;
     flushSync(() => root.render(null));
     defaultSessionLaneStore.clear();
   }

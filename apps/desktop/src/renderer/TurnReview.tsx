@@ -6,7 +6,6 @@ import {
   type SetStateAction,
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -16,7 +15,6 @@ import { ErrorNotice, errorMessageText } from './ErrorNotice';
 import { GitDiffBody } from './ReviewPane';
 import { findPatch } from './transcript-diff';
 import { readDiffStyle, TURN_REVIEW_DIFF_STYLE_KEY, type TranscriptItem, writeDiffStyle } from './desktop-types';
-import { openDockSlot } from './dock-slot-motion';
 import { turnReviewScope } from './renderer-logic.mjs';
 import { isMobileRemoteSurface } from './mobile-surface';
 import {
@@ -715,18 +713,6 @@ export const TurnReviewBar = memo(function TurnReviewBar({
   const normalizedCwd = String(cwd || '')
     .replace(/\\/g, '/')
     .replace(/\/+$/, '');
-  // A bar that appears while the transcript is on screen opens its slot over
-  // the dock motion; one already there when a session is entered lands at full
-  // height. The opening runs once, on appearance: a CSS animation gated on the
-  // entry flag replayed its unfinished part the moment the flag dropped, and
-  // the freshly revealed transcript slid up again (user: 웹앱에서 트랜스크립트가
-  // 위아래로 튄다). Removal stays instant.
-  useLayoutEffect(() => {
-    if (!reviewVisible) return undefined;
-    const slot = barElement.current?.closest<HTMLElement>('.turn-review-slot');
-    const opening = slot ? openDockSlot(slot) : null;
-    return () => opening?.cancel();
-  }, [reviewVisible]);
   // The prior turn's review must leave at the next user boundary. Conversation
   // reserves geometry only after the CURRENT turn actually touches files, so
   // carrying an empty review row through every busy turn creates a fixed black

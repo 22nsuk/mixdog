@@ -119,6 +119,7 @@ export const SearchPane = memo(function SearchPane({
   onOpenFile,
   onOpenFileAt,
   onRenameEntry,
+  headerActionSlot = null,
 }: {
   projectPath: string;
   gitStatus: DesktopGitStatus | null;
@@ -128,9 +129,14 @@ export const SearchPane = memo(function SearchPane({
   onOpenFile?(project: string, rel: string, mode?: 'preview' | 'pinned'): void;
   onOpenFileAt?(project: string, rel: string, line?: number): void;
   onRenameEntry?(projectPath: string, relPath: string, newName: string): Promise<void>;
+  /** The panel title row's action slot. With it, the tree's actions ride the
+   *  title row and the Names/Contents tabs keep the full width in both modes
+   *  — sharing their row, the tabs narrowed only while the tree showed (user:
+   *  이름 내용이 좌우로 전체 차지하게 해야지). */
+  headerActionSlot?: HTMLElement | null;
 }) {
   // The tree's New File / New Folder / Refresh / Collapse All actions portal
-  // into the mode row while the tree is the body.
+  // into the title row, or into the mode row where no title row is shown.
   const [explorerActions, setExplorerActions] = useState<HTMLDivElement | null>(null);
   const {
     folders,
@@ -175,7 +181,7 @@ export const SearchPane = memo(function SearchPane({
         onReadyChange={ignoreFilesReadyChange}
         onOpenFile={onOpenFile}
         onRenameEntry={onRenameEntry}
-        headerSlot={explorerActions}
+        headerSlot={headerActionSlot ?? explorerActions}
       />
     );
   };
@@ -209,7 +215,7 @@ export const SearchPane = memo(function SearchPane({
               {t('Contents')}
             </button>
           </div>
-          <div className="workbench-explorer-actions" ref={setExplorerActions} />
+          {!headerActionSlot && <div className="workbench-explorer-actions" ref={setExplorerActions} />}
         </div>
       </div>
       {renderBody()}

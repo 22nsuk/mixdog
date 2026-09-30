@@ -40,6 +40,35 @@ test('completed media and Office outputs become deduplicated artifacts, includin
   assert.deepEqual(transcriptArtifacts(JSON.parse(JSON.stringify(items))), transcriptArtifacts(items));
 });
 
+test('SVG files written by edit and apply_patch become image artifacts; failed, deleted and other files do not', () => {
+  const edit = (file_path, extra = {}) => ({ kind: 'tool', name: 'edit', args: { file_path }, result: 'ok', ...extra });
+  const patch = (text) => ({ kind: 'tool', name: 'apply_patch', args: { patch: text }, result: 'ok' });
+  assert.deepEqual(
+    transcriptArtifacts([
+      edit('C:/work/chart.svg'),
+      edit('C:/work/chart.svg'),
+      edit('C:/work/app.ts'),
+      edit('C:/work/failed.svg', { isError: true }),
+      patch(
+        [
+          '*** Begin Patch',
+          '*** Add File: out/new.svg',
+          '+<svg/>',
+          '*** Update File: old.svg',
+          '*** Move to: moved.svg',
+          '*** Delete File: gone.svg',
+          '*** End Patch',
+        ].join('\n')
+      ),
+    ]).map(({ kind, path }) => ({ kind, path })),
+    [
+      { kind: 'image', path: 'C:/work/chart.svg' },
+      { kind: 'image', path: 'out/new.svg' },
+      { kind: 'image', path: 'moved.svg' },
+    ]
+  );
+});
+
 test('input paths, lookup, pending, failed and executable outputs never become result cards', () => {
   assert.deepEqual(
     transcriptArtifacts([
@@ -77,6 +106,11 @@ test('collapsed activity exposes image, playable video, a document that opens in
       if (/gone/.test(absolutePath)) throw Object.assign(new Error('ENOENT: no such file'), { code: 'ENOENT' });
       return [{ absolutePath, dir: false, projectPath: 'C:/work', relPath: absolutePath.slice('C:/work/'.length) }];
     },
+    previewProjectFile: async (_project, relPath) => ({
+      url: `mixdog-media://preview/token/${relPath}`,
+      kind: 'image',
+      mime: 'image/svg+xml',
+    }),
   };
   const root = createRoot(dom.window.document.getElementById('root'));
   try {
@@ -91,6 +125,7 @@ test('collapsed activity exposes image, playable video, a document that opens in
               media({ ok: true, assetId: 'b', output: 'C:/work/b.mp4' }, { action: 'generate', kind: 'video' }),
               office('C:/work/report #1.docx'),
               office('C:/work/gone.xlsx'),
+              { kind: 'tool', name: 'edit', args: { file_path: 'C:/work/chart.svg' }, result: 'ok' },
             ],
           })
         )
@@ -103,7 +138,9 @@ test('collapsed activity exposes image, playable video, a document that opens in
     assert.equal(gone.querySelector('small').textContent, 'Deleted');
     assert.equal(dom.window.document.querySelector('.tool-activity-header').getAttribute('aria-expanded'), 'false');
     assert.ok(dom.window.document.querySelector('.transcript-artifacts img'));
-    const video = dom.window.document.querySelector('video');
+    // A written SVG renders as an image through the file preview lane, never inline markup.
+    const svg = dom.window.document.querySelector('img[src="mixdog-media://preview/token/chart.svg"]');
+    assert.equal(svg?.closest('figure')?.querySelector('figcaption > span')?.textContent, 'chart.svg');    const video = dom.window.document.querySelector('video');
     assert.equal(video.controls, true);
     assert.equal(video.autoplay, false);
     assert.equal(video.preload, 'none');

@@ -33,6 +33,12 @@
 .workbench-explorer-actions:empty {
   display: none;
 }
+/* In the panel title row the tree actions close on its trailing edge, like
+   the "+" other panels carry there. */
+.utility-dock-header-actions {
+  margin-left: auto;
+  padding-bottom: 0;
+}
 .workbench-explorer-actions > button {
   width: 22px;
   height: 22px;

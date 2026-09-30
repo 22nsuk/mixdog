@@ -1,4 +1,4 @@
-import { ChevronRight, Layers3, Plus } from 'lucide-react';
+import { Bot, ChevronRight, Globe, Layers3, Plus } from 'lucide-react';
 import { useMemo, useRef, useState } from 'react';
 
 import type { DesktopApi, DesktopModelOption } from '../shared/contract';
@@ -7,7 +7,7 @@ import { InitialSurface } from './InitialSurface';
 import { filterConfiguredModels } from './model-catalog';
 import { preferredModelEffort, routeOption } from './model-route-utils';
 import { showDesktopToast } from './notifications';
-import { ModelRouteLabel, modelDisplayName, normalizeModelOptions } from './provider-display';
+import { ModelRouteLabel, ProviderIcon, modelDisplayName, normalizeModelOptions } from './provider-display';
 import { record } from './record-utils';
 import { SidebarLoadingDialog } from './sidebar-dialog';
 import { useSidebarPanelDismiss } from './sidebar-panel-surface';
@@ -48,6 +48,22 @@ function agentRouteSummary(route: RecordValue, models: DesktopModelOption[]): Ag
     fast: fastCapable && fast,
     effortLabel: rawEffortLabel,
   };
+}
+
+/** The row's leading mark: the brand of the model it runs on, so flat rows
+ *  part at a glance (user: 각각이 분리되어 보이지 않는데). A route with no
+ *  pinned model — off, or following Main — shows the row's own glyph. */
+function AgentRowIcon({ route, fallback = 'agent' }: { route: RecordValue; fallback?: 'agent' | 'web' }) {
+  const provider = String(route.provider || '');
+  const pinned = provider !== '' && provider !== 'default' && String(route.model || '') !== '';
+  let mark = <Bot size={16} />;
+  if (pinned) mark = <ProviderIcon provider={provider} width={16} height={16} />;
+  else if (fallback === 'web') mark = <Globe size={16} />;
+  return (
+    <span className="sidebar-resource-icon" aria-hidden="true">
+      {mark}
+    </span>
+  );
 }
 
 function AgentRouteSummaryView({ summary }: { summary: AgentRouteSummary }) {
@@ -263,6 +279,7 @@ export function WorkflowsPane({ api = window.mixdogDesktop, active = true }: { a
         onClick={() => void openAgentEditor(agent.id, agent.label, agent.custom)}
         {...agentOrder.getReorderProps(agent.id)}
       >
+        <AgentRowIcon route={route} />
         <span className="schedules-row-copy utilities-row-copy">
           <SidebarResourceTitle label={agent.label} tag={disabled ? { label: t('Disabled'), tone: 'muted' } : null} />
           <AgentRouteSummaryView summary={agentRouteSummary(route, models)} />
@@ -299,6 +316,7 @@ export function WorkflowsPane({ api = window.mixdogDesktop, active = true }: { a
         }
         {...defaultAgentOrder.getReorderProps(agent.id)}
       >
+        <AgentRowIcon route={record(row?.route)} />
         <span className="schedules-row-copy utilities-row-copy">
           <SidebarResourceTitle label={agent.label} tag={disabled ? { label: t('Disabled'), tone: 'muted' } : null} />
           <AgentRouteSummaryView summary={agentRouteSummary(record(row?.route), models)} />
@@ -405,6 +423,9 @@ export function WorkflowsPane({ api = window.mixdogDesktop, active = true }: { a
                       onClick={() => void openEditor(id, name, custom)}
                       {...workflowOrder.getReorderProps(id)}
                     >
+                      <span className="sidebar-resource-icon" aria-hidden="true">
+                        <Layers3 size={16} />
+                      </span>
                       <span className="schedules-row-copy utilities-row-copy">
                         <b>{name}</b>
                         <small>
@@ -450,6 +471,7 @@ export function WorkflowsPane({ api = window.mixdogDesktop, active = true }: { a
                 }
                 {...defaultAgentOrder.getReorderProps('web-search')}
               >
+                <AgentRowIcon route={webSearchRoute} fallback="web" />
                 <span className="schedules-row-copy utilities-row-copy">
                   <b>{t('Web Search')}</b>
                   <AgentRouteSummaryView summary={agentRouteSummary(webSearchRoute, webSearchModels)} />

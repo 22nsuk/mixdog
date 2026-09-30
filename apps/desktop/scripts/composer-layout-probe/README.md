@@ -28,7 +28,18 @@ It does not connect to, restart, or modify the installed application.
   after the transcript is shown takes space exactly once when the bar
   appears, Goal republications (new object, clock-only fields) must not move the
   viewport, and clearing the Goal must move it exactly once.
-- No argument runs both.
+- `height` covers native textarea growth/clear, approval, draft context,
+  attachments, queued messages, notices, runtime progress and Goal presence,
+  pane width changes, and viewport height steps representing a keyboard or
+  bottom panel. It combines short/long history and tail/reader ownership at
+  desktop and narrow widths. Wheel, held-touch and fling fixtures ensure a
+  resize yields to the reader and is applied after idle without another edit.
+- No argument runs all modes, including the palette fixtures.
+
+The hidden window simulates visible-document and input focus events. Entry
+fixtures wait for readiness rather than a fixed number of frames; geometry
+is sampled after the frame's layout and ResizeObserver delivery. Keyboard
+height and touch events are simulated, not physical mobile-device tests.
 
 Bundles and reports are generated in a unique temporary directory, printed
 to stdout, then removed. A failed assertion exits nonzero.

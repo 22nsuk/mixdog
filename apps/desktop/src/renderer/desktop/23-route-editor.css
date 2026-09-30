@@ -343,8 +343,8 @@
   padding: 2px 10px 0;
 }
 .route-context-head strong {
-  font-size: 15px;
-  font-weight: 600;
+  font-size: var(--mx-font-category);
+  font-weight: var(--mx-weight-semibold);
 }
 .route-context-head small {
   color: var(--mx-text-muted);

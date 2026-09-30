@@ -519,11 +519,13 @@
   color: var(--mx-text);
 }
 .session-sidebar-panels .schedules-row-copy small {
-  color: var(--mx-text-muted);
+  color: var(--mx-row-meta-ink);
 }
+/* The model a row runs on is its supporting line, not a second title: it
+   shares the meta ink instead of matching the name's brightness. */
 .session-sidebar-panels .agent-route-summary .model-route-label-model,
 .utility-dock .agent-activity-page .agent-route-summary .model-route-label-model {
-  color: var(--mx-text);
+  color: var(--mx-row-meta-ink);
 }
 /* ── Rail gutter ───────────────────────────────────────────────────────────
    ONE token drives every left/right inset in both rails (user: 공통값으로
@@ -536,6 +538,8 @@
 .utility-dock {
   --mx-rail-gutter: 12px;
   --mx-rail-gap: 8px;
+  /* Flat rows sit close; the hover wash is their only boundary. */
+  --mx-rail-list-gap: 2px;
   --mx-rail-trailing-center: 20px;
   --mx-rail-row-padding: 10px;
 }
@@ -622,10 +626,12 @@ html:not([data-mixdog-mobile-tabs]) :is(.session-sidebar, .session-sidebar-panel
 .session-sidebar .automation-group > div {
   padding-left: 0;
 }
-.session-sidebar-panels .schedules-page,
+.session-sidebar-panels .schedules-page {
+  gap: var(--mx-rail-gap);
+}
 .session-sidebar-panels .schedules-list,
 .utility-dock .schedules-list {
-  gap: var(--mx-rail-gap);
+  gap: var(--mx-rail-list-gap);
 }
 /* ── Rail type ramp ──────────────────────────────────────────────────────
    Shared left/right/bottom ladder: panel 15 > category 14 > item/tab/group

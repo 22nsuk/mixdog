@@ -93,14 +93,16 @@
   --mx-terminal-bg: #121215;
 
   /* ── Type scale ── */
-  /* One chrome ramp on FIVE real sizes — 11 badge · 13 meta · 14 item ·
-     15 category · 16 panel title. The semantic aliases below are the shared
-     contract for left, right, and bottom rails; local surfaces should not
-     collapse panel and category headings onto the same size.
+  /* One chrome ramp on SIX real sizes — 12 badge · 13 meta · 14 item ·
+     15 category · 16 panel title · 20 page title. The semantic aliases below
+     are the shared contract for left, right, and bottom rails; local surfaces
+     should not collapse panel and category headings onto the same size.
      micro is RESERVED for counters/badges/pills — readable sentences,
-     captions with names, and button labels start at meta. Content scales
-     (markdown headings, onboarding hero, editor titles) stay literal. */
-  --mx-font-micro: 11px;
+     captions with names, and button labels start at meta. 12 is the Windows
+     11 type ramp's floor for regular text (Caption 12/16); 11 sat under it
+     (user: 폰트 위계도 조사해 봐). Content scales (markdown headings,
+     onboarding hero, editor titles) stay literal. */
+  --mx-font-micro: 12px;
   --mx-font-meta: 13px;
   --mx-font-minor: 14px;
   --mx-font-code: 13px;
@@ -112,6 +114,13 @@
      large (user: 이건 또 너무 커) — in a roomier band (--mx-rail-panel-band). */
   --mx-rail-panel-title: 16px;
   --mx-rail-panel-band: 52px;
+  /* Page-scale titles and figures: the Settings page title, the large
+     command dialogs (Context, Usage, Doctor) and a dashboard card's figure.
+     A clear step over the 16 panel tier, as the Fluent subtitle (20/28),
+     Geist and Primer titles step to 20 — 15 and 16 alone told the page and
+     its sections apart by weight only. */
+  --mx-font-page-title: 20px;
+  --mx-line-page-title: 28px;
   --mx-font-category: var(--mx-font-emphasis);
   --mx-font-item: var(--mx-font-ui);
   --mx-font-supporting: var(--mx-font-meta);
@@ -120,7 +129,7 @@
      through the token). 15/17/19/23 strays converged to the pair;
      content headings (markdown h1-h3, onboarding hero, recovery card)
      keep literal metrics like their font sizes. */
-  --mx-line-micro: 14px;
+  --mx-line-micro: 16px;
   --mx-line-meta: 16px;
   --mx-line-minor: 18px;
   --mx-line-ui: 20px;
@@ -161,6 +170,9 @@
      `font-synthesis: none` never synthesizes it — and 650 keeps strong clear
      of the 600 heading tier, where size and ink carry the hierarchy. */
   --mx-weight-strong: 650;
+  /* A row or field LABEL beside its value (Settings rows). Semibold is the
+     heading tier; a label sits one step under it (user: 폰트 위계 · 웨이트). */
+  --mx-weight-label: var(--mx-weight-medium);
   /* Opacity ladder, five tiers between the functional 0/1: ghost .35
      (always-visible disabled arrows) < disabled .45 (standard disabled
      controls) < dim .55 (cut/waiting content, skeleton low) < secondary
@@ -184,6 +196,14 @@
   /* Soft ink: one step under full text (was ad-hoc 80/82/85% color-mix
      strays). Mix keeps it theme-adaptive like the strays it replaces. */
   --mx-text-soft: color-mix(in srgb, var(--mx-text) 85%, transparent);
+  /* List-row ink roles, ONE rule for every rail list (sessions, agents,
+     workflows, projects, extensions): the title rests a step under full ink
+     and lifts on hover or selection; the supporting line sits under it. The
+     panels had drifted — sessions at soft, the rest at full ink with their
+     model line as bright as the name (user: 웨이트나 색감까지 포함해서). */
+  --mx-row-title-ink: var(--mx-text-soft);
+  --mx-row-title-ink-active: var(--mx-text);
+  --mx-row-meta-ink: var(--mx-text-muted);
   /* Brand accent = Google's own blue (user: 구글색이 낫다). The Material 3
      indigo tones this replaces sat near hue 275 and read pale violet rather
      than the Google indigo they were meant to echo: #8ab4f8 is the accent
@@ -197,8 +217,10 @@
      Both are blue now, but code ink answers to "reads as code/reference"
      (GitHub #79b8ff on dark; on paper one rung under GitHub's #0969da) while
      the accent answers to the brand, so a future accent move must not drag
-     inline code with it. */
-  --mx-md-code: #79b8ff;
+     inline code with it. The role stays its own token, but its value is the
+     accent: #79b8ff beside #8ab4f8 was a second blue nobody could tell apart
+     (user: 팔레트도 깔끔한지 체크). */
+  --mx-md-code: var(--mx-text-accent);
   /* Neutral glyphs share the same ink ramp as their companion labels so
      chrome icons never drift darker or pick up a separate color cast. */
   --mx-icon: var(--mx-text);
@@ -213,9 +235,12 @@
   --mx-border-strong: rgba(255, 255, 255, 0.24);
 
   /* ── 4. Interaction ── */
-  /* Focus ring tracks the brand accent: Google's dark-UI blue here, and the
-     light block's paper accent so the ring stays legible on paper. */
-  --mx-focus: #8ab4f8;
+  /* Neutral focus ring in BOTH themes (user: 파란 강조/선택 톤 제거, 입력 포커스
+     파란 하이라이트 제외). Only keyboard navigation onto a control swaps in
+     the accent (02-base.css). Defined here once: a later :root override in
+     19-studio.css used to neutralise dark only, and the light block's blue
+     outranked it. */
+  --mx-focus: var(--mx-border-strong);
   --mx-hover: rgba(255, 255, 255, 0.06);
   --mx-pressed: rgba(255, 255, 255, 0.1);
   /* Opaque hover/pressed equivalents for rows that stack OPAQUE action
@@ -285,6 +310,22 @@
      rows). Dark shades with its own deepest surface; light overrides with a
      real ink tint, because a paper-grey "shadow" disappears on paper. */
   --mx-shadow-tint: var(--mx-bg-deep);
+  /* Chart inks: ONE categorical palette for every data surface (usage mix,
+     quota series, provider trends, context categories), muted mid-tones on
+     the dark plates, the same hues one step deeper on light. They never
+     reuse focus/success/warning/danger semantics. The usage and context
+     charts used to keep two near-identical palettes of their own. */
+  --mx-chart-purple: #b3a3da;
+  --mx-chart-teal: #71bcb0;
+  --mx-chart-gold: #d4ba78;
+  --mx-chart-blue: #8fa9d4;
+  --mx-chart-pink: #d58eaa;
+  --mx-chart-green: #8cb77c;
+  --mx-chart-mauve: #c49fbd;
+  --mx-chart-orange: #d59b79;
+  --mx-chart-sky: #80b6ca;
+  --mx-chart-violet: #b58bc3;
+  --mx-chart-grey: #9a9fa7;
   /* Quiet chip/segmented-control plate. Dark lifts with a white wash; light
      overrides with an ink wash — a white wash vanishes on white. */
   --mx-chip-bg: var(--mx-alpha-light-6);
@@ -326,6 +367,16 @@
      a 4% ink tint under a muted hairline, so it reads as a button on the same
      base plate without a filled block. */
   --mx-popup-action-bg: color-mix(in srgb, var(--mx-text) 4%, transparent);
+  /* Card and plate steps shared by the flat shell: a grouped card's whisper
+     edge (Settings groups, dialog lists, usage cards), and the hover and
+     selected plates a flat item wears (workspace tabs). */
+  --mx-card-outline: inset 0 0 0 0.5px color-mix(in srgb, var(--mx-text) 6%, transparent);
+  /* The app's one hover wash: at 4% a hovered tab sat at 1.09:1 on the sheet,
+     half the step every other hover takes. */
+  --mx-plate-hover: var(--mx-hover);
+  /* Selected rides the app's pressed fill (a selected session row's too), a
+     clear step over the hover wash. */
+  --mx-plate-selected: var(--mx-pressed);
   --mx-popup-action-ring: inset 0 0 0 0.5px var(--mx-border-muted);
   --mx-popup-action-ring-hover: inset 0 0 0 0.5px var(--mx-border-strong);
   /* Hover bridge geometry — the transparent frame that JOINS a card to the
@@ -471,9 +522,7 @@
   --mx-text-faint: #6a6a6e; /* ≥4.5:1 on the band; #8a8f95 sat at 3.1 and read washed under its own rows */
   --mx-text-accent: #1967d2;
   --mx-accent: var(--mx-text-accent);
-  /* Paper needs a darker rung of the same blue: #79b8ff sits ~2:1 on white,
-     and GitHub's #0969da stayed under 4.5:1 on the raised plates. */
-  --mx-md-code: #0860ca;
+  --mx-md-code: var(--mx-text-accent);
   --mx-icon: var(--mx-text);
   --mx-icon-muted: var(--mx-text-muted);
   /* Neutral hairlines: the warm alpha set pulled every seam brown. */
@@ -483,9 +532,7 @@
   --mx-border-strong: rgba(23, 24, 26, 0.26);
 
   /* ── 4. Interaction ── */
-  /* Tracks the paper accent. The old blue-500 ring sat ~2:1 against the
-     paper surfaces (user-flagged as washed out). */
-  --mx-focus: #1967d2;
+  --mx-focus: var(--mx-border-strong);
   --mx-hover: rgba(0, 0, 0, 0.05);
   --mx-pressed: rgba(0, 0, 0, 0.09);
   /* Opaque sidebar-row tones (hover/selected under opaque action gradients). */
@@ -529,6 +576,17 @@
   --mx-floating: 0 8px 16px rgba(0, 0, 0, 0.08), 0 4px 8px rgba(0, 0, 0, 0.06), 0 0 0 0.5px rgba(0, 0, 0, 0.12);
   --mx-overlay: 0 16px 32px rgba(0, 0, 0, 0.1), 0 8px 16px rgba(0, 0, 0, 0.08), 0 0 0 0.5px rgba(0, 0, 0, 0.12);
   --mx-shadow-tint: rgba(0, 0, 0, 0.22);
+  --mx-chart-purple: #8066b0;
+  --mx-chart-teal: #398e82;
+  --mx-chart-gold: #a88435;
+  --mx-chart-blue: #4f6fa8;
+  --mx-chart-pink: #b0557a;
+  --mx-chart-green: #5a8a4a;
+  --mx-chart-mauve: #9a6a92;
+  --mx-chart-orange: #c37d50;
+  --mx-chart-sky: #5a95b1;
+  --mx-chart-violet: #ab7cbb;
+  --mx-chart-grey: #7b8088;
   --mx-chip-bg: rgba(23, 24, 26, 0.05);
   --mx-button: 0 0 0 0.5px rgba(0, 0, 0, 0.141);
   --mx-button-contrast: 0 0 0 0.5px #3a3a3a;

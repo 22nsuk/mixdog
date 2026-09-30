@@ -831,7 +831,6 @@ export function Conversation({
             ) : null
           }
           showProjectSelector={showProjectSelector}
-          softCollapseContextBar={suppressDraftSubmitPaintHandoff}
           contextBar={
             <>
               <ProjectContextSelector

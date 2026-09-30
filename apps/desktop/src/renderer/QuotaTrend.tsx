@@ -43,7 +43,7 @@ const AXIS_FORMATS: Record<AxisUnit, Intl.DateTimeFormatOptions> = {
 };
 
 type Point = [number, number, number];
-type LegendItem = { key: string; label: string; legend?: string; series?: string };
+type LegendItem = { key: string; label: string; series: string };
 
 function pointList(value: unknown): Point[] {
   if (!Array.isArray(value)) return [];
@@ -245,14 +245,12 @@ export function QuotaTrend({
     return { ...entry, edge, area: edge ? `${edge}${floor}Z` : '' };
   });
   const stacked = stacks.some((entry) => entry.area);
-  // The models are named, and the lines that need a word: the meter, the
-  // limit and now read for themselves.
-  const legend: LegendItem[] = [
-    ...(stacked ? stacks.map((entry) => ({ key: `series:${entry.key}`, label: entry.label, series: entry.ink })) : []),
-    ...(forecastPath ? [{ key: 'forecast', label: t('Forecast'), legend: 'forecast' }] : []),
-    ...(pacePath ? [{ key: 'pace', label: t('Even pace'), legend: 'pace' }] : []),
-    ...(paths.unmeasured ? [{ key: 'unmeasured', label: t('Not measured'), legend: 'unmeasured' }] : []),
-  ];
+  // The legend names the models only; the forecast, pace and unmeasured
+  // strokes read for themselves on the plot (user: 범례에서 예상 · 적정 속도
+  // · 측정 못 한 구간은 빼고).
+  const legend: LegendItem[] = stacked
+    ? stacks.map((entry) => ({ key: `series:${entry.key}`, label: entry.label, series: entry.ink }))
+    : [];
   const axis = axisTicks(from, to);
   const axisFormat = new Intl.DateTimeFormat(
     uiFormatLocale(),
@@ -288,7 +286,11 @@ export function QuotaTrend({
     },
   };
   return (
-    <section className="stats-trend quota-trend" data-usage-provider={provider}>
+    <section
+      className="stats-trend quota-trend"
+      data-usage-provider={provider}
+      data-stacked={stacked ? 'true' : undefined}
+    >
       <header>
         {/* The chart names itself; the heading stays for assistive technology. */}
         <h4 className="sr-only">{t('Trend')}</h4>
@@ -305,6 +307,23 @@ export function QuotaTrend({
                   <stop offset="0" className="quota-chart-area-top" />
                   <stop offset="1" className="quota-chart-area-bottom" />
                 </linearGradient>
+                {/* Each model layer fades down to the baseline in its own ink,
+                so the stack reads as one soft area split by hue rather than
+                a solid slab (user: 깔끔하게 좀 만들어 줘, 되게 지저분하고). */}
+                {stacks.map((entry, index) => (
+                  <linearGradient
+                    key={entry.key}
+                    id={`${areaFill}-${index}`}
+                    data-series={entry.ink}
+                    x1="0"
+                    y1="0"
+                    x2="0"
+                    y2="1"
+                  >
+                    <stop offset="0" className="quota-chart-stack-top" />
+                    <stop offset="1" className="quota-chart-stack-bottom" />
+                  </linearGradient>
+                ))}
               </defs>
               {nowX !== null && (
                 <rect
@@ -331,9 +350,15 @@ export function QuotaTrend({
                 <path className="quota-chart-area" d={paths.area} style={{ fill: `url(#${areaFill})` }} />
               )}
               {stacks.map(
-                (entry) =>
+                (entry, index) =>
                   entry.area && (
-                    <path key={entry.key} className="quota-chart-stack" data-series={entry.ink} d={entry.area} />
+                    <path
+                      key={entry.key}
+                      className="quota-chart-stack"
+                      data-series={entry.ink}
+                      d={entry.area}
+                      style={{ fill: `url(#${areaFill}-${index})` }}
+                    />
                   )
               )}
               {paths.unmeasured && <path className="quota-chart-unmeasured" d={paths.unmeasured} />}
@@ -484,7 +509,7 @@ export function QuotaTrend({
         <ul className="stats-trend-legend quota-legend">
           {legend.map((item) => (
             <li key={item.key}>
-              <i data-legend={item.legend} data-series={item.series} aria-hidden="true" />
+              <i data-series={item.series} aria-hidden="true" />
               {item.label}
             </li>
           ))}

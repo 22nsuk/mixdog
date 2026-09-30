@@ -57,7 +57,7 @@ export function LocalProviderModelRow({
   return (
     <>
       <ExtensionItemRow
-        icon={<Cpu size={15} aria-hidden="true" />}
+        icon={<Cpu size={16} aria-hidden="true" />}
         title={name}
         description={details}
         tone={tone}

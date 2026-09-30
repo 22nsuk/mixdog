@@ -245,7 +245,7 @@ function FeatureDetailDialog({
               return (
                 <ExtensionItemRow
                   key={name}
-                  icon={<CapabilityIcon name={name} size={15} />}
+                  icon={<CapabilityIcon name={name} size={16} />}
                   title={name}
                   description={skillDisplayDescription(skill).trim()}
                   tone={off ? 'off' : 'ok'}

@@ -370,7 +370,7 @@ export function StarterGuide({
                   onClick={() => startTour(step.id, false)}
                 >
                   <span className="starter-guide-step-mark" aria-hidden="true">
-                    {step.done ? <Check size={12} strokeWidth={2.5} /> : <Icon size={13} />}
+                    {step.done ? <Check size={14} /> : <Icon size={14} />}
                   </span>
                   <span className="starter-guide-step-text">
                     <b>{step.label}</b>

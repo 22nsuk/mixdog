@@ -205,6 +205,7 @@ export const UtilityDock = memo(function UtilityDock({
   const paneMounted = (pane: UtilityDockTab) => contentReady && mountedTabs.has(pane);
   const paneActive = (pane: UtilityDockTab) => open && pane === tab;
   const dockTitle = title || utilityDockTabTitle(tab);
+  const [headerActionSlot, setHeaderActionSlot] = useState<HTMLDivElement | null>(null);
   if (!desktopUtilityDockTabEnabled(tab)) return null;
   return (
     <aside
@@ -219,6 +220,8 @@ export const UtilityDock = memo(function UtilityDock({
         <header {...titleDragProps} className="utility-dock-header" data-tab={tab}>
           <b>{dockTitle}</b>
           {tab === 'agents' && <AgentGroupsMenu />}
+          {/* The showing pane's own title-row actions (Search's file tree). */}
+          <div className="utility-dock-header-actions workbench-explorer-actions" ref={setHeaderActionSlot} />
         </header>
       )}
       <div
@@ -261,6 +264,7 @@ export const UtilityDock = memo(function UtilityDock({
                 onOpenFile={onOpenFile}
                 onOpenFileAt={onOpenFileAt}
                 onRenameEntry={onRenameProjectEntry}
+                headerActionSlot={showTitle && paneActive('search') ? headerActionSlot : null}
               />
             </DockPane>
           </UtilityDockViewSection>

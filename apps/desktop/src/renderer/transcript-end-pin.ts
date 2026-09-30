@@ -9,7 +9,6 @@ export function createTranscriptEndPin({
   getViewport,
   getSpacer,
   getMaxScrollTop,
-  getScrollTop,
   hasReaderGesture,
   markProgrammaticScroll,
 }: {
@@ -19,28 +18,37 @@ export function createTranscriptEndPin({
   /** Largest offset of the committed geometry, derived from the virtual total
    *  size and the observed viewport height — never read back from layout. */
   getMaxScrollTop(): number;
-  /** The viewport offset as last observed or written, or null if unknown. */
-  getScrollTop(): number | null;
   hasReaderGesture(): boolean;
   markProgrammaticScroll(top: number, intended: number): void;
 }) {
   let queued = false;
   let generation = 0;
-  return {
+  let idleFrame = 0;
+  const pin = {
     request() {
-      if (queued || hasReaderGesture()) return;
+      if (queued) return;
       queued = true;
       const requestedGeneration = generation;
       queueMicrotask(() => {
         if (requestedGeneration !== generation) return;
         queued = false;
-        if (hasReaderGesture()) return;
         const element = getViewport();
         if (!element?.isConnected) return;
         const instance = getVirtualizer();
         // Follow may have been released after the request but before this
         // microtask, even without a continuing native gesture.
         if (instance.options.anchorTo !== 'end' && !instance.options.followOnAppend) return;
+        // A height change during a downward wheel/touch must survive the
+        // gesture. Dropping it left the tail detached until another mutation.
+        if (hasReaderGesture()) {
+          if (!idleFrame && instance.targetWindow) {
+            idleFrame = instance.targetWindow.requestAnimationFrame(() => {
+              idleFrame = 0;
+              if (requestedGeneration === generation) pin.request();
+            });
+          }
+          return;
+        }
         const spacer = getSpacer();
         if (spacer) spacer.style.height = `${instance.getTotalSize()}px`;
         // Reading scrollHeight right after that write forced a synchronous
@@ -51,6 +59,7 @@ export function createTranscriptEndPin({
         const core = instance as unknown as {
           scrollOffset: number | null;
           scrollAdjustments: number;
+          _intendedScrollOffset: number | null;
           _iosDeferredAdjustment: number;
           _deferredFlushTimerId: number | null;
           targetWindow: (Window & typeof globalThis) | null;
@@ -61,31 +70,34 @@ export function createTranscriptEndPin({
         }
         core._iosDeferredAdjustment = 0;
         core.scrollAdjustments = 0;
-        core.scrollOffset = max;
-        // scrollHeight/scrollTop read back AFTER the write forces a synchronous
-        // layout, so the probe only resolves its fields when diagnostics are on.
-        // Writing scrollTop lays out too: a pin whose end is already held (a
-        // second request in the same frame, a resize that left the end in
-        // place) skips it.
+        // A replacement can briefly shrink the spacer and Chromium clamps
+        // scrollTop before delivering its scroll event. The cached offset
+        // still equals `max` then: skipping the write loses the tail. Read the
+        // actual offset once per coalesced pin, after committing the spacer.
         const diagnose = transcriptScrollDiagnosticsEnabled();
-        const before = diagnose ? element.scrollTop : 0;
-        const known = getScrollTop();
-        if (known === null || Math.abs(known - max) >= 0.5) element.scrollTop = max;
+        const before = element.scrollTop;
+        if (Math.abs(before - max) >= 0.5) element.scrollTop = max;
+        const landed = element.scrollTop;
+        core.scrollOffset = landed;
+        core._intendedScrollOffset = landed;
         if (diagnose) {
           logTranscriptScroll('end-pin', {
             from: before,
-            to: element.scrollTop,
-            delta: element.scrollTop - before,
+            to: landed,
+            delta: landed - before,
             total: instance.getTotalSize(),
             height: element.scrollHeight,
           });
         }
-        markProgrammaticScroll(max, max);
+        markProgrammaticScroll(landed, max);
       });
     },
     cancel() {
       generation += 1;
       queued = false;
+      if (idleFrame) getVirtualizer().targetWindow?.cancelAnimationFrame(idleFrame);
+      idleFrame = 0;
     },
   };
+  return pin;
 }

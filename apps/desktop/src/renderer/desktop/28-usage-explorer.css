@@ -27,9 +27,11 @@
   min-height: 0;
   flex: 1 1 auto;
   overflow: auto;
-  border: 0.5px solid var(--mx-border);
-  border-radius: var(--mx-radius-md);
+  /* The Settings group card's edge (user: 최종 폰트 위계 · 모든 UI 점검). */
+  border: 0;
+  border-radius: var(--mx-radius-lg);
   background: var(--mx-bg-base);
+  box-shadow: var(--mx-card-outline);
 }
 @media (min-width: 761px) {
   .command-surface[data-surface="usage"] .usage-table-shell {
@@ -274,10 +276,10 @@
   padding: 20px 20px 0;
 }
 .stats-surface {
-  --stats-input: #b3a3da;
-  --stats-output: #71bcb0;
-  --stats-cache: #d4ba78;
-  --stats-provider-color: #9a9fa7;
+  --stats-input: var(--mx-chart-purple);
+  --stats-output: var(--mx-chart-teal);
+  --stats-cache: var(--mx-chart-gold);
+  --stats-provider-color: var(--mx-chart-grey);
   display: flex;
   flex-direction: column;
   flex: 0 0 auto;
@@ -401,27 +403,30 @@
   flex-direction: column;
   gap: 2px;
   min-width: 0;
-  padding: 8px 10px;
-  border: 0.5px solid var(--mx-border);
-  border-radius: var(--mx-radius-md);
+  padding: 10px 12px;
+  border: 0;
+  border-radius: var(--mx-radius-lg);
   background: var(--mx-bg-layer-1);
+  box-shadow: var(--mx-card-outline);
 }
+/* Card ramp: caption 13 (the app's meta tier — 11px uppercase sat two steps
+   under it), figure at the page-title tier so it leads the table's 14px
+   numbers. */
 .stats-card small {
   color: var(--mx-text-faint);
-  font-size: var(--mx-font-micro);
-  letter-spacing: var(--mx-tracking-wide);
+  font-size: var(--mx-font-meta);
   line-height: var(--mx-line-meta);
-  text-transform: uppercase;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .stats-card b {
   color: var(--mx-text);
-  font-size: var(--mx-font-ui);
+  font-size: var(--mx-font-page-title);
   font-weight: var(--mx-weight-semibold);
   font-variant-numeric: tabular-nums;
-  line-height: var(--mx-line-minor);
+  line-height: var(--mx-line-page-title);
+  letter-spacing: var(--mx-tracking-tight);
 }
 .stats-table {
   min-width: 760px;
@@ -609,10 +614,11 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 10px 12px;
-  border: 0.5px solid var(--mx-border);
-  border-radius: var(--mx-radius-md);
+  padding: 12px 14px;
+  border: 0;
+  border-radius: var(--mx-radius-lg);
   background: var(--mx-bg-layer-1);
+  box-shadow: var(--mx-card-outline);
 }
 .stats-mix header,
 .stats-trend header {
@@ -628,14 +634,14 @@
 .stats-trend h4 {
   margin: 0;
   color: var(--mx-text);
-  font-size: var(--mx-font-meta);
+  font-size: var(--mx-font-ui);
   font-weight: var(--mx-weight-semibold);
-  line-height: var(--mx-line-meta);
+  line-height: var(--mx-line-ui);
 }
 .stats-mix header span,
 .stats-trend header span {
   color: var(--mx-text-faint);
-  font-size: var(--mx-font-micro);
+  font-size: var(--mx-font-meta);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -693,7 +699,7 @@
   align-items: center;
   gap: 6px;
   color: var(--mx-text-muted);
-  font-size: var(--mx-font-micro);
+  font-size: var(--mx-font-meta);
   line-height: var(--mx-line-meta);
 }
 .stats-mix li > i {
@@ -867,39 +873,34 @@
 }
 /* Chart inks do not reuse focus, warning or success UI semantics. */
 .stats-surface [data-usage-provider="cursor-oauth"] {
-  --stats-provider-color: #d59b79;
+  --stats-provider-color: var(--mx-chart-orange);
 }
 .stats-surface :is([data-usage-provider="openai"], [data-usage-provider="openai-oauth"]) {
-  --stats-provider-color: #71bcb0;
+  --stats-provider-color: var(--mx-chart-teal);
 }
 .stats-surface :is([data-usage-provider="anthropic"], [data-usage-provider="anthropic-oauth"]) {
-  --stats-provider-color: #b3a3da;
+  --stats-provider-color: var(--mx-chart-purple);
 }
 .stats-surface :is([data-usage-provider="xai"], [data-usage-provider="grok-oauth"]) {
-  --stats-provider-color: #d4ba78;
+  --stats-provider-color: var(--mx-chart-gold);
 }
 .stats-surface [data-usage-provider="opencode-go"] {
-  --stats-provider-color: #8cb77c;
+  --stats-provider-color: var(--mx-chart-green);
 }
 .stats-surface [data-usage-provider="mixdog-local"] {
-  --stats-provider-color: #9a9fa7;
+  --stats-provider-color: var(--mx-chart-grey);
 }
 .stats-surface [data-usage-provider="openrouter"] {
-  --stats-provider-color: #8fa9d4;
+  --stats-provider-color: var(--mx-chart-blue);
 }
 .stats-surface [data-usage-provider="gemini"] {
-  --stats-provider-color: #d58eaa;
+  --stats-provider-color: var(--mx-chart-pink);
 }
 .stats-surface [data-usage-provider="antigravity-oauth"] {
-  --stats-provider-color: #c49fbd;
+  --stats-provider-color: var(--mx-chart-mauve);
 }
 .stats-surface [data-usage-provider="deepseek"] {
-  --stats-provider-color: #80b6ca;
-}
-:root[data-mixdog-theme="light"] .stats-surface {
-  --stats-input: #8066b0;
-  --stats-output: #398e82;
-  --stats-cache: #a88435;
+  --stats-provider-color: var(--mx-chart-sky);
 }
 .stats-trend-legend {
   display: flex;
@@ -911,7 +912,7 @@
   list-style: none;
   /* The provider list arrives asynchronously. Reserve two lines instead of
      moving the table when the list first appears or wraps on a narrow shell. */
-  font-size: var(--mx-font-micro);
+  font-size: var(--mx-font-meta);
   line-height: var(--mx-line-meta);
   height: calc(2lh + 4px);
   overflow-y: auto;
@@ -922,7 +923,7 @@
   gap: 6px;
   min-width: 0;
   color: var(--mx-text-muted);
-  font-size: var(--mx-font-micro);
+  font-size: var(--mx-font-meta);
   line-height: var(--mx-line-meta);
 }
 .stats-trend-legend li > i {
@@ -1010,7 +1011,7 @@
 .stats-card em {
   overflow: hidden;
   color: var(--mx-text-muted);
-  font-size: var(--mx-font-micro);
+  font-size: var(--mx-font-meta);
   font-style: normal;
   line-height: var(--mx-line-meta);
   text-overflow: ellipsis;
@@ -1027,24 +1028,14 @@
    ink follows its rank in the period, so it keeps one colour across the mix,
    the chart, its hover card and the table. */
 .quota-surface {
-  --quota-series-0: #b3a3da;
-  --quota-series-1: #71bcb0;
-  --quota-series-2: #d4ba78;
-  --quota-series-3: #8fa9d4;
-  --quota-series-4: #d58eaa;
-  --quota-series-5: #8cb77c;
-  --quota-series-other: #c49fbd;
-  --quota-series-outside: #9a9fa7;
-}
-:root[data-mixdog-theme="light"] .quota-surface {
-  --quota-series-0: #8066b0;
-  --quota-series-1: #398e82;
-  --quota-series-2: #a88435;
-  --quota-series-3: #4f6fa8;
-  --quota-series-4: #b0557a;
-  --quota-series-5: #5a8a4a;
-  --quota-series-other: #9a6a92;
-  --quota-series-outside: #7b8088;
+  --quota-series-0: var(--mx-chart-purple);
+  --quota-series-1: var(--mx-chart-teal);
+  --quota-series-2: var(--mx-chart-gold);
+  --quota-series-3: var(--mx-chart-blue);
+  --quota-series-4: var(--mx-chart-pink);
+  --quota-series-5: var(--mx-chart-green);
+  --quota-series-other: var(--mx-chart-mauve);
+  --quota-series-outside: var(--mx-chart-grey);
 }
 .quota-surface [data-series="0"] {
   --quota-ink: var(--quota-series-0);
@@ -1248,9 +1239,23 @@
    colours alone part the layers, and only the meter line strokes the top
    (per-layer edges stacked a tangle of lines under it). */
 .quota-chart-plot .quota-chart-stack {
-  fill: var(--quota-ink);
-  fill-opacity: 0.55;
   stroke: none;
+}
+/* Each layer fades from a clear ink at the top to a whisper at the baseline:
+   distinct hues (user: 아예 다른 색으로) without a solid slab (user: 깔끔하게). */
+.quota-chart-stack-top {
+  stop-color: var(--quota-ink);
+  stop-opacity: 0.75;
+}
+.quota-chart-stack-bottom {
+  stop-color: var(--quota-ink);
+  stop-opacity: 0.12;
+}
+/* Over the model layers the meter's top edge takes a neutral ink: in the
+   provider's own colour it matched the first model's layer. */
+.quota-trend[data-stacked="true"] .quota-chart-line {
+  stroke: var(--mx-text-soft);
+  stroke-width: 1.25;
 }
 /* Now: a hairline, with the time still to come faintly shaded after it. */
 .quota-chart-now {
@@ -1340,23 +1345,7 @@ button.quota-chart-slot[aria-expanded="true"] {
 .quota-chart-axis .quota-chart-axis-now {
   color: var(--mx-text-muted);
 }
-/* Legend marks draw the stroke each line uses; models keep their dot. */
-.quota-legend li > i {
-  width: 14px;
-  height: 0;
-  border-top: 2px solid var(--quota-line);
-  border-radius: 0;
-  background: none;
-}
-.quota-legend li > i[data-legend="forecast"] {
-  border-top-style: dashed;
-}
-.quota-legend li > i[data-legend="pace"] {
-  border-top: 1px dashed var(--mx-text-faint);
-}
-.quota-legend li > i[data-legend="unmeasured"] {
-  border-top: 2px dotted var(--mx-text-faint);
-}
+/* The legend names the models only, each by its ink dot. */
 .quota-legend li > i[data-series] {
   width: 8px;
   height: 8px;

@@ -287,6 +287,15 @@ export function desktopToolActivityModeledName(name: unknown, args: unknown): st
   return DESKTOP_TOOL_ACTIVITY_ALIASES.get(surface.normalizedName) ?? String(name || 'tool');
 }
 
+/** Canonical surface name and arguments after the desktop aliases (`write` → `edit`). */
+export function desktopToolActivitySurface(
+  name: unknown,
+  args: unknown
+): { normalizedName: string; args: Record<string, unknown> } {
+  const surface = formatToolSurface(desktopToolActivityModeledName(name, args), args);
+  return { normalizedName: String(surface.normalizedName), args: asRecord(surface.args) ?? asRecord(args) ?? {} };
+}
+
 export function desktopToolActivityCategory(name: unknown, args: unknown): string {
   const modeledName = desktopToolActivityModeledName(name, args);
   const surface = formatToolSurface(modeledName, args);

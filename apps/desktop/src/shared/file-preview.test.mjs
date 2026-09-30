@@ -3,7 +3,7 @@ import test from 'node:test';
 import { documentPreviewFormatForPath, editorFileOpener, filePreviewTypeForPath } from './file-preview.ts';
 import { localFileMimeTypeForPath, localFileOpener, localLinkKind } from './local-files.ts';
 
-test('Office documents and unsupported safe media default to external apps', () => {
+test('Office documents, SVG and unsupported safe media default to external apps', () => {
   for (const extension of [
     'pptx',
     'ppt',
@@ -19,6 +19,7 @@ test('Office documents and unsupported safe media default to external apps', () 
     'tif',
     'tiff',
     'mkv',
+    'svg',
   ]) {
     assert.equal(editorFileOpener(`output/report.${extension}`), 'os', extension);
     assert.equal(editorFileOpener(`C:\\Project\\Report.${extension.toUpperCase()}`), 'os', extension);
@@ -34,7 +35,6 @@ test('native previews and editable files stay inside Mixdog', () => {
     'gif',
     'webp',
     'avif',
-    'svg',
     'bmp',
     'ico',
     'pdf',
@@ -58,6 +58,13 @@ test('native previews and editable files stay inside Mixdog', () => {
     'csv',
   ]) {
     assert.equal(editorFileOpener(`file.${extension}`), 'editor', extension);
+  }
+});
+
+test('SVG links open externally while image previews remain available for thumbnails', () => {
+  for (const path of ['output/chart.svg', 'C:\\Project\\Chart.SVG']) {
+    assert.equal(localFileOpener(path), 'os');
+    assert.deepEqual(filePreviewTypeForPath(path), { kind: 'image', mime: 'image/svg+xml' });
   }
 });
 

@@ -2195,7 +2195,8 @@ i.dock-pr-row-checks[data-checks="pending"] {
   flex: 1;
   margin: 0;
   overflow-wrap: anywhere;
-  font-size: 22px;
+  /* Page-title tier; the PR number beside it sits on the panel-title tier. */
+  font-size: var(--mx-font-page-title);
   font-weight: var(--mx-weight-semibold);
   line-height: 1.3;
   letter-spacing: -0.015em;
@@ -2203,7 +2204,7 @@ i.dock-pr-row-checks[data-checks="pending"] {
 .workspace-pr-editor-title-row h1 small {
   margin-left: 8px;
   color: var(--mx-text-faint);
-  font-size: 17px;
+  font-size: var(--mx-font-panel-title);
   font-weight: var(--mx-weight-regular);
   white-space: nowrap;
 }

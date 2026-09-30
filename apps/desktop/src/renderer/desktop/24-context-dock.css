@@ -42,7 +42,8 @@
 }
 .context-usage-heading strong {
   color: var(--mx-text);
-  font-size: 24px;
+  /* The dashboard-figure tier the Usage cards share. */
+  font-size: var(--mx-font-page-title);
   font-weight: var(--mx-weight-semibold);
   line-height: 1.1;
   letter-spacing: var(--mx-tracking-tight);
@@ -135,78 +136,45 @@
   font-weight: var(--mx-weight-semibold);
   font-variant-numeric: tabular-nums;
 }
-/* Category palette: muted mid-tones for the dark plates; light takes the same
-   hues one step deeper below. */
+/* Category palette: the shared chart inks (01-tokens.css), which already
+   step one shade deeper on light. Free space is not a category — it keeps
+   its own dim plate grey. */
 .context-surface-view [data-context-key="messages"],
 .context-surface-view [data-context-key="user"] {
-  --ctx-color: #a091d6;
+  --ctx-color: var(--mx-chart-purple);
 }
 .context-surface-view [data-context-key="assistant"] {
-  --ctx-color: #7f93c9;
+  --ctx-color: var(--mx-chart-blue);
 }
 .context-surface-view [data-context-key="reasoning"] {
-  --ctx-color: #cf9874;
+  --ctx-color: var(--mx-chart-orange);
 }
 .context-surface-view [data-context-key="toolResults"] {
-  --ctx-color: #6fa8a0;
+  --ctx-color: var(--mx-chart-teal);
 }
 .context-surface-view [data-context-key="attachments"] {
-  --ctx-color: #c98f77;
+  --ctx-color: var(--mx-chart-pink);
 }
 .context-surface-view [data-context-key="tools"] {
-  --ctx-color: #7fae7f;
+  --ctx-color: var(--mx-chart-green);
 }
 .context-surface-view [data-context-key="mcp"] {
-  --ctx-color: #c493b8;
+  --ctx-color: var(--mx-chart-mauve);
 }
 .context-surface-view [data-context-key="agents"] {
-  --ctx-color: #b58bc3;
+  --ctx-color: var(--mx-chart-violet);
 }
 .context-surface-view [data-context-key="skills"] {
-  --ctx-color: #cfa963;
+  --ctx-color: var(--mx-chart-gold);
 }
 .context-surface-view [data-context-key="memory"] {
-  --ctx-color: #74a6bd;
+  --ctx-color: var(--mx-chart-sky);
 }
 .context-surface-view [data-context-key="system"] {
-  --ctx-color: #8f8a81;
+  --ctx-color: var(--mx-chart-grey);
 }
 .context-surface-view [data-context-key="free"] {
   --ctx-color: #6f777d;
-}
-/* Paper washed those mid-tones out (2.2-2.9:1): the same hue and saturation,
-   the nearest darker step, keep every segment and legend dot at ≥3:1 on the
-   light plates. System and free already clear it. */
-:root[data-mixdog-theme="light"] .context-surface-view [data-context-key="messages"],
-:root[data-mixdog-theme="light"] .context-surface-view [data-context-key="user"] {
-  --ctx-color: #9382d0;
-}
-:root[data-mixdog-theme="light"] .context-surface-view [data-context-key="assistant"] {
-  --ctx-color: #768bc5;
-}
-:root[data-mixdog-theme="light"] .context-surface-view [data-context-key="reasoning"] {
-  --ctx-color: #c37d50;
-}
-:root[data-mixdog-theme="light"] .context-surface-view [data-context-key="toolResults"] {
-  --ctx-color: #5c988f;
-}
-:root[data-mixdog-theme="light"] .context-surface-view [data-context-key="attachments"] {
-  --ctx-color: #c07d61;
-}
-:root[data-mixdog-theme="light"] .context-surface-view [data-context-key="tools"] {
-  --ctx-color: #619961;
-}
-:root[data-mixdog-theme="light"] .context-surface-view [data-context-key="mcp"] {
-  --ctx-color: #b67aa8;
-}
-:root[data-mixdog-theme="light"] .context-surface-view [data-context-key="agents"] {
-  --ctx-color: #ab7cbb;
-}
-:root[data-mixdog-theme="light"] .context-surface-view [data-context-key="skills"] {
-  --ctx-color: #b18637;
-}
-:root[data-mixdog-theme="light"] .context-surface-view [data-context-key="memory"] {
-  --ctx-color: #5a95b1;
 }
 @media (max-width: 640px) {
   .context-mix-grid {

@@ -3,8 +3,8 @@ import type { Root } from 'react-dom/client';
 import { Conversation } from '../../src/renderer/Conversation';
 import { SessionGoalIsland } from '../../src/renderer/SessionGoalIsland';
 import { preloadMarkdownBody } from '../../src/renderer/markdown-body-loader';
+import { editPrompt, frame, waitFor } from './probe-support';
 
-const frame = () => new Promise<void>((done) => requestAnimationFrame(() => done()));
 const noop = () => {};
 export async function runConversationSubmitProbe(root: Root) {
   await preloadMarkdownBody();
@@ -111,7 +111,13 @@ async function runSubmitCase(root: Root, chrome: 'diff-goal' | 'goal' | 'diff', 
       </div>
     );
   flushSync(render);
-  for (let n = 0; n < 12; n++) await frame();
+  await waitFor(
+    () =>
+      getComputedStyle(document.querySelector('.transcript')!).visibility !== 'hidden' &&
+      Boolean(document.querySelector('.turn-review-bar')) === hasDiff &&
+      Boolean(document.querySelector('.session-goal-island')) === hasGoal,
+    `${name} ready chrome`
+  );
   const input = document.querySelector<HTMLTextAreaElement>('.composer textarea');
   if (!input) return { name, failures: ['real composer failed to mount'], frames };
   const measure = () => {
@@ -142,10 +148,8 @@ async function runSubmitCase(root: Root, chrome: 'diff-goal' | 'goal' | 'diff', 
   };
   const before = measure();
   if (before.diff !== hasDiff || before.goal !== hasGoal) failures.push('fixture has incorrect completed chrome');
-  input.focus();
-  Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, '/');
-  input.dispatchEvent(new Event('input', { bubbles: true }));
-  await frame();
+  editPrompt(input, '/');
+  await waitFor(() => Boolean(document.getElementById('composer-slash-palette')), `${name} slash palette`);
   const palette = document.getElementById('composer-slash-palette');
   if (!palette) failures.push('real slash palette did not open');
   else {
@@ -164,8 +168,7 @@ async function runSubmitCase(root: Root, chrome: 'diff-goal' | 'goal' | 'diff', 
       failures.push('Escape failed to dismiss the palette while retaining input focus');
     }
   }
-  Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, prompt);
-  input.dispatchEvent(new Event('input', { bubbles: true }));
+  editPrompt(input, prompt);
   await frame();
   if (expanded) {
     document.querySelector<HTMLButtonElement>('.turn-review-summary')?.click();

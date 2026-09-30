@@ -144,13 +144,13 @@ for (const [pipeline, render] of Object.entries(renderers)) {
     );
     for (let index = 0; index < 7; index++) await f.click(index);
     assert.deepEqual(f.opened, [
-      [other, 'favicon.svg', undefined],
-      [other, 'assets/aiscroll-favicon.svg', undefined],
-      [other, 'assets/aiscroll-favicon.svg', undefined],
       [other, 'src/app.ts', 12],
       [other, 'run.ps1', undefined],
     ]);
     assert.deepEqual(f.local, [
+      [other, 'favicon.svg'],
+      [other, 'assets/aiscroll-favicon.svg'],
+      [other, 'assets/aiscroll-favicon.svg'],
       [other, 'output/report.pptx'],
       [`${other}/output`, '.'],
     ]);
@@ -396,7 +396,8 @@ for (const [pipeline, render] of Object.entries(renderers)) {
     assert.equal(f.opened.length + f.local.length, 0);
     installProjectFiles(f, { [PROJECT]: ['favicon.svg'], [other]: ['favicon.svg'] });
     await f.click(0);
-    assert.deepEqual(f.opened, [[PROJECT, 'favicon.svg', undefined]]);
+    assert.deepEqual(f.opened, []);
+    assert.deepEqual(f.local, [[PROJECT, 'favicon.svg']]);
   });
 
   test(`${pipeline}: access failures are reported rather than redirected to another Project`, async (t) => {

@@ -431,7 +431,7 @@ function PluginDetailDialog({
               return (
                 <ExtensionItemRow
                   key={`skill:${name}`}
-                  icon={<CapabilityIcon name={name} size={15} />}
+                  icon={<CapabilityIcon name={name} size={16} />}
                   title={name}
                   description={skillDisplayDescription(skill).trim()}
                   tone={off ? 'off' : 'ok'}
@@ -458,7 +458,7 @@ function PluginDetailDialog({
               return (
                 <ExtensionItemRow
                   key={`mcp:${name}`}
-                  icon={<Plug size={15} aria-hidden="true" />}
+                  icon={<Plug size={16} aria-hidden="true" />}
                   title={name}
                   description={mcpRowDescription(server)}
                   status={status.label}
@@ -479,7 +479,7 @@ function PluginDetailDialog({
         {Boolean(open.mcpScript && !open.mcpEnabled) && (
           <ExtensionItemList>
             <ExtensionItemRow
-              icon={<Plug size={15} aria-hidden="true" />}
+              icon={<Plug size={16} aria-hidden="true" />}
               title={String(open.mcpServerName || t('MCP server'))}
               description={t('This plugin ships an MCP server. Enable MCP to connect it.')}
               tone="muted"

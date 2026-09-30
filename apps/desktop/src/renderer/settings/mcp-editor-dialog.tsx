@@ -292,7 +292,7 @@ export function McpEditorDialog({
       {connection && server && (
         <ExtensionItemList>
           <ExtensionItemRow
-            icon={<Plug size={15} aria-hidden="true" />}
+            icon={<Plug size={16} aria-hidden="true" />}
             title={t('Connection')}
             description={server.error ? errorSummary(server.error) : mcpRowDescription(server)}
             tone={connection.tone}

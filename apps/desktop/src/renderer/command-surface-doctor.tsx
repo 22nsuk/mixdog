@@ -132,7 +132,7 @@ export function DoctorBody({
             <span className="doctor-surface-counts">
               {(['ok', 'warn', 'fail'] as const).map((level) => (
                 <span key={level} data-level={level}>
-                  <LevelIcon level={level} size={13} />
+                  <LevelIcon level={level} size={14} />
                   {report.summary[level]}
                 </span>
               ))}

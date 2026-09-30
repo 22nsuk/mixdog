@@ -286,7 +286,7 @@ export function OAuthControl({
           title={t('Add account')}
           onClick={() => void start()}
         >
-          <Plus size={15} aria-hidden="true" />
+          <Plus size={16} aria-hidden="true" />
         </button>
       )}
       {!addAccount && (

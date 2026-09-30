@@ -670,7 +670,7 @@
   /* The Settings group card exactly: 10px corner, plate, 6% outline. */
   border-radius: var(--mx-radius-lg);
   background: var(--mx-bg-layer-1);
-  box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--mx-text) 6%, transparent);
+  box-shadow: var(--mx-card-outline);
 }
 .projects-memory-viewport.is-empty {
   min-height: 96px;

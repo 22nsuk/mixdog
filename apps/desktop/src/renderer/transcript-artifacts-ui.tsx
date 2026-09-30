@@ -20,26 +20,25 @@ function artifactHref(path: string): string {
     .join('/');
 }
 
-function GeneratedMedia({ artifact }: { artifact: TranscriptArtifact }) {
+/** Image/video frame, caption and zoom dialog shared by generated media and
+ *  images written to local files. */
+function MediaFigure({
+  artifact,
+  original,
+  preview,
+  actions,
+}: {
+  artifact: TranscriptArtifact;
+  original: string;
+  preview: string;
+  actions: ReactNode;
+}) {
   const [failed, setFailed] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const dialog = useRef<HTMLDialogElement>(null);
-  const api = window.mixdogDesktop;
-  const id = artifact.assetId!;
-  const original = mediaUrl(api, id, 'original');
-  const preview = mediaUrl(api, id, artifact.kind === 'video' ? 'thumb' : 'display');
   useEffect(() => {
     if (expanded) dialog.current?.showModal();
   }, [expanded]);
-  const open = async (folder = false) => {
-    try {
-      const action = folder ? api?.openMediaFolder : api?.openMediaAsset;
-      if (!action) throw new Error(t('Local file links can only be opened in the desktop app.'));
-      await action(id);
-    } catch (error) {
-      showDesktopToast(t('Unable to open file: {{error}}', { error: errorMessageText(error) }), 'error');
-    }
-  };
   let media: ReactNode;
   if (failed || !original) {
     media = <FileText size={24} aria-hidden="true" />;
@@ -80,28 +79,7 @@ function GeneratedMedia({ artifact }: { artifact: TranscriptArtifact }) {
       <div className="transcript-artifact-frame">{media}</div>
       <figcaption>
         <span title={artifact.path || artifact.name}>{artifact.name}</span>
-        {/* Same icon-only action grammar as the response copy control: transparent
-          icon-button + tooltip, never a native grey text button. */}
-        <button
-          type="button"
-          className="icon-button"
-          aria-label={t('Open file')}
-          data-tooltip={t('Open file')}
-          onClick={() => void open()}
-        >
-          <MxIcon name="open-file" size={14} />
-        </button>
-        {api?.openMediaFolder && (
-          <button
-            type="button"
-            className="icon-button"
-            aria-label={t('Open Folder')}
-            data-tooltip={t('Open Folder')}
-            onClick={() => void open(true)}
-          >
-            <FolderOpen size={14} aria-hidden="true" />
-          </button>
-        )}
+        {actions}
       </figcaption>
       {expanded && (
         <dialog
@@ -127,6 +105,100 @@ function GeneratedMedia({ artifact }: { artifact: TranscriptArtifact }) {
         </dialog>
       )}
     </figure>
+  );
+}
+
+function GeneratedMedia({ artifact }: { artifact: TranscriptArtifact }) {
+  const api = window.mixdogDesktop;
+  const id = artifact.assetId!;
+  const open = async (folder = false) => {
+    try {
+      const action = folder ? api?.openMediaFolder : api?.openMediaAsset;
+      if (!action) throw new Error(t('Local file links can only be opened in the desktop app.'));
+      await action(id);
+    } catch (error) {
+      showDesktopToast(t('Unable to open file: {{error}}', { error: errorMessageText(error) }), 'error');
+    }
+  };
+  return (
+    <MediaFigure
+      artifact={artifact}
+      original={mediaUrl(api, id, 'original')}
+      preview={mediaUrl(api, id, artifact.kind === 'video' ? 'thumb' : 'display')}
+      actions={
+        <>
+          {/* Same icon-only action grammar as the response copy control: transparent
+            icon-button + tooltip, never a native grey text button. */}
+          <button
+            type="button"
+            className="icon-button"
+            aria-label={t('Open file')}
+            data-tooltip={t('Open file')}
+            onClick={() => void open()}
+          >
+            <MxIcon name="open-file" size={14} />
+          </button>
+          {api?.openMediaFolder && (
+            <button
+              type="button"
+              className="icon-button"
+              aria-label={t('Open Folder')}
+              data-tooltip={t('Open Folder')}
+              onClick={() => void open(true)}
+            >
+              <FolderOpen size={14} aria-hidden="true" />
+            </button>
+          )}
+        </>
+      }
+    />
+  );
+}
+
+/** An image an edit wrote (SVG), shown like generated media through the file
+ *  preview lane; `<img>` never runs the SVG's scripts. A file that cannot be
+ *  previewed falls back to the document row, which also reports deletion. */
+function LocalImageArtifact({ artifact }: { artifact: TranscriptArtifact }) {
+  const project = useContext(MarkdownProjectContext);
+  const href = artifactHref(artifact.path);
+  const [url, setUrl] = useState('');
+  const [unavailable, setUnavailable] = useState(false);
+  useEffect(() => {
+    setUrl('');
+    setUnavailable(false);
+    const previewFile = window.mixdogDesktop?.previewProjectFile;
+    if (!previewFile) {
+      setUnavailable(true);
+      return;
+    }
+    let active = true;
+    verifyLocalLink(project, parseLocalFileLocation(href).path)
+      .then((target) => previewFile(target.project, target.path, target.accessToken))
+      .then(
+        (preview) => {
+          if (active) setUrl(preview.url);
+        },
+        () => {
+          if (active) setUnavailable(true);
+        }
+      );
+    return () => {
+      active = false;
+    };
+  }, [project, href]);
+  if (unavailable) return <DocumentArtifact artifact={artifact} />;
+  return (
+    <MediaFigure
+      key={url}
+      artifact={artifact}
+      original={url}
+      preview={url}
+      actions={
+        <MarkdownLink className="icon-button" title={t('Open file')} href={href}>
+          <MxIcon name="open-file" size={14} />
+        </MarkdownLink>
+      }
+    />
   );
 }
 
@@ -176,6 +248,8 @@ export function TranscriptArtifacts({ items }: { items: readonly TranscriptItem[
       {artifacts.map((artifact) =>
         artifact.assetId ? (
           <GeneratedMedia key={artifact.key} artifact={artifact} />
+        ) : artifact.kind === 'image' ? (
+          <LocalImageArtifact key={artifact.key} artifact={artifact} />
         ) : (
           <DocumentArtifact key={artifact.key} artifact={artifact} />
         )

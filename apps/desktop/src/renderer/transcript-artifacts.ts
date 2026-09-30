@@ -1,6 +1,12 @@
 import type { TranscriptItem } from './desktop-types';
 import { asRecord } from './text-format';
-import { desktopToolActivityCategory, flattenedToolActivityItems, toolItemDone } from './transcript-tool-core';
+import {
+  desktopToolActivityCategory,
+  desktopToolActivitySurface,
+  flattenedToolActivityItems,
+  toolItemDone,
+} from './transcript-tool-core';
+import { toolActivityFirstText } from './transcript-tool-format';
 import { toolActivityResultValue } from './transcript-tool-result';
 
 export interface TranscriptArtifact {
@@ -12,8 +18,27 @@ export interface TranscriptArtifact {
 }
 
 const DOCUMENT = /\.(?:docx|xlsx|pptx|pdf|csv|tsv|rtf|odt|ods|odp)$/i;
+const SVG = /\.svg$/i;
 
-// Only parse structured tool output, never paths guessed from prose or input args.
+/** Files a successful edit/apply_patch call wrote: its own write targets, not
+ *  paths guessed from prose. Deleted files and move sources are excluded. */
+function writtenFiles(normalizedName: string, args: Record<string, unknown>): string[] {
+  if (normalizedName === 'edit') {
+    const path = toolActivityFirstText(args, 'file_path', 'filePath', 'path');
+    return path ? [path] : [];
+  }
+  if (normalizedName !== 'apply_patch' || typeof args.patch !== 'string') return [];
+  const paths: string[] = [];
+  for (const line of args.patch.split(/\r?\n/)) {
+    const header = /^\*\*\* (Add File|Update File|Move to): (.+)$/.exec(line);
+    if (!header) continue;
+    if (header[1] === 'Move to') paths.pop();
+    paths.push(header[2].trim());
+  }
+  return paths;
+}
+
+// Otherwise only parse structured tool output, never paths guessed from prose or input args.
 function resultRecords(value: unknown, depth = 0): Record<string, unknown>[] {
   if (depth > 3) return [];
   if (typeof value === 'string') {
@@ -46,6 +71,12 @@ export function transcriptArtifacts(items: readonly TranscriptItem[]): Transcrip
       Number(item.exitErrorCount || 0) > 0
     )
       continue;
+    const surface = desktopToolActivitySurface(item.name, item.args);
+    for (const path of writtenFiles(surface.normalizedName, surface.args)) {
+      if (!SVG.test(path)) continue;
+      const key = `file:${path.replace(/\\/g, '/')}`;
+      artifacts.set(key, { key, kind: 'image', path, name: path.split(/[\\/]/).pop() || path });
+    }
     const category = desktopToolActivityCategory(item.name, item.args);
     if (category !== 'Media' && category !== 'Office') continue;
     for (const result of resultRecords(toolActivityResultValue(item))) {
