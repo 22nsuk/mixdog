@@ -234,12 +234,12 @@ export function AgentEditorDialog({
               return;
             }
             setFormError('');
-            const routePatch = route.provider && route.model ? { route } : {};
+            const picked = route.provider && route.model ? route : null;
             onSave({
               ...(editing ? { id: String(agent?.id || '') } : {}),
               name: text('agent-name'),
               description: text('agent-description'),
-              ...(enabled ? routePatch : { route: { disabled: true } }),
+              ...(enabled ? (picked ? { route: picked } : {}) : { route: { ...(picked || {}), disabled: true } }),
               body,
             });
           }}

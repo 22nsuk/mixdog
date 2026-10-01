@@ -118,6 +118,26 @@ test('saveAgentDefinition creates a custom agent (id from name, AGENT.md + manif
   assert.throws(() => api.getAgentDefinition(created.id), /not found/);
 });
 
+test('saving an off agent with a picked model stores the model and keeps the agent off', async (t) => {
+  const { state, api } = fixture(t);
+  const created = await api.saveAgentDefinition({
+    name: 'Quiet Reviewer',
+    body: 'Review quietly.',
+    route: { disabled: true },
+  });
+  assert.equal(created.disabled, true);
+  const saved = await api.saveAgentDefinition({
+    id: created.id,
+    name: 'Quiet Reviewer',
+    body: 'Review quietly.',
+    route: { provider: 'anthropic', model: 'claude', disabled: true },
+  });
+  assert.equal(saved.disabled, true);
+  const savedRoute = { provider: 'anthropic', model: 'claude', fast: false, modelParameters: {} };
+  assert.deepEqual(saved.route, savedRoute);
+  assert.deepEqual(state.config.agents[created.id], savedRoute);
+});
+
 test('agent editor validation: empty body, bad id, missing name, hidden roles', async (t) => {
   const { api } = fixture(t);
   await assert.rejects(api.saveAgentDefinition({ name: 'x' }), /AGENT.md body must not be empty/);

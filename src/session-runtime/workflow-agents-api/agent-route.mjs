@@ -68,8 +68,10 @@ export function createAgentRouteApi(deps) {
     const requested = { ...(next || {}) };
     const stored = agentRouteFromConfig(getConfig(), id) || {};
     // Off is an explicit state, stored apart from the route so the model the
-    // user picked survives and comes back when the agent is switched on.
-    if (requested.disabled === true) {
+    // user picked survives and comes back when the agent is switched on. An
+    // off request that also carries a model saves that model and stays off.
+    const keepOff = requested.disabled === true;
+    if (keepOff && !(clean(requested.provider) && clean(requested.model))) {
       saveDisabled(id, true);
       return { ...stored, id, disabled: true };
     }
@@ -77,6 +79,7 @@ export function createAgentRouteApi(deps) {
       saveDisabled(id, false);
       return { ...stored, id, disabled: false, inherited: !stored.provider };
     }
+    delete requested.disabled;
     // Tuning-only edits must preserve the selected agent model, not silently inherit Main.
     const current = stored.provider ? stored : normalizeWorkflowRoute(resolveRoute(getConfig(), {})) || {};
     if (!hasOwn(requested, 'provider')) requested.provider = current.provider;
@@ -87,11 +90,11 @@ export function createAgentRouteApi(deps) {
     if (!clean(requested.model)) throw new Error('agent route requires provider and model');
     const routeToSave = normalizeWorkflowRoute(await resolveSelectedRoute(requested, stored));
     if (!routeToSave) throw new Error('agent route requires provider and model');
-    // Picking a model is also the "on" switch — the two states are exclusive.
-    const nextConfig = withAgentDisabled(getConfig(), id, false);
+    // Picking a model is also the "on" switch unless the request keeps it off.
+    const nextConfig = withAgentDisabled(getConfig(), id, keepOff);
     nextConfig.agents = { ...(nextConfig.agents || {}), [id]: routeToSave };
     saveConfigAndAdopt(canonicalizeAgentRouteStorage(nextConfig));
-    return routeToSave;
+    return keepOff ? { ...routeToSave, id, disabled: true } : routeToSave;
   }
 
   return { setAgentRoute };

@@ -53,10 +53,10 @@ export function useAppShellPanels(activeBottomPanelPaneId: string) {
     if (activeSidePanelLayout.sidebarLockedOpen) return true;
     try {
       if (responsiveSidePanels) return false;
-      // Default layout starts MINIMIZED on both edges (user decision): only
-      // an explicit stored "true" (the user opened it before) restores an
-      // open sidebar. The right dock already defaults to closed.
-      return window.localStorage.getItem(SIDEBAR_OPEN_KEY) === 'true';
+      // First launch starts with the session sidebar OPEN (user decision):
+      // only an explicit stored "false" (the user folded it before) keeps it
+      // minimized. The right dock still defaults to closed.
+      return window.localStorage.getItem(SIDEBAR_OPEN_KEY) !== 'false';
     } catch {
       return false;
     }

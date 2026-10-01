@@ -3,14 +3,75 @@ function Get-ElRuntimeKey($el) {
     try { return [string](@($el.GetRuntimeId()) -join ',') } catch { return '' }
 }
 
+# What the caller saw: the snapshot's cached view when there is one, else the live one.
+function Get-ElIdentity($el) {
+    foreach ($view in @('Cached', 'Current')) {
+        try {
+            $info = $el.$view
+            # PowerShell turns a property that is not cached into $null, not an error.
+            if ($null -eq $info.ControlType) { continue }
+            $bounds = $info.BoundingRectangle
+            return @{
+                ControlType  = $info.ControlType
+                Name         = [string]$info.Name
+                AutomationId = [string]$info.AutomationId
+                X            = [double]$bounds.X
+                Y            = [double]$bounds.Y
+                Width        = [double]$bounds.Width
+                Height       = [double]$bounds.Height
+            }
+        }
+        catch {}
+    }
+    return $null
+}
+
 function Set-ElRef($state, $ref, $el, $windowId, $generation) {
     $state.Map[$ref] = @{
-        Kind       = 'uia'
-        Element    = $el
-        WindowId   = [string]$windowId
-        Generation = [int]$generation
-        RuntimeId  = Get-ElRuntimeKey $el
+        Kind        = 'uia'
+        Element     = $el
+        WindowId    = [string]$windowId
+        Generation  = [int]$generation
+        RuntimeId   = Get-ElRuntimeKey $el
+        UiaIdentity = Get-ElIdentity $el
     }
+}
+
+# A provider that rebuilds its tree (Chromium/Electron re-rendering) retires the
+# element a ref held while the same control stays where the caller saw it. Only
+# one enabled element of the same window with the same role, name, automation id
+# and bounds may stand in; anything else stays stale.
+function Find-ReboundElement($record) {
+    $identity = $record.UiaIdentity
+    if ($null -eq $identity -or $null -eq $identity.ControlType) { return $null }
+    if ([string]::IsNullOrEmpty($identity.Name) -and [string]::IsNullOrEmpty($identity.AutomationId)) { return $null }
+    $top = [MixWin32]::ParseWindowId([string]$record.WindowId)
+    if (-not [MixWin32]::IsWindowHandle($top)) { return $null }
+    try {
+        $root = $AE::FromHandle($top)
+        $typeCondition = New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, $identity.ControlType)
+        $keyCondition = if ($identity.Name) {
+            New-Object System.Windows.Automation.PropertyCondition($AE::NameProperty, $identity.Name)
+        }
+        else {
+            New-Object System.Windows.Automation.PropertyCondition($AE::AutomationIdProperty, $identity.AutomationId)
+        }
+        $candidates = $root.FindAll($TS::Descendants, (New-Object System.Windows.Automation.AndCondition($typeCondition, $keyCondition)))
+        $matched = @(foreach ($candidate in $candidates) {
+                $current = $candidate.Current
+                $bounds = $current.BoundingRectangle
+                if ([string]$current.AutomationId -ne $identity.AutomationId -or -not $current.IsEnabled) { continue }
+                if ([math]::Abs($bounds.X - $identity.X) -gt 2 -or [math]::Abs($bounds.Y - $identity.Y) -gt 2 -or
+                    [math]::Abs($bounds.Width - $identity.Width) -gt 2 -or [math]::Abs($bounds.Height - $identity.Height) -gt 2) { continue }
+                $candidate
+            })
+        if ($matched.Count -ne 1) { return $null }
+        $rebound = $matched[0]
+        $reboundTop = New-Object IntPtr((Get-TopWindow $rebound).Current.NativeWindowHandle)
+        if ([MixWin32]::WindowId($reboundTop) -ne [string]$record.WindowId) { return $null }
+        return $rebound
+    }
+    catch { return $null }
 }
 
 function Get-MsaaIdentity($node) {
@@ -58,17 +119,22 @@ function Get-RefRecord($ref) {
     }
     if ($null -eq $record.Element) { throw "ref $ref is stale; take a fresh snapshot/find" }
     $el = $record.Element
+    $sameElement = $false
     try {
         $top = New-Object IntPtr((Get-TopWindow $el).Current.NativeWindowHandle)
-        $runtimeId = Get-ElRuntimeKey $el
-        if ((-not [MixWin32]::IsWindowHandle($top)) -or
-            ([MixWin32]::WindowId($top) -ne [string]$record.WindowId) -or
-            ($runtimeId -ne [string]$record.RuntimeId)) {
-            throw "ref $ref no longer identifies the same element"
-        }
+        $sameElement = [MixWin32]::IsWindowHandle($top) -and
+        ([MixWin32]::WindowId($top) -eq [string]$record.WindowId) -and
+        ((Get-ElRuntimeKey $el) -eq [string]$record.RuntimeId)
     }
-    catch {
-        throw "ref $ref is stale or its target changed; take a fresh snapshot/find"
+    catch {}
+    if (-not $sameElement) {
+        # A later step of a sequence acts on what earlier steps left, so only the
+        # step the caller aimed from its observation may stand in a rebuilt twin.
+        $rebound = if ($continuation) { $null } else { Find-ReboundElement $record }
+        if ($null -eq $rebound) { throw "ref $ref is stale or its target changed; take a fresh snapshot/find" }
+        $record.Element = $rebound
+        $record.RuntimeId = Get-ElRuntimeKey $rebound
+        $el = $rebound
     }
     # An earlier step of this sequence may have covered, hidden, or disabled it.
     if ($continuation) {

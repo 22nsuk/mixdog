@@ -36,6 +36,8 @@ interface LocalLinkTarget {
   local: boolean;
   /** True only after an automatic mention's resolved target has been statted. */
   verified: boolean;
+  /** True once an automatic mention's verification has failed. */
+  missing: boolean;
   path: string;
   kind: 'folder' | 'file' | 'unknown';
   /** Display name: file name, or `folder/`. */
@@ -102,6 +104,7 @@ function useLocalLinkTarget(target: string, verify = false): LocalLinkTarget {
     target: null,
   });
   const [verifiedKey, setVerifiedKey] = useState('');
+  const [missingKey, setMissingKey] = useState('');
   const [press] = useState(createLinkPressIntent);
   const resolutionKey = `${projectPath}\0${target}`;
   const resolvedTitle = resolved.key === resolutionKey ? resolved.title : '';
@@ -133,6 +136,7 @@ function useLocalLinkTarget(target: string, verify = false): LocalLinkTarget {
   useEffect(() => {
     if (!verify || !local) return;
     setVerifiedKey('');
+    setMissingKey('');
     let active = true;
     verifyLocalLink(projectPath, location.path)
       .then((match) => {
@@ -144,8 +148,11 @@ function useLocalLinkTarget(target: string, verify = false): LocalLinkTarget {
         });
         setVerifiedKey(resolutionKey);
       })
-      // Missing, ambiguous, inaccessible or unverified mentions remain text.
-      .catch(() => {});
+      // Missing, ambiguous, inaccessible or unverified mentions remain text;
+      // a click retries the lookup and says why it cannot open.
+      .catch(() => {
+        if (active) setMissingKey(resolutionKey);
+      });
     return () => {
       active = false;
     };
@@ -206,6 +213,7 @@ function useLocalLinkTarget(target: string, verify = false): LocalLinkTarget {
   return {
     local,
     verified: verifiedKey === resolutionKey,
+    missing: missingKey === resolutionKey,
     path: location.path,
     kind,
     name,
@@ -305,11 +313,16 @@ export function MarkdownLink({
   // A healed explicit link may preview a path caption, never open its partial
   // destination. Empty/sanitized hrefs remain noninteractive as well.
   if (!raw || (verify && local && !link.verified)) {
+    // A mention whose lookup failed may name a file written since, or one
+    // outside every Project: a click looks again, then opens or explains.
+    const retry = Boolean(raw) && link.missing;
     return (
       <span
         className={[linkClass, 'markdown-link-pending'].filter(Boolean).join(' ')}
         title={title || link.title}
-        aria-disabled="true"
+        role={retry ? 'link' : undefined}
+        aria-disabled={retry ? undefined : 'true'}
+        onClick={retry ? () => void link.open() : undefined}
       >
         {label}
       </span>

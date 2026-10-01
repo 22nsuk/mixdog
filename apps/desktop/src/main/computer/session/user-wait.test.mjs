@@ -9,6 +9,7 @@ function fixture(t, reason = 'user_input_active') {
   let sequence = 0,
     held = false,
     ready = true,
+    locked = false,
     lastInput = 0,
     reads = 0,
     resumes = 0;
@@ -19,7 +20,14 @@ function fixture(t, reason = 'user_input_active') {
     enabled: () => true,
     observe: async () => {
       reads++;
-      return { ready, monitor: 'one', sequence, held, idleMs: Date.now() - lastInput };
+      return {
+        ready: ready && !locked,
+        monitor: 'one',
+        sequence,
+        held,
+        idleMs: Date.now() - lastInput,
+        desktopLocked: locked,
+      };
     },
     resume: async (generation, signal, recheck) => {
       beforeResume?.();
@@ -49,6 +57,9 @@ function fixture(t, reason = 'user_input_active') {
     },
     recover() {
       ready = true;
+    },
+    lock(value) {
+      locked = value;
     },
     beforeResume(callback) {
       beforeResume = callback;
@@ -151,6 +162,27 @@ test('intermittent observation failures have a finite per-takeover retry budget'
   await f.advance(10000);
   assert.equal(f.counts().reads, reads);
   assert.equal(f.counts().resumes, 0);
+});
+
+test('a locked or secure input desktop waits as user activity, never as an observation failure', async (t) => {
+  const f = fixture(t);
+  f.lock(true);
+  await f.advance(10000);
+  assert.equal(f.coordinator.snapshot().takeoverReason, 'user_input_active');
+  assert.equal(f.counts().resumes, 0);
+  f.lock(false);
+  await f.advance(5000);
+  assert.equal(f.counts().resumes, 0, 'the quiet interval restarts after the desktop returns');
+  await f.tick();
+  assert.equal(f.counts().resumes, 1);
+});
+
+test('a desktop locked at the final resume check cannot release control', async (t) => {
+  const f = fixture(t);
+  f.beforeResume(() => f.lock(true));
+  await f.advance(6000);
+  assert.equal(f.counts().resumes, 0);
+  assert.equal(f.coordinator.snapshot().takeoverReason, 'user_input_active');
 });
 
 test('Stop during observer retry prevents all later automatic recovery', async (t) => {

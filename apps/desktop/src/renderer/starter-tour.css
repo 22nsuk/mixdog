@@ -115,6 +115,22 @@
   color: var(--mx-success);
   font-weight: var(--mx-weight-semibold);
 }
+/* A recommendation reads as its own tinted callout, apart from the body. */
+.starter-tour-card .starter-tour-tip {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 8px 10px;
+  color: var(--mx-accent);
+  background: color-mix(in srgb, var(--mx-accent) 12%, transparent);
+  border-radius: var(--mx-radius-md);
+  font-weight: var(--mx-weight-semibold);
+}
+.starter-tour-tip svg {
+  flex: none;
+  margin-top: 2px;
+}
 .starter-tour-count {
   color: var(--mx-text-faint);
   font-size: var(--mx-font-meta);

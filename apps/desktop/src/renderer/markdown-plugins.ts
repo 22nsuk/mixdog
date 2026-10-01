@@ -373,7 +373,8 @@ function trailingLocation(text: string): (MentionLocation & { consumed: number }
 }
 
 /** Inline code that names one path: `src/a.ts:12`, `Dockerfile`, `output/`,
- *  `output/제안서 최종.pptx` (spaces only in document names). */
+ *  `output/제안서 최종.pptx` (spaces only in document names or drive paths
+ *  such as `C:\Users\me\바탕 화면\새 폴더 (3)\out`). */
 function codeMention(
   text: string,
   allowIncompletePath = false
@@ -387,7 +388,7 @@ function codeMention(
     !/\p{L}/u.test(path) ||
     /\s{2,}/.test(path) ||
     /^\.{1,2}$/.test(path) ||
-    !/^[\p{L}\p{N}_.@+\-\\/ ]*$/u.test(body)
+    !(drive ? /^[\p{L}\p{N}_.@+\-\\/ ()&',[\]~!]*$/u : /^[\p{L}\p{N}_.@+\-\\/ ()]*$/u).test(body)
   ) {
     return null;
   }
@@ -396,7 +397,9 @@ function codeMention(
   const name = folder ? '' : body.split(/[\\/]/).at(-1) || '';
   const dot = name.lastIndexOf('.');
   const extension = dot >= 0 ? name.slice(dot + 1).toLowerCase() : '';
-  if (/\s/.test(path) && !isOsDocumentExtension(extension)) return null;
+  // A drive path is unambiguous, and Windows folders carry spaces
+  // (`바탕 화면`); a relative one with spaces is usually a command.
+  if (/\s/.test(path) && !drive && !isOsDocumentExtension(extension)) return null;
   if (folder) return hasSeparator ? { path, bare: false } : null;
   // Without an extension only well-known names count (`scripts/Dockerfile`,
   // `.gitignore`, `.env.local`): `owner/repo` and `@scope/package` are not files.

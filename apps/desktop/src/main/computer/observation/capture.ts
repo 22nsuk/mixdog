@@ -221,11 +221,12 @@ export function createCaptureEngine(host: CaptureEngineHost) {
           const reread = applyRead(contentRead);
           timings.accessibility_reread_ms = contentRead.elapsed;
           timings.accessibility_ms = accessibilityMsBeforeReread + contentRead.elapsed;
-          if (!reread.accessibilityError && hasSemanticAccessibilityTarget(reread.rawElements, screenshot?.frame)) {
-            ({ accessibilityError, rawElements, totalElements, continuation, generation, windowId } = reread);
-            elements = frameElements(rawElements, screenshot?.frame, mode !== 'som').slice(0, totalElementBudget);
-            semanticAccessibilityAvailable = true;
-          }
+          // The re-read replaced the session's refs, so only its answer names
+          // live ones, whether or not it found the content surface.
+          ({ accessibilityError, rawElements, totalElements, continuation, generation, windowId } = reread);
+          elements = frameElements(rawElements, screenshot?.frame, mode !== 'som').slice(0, totalElementBudget);
+          semanticAccessibilityAvailable =
+            !accessibilityError && hasSemanticAccessibilityTarget(rawElements, screenshot?.frame);
         }
       }
       if (visualOnlyOk && !visualOnlyCacheHit) {

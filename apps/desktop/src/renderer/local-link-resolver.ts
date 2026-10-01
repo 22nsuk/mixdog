@@ -86,7 +86,9 @@ export async function resolveLocalLink(project: string, path: string): Promise<R
     const url = new URL(path);
     path = url.hostname && url.hostname !== 'localhost' ? `//${url.hostname}${url.pathname}` : url.href;
   }
-  if (/^(?:[a-z]:[\\/]|[\\/]|file:)/i.test(path)) return resolveAbsolute(localMarkdownPath(path), path);
+  // Markdown encodes `C:\a\b.png` as `C:%5Ca%5Cb.png`; judge the decoded path.
+  const decoded = localMarkdownPath(path);
+  if (/^file:/i.test(path) || /^(?:[a-z]:\/|\/)/i.test(decoded)) return resolveAbsolute(decoded, path);
   if (!project) throw new Error(t("The conversation's Project is unavailable."));
   const relative = projectRelativeFilePath(project, path);
   const searchable = Boolean(relative && localLinkKind(path) === 'file');

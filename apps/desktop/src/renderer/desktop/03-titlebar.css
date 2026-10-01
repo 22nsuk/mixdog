@@ -82,6 +82,13 @@ html[data-window-material="mica"] .main-panel {
 html[data-window-material="mica"] .workbench-side-panel {
   background: var(--mx-mica-panel);
 }
+/* The parked conversation stays painted under a Studio/terminal/diff tab;
+   with the sheet token cleared the covering layer turned see-through and the
+   transcript showed behind Studio (user: 스튜디오로 넘어가면 트랜스크립트
+   안 날아감). The workspace layer is solid, so cover with the same tone. */
+html[data-window-material="mica"] .pane-surface-handoff-layer {
+  background: var(--mx-mica-layer);
+}
 html[data-window-material="mica"] .workbench-side-panel[data-side="left"],
 html[data-window-material="mica"] .app-shell.sidebar-collapsed .main-panel {
   border-top-left-radius: 8px;

@@ -200,9 +200,6 @@
   color: var(--mx-text-muted);
   font-weight: var(--mx-weight-medium);
 }
-.tool-activity-failed {
-  line-height: var(--mx-line-meta);
-}
 .tool-activity[data-surface="desktop"] .tool-activity-title small {
   flex: 0 0 auto;
   color: var(--mx-text-faint);

@@ -6,6 +6,9 @@ export interface IdleObservation {
   sequence: number;
   idleMs: number;
   held: boolean;
+  /** The observer works but the input desktop is the lock screen or a secure
+   *  prompt: the user is there, so this is activity, not a failed reading. */
+  desktopLocked?: boolean;
 }
 
 function isIdleResumePause(snapshot: ComputerUseSnapshot): boolean {
@@ -72,6 +75,11 @@ export function createComputerUserWait(options: {
     try {
       const value = await options.observe();
       if (!eligible() || generation !== currentGeneration) return;
+      if (value.desktopLocked) {
+        reset();
+        publish(seconds);
+        return;
+      }
       if (!valid(value) || now() - sampledAt > 2_000) {
         observationFailed(!valid(value) ? 'idle_observation_invalid' : 'idle_observation_slow', now() - sampledAt);
         return;
@@ -96,6 +104,7 @@ export function createComputerUserWait(options: {
         const last = await options.observe();
         const elapsed = now() - started;
         if (signal.aborted || !eligible() || currentGeneration !== generation) return false;
+        if (last.desktopLocked) return false;
         if (elapsed > 2_000 || !valid(last)) {
           observationFailed(!valid(last) ? 'idle_observation_invalid' : 'idle_observation_slow', elapsed);
           return false;

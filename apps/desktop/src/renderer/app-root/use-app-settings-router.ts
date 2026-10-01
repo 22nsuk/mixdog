@@ -4,6 +4,7 @@ import { desktopFeatureEnabled } from '../desktop-feature-config';
 import { extensionSectionForSettings, type ExtensionsSection } from '../extension-sections';
 import type { SettingsSection as SlashSettingsSection } from '../slash-commands';
 import { loadSidebarPanelModule, warmSettingsView } from '../app-shell-components';
+import { requestOpenModelPicker } from '../model-picker-event';
 import { useAppUiOpenRequest } from '../app-shell-ui-open-request';
 import { useSetupDesktopRequest } from '../use-setup-desktop-request';
 import type { Snapshot } from '../desktop-types';
@@ -65,7 +66,12 @@ export function useAppSettingsRouter({
         applySidebarOpen(true);
         return;
       }
-      if (section === 'workflow' || section === 'websearch') {
+      if (section === 'model' && requestOpenModelPicker()) {
+        setSettingsOpen(false);
+        setCommandSurface(null);
+        return;
+      }
+      if (section === 'workflow' || section === 'websearch' || section === 'model') {
         if (!desktopFeatureEnabled('projects')) return;
         setSettingsOpen(false);
         setCommandSurface(null);

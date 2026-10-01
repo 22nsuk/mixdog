@@ -643,6 +643,38 @@ for (const [pipeline, render] of Object.entries(renderers)) {
     assert.equal(f.toasts.length, 0);
   });
 
+  test(`${pipeline}: drive paths with spaces and parentheses in inline code become links`, async (t) => {
+    const root = 'C:/Users/me/바탕 화면/새 폴더 (3)';
+    const win = 'C:\\Users\\me\\바탕 화면\\새 폴더 (3)';
+    const f = await mount(
+      t,
+      render,
+      [
+        `\`${win}\\promo\``,
+        `\`${win}\\promo\\index.html\``,
+        `\`${win}\\promo\\cards\\card-1.png\``,
+        `\`${win}\\R&D, Tom's [v2]\\PROGRA~1!\\a.png\``,
+        `[card](<${win}\\promo\\cards\\card-1.png>)`,
+      ].join('\n\n'),
+      PROJECT,
+      (f) =>
+        installProjectFiles(f, {
+          [PROJECT]: [],
+          [root]: ['promo', 'promo/index.html', 'promo/cards/card-1.png', "R&D, Tom's [v2]/PROGRA~1!/a.png"],
+        })
+    );
+    assert.deepEqual(f.labels(), ['promo/', 'index.html', 'card-1.png', 'a.png', 'card']);
+    for (let index = 0; index < 5; index++) await f.click(index);
+    assert.deepEqual(f.local, [
+      [`${root}/promo`, '.'],
+      [root, 'promo/cards/card-1.png'],
+      [root, ["R&D, Tom's [v2]", 'PROGRA~1!', 'a.png'].map(encodeURIComponent).join('/')],
+      [root, 'promo/cards/card-1.png'],
+    ]);
+    assert.deepEqual(f.opened, [[root, 'promo/index.html', undefined]]);
+    assert.equal(f.toasts.length, 0);
+  });
+
   test(`${pipeline}: main hands text files back to the editor after probing an extension-less name`, async (t) => {
     const f = await mount(t, render, 'See `scripts/Dockerfile` and `docs/` here.', PROJECT, (f) =>
       installProjectFiles(f, { [PROJECT]: ['scripts/Dockerfile', 'docs'] })
@@ -690,10 +722,23 @@ for (const [pipeline, render] of Object.entries(renderers)) {
     ]);
     assert.equal(pending.filter((item) => item.querySelector('.seti-icon')).length, 4);
     for (const item of pending) {
-      assert.equal(item.getAttribute('aria-disabled'), 'true');
+      assert.equal(item.getAttribute('aria-disabled'), null);
       await act(async () => item.dispatchEvent(new f.dom.window.MouseEvent('click', { bubbles: true })));
     }
-    assert.equal(f.toasts.length + f.opened.length + f.local.length + f.popups.length, 0);
+    // A click looks again and explains why nothing opened.
+    assert.equal(f.toasts.length, pending.length);
+    assert.equal(f.opened.length + f.local.length + f.popups.length, 0);
+  });
+
+  test(`${pipeline}: a missing mention opens on click once its file exists`, async (t) => {
+    const files = { [PROJECT]: [] };
+    const f = await mount(t, render, 'See `late.png`.', PROJECT, (f) => installProjectFiles(f, files));
+    assert.equal(f.links().length, 0);
+    files[PROJECT].push('late.png');
+    const item = f.dom.window.document.querySelector('.markdown-link-pending');
+    await act(async () => item.dispatchEvent(new f.dom.window.MouseEvent('click', { bubbles: true })));
+    assert.deepEqual(f.local, [[PROJECT, 'late.png']]);
+    assert.equal(f.toasts.length, 0);
   });
 
   test(`${pipeline}: automatic links show their final icons immediately and enable clicking only after verification`, async (t) => {
@@ -851,7 +896,8 @@ for (const [pipeline, render] of Object.entries(renderers)) {
     assert.deepEqual(disabled.map(readableText), ['unsafe', 'data', 'secret.png']);
     for (const item of disabled) {
       assert.equal(item.getAttribute('href'), null);
-      assert.equal(item.getAttribute('aria-disabled'), 'true');
+      // An unverified local file stays retryable; sanitized schemes never are.
+      assert.equal(item.getAttribute('aria-disabled'), readableText(item) === 'secret.png' ? null : 'true');
       await act(async () => item.dispatchEvent(new f.dom.window.MouseEvent('click', { bubbles: true })));
     }
     assert.equal(f.external.length, 2);

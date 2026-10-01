@@ -5,6 +5,31 @@ the Unreleased section is empty, and stamps it with the released version.
 
 ## Unreleased
 
+- Transcript copy buttons can write to the clipboard from the trusted desktop
+  window. Response text, code blocks, tool output and per-file diffs have
+  regression coverage for exact copied text, retries and changing content;
+  clipboard reads and permissions for other windows remain blocked.
+
+- Model and effort commands open the current conversation's model picker, and
+  disabled agents keep the model selected for them. The starter tutorial
+  explains the Maintainer model recommendation, and diagnostics now cover
+  local providers, built-in features, voice and missing or invalid plugins.
+
+- Windows file links handle encoded separators and paths with spaces or
+  Korean text. A file mention that failed its initial lookup can be clicked
+  to retry. Studio's Select all includes every item in the tab, not only
+  the pages already loaded.
+
+- Computer Use keeps capture references aligned with accessibility re-reads,
+  safely rebinds rebuilt controls only when their observed identity matches,
+  and waits while the input desktop is locked instead of treating the lock as
+  an observer failure.
+
+- Workspace tabs and the starter tutorial have clearer styling, the session
+  sidebar starts open, and tool groups no longer show the aggregate failure
+  badge. Project instruction text is no longer added to the system prompt's
+  environment block. Published packages exclude nested development tests.
+
 ## v1.0.1 - 2026-09-30
 
 - The desktop app on Windows 11 now sits in a Mica window frame with a calmer,

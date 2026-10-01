@@ -547,6 +547,63 @@ test('Studio detail reuses a prompt, adds the asset as a reference, and deletes 
   }
 });
 
+test('Studio select-all covers unloaded pages, so a bulk delete empties the tab', async () => {
+  window.localStorage.clear();
+  let stored = Array.from({ length: 130 }, (_, index) => ({
+    ...assets[0],
+    id: `bulk-${index}`,
+    prompt: `Bulk ${index}`,
+    createdAt: 130 - index,
+  }));
+  const api = {
+    mediaUrl: () => PIXEL,
+    invokeCapability: async ({ capability, args = [] }) => {
+      if (capability === 'listMediaLanes') return { value: [lane], snapshot: null };
+      if (capability === 'listMediaAssets') {
+        const rows = stored.filter((asset) => asset.kind === args[0]?.kind);
+        const offset = args[0]?.offset || 0;
+        return { value: { assets: rows.slice(offset, offset + args[0].limit), total: rows.length }, snapshot: null };
+      }
+      if (capability === 'readMediaAsset') {
+        return { value: { base64: PIXEL.split(',')[1], mime: 'image/png' }, snapshot: null };
+      }
+      if (capability === 'setMediaDefault') return { value: args[0], snapshot: null };
+      if (capability === 'deleteMediaAssets') {
+        const filter = args[0];
+        const ids = stored
+          .filter((asset) => (!filter.kind || asset.kind === filter.kind) && (!filter.ids || filter.ids.includes(asset.id)))
+          .map((asset) => asset.id);
+        if (!filter.dryRun) stored = stored.filter((asset) => !ids.includes(asset.id));
+        return { value: { ids }, snapshot: null };
+      }
+      throw new Error(`unexpected capability: ${capability}`);
+    },
+  };
+  const confirm = window.confirm;
+  window.confirm = () => true;
+  const studio = await renderStudio(api, memoryReferenceStore());
+  const { host } = studio;
+  const button = (label) => [...host.querySelectorAll('button')].find((entry) => entry.textContent.trim() === label);
+  const tiles = () => host.querySelectorAll('.studio-tile:not(.studio-tile--pending)').length;
+
+  try {
+    await settle();
+    assert.equal(tiles(), 60, 'the gallery holds only its first page');
+    await act(async () => button('Clean up').click());
+    await act(async () => button('Select items').click());
+    await act(async () => button('Select all').click());
+    await settle();
+    assert.equal(host.querySelector('.studio-cleanup-count').textContent, '130 selected');
+    await act(async () => button('Delete selected').click());
+    await settle(60);
+    assert.equal(stored.length, 0, 'every asset in the tab is deleted');
+    assert.equal(tiles(), 0, 'no next page refills the grid');
+  } finally {
+    await studio.unmount();
+    window.confirm = confirm;
+  }
+});
+
 test('Studio detail on the web app folds its rail on tap and saves through the share sheet', async () => {
   window.localStorage.clear();
   const opened = [];

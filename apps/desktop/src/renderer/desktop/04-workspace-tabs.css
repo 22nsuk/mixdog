@@ -110,7 +110,7 @@
     padding-right var(--mx-motion-chrome),
     opacity var(--mx-motion-chrome);
   gap: 2px;
-  padding: 0 6px 0 10px;
+  padding: 0 8px 0 10px;
   border: 0;
   /* Tab grammar (user request): square, gapless cells. */
   border-radius: 0;
@@ -303,14 +303,18 @@
   color: var(--mx-text);
 }
 .workspace-tab:is(:hover, :focus-within, .active):not(.drop-target-right)::before {
-  top: 4px;
-  right: 2px;
-  bottom: 4px;
-  left: 2px;
+  top: 5px;
+  right: 4px;
+  bottom: 5px;
+  left: 4px;
   width: auto;
   z-index: -1;
   border-radius: var(--mx-radius-md);
   background: var(--mx-plate-hover);
+}
+/* The leading plate steps off the sidebar edge instead of grazing it. */
+.workspace-tab:first-child:is(:hover, :focus-within, .active):not(.drop-target-right)::before {
+  left: 6px;
 }
 /* The card: a lifted fill, a soft drop shadow in the theme's shadow tint and
    a hairline of light along its top edge. */

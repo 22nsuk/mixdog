@@ -30,7 +30,14 @@ function runtime(overrides = {}) {
       local: [],
     }),
     mcpStatus: () => ({ configuredCount: 0, connectedCount: 0, servers: [] }),
-    getToolModuleSettings: () => ({ memory: { installed: true, enabled: true } }),
+    getToolModuleSettings: () => ({
+      memory: { installed: true, enabled: true },
+      git: { installed: true, enabled: true },
+      office: { installed: true, enabled: false },
+      tidy: { installed: false, enabled: false },
+      localProvider: { installed: true, enabled: true, models: [{ id: 'm', installed: true }], installations: [] },
+    }),
+    getVoiceStatus: () => ({ enabled: true, installed: true, components: { model: true } }),
     getRecapSettings: () => ({ enabled: true }),
     getChannelSettings: () => ({ enabled: true, status: { running: true, mode: 'daemon' } }),
     skillsStatus: () => ({ count: 0, skills: [] }),
@@ -110,9 +117,9 @@ test('unknown engine syntax or missing metadata is unverified, never healthy', (
 test('healthy report preserves the shared desktop/TUI text contract without speculative Defender advice', async () => {
   const report = await buildDoctorReport(runtime(), state);
   const lines = report.split('\n');
-  assert.equal(lines.length, 14);
+  assert.equal(lines.length, 17);
   assert.equal(lines[0], 'mixdog doctor — installation health');
-  assert.equal(lines.at(-1), '12 ok · 0 warnings · 0 failed');
+  assert.equal(lines.at(-1), '15 ok · 0 warnings · 0 failed');
   assert.equal(reportRow(report, 'mixdog'), '✓ mixdog: v1.0.0 · up to date');
   assert.equal(reportRow(report, 'providers'), '✓ providers: 1 ready · route openai');
   assert.equal(reportRow(report, 'memory'), '✓ memory: installed · enabled · recap enabled');
@@ -137,16 +144,64 @@ test('structured rows carry summary counts and the command that fixes each probl
   const byId = Object.fromEntries(result.checks.map((check) => [check.id, check]));
   assert.deepEqual(
     result.checks.map((check) => check.id),
-    ['mixdog', 'node', 'providers', 'mcp', 'memory', 'channels', 'skills', 'plugins', 'hooks', 'data', 'config', 'logs']
+    [
+      'mixdog', 'node', 'providers', 'mcp', 'memory', 'localProvider', 'builtins', 'voice',
+      'channels', 'skills', 'plugins', 'hooks', 'data', 'config', 'logs',
+    ]
   );
-  assert.deepEqual(result.summary, { ok: 10, warn: 1, fail: 1 });
+  assert.deepEqual(result.summary, { ok: 13, warn: 1, fail: 1 });
   assert.deepEqual(byId.mixdog.fix, { command: '/update' });
   assert.equal(byId.providers.level, 'fail');
   assert.deepEqual(byId.providers.fix, { command: '/providers' });
   assert.equal(byId.hooks.fix, undefined);
   const report = formatDoctorReport(result);
   assert.match(report, /✗ providers: route openai has no auth · 0 ready\n {4}→ run \/providers\n/);
-  assert.equal(report.split('\n').at(-1), '10 ok · 1 warnings · 1 failed');
+  assert.equal(report.split('\n').at(-1), '13 ok · 1 warnings · 1 failed');
+});
+
+async function rowOf(id, overrides) {
+  return (await runDoctorChecks(runtime(overrides), state)).checks.find((check) => check.id === id);
+}
+
+test('local provider row: not installed, disabled, failed, empty and healthy', async () => {
+  const local = (value) => ({ getToolModuleSettings: () => ({ localProvider: value }) });
+  assert.deepEqual(
+    (await rowOf('localProvider', local({ installed: false, enabled: false }))).detail,
+    'not installed'
+  );
+  assert.equal((await rowOf('localProvider', local({ installed: true, enabled: false }))).level, 'ok');
+  const models = [{ installed: true }];
+  const failed = await rowOf(
+    'localProvider',
+    local({ installed: true, enabled: true, models, installations: [{ state: 'complete', updatedAt: 1 }, { state: 'failed', updatedAt: 2, error: 'secret' }] })
+  );
+  assert.equal(failed.level, 'warn');
+  assert.deepEqual(failed.fix, { command: '/providers' });
+  assert.doesNotMatch(failed.detail, /secret/);
+  const recovered = await rowOf(
+    'localProvider',
+    local({ installed: true, enabled: true, models, installations: [{ state: 'failed', updatedAt: 1 }, { state: 'complete', updatedAt: 2 }] })
+  );
+  assert.equal(recovered.level, 'ok');
+  const empty = await rowOf('localProvider', local({ installed: true, enabled: true, models: [], installations: [] }));
+  assert.equal(empty.level, 'warn');
+  assert.equal(recovered.detail, 'installed · enabled · 1 models installed');
+});
+
+test('built-ins row lists states and treats missing bridges as informational', async () => {
+  const row = await rowOf('builtins');
+  assert.equal(row.level, 'ok');
+  assert.match(row.detail, /^enabled: git · disabled: office · not installed: tidy · browser use .* · computer use /);
+});
+
+test('voice row: disabled ok, uninstalled warns, installed ok', async () => {
+  assert.equal((await rowOf('voice', { getVoiceStatus: () => ({ enabled: false }) })).level, 'ok');
+  const warn = await rowOf('voice', { getVoiceStatus: () => ({ enabled: true, installed: false, components: {} }) });
+  assert.equal(warn.level, 'warn');
+  assert.deepEqual(warn.fix, { hint: 'reinstall voice from Extensions' });
+  const noModel = await rowOf('voice', { getVoiceStatus: () => ({ enabled: true, installed: true, components: { model: false } }) });
+  assert.equal(noModel.level, 'warn');
+  assert.equal((await rowOf('voice')).level, 'ok');
 });
 
 test('a stalled check times out without holding back the others', async () => {
@@ -407,7 +462,13 @@ test('active skill dependency issues and plugin failures are warnings without ra
       skillsStatus: () => ({
         skills: [{ name: 'needs-tool', enabled: true, dependencyIssues: [{ message: 'private config' }] }],
       }),
-      pluginsStatus: () => ({ plugins: [{ name: 'broken', enabled: true, error: 'credential=private' }] }),
+      pluginsStatus: () => ({
+        plugins: [{ name: 'broken', enabled: true, invalid: true }],
+        missing: [
+          { id: 'gone', name: 'gone', enabled: true },
+          { id: 'off', name: 'off', enabled: false },
+        ],
+      }),
       hooksStatus: () => ({
         enabled: true,
         configuredEvents: ['tool:before'],
@@ -419,7 +480,7 @@ test('active skill dependency issues and plugin failures are warnings without ra
     state
   );
   assert.equal(reportRow(report, 'skills'), '⚠ skills: 1/1 active · issues: needs-tool');
-  assert.equal(reportRow(report, 'plugins'), '⚠ plugins: 1/1 active · issues: broken');
+  assert.equal(reportRow(report, 'plugins'), '⚠ plugins: 1/1 active · issues: broken, gone');
   assert.equal(reportRow(report, 'hooks'), '⚠ hooks: enabled · 2 rules · 1 configured events · 1 configuration errors');
   assert.doesNotMatch(report, /private|secret hook configuration/);
 });

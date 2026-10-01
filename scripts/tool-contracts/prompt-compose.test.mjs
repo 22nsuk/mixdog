@@ -43,7 +43,6 @@ test('BP layering keeps profile/skills in BP2 and ordered BP3 sections', () => {
     coreMemoryContext: 'BP3_MEMORY',
     languageContext: 'BP3_LANGUAGE',
     sessionStartContext: 'BP3_SESSION',
-    projectInstructionsContext: 'BP3_PROJECT',
     environmentContext: 'BP3_ENVIRONMENT',
   });
   if (layeredPrompt.baseRules !== 'BP1_TOOL_POLICY') {
@@ -63,7 +62,6 @@ test('BP layering keeps profile/skills in BP2 and ordered BP3 sections', () => {
     'BP3_SYSTEM',
     'BP3_MEMORY',
     'BP3_SESSION',
-    'BP3_PROJECT',
     'BP3_ENVIRONMENT',
     'BP3_LANGUAGE',
   ].map((value) => layeredPrompt.sessionMarker.indexOf(value));
@@ -72,24 +70,23 @@ test('BP layering keeps profile/skills in BP2 and ordered BP3 sections', () => {
   }
   if (
     layeredPrompt.sessionMarkerCore.includes('BP3_SESSION') ||
-    layeredPrompt.sessionMarkerCore.includes('BP3_PROJECT') ||
     layeredPrompt.sessionMarkerCore.includes('BP3_ENVIRONMENT') ||
     layeredPrompt.sessionMarkerCore.includes('BP3_LANGUAGE')
   ) {
     throw new Error(
-      `BP3 core must exclude the refreshable session/project/environment suffix: ${layeredPrompt.sessionMarkerCore}`
+      `BP3 core must exclude the refreshable session/environment suffix:${layeredPrompt.sessionMarkerCore}`
     );
   }
   if (
     layeredPrompt.sessionEnvironment !==
-    'BP3_SESSION\n\n---\n\nBP3_PROJECT\n\n---\n\nBP3_ENVIRONMENT\n\n---\n\nBP3_LANGUAGE'
+    'BP3_SESSION\n\n---\n\nBP3_ENVIRONMENT\n\n---\n\nBP3_LANGUAGE'
   ) {
     throw new Error(
       `session environment must carry exactly the refreshable suffix: ${layeredPrompt.sessionEnvironment}`
     );
   }
   if (
-    !/BP3_SESSION|BP3_PROJECT|BP3_ENVIRONMENT|BP3_LANGUAGE/.test(layeredPrompt.sessionEnvironment) ||
+    !/BP3_SESSION|BP3_ENVIRONMENT|BP3_LANGUAGE/.test(layeredPrompt.sessionEnvironment) ||
     /BP3_WORKFLOW|BP3_ROLE|BP3_MEMORY/.test(layeredPrompt.sessionEnvironment)
   ) {
     throw new Error(`session environment must exclude the stable BP3 core: ${layeredPrompt.sessionEnvironment}`);

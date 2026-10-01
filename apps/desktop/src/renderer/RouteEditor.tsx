@@ -18,6 +18,7 @@ import { commitImmediateOverlay, useImmediateOverlayClickGuard } from './immedia
 import { ModelCatalog } from './model-catalog';
 import { formatContextWindow, ModelRouteLabel } from './provider-display';
 import { useSurfaceActive } from './surface-activity';
+import { OPEN_MODEL_PICKER_EVENT } from './model-picker-event';
 import {
   ROUTE_PANEL_PADDING,
   ROUTE_PANEL_WIDTH,
@@ -80,7 +81,11 @@ export function RouteEditor({
   onChangeModelParameter,
   onOpenProviders,
   onOpenModelPane,
+  answersModelPickerRequests = false,
 }: {
+  /** Only the focused conversation's composer sets this; it is the single
+   *  responder to the open-model-picker event. */
+  answersModelPickerRequests?: boolean;
   models: DesktopModelOption[];
   provider: string;
   model: string;
@@ -381,6 +386,23 @@ export function RouteEditor({
     layoutFor(next);
     setPane(next);
   };
+
+  const openModelPicker = useRef(() => {});
+  openModelPicker.current = () => {
+    show();
+    openPane('model');
+  };
+  const respondsToModelPicker = answersModelPickerRequests && surfaceActive && !modelDisabled;
+  useEffect(() => {
+    if (!respondsToModelPicker) return undefined;
+    const onRequest = (event: Event) => {
+      if (event.defaultPrevented) return;
+      event.preventDefault();
+      openModelPicker.current();
+    };
+    window.addEventListener(OPEN_MODEL_PICKER_EVENT, onRequest);
+    return () => window.removeEventListener(OPEN_MODEL_PICKER_EVENT, onRequest);
+  }, [respondsToModelPicker]);
 
   useEffect(() => {
     if (!surfaceActive && (open || closing)) closeAll(false, true);

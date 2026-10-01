@@ -62,6 +62,12 @@ function checkLabel(check: DoctorCheck): string {
       return t('MCP');
     case 'memory':
       return t('Memory');
+    case 'localProvider':
+      return t('Local Provider');
+    case 'builtins':
+      return t('Built-ins');
+    case 'voice':
+      return t('Voice transcription');
     case 'channels':
       return t('Channels');
     case 'skills':

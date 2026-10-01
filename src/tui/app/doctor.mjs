@@ -15,6 +15,7 @@
 import { compareSemver } from '../../runtime/shared/update-checker.mjs';
 import { resolvePluginData } from '../../runtime/shared/plugin-paths.mjs';
 import { hasEnabledAutomation } from '../../runtime/shared/automation-presence.mjs';
+import { builtinFeatureActive } from '../../runtime/agent/orchestrator/runtime-core/builtin-features.mjs';
 import { providerRowUsable } from './provider-usable.mjs';
 import { constants as fsConstants, readFileSync } from 'node:fs';
 import { access, readdir, readFile } from 'node:fs/promises';
@@ -247,14 +248,76 @@ function reportRegistry(label) {
     const broken = active.filter(
       (entry) => entry.broken || entry.error || entry.invalid || entry.dependencyIssues?.length
     );
+    const missing = Array.isArray(status.missing)
+      ? status.missing.filter((entry) => entry.enabled !== false)
+      : [];
     let detail = `${active.length}/${entries.length} active${scopeDetail}`;
-    if (!broken.length) {
+    const issues = [...broken, ...(label === 'plugins' ? missing : [])];
+    if (!issues.length) {
       row('ok', detail);
       return;
     }
-    detail += ` · issues: ${broken.map((entry) => entry.name || entry.id).join(', ')}`;
+    detail += ` · issues: ${issues.map((entry) => entry.name || entry.id).join(', ')}`;
     row('warn', detail, { command: `/${label}` });
   };
+}
+
+function reportLocalProvider(local, row) {
+  if (typeof local.installed !== 'boolean') {
+    row('warn', 'status unavailable');
+    return;
+  }
+  if (!local.installed) {
+    row('ok', 'not installed');
+    return;
+  }
+  if (local.enabled !== true) {
+    row('ok', 'installed · disabled');
+    return;
+  }
+  const fix = { command: '/providers' };
+  const models = Array.isArray(local.models) ? local.models.filter((model) => model.installed === true).length : 0;
+  const jobs = Array.isArray(local.installations) ? local.installations : [];
+  const latest = jobs.reduce((a, b) => (a && (a.updatedAt || 0) > (b.updatedAt || 0) ? a : b), null);
+  if (latest?.state === 'failed') {
+    row('warn', `installed · enabled · ${models} models · latest installation failed`, fix);
+  } else if (!models) {
+    row('warn', 'installed · enabled · no model installed', fix);
+  } else row('ok', `installed · enabled · ${models} models installed`);
+}
+
+function reportBuiltins(settings, row) {
+  const groups = { enabled: [], disabled: [], 'not installed': [] };
+  for (const id of ['git', 'office', 'tidy']) {
+    const entry = settings[id];
+    if (!entry || typeof entry.installed !== 'boolean') {
+      row('warn', 'status unavailable');
+      return;
+    }
+    if (!entry.installed) groups['not installed'].push(id);
+    else groups[entry.enabled === false ? 'disabled' : 'enabled'].push(id);
+  }
+  const parts = Object.entries(groups)
+    .filter(([, ids]) => ids.length)
+    .map(([state, ids]) => `${state}: ${ids.join(', ')}`);
+  const bridge = (id) => (builtinFeatureActive(undefined, id) ? 'bridge active' : 'no bridge');
+  row('ok', `${parts.join(' · ')} · browser use ${bridge('browser')} · computer use ${bridge('computer')}`);
+}
+
+function reportVoice(voice, row) {
+  if (typeof voice.enabled !== 'boolean') {
+    row('warn', 'status unavailable');
+    return;
+  }
+  if (!voice.enabled) {
+    row('ok', 'disabled');
+    return;
+  }
+  if (voice.installed !== true || voice.components?.model === false) {
+    row('warn', 'enabled · runtime or model not installed', { hint: 'reinstall voice from Extensions' });
+    return;
+  }
+  row('ok', 'enabled · runtime and model installed');
 }
 
 function reportHooks(hooks, row) {
@@ -333,6 +396,19 @@ export async function runDoctorChecks(runtime = {}, getState = () => ({}), optio
     ['providers', 'providers', () => runtime.getProviderSetup?.(), reportProviders(getState)],
     ['mcp', 'mcp', () => runtime.mcpStatus?.(), reportMcp],
     ['memory', 'memory', async () => (await runtime.getToolModuleSettings?.())?.memory, reportMemory(runtime)],
+    [
+      'localProvider',
+      'local provider',
+      async () => (await runtime.getToolModuleSettings?.())?.localProvider,
+      reportLocalProvider,
+    ],
+    ['builtins', 'built-ins', async () => runtime.getToolModuleSettings?.(), reportBuiltins],
+    [
+      'voice',
+      'voice',
+      async () => (runtime.getVoiceStatus || (await import('../lib/voice-setup.mjs')).getVoiceStatus)(),
+      reportVoice,
+    ],
     [
       'channels',
       'channels',

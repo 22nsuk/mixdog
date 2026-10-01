@@ -125,6 +125,7 @@ export function ComposerFooter({
         // Model writes are queued by the session API. A preceding write must
         // not disable the next selection while its acknowledgement travels.
         modelDisabled={transitioning}
+        answersModelPickerRequests={paneActive}
         // Effort/Fast stay live during a turn: the running turn already
         // captured its own effort/fast at turn start, so a change here lands
         // on the NEXT turn instead of being locked out. Only session-command

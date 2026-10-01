@@ -86,7 +86,7 @@ export function composeSessionSystem(opts, { profile, providerName, modelName, s
   const languageContext = leadOnly ? _buildLeadLanguageContext() : '';
   const shellEnvironmentContext = buildShellEnvironmentContext(opts, ownerIsAgent, surface.toolsForRouting);
   // Persisted env tail: refreshSessionBp3Environment rebuilds the env block
-  // as [session, project, bp3EnvironmentContext], so the language block must
+  // as [session, bp3EnvironmentContext], so the language block must
   // already sit at the end of this string to stay last after a refresh.
   const environmentTailContext = [shellEnvironmentContext, languageContext].filter(Boolean).join('\n\n---\n\n');
   const composed = composeSystemPrompt({

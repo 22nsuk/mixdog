@@ -1615,8 +1615,9 @@ if (!app.requestSingleInstanceLock()) {
       // Gallery bytes leave the RPC lane here: tiles and clips become ordinary
       // cacheable, range-able resources fetched straight by the DOM.
       registerMediaProtocol(host);
-      // Push-to-talk and pairing use getUserMedia. Only the trusted desktop
-      // renderer receives that permission; every other permission fails closed.
+      // Push-to-talk/pairing use getUserMedia; transcript copy uses clipboard
+      // writes. Only the trusted desktop renderer receives these permissions.
+      // Clipboard reads and every other permission still fail closed.
       const trustedPermissionSender = () => {
         const window = mainWindow;
         return window && !window.isDestroyed() ? window.webContents : null;

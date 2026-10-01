@@ -301,7 +301,10 @@ export const ModelSelector = memo(function ModelSelector({
   onDraftSelection,
   onRoutePreferenceApplied,
   sessionId,
+  answersModelPickerRequests = false,
 }: {
+  /** True only for the focused, visible conversation pane. */
+  answersModelPickerRequests?: boolean;
   provider: string;
   model: string;
   effort: string;
@@ -737,6 +740,7 @@ export const ModelSelector = memo(function ModelSelector({
         onChangeModelParameter={(id, value) => void changeModelParameter(id, value)}
         onOpenProviders={() => onOpenSettings('providers')}
         onOpenModelPane={() => void loadCatalog()}
+        answersModelPickerRequests={answersModelPickerRequests}
       />
     </div>
   );

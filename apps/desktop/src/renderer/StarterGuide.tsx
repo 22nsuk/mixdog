@@ -227,6 +227,7 @@ export function StarterGuide({
           body: t(
             'The Maintainer handles upkeep like memory and session titles. Open it, turn it on and pick a model.'
           ),
+          tip: t('Recommended: the cheapest model at the lowest effort is enough.'),
           action: true,
         },
       ],

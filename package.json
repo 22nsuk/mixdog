@@ -31,7 +31,7 @@
     "!scripts/bench/",
     "!scripts/recall-bench-*.txt",
     "!scripts/*-test.mjs",
-    "!scripts/*.test.mjs",
+    "!scripts/**/*.test.mjs",
     "!scripts/tool-contracts/",
     "!scripts/provider-toolcall/",
     "!scripts/session-transport/",

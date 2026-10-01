@@ -103,13 +103,6 @@ export const ToolActivityGroup = React.memo(function ToolActivityGroup({
   const pending = items.some((item) => !toolItemDone(item));
   const categoryGroups = useMemo(() => desktopToolActivityCategoryGroups(items), [items]);
   const calls = useMemo(() => flattenedToolActivityItems(items), [items]);
-  // Counted with the same tone the call rows paint red, so a collapsed group
-  // still says that something inside it failed.
-  const failedCount = useMemo(
-    () =>
-      calls.filter((item) => toolItemDone(item) && desktopToolActivityItemPresentation(item).tone === 'error').length,
-    [calls]
-  );
   // A single call carries no count: "Skill mixdog-refs" not "Skill mixdog-refs 1".
   const categorySummary = (() => {
     const summary = new Map<string, number>();
@@ -136,11 +129,6 @@ export const ToolActivityGroup = React.memo(function ToolActivityGroup({
             <TextShimmer text={label} active={pending} />
           </b>
         </span>
-        {failedCount > 0 && (
-          <span className="tool-state failed tool-activity-failed">
-            {t('{{count}} failed', { count: failedCount })}
-          </span>
-        )}
         {pending && (
           <span className="sr-only" role="status">
             {t('Running')}

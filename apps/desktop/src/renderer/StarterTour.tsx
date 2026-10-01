@@ -1,7 +1,7 @@
 // Spotlight tour for the getting-started guide: dims the app, cuts a hole
 // around one real control at a time and explains it in a card beside it.
 // Also the one-time welcome card that offers the tour after onboarding.
-import { ArrowLeft, ArrowRight, Check, GraduationCap, MousePointerClick } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Check, GraduationCap, MousePointerClick, ThumbsUp } from 'lucide-react';
 import type React from 'react';
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -16,6 +16,8 @@ export interface TourStop {
   target: string | readonly string[];
   title: string;
   body: string;
+  /** A recommendation shown as a highlighted callout under the body. */
+  tip?: string;
   /** The spotlighted control is live: clicking it performs its real action
    *  and completes this stop (the tour steps aside for what it opens). */
   action?: boolean;
@@ -355,6 +357,11 @@ export function StarterTour({
         )}
         <h2 id={titleId}>{stop.title}</h2>
         <p id={bodyId}>{stop.body}</p>
+        {stop.tip && (
+          <p className="starter-tour-tip">
+            <ThumbsUp size={14} aria-hidden="true" /> {stop.tip}
+          </p>
+        )}
         {live && (
           <p className="starter-tour-try">
             <MousePointerClick size={14} aria-hidden="true" /> {t('Try it: click the highlighted control.')}

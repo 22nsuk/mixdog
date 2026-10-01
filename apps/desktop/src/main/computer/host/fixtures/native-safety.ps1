@@ -306,6 +306,44 @@ Invalidate-RefsForRequest ([pscustomobject]@{ action = 'key' })
 $staleRefRejected = $false
 try { [void](Get-El $editRef) } catch { $staleRefRejected = "$($_.Exception.Message)" -match 'stale' }
 [void]$probeResults.Add(@{ name = 'mutation-invalidates-refs'; ok = $staleRefRejected; error = '' })
+[Console]::Error.WriteLine('probe:ref-rebind')
+$rebindButton = New-Object System.Windows.Forms.Button
+$rebindButton.Location = New-Object System.Drawing.Point(300, 10)
+$rebindButton.Size = New-Object System.Drawing.Size(100, 30)
+$rebindButton.Text = 'rebind'
+$form.Controls.Add($rebindButton)
+[System.Windows.Forms.Application]::DoEvents()
+$rebindRef = 'probe:rebind'
+# A provider that rebuilt its tree hands the same control a new runtime id.
+function Set-RebuiltRef {
+    $probeState.Map.Clear()
+    Set-ElRef $probeState $rebindRef ($AE::FromHandle($rebindButton.Handle)) ([MixWin32]::WindowId($form.Handle)) $probeState.Generation
+    $probeState.Map[$rebindRef].RuntimeId = 'retired-runtime-id'
+}
+Set-RebuiltRef
+$reboundOk = $false
+$reboundError = ''
+try {
+    $rebound = Get-El $rebindRef
+    $reboundOk = [MixWin32]::WindowId((New-Object IntPtr($rebound.Current.NativeWindowHandle))) -eq [MixWin32]::WindowId($rebindButton.Handle) -and
+    $probeState.Map[$rebindRef].RuntimeId -ne 'retired-runtime-id'
+}
+catch { $reboundError = "$($_.Exception.Message)" }
+Set-RebuiltRef
+$script:CurrentRequest = [pscustomobject]@{ action = 'click'; sequence_continuation = $true }
+$continuationRejected = $false
+try { [void](Get-El $rebindRef) } catch { $continuationRejected = "$($_.Exception.Message)" -match 'target changed' }
+$script:CurrentRequest = $null
+Set-RebuiltRef
+$rebindButton.Location = New-Object System.Drawing.Point(320, 10)
+[System.Windows.Forms.Application]::DoEvents()
+$movedRejected = $false
+try { [void](Get-El $rebindRef) } catch { $movedRejected = "$($_.Exception.Message)" -match 'target changed' }
+$form.Controls.Remove($rebindButton); $rebindButton.Dispose()
+[void]$probeResults.Add(@{
+        name = 'rebuilt-control-rebinds-only-where-observed'; ok = $reboundOk -and $continuationRejected -and $movedRejected
+        error = ('rebound={0}; continuationRejected={1}; movedRejected={2}; error={3}' -f $reboundOk, $continuationRejected, $movedRejected, $reboundError)
+    })
 $pageOne = Get-ElementPage 205 0 200 7 'probe'
 $pageOffset = [int](([string]$pageOne.Continuation).Split(':')[1])
 $pageTwo = Get-ElementPage 205 $pageOffset 200 8 'probe'

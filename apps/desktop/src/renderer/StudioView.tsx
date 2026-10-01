@@ -590,6 +590,18 @@ export function StudioPane({
       if (!next.delete(asset.id)) next.add(asset.id);
       return next;
     });
+  /** Select all means the whole tab, not just the pages scrolled in so far:
+   *  deleting a loaded-only selection let the next page refill the grid. */
+  const selectAll = async () => {
+    try {
+      const preview = (await callCapability(api, 'deleteMediaAssets', [{ all: true, kind, dryRun: true }])) as
+        | { ids?: string[] }
+        | undefined;
+      setCheckedIds(new Set(Array.isArray(preview?.ids) ? preview.ids : []));
+    } catch (reason) {
+      setError(errorText(reason));
+    }
+  };
   /** Bulk cleanup: the runtime names the matching ids first, the user confirms
    *  that exact count, and only those ids are deleted. */
   const cleanUp: StudioCleanupRequest = async (filter, confirmText) => {
@@ -988,7 +1000,7 @@ export function StudioPane({
                   selectedCount={checkedIds.size}
                   visibleCount={visibleAssets.length}
                   onSelectMode={() => setSelecting(true)}
-                  onSelectAll={() => setCheckedIds(new Set(visibleAssets.map((asset) => asset.id)))}
+                  onSelectAll={() => void selectAll()}
                   onDeleteSelected={() =>
                     void cleanUp({ ids: [...checkedIds] }, (total) =>
                       t('Delete {{total}} selected items permanently? This cannot be undone.', { total })

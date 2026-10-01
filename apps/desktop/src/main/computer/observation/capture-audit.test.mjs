@@ -815,3 +815,58 @@ test('app listing returns process names from the full native window read', async
     [['notepad', 100]]
   );
 });
+
+test('a chrome-only capture hands back the refs of the re-read that replaced the first ones', async () => {
+  let generation = 0;
+  const f = fixture({
+    native: (request) => {
+      if (request.action !== 'snapshot') return;
+      generation++;
+      return {
+        ok: true,
+        result: {
+          window_id: 'hwnd:0x1',
+          generation,
+          total_elements: 1,
+          elements: [
+            { mark: 1, ref: `s${generation}:e0`, role: 'Button', name: 'Close', x: 770, y: 0, width: 30, height: 30 },
+          ],
+        },
+      };
+    },
+  });
+  const result = await f.run(() =>
+    f.capture.captureComputer({ action: 'capture', window_id: 'hwnd:0x1', session_id: 'a', mode: 'state' })
+  );
+  assert.equal(generation, 2, 'the chrome-only answer is re-read once');
+  assert.equal(result.payload.accessibility_status, 'chrome_only');
+  assert.equal(result.payload.generation, 2);
+  const refs = JSON.stringify(result.payload.elements);
+  assert.match(refs, /s2:e0/);
+  assert.doesNotMatch(refs, /s1:e0/, 'refs the native host already retired are never handed out');
+});
+
+test('a failed chrome-only re-read reports its error instead of the retired first refs', async () => {
+  let generation = 0;
+  const f = fixture({
+    native: (request) => {
+      if (request.action !== 'snapshot') return;
+      generation++;
+      if (generation > 1) return { ok: false, error: 'accessibility candidate limit exceeded' };
+      return {
+        ok: true,
+        result: {
+          window_id: 'hwnd:0x1',
+          generation,
+          total_elements: 1,
+          elements: [{ mark: 1, ref: 's1:e0', role: 'Button', name: 'Close', x: 770, y: 0, width: 30, height: 30 }],
+        },
+      };
+    },
+  });
+  const result = await f.run(() =>
+    f.capture.captureComputer({ action: 'capture', window_id: 'hwnd:0x1', session_id: 'a', mode: 'state' })
+  );
+  assert.equal(result.payload.accessibility_status, 'error');
+  assert.doesNotMatch(JSON.stringify(result.payload.elements), /s1:e0/);
+});

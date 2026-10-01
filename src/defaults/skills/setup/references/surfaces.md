@@ -37,7 +37,8 @@ An attached Desktop or TUI may navigate and return `opened:true`.
 - Settings → Providers: API-key, OAuth, local providers, and usage sign-in.
 - Extensions → Plugin → Git & GitHub: Git/GitHub CLI installation and connection.
 - Settings → Connection: web-app pairing and linked devices.
-- Settings → System: update, keep-awake, and Doctor.
+- Settings → System: update, keep-awake, run in background after the window
+  closes, and Doctor.
 - Projects: Project registration, name, Project Memories, and Common Memory.
 - Workflows: workflow packs, Main and Web Search defaults, and agent editing.
 - Extensions → Plugin: Built-in cards and plugins.
@@ -48,11 +49,14 @@ the user to Desktop.
 
 ## Desktop-backed settings
 
-Setup can read and change Desktop appearance, keep-awake, usage pin,
-Computer observe-only, Browser/Computer/voice installation and toggles,
-Projects, and linked-device revocation through the attached
+Setup can read and change Desktop appearance, keep-awake, run in background,
+usage pin, Computer observe-only, Browser/Computer/voice installation and
+toggles, Projects, and linked-device revocation through the attached
 Desktop. A receipt identifies `scope:desktop-host`; appearance is not applied
 to the paired browser. No Desktop claimant means no confirmed change.
+
+Computer observe-only has no Desktop settings control; setup is its only
+supported route. Usage pin is the pin toggle on the activity rail usage card.
 
 Schedules/webhooks and workflow/agent/skill definitions use their runtime
 actions directly. These do not require clicking their Desktop rails.

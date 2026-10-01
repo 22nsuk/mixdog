@@ -204,7 +204,7 @@ export const SETUP_TOOL_DEFS = Object.freeze([
         },
         name: {
           type: 'string',
-          description: `set_builtin_enabled: ${SETUP_BUILTIN_TOGGLE_FEATURES.join('|')}; install_builtin also accepts memory. Memory toggles use set_memory_enabled. set_first_use_approval: browser|computer; else MCP/plugin/provider id.`,
+          description: `set_builtin_enabled: ${SETUP_BUILTIN_TOGGLE_FEATURES.join('|')}; install_builtin also accepts memory. Memory toggles use set_memory_enabled. set_first_use_approval: browser|computer; revoke_linked_device: client id from status connection, not its display name; else MCP/plugin/provider id.`,
         },
         modelId: {
           type: 'string',

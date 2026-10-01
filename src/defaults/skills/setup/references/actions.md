@@ -64,11 +64,11 @@ Read this when choosing a `setup` mutation.
 | Delete an existing schedule/webhook | `delete_automation` |
 | Enable/disable a schedule/webhook | `set_automation_enabled` |
 | Webhook listener enabled state, port, or domain | `set_webhook_config` |
-| Desktop keep-awake, usage pin, or Computer observe-only state | `set_desktop_settings` |
+| Desktop keep-awake, run in background after window close, usage pin, or Computer observe-only state | `set_desktop_settings` |
 | Desktop theme, display language, side panels, or zoom | `set_appearance` |
 | Register a Project and optionally set its display alias | `save_project` |
 | Unregister a Project without deleting its files | `remove_project` |
-| Revoke one linked device; re-pairing restores access | `revoke_linked_device` |
+| Revoke one linked device by its client id from `status connection`; re-pairing restores access | `revoke_linked_device` |
 | Managed local model context allocation; null restores automatic | `set_local_context` |
 
 ## Routes and workflow
@@ -116,7 +116,10 @@ values through chat.
 ## Built-in features
 
 Read `status features` and distinguish installation, enabled state, and live
-bridge state.
+bridge state. `status features` covers Git, Memory, Office, Code Tidy, Local
+Provider and Web Search plus Browser/Computer bridge activity; voice status and
+the Browser Use / Computer Use installed and enabled markers are read with
+`status desktop`.
 
 - Git, Memory, Office, and Local Provider are install-first capabilities.
 - Git and Office installation run on the Desktop when this conversation is

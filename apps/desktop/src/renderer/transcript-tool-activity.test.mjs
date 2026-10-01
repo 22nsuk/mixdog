@@ -448,7 +448,7 @@ test('desktop activity lists every call as one row under the summary, without ca
       group?.querySelector('.tool-activity-title')?.textContent?.trim(),
       'Content search 2 · Command execution'
     );
-    assert.equal(group?.querySelector('.tool-activity-failed')?.textContent, '1 failed');
+    assert.equal(group?.querySelector('.tool-activity-failed'), null);
 
     await act(async () => {
       group

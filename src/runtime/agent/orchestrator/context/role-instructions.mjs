@@ -281,7 +281,6 @@ export function composeSystemPrompt(opts) {
   // pre-tool preamble toward English.
   const environmentParts = [
     opts.sessionStartContext,
-    opts.projectInstructionsContext,
     opts.environmentContext,
     opts.languageContext,
   ].map(trimmedPromptSlice);

@@ -45,6 +45,7 @@ export function createUserWaitService(options: {
         sequence: Number(value.sequence),
         idleMs: Number(value.idleMs),
         held: value.held !== false,
+        desktopLocked: value.observer_ready === true && value.ready !== true,
       };
     },
   });
