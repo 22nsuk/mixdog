@@ -5,6 +5,8 @@ the Unreleased section is empty, and stamps it with the released version.
 
 ## Unreleased
 
+## v1.0.2 - 2026-10-01
+
 - Transcript copy buttons can write to the clipboard from the trusted desktop
   window. Response text, code blocks, tool output and per-file diffs have
   regression coverage for exact copied text, retries and changing content;
