@@ -5,6 +5,8 @@ the Unreleased section is empty, and stamps it with the released version.
 
 ## Unreleased
 
+## v1.0.3 - 2026-10-01
+
 - Media generation records one usage row per image or video job with the
   tokens, images, seconds and cost the provider reported, so Gemini,
   Antigravity, Codex and xAI media appear in usage and cost totals alongside
