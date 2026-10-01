@@ -256,6 +256,11 @@ export const createRemoteApi = (ctx: RemoteShimContext): DesktopApi => {
       ctx.activityRailPinsListeners.add(listener);
       return () => { ctx.activityRailPinsListeners.delete(listener); };
     },
+    notifyProviderModelsChanged: (origin) => fire('notifyProviderModelsChanged', [origin]),
+    subscribeProviderModelsChanged: (listener) => {
+      ctx.providerModelsListeners.add(listener);
+      return () => { ctx.providerModelsListeners.delete(listener); };
+    },
     invokeCapability: <T = unknown>(request: DesktopCapabilityRequest) =>
       call<DesktopCapabilityResult<T>>('invokeCapability', [request]),
     readCapabilities: (requests) => call('readCapabilities', [requests]),

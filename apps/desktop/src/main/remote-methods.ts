@@ -618,6 +618,8 @@ export function createRemoteMethods({
     readActivityRailPins: () => invokeDesktopOperation('readActivityRailPins', []),
     // A web client writes normally; it never initializes from its local cache.
     updateActivityRailPins: ([pins]) => invokeDesktopOperation('updateActivityRailPins', [pins]),
+    notifyProviderModelsChanged: ([origin]) =>
+      invokeDesktopOperation('notifyProviderModelsChanged', [requiredString(origin, 'origin', 128)]),
     startProject: ([projectPath]) => host.startProject(requiredString(projectPath, 'projectPath')),
     startProjectTask: ([projectPath]) => host.startProjectTask(requiredString(projectPath, 'projectPath')),
     startTask: () => host.startTask(),

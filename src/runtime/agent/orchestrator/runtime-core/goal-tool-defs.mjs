@@ -31,7 +31,7 @@ export const GOAL_TOOL_DEFS = Object.freeze([
     name: 'goal',
     title: 'Goal',
     description: [
-      'Durable tasks with an idle reminder for unfinished work. Create for an explicit Goal request, or approved work spanning several rounds or turns: staged refactors and migrations, repeated improvement passes, open-ended objectives that must be finished, with or without a time budget. Single-turn tasks, planning or estimates alone, and unaccepted proposals do not qualify.',
+      'Task list that persists across turns, with an idle reminder for unfinished work being actively carried out. Create for an explicit Goal request, or approved work spanning several rounds or turns: staged refactors and migrations, repeated improvement passes, open-ended objectives that must be finished through continuous work, with or without a time budget. Single-turn tasks, planning or estimates alone, unaccepted proposals, and recurring schedules or objectives that wait weeks on external events do not qualify.',
       'Obtain required approval, load the goal-management skill for lifecycle and completion policy, then create or reconcile the Goal before starting approved work. Mutations need the latest revision.',
     ].join(' '),
     annotations: {

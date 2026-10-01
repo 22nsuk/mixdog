@@ -13,11 +13,19 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { fetchProviderModels, invalidateSharedModelCatalogRequest } from './model-catalog-cache';
 import { invalidateWorkflowOptions } from './workflow-options-cache';
 
-import type { DesktopApi, DesktopCapability, DesktopModelOption, DesktopProjectSummary } from '../shared/contract';
+import type {
+  DesktopApi,
+  DesktopCapability,
+  DesktopModelOption,
+  DesktopProjectSummary,
+  ProviderModelsChange,
+} from '../shared/contract';
 import { record, rows } from './record-utils';
 import type { RecordValue } from './desktop-types';
 
-type SidebarReferenceApi = Partial<Pick<DesktopApi, 'invokeCapability' | 'listProviderModels' | 'listProjects'>>;
+type SidebarReferenceApi = Partial<
+  Pick<DesktopApi, 'invokeCapability' | 'listProviderModels' | 'listProjects' | 'notifyProviderModelsChanged'>
+>;
 
 interface SidebarReferenceValues {
   channelSetup: RecordValue;
@@ -297,6 +305,31 @@ export function updateSidebarReference<K extends SidebarReferenceKey>(key: K, va
 /** Mark keys untrue after a mutation: rows stay visible, the next read-through
  *  refetches them. */
 function invalidateSidebarReference(...keys: SidebarReferenceKey[]): void {
+  invalidateKeys(keys, true);
+}
+
+/** One id per renderer: lets the originator ignore its own broadcast echo. */
+export const PROVIDER_MODELS_INSTANCE_ID: string =
+  globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+
+/** Another window or paired client changed providers: refresh locally and do
+ *  NOT notify main again (that would echo forever). */
+function invalidateProviderReferencesFromPeer(change: ProviderModelsChange): void {
+  if (change.origin === PROVIDER_MODELS_INSTANCE_ID) return;
+  invalidateKeys(PROVIDER_KEYS, false);
+}
+
+export function subscribeProviderModelsSync(
+  api: Partial<Pick<DesktopApi, 'subscribeProviderModelsChanged'>> | undefined
+): () => void {
+  return api?.subscribeProviderModelsChanged?.(invalidateProviderReferencesFromPeer) ?? (() => {});
+}
+
+export function useProviderModelsSync(api: Parameters<typeof subscribeProviderModelsSync>[0]): void {
+  useEffect(() => subscribeProviderModelsSync(api), [api]);
+}
+
+function invalidateKeys(keys: readonly SidebarReferenceKey[], notifyMain: boolean): void {
   for (const key of keys) {
     bumpGeneration(key);
     const entry = entries.get(key);
@@ -307,7 +340,12 @@ function invalidateSidebarReference(...keys: SidebarReferenceKey[]): void {
   // The route picker keeps its own day-long catalog share, outside these
   // entries. A provider change retires that snapshot too, otherwise a newly
   // connected provider stays missing from the picker until the app restarts.
-  if (keys.some((key) => PROVIDER_KEYS.includes(key))) invalidateSharedModelCatalogRequest();
+  if (keys.some((key) => PROVIDER_KEYS.includes(key))) {
+    invalidateSharedModelCatalogRequest();
+    if (notifyMain) {
+      (boundApi ?? globalThis.window?.mixdogDesktop)?.notifyProviderModelsChanged?.(PROVIDER_MODELS_INSTANCE_ID);
+    }
+  }
   // The composer's workflow picker shares its own list, also outside these
   // entries, and it hides itself where a workspace has a single pack. A created
   // or deleted pack therefore decides whether that control exists at all: it

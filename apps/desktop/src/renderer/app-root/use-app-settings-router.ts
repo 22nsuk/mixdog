@@ -7,6 +7,7 @@ import { loadSidebarPanelModule, warmSettingsView } from '../app-shell-component
 import { requestOpenModelPicker } from '../model-picker-event';
 import { useAppUiOpenRequest } from '../app-shell-ui-open-request';
 import { useSetupDesktopRequest } from '../use-setup-desktop-request';
+import { useProviderModelsSync } from '../sidebar-reference-cache';
 import type { Snapshot } from '../desktop-types';
 import type { useAppShellPanels } from '../use-app-shell-panels';
 import type { useAppSideDocks } from '../use-app-side-docks';
@@ -111,6 +112,7 @@ export function useAppSettingsRouter({
   });
 
   useSetupDesktopRequest(setupUiRequest, sessionId, window.mixdogDesktop);
+  useProviderModelsSync(window.mixdogDesktop);
 
   return {
     openSettings,

@@ -25,10 +25,8 @@ import { isSessionId } from './desktop-state';
 import { SessionTransport } from './session-transport';
 import { readDesktopModelBootstrapSnapshot } from './model-bootstrap';
 import { AgentAwakeService } from './agent-awake';
-import { createAppPrompt } from './app-prompt';
 import { createBackgroundWindow } from './background-window';
 import { createDesktopTray, type DesktopTray } from './desktop-tray';
-import { createQuitConfirmation } from './quit-confirmation';
 import { loginShellOverrides, readLoginShellEnvironment } from './login-shell-environment';
 import { createTurnAttention, type TurnAttention } from './turn-attention';
 import { createIdleReclaim, purgeRendererMemory, type IdleReclaim } from './idle-reclaim';
@@ -589,35 +587,13 @@ unsubscribeServiceSettings = serviceClient.subscribeDesktopEvents(({ name, value
 let quitAfterDispose = false;
 // Last-known runInBackground setting; the window's close listener reads it live.
 let runInBackground = true;
-// A quit that was confirmed or needs no question (relaunch, failed start, OS
-// session end): windows close for real and before-quit stops asking.
+// A quit is under way (any quit entry, relaunch, failed start, OS session
+// end): windows close for real instead of hiding to the tray.
 let quitApproved = false;
 let desktopTray: DesktopTray | null = null;
-// Close and quit questions render as app dialogs while the window is up; a
-// hidden window (tray quit) keeps the native box.
-const appPrompt = createAppPrompt({
-  getWindow: () => mainWindow,
-  ipcMain,
-  fallback: (options) => dialog.showMessageBox(options),
-});
-const quitConfirmation = createQuitConfirmation({
-  inspect: async () => (await host.listSessions()).some((session) => session.working === true),
-  show: (options) => appPrompt.show(options),
-  nativeT,
-});
 const backgroundWindow = createBackgroundWindow({
   enabled: () => runInBackground,
   quitting: () => quitApproved || quitAfterDispose,
-  noticeMarkerPath: join(app.getPath('userData'), 'background-notice-acknowledged'),
-  quitInstead: () => {
-    void settingsStore
-      .update('runInBackground', false)
-      .then(applyDesktopSettings)
-      .catch((error: unknown) => console.warn('Mixdog could not turn off running in the background:', error))
-      .finally(() => app.quit());
-  },
-  showNotice: (options) => appPrompt.show(options),
-  nativeT,
 });
 
 function trayIconPath(): string | null {
@@ -629,10 +605,10 @@ function trayIconPath(): string | null {
   );
 }
 
-/** Windows and Linux carry a tray icon while closing hides the window; macOS
- *  has its Dock icon. */
+/** Windows and Linux carry a tray icon from launch, whatever the close
+ *  setting; macOS has its Dock icon. */
 function syncDesktopTray(): void {
-  if (!runInBackground || quitApproved || process.platform === 'darwin' || !app.isReady()) {
+  if (quitApproved || process.platform === 'darwin' || !app.isReady()) {
     desktopTray?.dispose();
     desktopTray = null;
     return;
@@ -1665,18 +1641,9 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 app.on('before-quit', (event) => {
-  // Every ordinary quit entry (menu, tray, Cmd+Q, last window) asks first when
-  // it would interrupt working agents; the installer restart sets
-  // quitAfterDispose and never asks.
-  if (!quitAfterDispose && !quitApproved) {
-    event.preventDefault();
-    void quitConfirmation.confirm().then((approved) => {
-      if (!approved) return;
-      quitApproved = true;
-      app.quit();
-    });
-    return;
-  }
+  // Every quit entry (menu, tray, Cmd+Q, last window) quits without asking;
+  // the flag lets a window hidden to the tray close for real.
+  quitApproved = true;
   // The handler outlives a quitting main process; its normal exit is not a loss.
   stopCrashHandlerWatch?.();
   stopCrashHandlerWatch = null;

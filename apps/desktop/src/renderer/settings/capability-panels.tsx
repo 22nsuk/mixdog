@@ -12,7 +12,7 @@ import { ConnectionPanel } from './connection-panel';
 import { DeveloperPanel } from './developer-panel';
 import { GeneralPanel } from './general-panel';
 
-import { ActionButton, AutoSaveRow, Group, ListEmpty, ResourceRow, ToggleRow } from './capability-controls';
+import { ActionButton, AutoSaveRow, Group, ListEmpty, ResourceRow, SelectRow, ToggleRow } from './capability-controls';
 import {
   durationTextInput,
   formatDuration,
@@ -329,10 +329,15 @@ function DesktopPowerGroup() {
           void api.updateSetting?.('keepAwake', enabled).catch(() => {});
         }}
       />
-      <ToggleRow
-        title="Keep running when the window is closed"
-        checked={runInBackground}
-        onChange={(enabled) => {
+      <SelectRow
+        title="When closing the window"
+        value={runInBackground ? 'tray' : 'quit'}
+        options={[
+          { value: 'tray', label: 'Hide to tray' },
+          { value: 'quit', label: 'Quit completely' },
+        ]}
+        onChange={(value) => {
+          const enabled = value === 'tray';
           setRunInBackground(enabled);
           void api.updateSetting?.('runInBackground', enabled).catch(() => {});
         }}

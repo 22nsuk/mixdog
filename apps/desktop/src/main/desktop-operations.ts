@@ -21,9 +21,16 @@ import { createDocumentPreviewOperations } from './document-preview';
 import type { DocumentPreviewModule } from './document-preview';
 
 import { ACTIVITY_RAIL_PINS_EVENT } from '../shared/activity-rail-pins';
+import { PROVIDER_MODELS_EVENT } from '../shared/provider-models';
 
 interface DesktopOperationEvent {
-  name: 'folder-changed' | 'lsp-diagnostics' | 'lsp-status' | 'terminal-data' | typeof ACTIVITY_RAIL_PINS_EVENT;
+  name:
+    | 'folder-changed'
+    | 'lsp-diagnostics'
+    | 'lsp-status'
+    | 'terminal-data'
+    | typeof ACTIVITY_RAIL_PINS_EVENT
+    | typeof PROVIDER_MODELS_EVENT;
   value: unknown;
 }
 
@@ -323,6 +330,10 @@ export function createDesktopOperations({
       const saved = await settingsStore.updateActivityRailPins(args[0], args[1] === true);
       emit({ name: ACTIVITY_RAIL_PINS_EVENT, value: saved });
       return saved;
+    }
+    if (name === 'notifyProviderModelsChanged') {
+      emit({ name: PROVIDER_MODELS_EVENT, value: { origin: args[0] } });
+      return undefined;
     }
     if (name === 'updateSetting') {
       return settingsStore.update(args[0] as Parameters<DesktopSettingsStore['update']>[0], args[1] === true);

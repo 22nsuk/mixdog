@@ -471,14 +471,16 @@ const api: DesktopApi = {
   updateActivityRailPins: (pins, initializeIfMissing) =>
     ipcRenderer.invoke(DESKTOP_IPC.updateActivityRailPins, pins, initializeIfMissing),
   subscribeActivityRailPins: (listener) => subscribeIpc(DESKTOP_IPC.activityRailPinsChanged, listener),
+  notifyProviderModelsChanged: (origin) => {
+    void ipcRenderer.invoke(DESKTOP_IPC.notifyProviderModelsChanged, origin).catch(() => {});
+  },
+  subscribeProviderModelsChanged: (listener) => subscribeIpc(DESKTOP_IPC.providerModelsChanged, listener),
   getZoomFactor: () => ipcRenderer.invoke(DESKTOP_IPC.getZoomFactor),
   setZoomFactor: (factor) => ipcRenderer.invoke(DESKTOP_IPC.setZoomFactor, factor),
   applyTitleBarTheme: (theme, systemPreference) =>
     ipcRenderer.invoke(DESKTOP_IPC.applyTitleBarTheme, theme, systemPreference === true),
   setTitleBarDim: (dim) => ipcRenderer.invoke(DESKTOP_IPC.setTitleBarDim, dim),
   onZoomFactorChanged: (listener) => subscribeIpc(DESKTOP_IPC.zoomFactorChanged, listener),
-  onAppPrompt: (listener) => subscribeIpc(DESKTOP_IPC.appPrompt, listener),
-  answerAppPrompt: (id, state) => ipcRenderer.send(DESKTOP_IPC.appPromptAnswer, id, state),
   onBrowserOpenRequested: (listener) => subscribeIpc(DESKTOP_IPC.browserOpenRequested, listener),
   onBrowserSessionReleased: (listener) => subscribeIpc(DESKTOP_IPC.browserSessionReleased, listener),
   browserSetActiveGuest: (sessionId, webContentsId, active) =>

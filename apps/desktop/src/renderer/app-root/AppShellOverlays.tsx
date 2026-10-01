@@ -22,7 +22,6 @@ import type { useAppShellPanels } from '../use-app-shell-panels';
 import type { useDesktopUpdater } from '../use-desktop-updater';
 import type { WorkbenchCommand } from '../WorkbenchOverlays';
 import { BRIDGE_UNAVAILABLE_ERROR } from './use-app-invocation';
-import { AppPromptHost } from './AppPromptHost';
 
 const CommandSurface = lazy(() => loadCommandSurfaceModule().then((module) => ({ default: module.CommandSurface })));
 
@@ -225,7 +224,6 @@ export function AppShellOverlays({
           onConfirm={installDesktopUpdate}
         />
       )}
-      <AppPromptHost />
       <DesktopToastRegion
         bridgeError={error || (!connected ? BRIDGE_UNAVAILABLE_ERROR : '')}
         toasts={Array.isArray(snapshot.toasts) ? snapshot.toasts : []}

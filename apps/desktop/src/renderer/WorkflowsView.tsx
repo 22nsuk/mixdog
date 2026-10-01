@@ -31,12 +31,11 @@ function agentRouteSummary(route: RecordValue, models: DesktopModelOption[]): Ag
   const provider = String(route.provider || '');
   const model = String(route.model || '');
   const selected = models.find((entry) => entry.provider === provider && entry.model === model);
-  // Web Search's default marker follows Main; an agent with no model shows
-  // none — it stays off until one is picked.
-  const followsMain = provider === 'default' && model === 'default';
-  let modelLabel = '';
-  if (followsMain) modelLabel = 'Default · follows Main';
-  else if (model) modelLabel = modelDisplayName(model, provider, selected?.display || '');
+  // Every row reads the same way (user: 웹검색만 왜 다르게 취급하냐): a row
+  // with no model — Web Search's default marker or an empty route — says
+  // "Default", and a set model shows its name.
+  const pinned = model !== '' && !(provider === 'default' && model === 'default');
+  const modelLabel = pinned ? modelDisplayName(model, provider, selected?.display || '') : 'Default';
   const effortValue = String(route.effort || preferredModelEffort(selected) || '');
   const effortOption = selected?.effortOptions.find((entry) => entry.value === effortValue);
   const rawEffortLabel = effortOption?.label || effortValue;
@@ -67,9 +66,10 @@ function AgentRowIcon({ route, fallback = 'agent' }: { route: RecordValue; fallb
 }
 
 function AgentRouteSummaryView({ summary }: { summary: AgentRouteSummary }) {
-  if (!summary.model) return null;
   return (
-    <small className="agent-route-summary route-trigger-copy">
+    // The model line is a value, not UI copy: "Default" and model names stay
+    // untranslated (user: 다국어 안 먹게).
+    <small className="agent-route-summary route-trigger-copy" data-i18n-skip>
       <ModelRouteLabel
         model={summary.model}
         effort={summary.effort}
@@ -474,7 +474,8 @@ export function WorkflowsPane({ api = window.mixdogDesktop, active = true }: { a
               >
                 <AgentRowIcon route={webSearchRoute} fallback="web" />
                 <span className="schedules-row-copy utilities-row-copy">
-                  <b>{t('Web Search')}</b>
+                  {/* Agent names stay as named, like every other row (user: 워커명이 왜 저거만 한글이야). */}
+                  <b data-i18n-skip>Web Search</b>
                   <AgentRouteSummaryView summary={agentRouteSummary(webSearchRoute, webSearchModels)} />
                 </span>
                 <ChevronRight className="utilities-row-chevron" size={16} aria-hidden="true" />

@@ -6,6 +6,7 @@ import { t } from '../i18n';
 import { ErrorNotice, verificationUrlOf } from '../ErrorNotice';
 import { registerMobileBack } from '../mobile-back';
 import { record } from '../record-utils';
+import { invalidateSidebarReferenceForMutation } from '../sidebar-reference-cache';
 import { useOAuthUsageRefresh } from './use-oauth-usage-refresh';
 import { ProviderAccountsList, PROVIDER_ACCOUNTS_CHANGED } from '../ProviderAccountsList';
 import { ActionButton, Group, ListEmpty, ResourceRow, settingsStatus } from './capability-controls';
@@ -223,6 +224,11 @@ export function OAuthControl({
   useEffect(() => {
     if (!flowId || flowState !== 'complete' || completedFlowRef.current === flowId) return;
     completedFlowRef.current = flowId;
+    // A browser-callback login completes through status polling, never through
+    // completeOAuthProviderLogin, so it invalidates the provider-derived caches
+    // (setup snapshot and model pickers) itself. The daemon reports `complete`
+    // only after it adopted the new credentials.
+    invalidateSidebarReferenceForMutation('completeOAuthProviderLogin');
     void runRef
       .current<RecordValue>('getProviderSetup', [{ force: true }], `oauth-refresh-${providerId}`, true, true)
       .then((next) => {

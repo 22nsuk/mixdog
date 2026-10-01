@@ -22,6 +22,7 @@ import type {
 } from './contract-capabilities';
 import type { DesktopSettingKey, DesktopSettings } from './contract-settings';
 import type { ActivityRailPinsState } from './activity-rail-pins';
+import type { ProviderModelsChange } from './provider-models';
 import type {
   DesktopBrowserCredentialFillResult,
   DesktopBrowserCredentialSuggestion,
@@ -93,6 +94,7 @@ export * from './contract-session';
 export * from './contract-capabilities';
 export * from './contract-settings';
 export * from './activity-rail-pins';
+export * from './provider-models';
 export * from './contract-browser';
 export * from './contract-git';
 export * from './contract-workspace';
@@ -101,20 +103,6 @@ export type { GithubRequest, GithubResult } from '../../../../src/runtime/github
 
 /** Small, last-writer-wins UI projection shared by Electron and paired web
  * clients. Pane geometry remains local; `selection` is the first visual pane. */
-/** A main-process confirmation (close to background, quit while working)
- *  drawn in the app's own dialog instead of a native message box. */
-export interface DesktopAppPrompt {
-  id: string;
-  title: string;
-  description: string;
-  confirmLabel: string;
-  danger: boolean;
-  /** A second answer in the cancel button's place; the X still cancels. */
-  alternateLabel?: string;
-}
-/** `shown` acknowledges receipt; the prompt then waits for its answer. */
-export type DesktopAppPromptState = 'shown' | 'confirm' | 'alternate' | 'cancel';
-
 export interface DesktopApi {
   /** Immutable process timeline identity injected before renderer modules run. */
   readonly bootContext?: DesktopBootContext;
@@ -472,12 +460,12 @@ export interface DesktopApi {
   /** Only Electron seeds a missing shared value from its existing local pins. */
   updateActivityRailPins(pins: string[], initializeIfMissing?: boolean): Promise<ActivityRailPinsState>;
   subscribeActivityRailPins(listener: (state: ActivityRailPinsState) => void): () => void;
+  /** Fire-and-forget: tell every window and paired client the provider model list changed. */
+  notifyProviderModelsChanged(origin: string): void;
+  subscribeProviderModelsChanged(listener: (change: ProviderModelsChange) => void): () => void;
   getZoomFactor(): Promise<number>;
   setZoomFactor(factor: number): Promise<number>;
   onZoomFactorChanged(listener: (factor: number) => void): () => void;
-  /** Desktop only: main-process confirmations rendered as app dialogs. */
-  onAppPrompt?(listener: (prompt: DesktopAppPrompt) => void): () => void;
-  answerAppPrompt?(id: string, state: DesktopAppPromptState): void;
   /** Agent browser bridge (desktop host only): retain the owning session's
    *  Browser surface and optionally reveal its dock for a foreground call. */
   onBrowserOpenRequested?(listener: (request: DesktopBrowserOpenRequest) => void): () => void;

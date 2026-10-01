@@ -1,6 +1,6 @@
 // The tray icon is the way back to a window hidden by close-to-background on
-// Windows and Linux, and its menu carries an explicit Quit. It exists while
-// the setting is on, not only while the window is hidden.
+// Windows and Linux, and its menu carries an explicit Quit. It exists from
+// launch, whatever the close setting.
 import { Menu, nativeImage, Tray } from 'electron';
 
 import { nativeT } from './native-i18n';
@@ -9,7 +9,7 @@ export interface DesktopTrayOptions {
   /** mixdog.ico on Windows (multi-size; the shell picks per DPI), mixdog.png elsewhere. */
   iconPath: string;
   open(): void;
-  /** The ordinary quit path, confirmation included. */
+  /** The ordinary quit path. */
   quit(): void;
 }
 

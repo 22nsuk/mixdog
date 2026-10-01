@@ -5,6 +5,26 @@ the Unreleased section is empty, and stamps it with the released version.
 
 ## Unreleased
 
+- Model pickers refresh as soon as a provider changes. Browser-based OAuth
+  sign-ins (OpenAI, Grok, Cursor, Antigravity) and account switches now
+  reload the picker immediately instead of after a restart, and a provider
+  connected, removed or switched in one window also refreshes every other
+  desktop window and paired phone.
+
+- Closing the window no longer asks what to do. Settings offer a "When
+  closing the window" choice between hiding to the tray (the default) and
+  quitting completely, the tray icon is available from launch, and the
+  in-app quit confirmation prompt is gone.
+
+- Workflow agent rows read the same way everywhere: a row without a pinned
+  model, including Web Search, shows "Default", and agent names and model
+  labels stay untranslated. Unselected workspace tabs rest on a faint plate
+  instead of thin dividers.
+
+- The Goal tool and goal-management skill describe Goals as a task list for
+  approved work carried across turns, and exclude recurring schedules and
+  objectives that wait weeks on external events.
+
 ## v1.0.3 - 2026-10-01
 
 - Media generation records one usage row per image or video job with the

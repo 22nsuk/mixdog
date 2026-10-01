@@ -93,6 +93,7 @@ export class DesktopStateBridge {
       host.subscribeDesktopEvents?.(({ name, value }) => {
         if (name === 'folder-changed') this.send(DESKTOP_IPC.folderChanged, value);
         else if (name === 'activity-rail-pins-changed') this.send(DESKTOP_IPC.activityRailPinsChanged, value);
+        else if (name === 'provider-models-changed') this.send(DESKTOP_IPC.providerModelsChanged, value);
         else if (name === 'lsp-diagnostics') this.send(DESKTOP_IPC.lspDiagnostics, value);
         else if (name === 'lsp-status') this.send(DESKTOP_IPC.lspStatus, value);
         else if (name === 'relay-payload-refused') {

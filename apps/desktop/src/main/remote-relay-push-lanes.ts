@@ -5,6 +5,7 @@ import type { DesktopService } from './desktop-service-contract';
 import { clientReadsLane, type RelayClientState } from './remote-relay-clients';
 import { TerminalDataBufferer } from './terminal-data-buffer';
 import { ACTIVITY_RAIL_PINS_EVENT } from '../shared/activity-rail-pins';
+import { PROVIDER_MODELS_EVENT } from '../shared/provider-models';
 
 export interface RelayPushLaneDeps {
   clients: ReadonlyMap<string, RelayClientState>;
@@ -54,6 +55,8 @@ export function createRelayPushLanes(deps: RelayPushLaneDeps): { dispose(): void
       if (name === ACTIVITY_RAIL_PINS_EVENT) {
         // Pins are global UI state, not a panel-specific subscription lane.
         deps.broadcastEncrypted({ event: ACTIVITY_RAIL_PINS_EVENT, payload: value }, false);
+      } else if (name === PROVIDER_MODELS_EVENT) {
+        deps.broadcastEncrypted({ event: PROVIDER_MODELS_EVENT, payload: value }, false);
       } else if (name === 'folder-changed') {
         deps.broadcastEncrypted({ event: 'folderChanged', payload: value }, false, readsFiles);
       } else if (name === 'lsp-diagnostics') {

@@ -18,6 +18,7 @@ import {
   type UsageApi,
 } from './usage-dashboard-store';
 import { ProviderIcon } from './provider-display';
+import { invalidateSidebarReferenceForMutation } from './sidebar-reference-cache';
 import './provider-accounts.css';
 
 export const PROVIDER_ACCOUNTS_CHANGED = 'mixdog:provider-accounts-changed';
@@ -128,6 +129,9 @@ export function ProviderAccountsList({
     setError('');
     try {
       const next = await invoke('updateProviderAccounts', [provider, value]);
+      // This list calls the capability directly, outside the settings runner,
+      // so it owns the provider-cache invalidation an account change implies.
+      invalidateSidebarReferenceForMutation('updateProviderAccounts');
       setPool(next);
       window.dispatchEvent(new window.Event(PROVIDER_ACCOUNTS_CHANGED));
       if (value.selectedId !== undefined) {

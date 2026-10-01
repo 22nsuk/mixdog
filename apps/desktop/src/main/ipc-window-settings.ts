@@ -44,6 +44,9 @@ export function registerWindowSettingsIpc({
   handle(DESKTOP_IPC.updateActivityRailPins, (_event, pins, initializeIfMissing) =>
     invokeDesktopOperation('updateActivityRailPins', [pins, initializeIfMissing])
   );
+  handle(DESKTOP_IPC.notifyProviderModelsChanged, (_event, origin) =>
+    invokeDesktopOperation('notifyProviderModelsChanged', [requiredString(origin, 'origin', 128)])
+  );
   handle(DESKTOP_IPC.updateSetting, (_event, key, enabled) => {
     if (typeof enabled !== 'boolean') throw new TypeError('enabled must be a boolean.');
     const settingKey = requiredDesktopSettingKey(key);

@@ -264,23 +264,27 @@
   margin: 0;
   pointer-events: none;
 }
-/* Short dividers (10px inset, never full height) separate the cells (user:
-   서로 구분선은 있는 게 좋다). A seam that would touch a plate — the
-   selected or hovered tab to its right — steps aside, so a plate never
-   wears a stray line at its edge; the plate's own cell turns its seam into
-   the plate below. */
+/* Every cell wears a plate (user: 미선택 탭이 아예 비어 보인다 — 글자는
+   그대로, 아주 옅은 배경으로): an idle tab rests on a faint fill, hover lifts
+   it to the hover plate, and the selection is the ringed card below. The
+   plates separate the cells, replacing the old short dividers that stepped
+   aside next to the selection and left a two-tab strip with no seam at all. */
+.workspace-tab {
+  isolation: isolate;
+}
 .workspace-tab::before {
   content: "";
   position: absolute;
-  top: 10px;
-  right: 0;
-  bottom: 10px;
-  width: 1px;
-  background: var(--mx-border-muted);
   pointer-events: none;
 }
-.workspace-tab:not(:hover, :focus-within, .active):has(+ .workspace-tab:is(:hover, :focus-within, .active))::before {
-  opacity: 0;
+.workspace-tab:not(.drop-target-right)::before {
+  top: 5px;
+  right: 4px;
+  bottom: 5px;
+  left: 4px;
+  z-index: -1;
+  border-radius: var(--mx-radius-md);
+  background: color-mix(in srgb, var(--mx-text) 3%, transparent);
 }
 .workspace-tab:active {
   cursor: grabbing;
@@ -297,21 +301,13 @@
 .workspace-tab:hover,
 .workspace-tab:focus-within,
 .workspace-tab.active {
-  isolation: isolate;
   color: var(--mx-text);
 }
-.workspace-tab:is(:hover, :focus-within, .active):not(.drop-target-right)::before {
-  top: 5px;
-  right: 4px;
-  bottom: 5px;
-  left: 4px;
-  width: auto;
-  z-index: -1;
-  border-radius: var(--mx-radius-md);
+.workspace-tab:is(:hover, :focus-within):not(.drop-target-right)::before {
   background: var(--mx-plate-hover);
 }
 /* The leading plate steps off the sidebar edge instead of grazing it. */
-.workspace-tab:first-child:is(:hover, :focus-within, .active):not(.drop-target-right)::before {
+.workspace-tab:first-child:not(.drop-target-right)::before {
   left: 6px;
 }
 /* The selection: a quiet fill edged by a 1px ring, no drop shadow — a
