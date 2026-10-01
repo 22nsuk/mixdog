@@ -33,8 +33,15 @@ concurrency:
   group: release-gate-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+env:
+  # onnxruntime-node's postinstall only fetches the CUDA execution-provider
+  # libraries from NuGet on linux/x64; the suites run the CPU provider, and a
+  # connect timeout there failed `npm ci`. Other platforms ignore it.
+  ONNXRUNTIME_NODE_INSTALL: skip
+
 jobs:
   changes:
+    timeout-minutes: 5
     runs-on: ubuntu-22.04
     outputs:
       computer: ${{ steps.paths.outputs.computer }}
@@ -117,6 +124,10 @@ jobs:
   runtime:
     needs: changes
     if: needs.changes.outputs.runtime == 'true'
+    # Job ceilings cut a hung step (a stalled apt mirror once held a job for
+    # 30+ minutes) while leaving room for slow-but-progressing runs: a shard
+    # has taken 460s and runtime-slow 794s on a slow LibreOffice install.
+    timeout-minutes: 20
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
@@ -130,7 +141,14 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
       - name: Install
-        run: npm ci --prefer-offline --no-audit --no-fund
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            npm ci --prefer-offline --no-audit --no-fund && exit 0
+            echo "npm ci failed (attempt ${attempt}/3)" >&2
+            sleep $((attempt * 10))
+          done
+          exit 1
       - name: Install fonts and LibreOffice for the Office suites
         uses: ./.github/actions/office-runtime
       # The tool-contract and shell-hardening suites drive the debug native
@@ -159,6 +177,7 @@ jobs:
   runtime-slow:
     needs: changes
     if: needs.changes.outputs.runtime == 'true'
+    timeout-minutes: 20
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -168,7 +187,14 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
       - name: Install
-        run: npm ci --prefer-offline --no-audit --no-fund
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            npm ci --prefer-offline --no-audit --no-fund && exit 0
+            echo "npm ci failed (attempt ${attempt}/3)" >&2
+            sleep $((attempt * 10))
+          done
+          exit 1
       - name: Install fonts and LibreOffice for the Office suites
         uses: ./.github/actions/office-runtime
       - name: Cache the native spawn test build
@@ -191,6 +217,7 @@ jobs:
   runtime-macos:
     needs: changes
     if: needs.changes.outputs.runtime == 'true'
+    timeout-minutes: 20
     runs-on: macos-14
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -200,7 +227,14 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
       - name: Install
-        run: npm ci --prefer-offline --no-audit --no-fund
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            npm ci --prefer-offline --no-audit --no-fund && exit 0
+            echo "npm ci failed (attempt ${attempt}/3)" >&2
+            sleep $((attempt * 10))
+          done
+          exit 1
       - name: Install fonts and LibreOffice for the Office suites
         uses: ./.github/actions/office-runtime
       - name: Cache the native spawn test build
@@ -223,6 +257,7 @@ jobs:
   computer-backend:
     needs: changes
     if: needs.changes.outputs.computer == 'true'
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -249,8 +284,22 @@ jobs:
       - name: Install an X11 session with accessibility
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends xvfb openbox zenity at-spi2-core libatk-adaptor dbus-x11 xinput
+          # Bounded and retried like the office-runtime action: a stuck mirror
+          # must fail over, not hold the job.
+          apt_retry() {
+            local limit="$1" attempt
+            shift
+            for attempt in 1 2 3; do
+              if sudo timeout -k 10 "$limit" apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 "$@"; then
+                return 0
+              fi
+              echo "apt-get $1 failed (attempt ${attempt}/3)" >&2
+              sleep $((attempt * 5))
+            done
+            return 1
+          }
+          apt_retry 120 update -qq
+          apt_retry 300 install -y -qq --no-install-recommends xvfb openbox zenity at-spi2-core libatk-adaptor dbus-x11 xinput
       - name: Drive a real X11 desktop through the backend
         if: runner.os == 'Linux'
         run: |
@@ -267,6 +316,7 @@ jobs:
   desktop:
     needs: changes
     if: needs.changes.outputs.desktop == 'true'
+    timeout-minutes: 15
     runs-on: ubuntu-22.04
     env:
       NODE_OPTIONS: --max-old-space-size=6144
@@ -317,12 +367,26 @@ jobs:
         if: >-
           needs.changes.outputs.desktop_css_only == 'true'
           || steps.desktop-out.outputs.cache-hit != 'true'
-        run: npm ci --prefix apps/desktop --prefer-offline --no-audit --no-fund
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            npm ci --prefix apps/desktop --prefer-offline --no-audit --no-fund && exit 0
+            echo "npm ci failed (attempt ${attempt}/3)" >&2
+            sleep $((attempt * 10))
+          done
+          exit 1
       - name: Install root dependencies
         if: >-
           needs.changes.outputs.desktop_css_only != 'true'
           && steps.desktop-out.outputs.cache-hit != 'true'
-        run: npm ci --prefer-offline --no-audit --no-fund
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            npm ci --prefer-offline --no-audit --no-fund && exit 0
+            echo "npm ci failed (attempt ${attempt}/3)" >&2
+            sleep $((attempt * 10))
+          done
+          exit 1
       - name: Build CSS-only renderer
         if: needs.changes.outputs.desktop_css_only == 'true'
         run: npm run build:fast --prefix apps/desktop
@@ -350,6 +414,7 @@ jobs:
     if: >-
       needs.changes.outputs.desktop == 'true'
       && needs.changes.outputs.desktop_css_only != 'true'
+    timeout-minutes: 15
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -380,10 +445,22 @@ jobs:
       - name: Install root dependencies
         if: matrix.lane != 'computer'
         shell: bash
-        run: npm ci --prefer-offline --no-audit --no-fund
+        run: |
+          for attempt in 1 2 3; do
+            npm ci --prefer-offline --no-audit --no-fund && exit 0
+            echo "npm ci failed (attempt ${attempt}/3)" >&2
+            sleep $((attempt * 10))
+          done
+          exit 1
       - name: Install desktop dependencies
         shell: bash
-        run: npm ci --prefix apps/desktop --prefer-offline --no-audit --no-fund
+        run: |
+          for attempt in 1 2 3; do
+            npm ci --prefix apps/desktop --prefer-offline --no-audit --no-fund && exit 0
+            echo "npm ci failed (attempt ${attempt}/3)" >&2
+            sleep $((attempt * 10))
+          done
+          exit 1
       - name: Run the desktop ${{ matrix.lane }} lane
         if: matrix.lane != 'computer'
         shell: bash
@@ -401,6 +478,7 @@ jobs:
   relay:
     needs: changes
     if: needs.changes.outputs.relay == 'true'
+    timeout-minutes: 15
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -410,13 +488,21 @@ jobs:
           cache: npm
           cache-dependency-path: apps/relay/package-lock.json
       - name: Install
-        run: npm ci --prefix apps/relay --prefer-offline --no-audit --no-fund
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            npm ci --prefix apps/relay --prefer-offline --no-audit --no-fund && exit 0
+            echo "npm ci failed (attempt ${attempt}/3)" >&2
+            sleep $((attempt * 10))
+          done
+          exit 1
       - name: Run the relay test lane
         run: npm test --prefix apps/relay
 
   graph:
     needs: changes
     if: needs.changes.outputs.graph == 'true'
+    timeout-minutes: 15
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -439,6 +525,7 @@ jobs:
   complete:
     if: always()
     needs: [runtime, runtime-slow, runtime-macos, computer-backend, desktop, desktop-tests, relay, graph]
+    timeout-minutes: 5
     runs-on: ubuntu-22.04
     steps:
       - name: Require every selected gate

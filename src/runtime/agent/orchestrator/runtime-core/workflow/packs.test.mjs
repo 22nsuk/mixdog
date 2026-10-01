@@ -47,13 +47,16 @@ function spyReads(t, root) {
   };
 }
 
-async function settle(read, predicate) {
-  for (let i = 0; i < 500; i += 1) {
+// Waits on the real clock: the background revalidation is genuine file I/O,
+// and a loaded CI runner can take longer than a fixed number of event-loop
+// turns. Only Date is mocked in these tests, so setTimeout still advances.
+async function settle(read, predicate, timeoutMs = 5_000) {
+  const deadline = performance.now() + timeoutMs;
+  for (;;) {
     const value = read();
-    if (predicate(value)) return value;
-    await new Promise((resolve) => setImmediate(resolve));
+    if (predicate(value) || performance.now() >= deadline) return value;
+    await new Promise((resolve) => setTimeout(resolve, 5));
   }
-  return read();
 }
 
 test('many sessions share one WORKFLOW.md read per interval and pick up an on-disk edit', async (t) => {

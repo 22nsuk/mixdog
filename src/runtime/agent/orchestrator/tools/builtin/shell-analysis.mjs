@@ -619,7 +619,9 @@ export function preflightPowerShellHygiene(command, { shellType, shellName } = {
 const POWERSHELL_ONLY_SYNTAX = [
   /\$(?:null|true|false|env:|_\b|args\b|host\b|profile\b|pwd\b|psversiontable\b|psscriptroot\b|lastexitcode\b|erroractionpreference\b)/i,
   /\$[A-Za-z_]\w*\s*=/,
-  /\b(?:get|set|new|remove|select|where|foreach|invoke|out|write|start|stop|test|measure|sort|join|split|convert|import|export|add|copy|move|rename|resolve|compare|clear|push|pop)-[A-Za-z]+\b/i,
+  // A verb joined to the previous character by a path/word char (`mixdog-test-scratch`, `a/test-x`) is part of a
+  // path or name, not a cmdlet.
+  /(?<![\w\-./\\:])(?:get|set|new|remove|select|where|foreach|invoke|out|write|start|stop|test|measure|sort|join|split|convert|import|export|add|copy|move|rename|resolve|compare|clear|push|pop)-[A-Za-z]+\b/i,
   /\[[A-Za-z_][\w.]*\]::/,
   /(?:^|\s)-(?:eq|ne|gt|lt|ge|le|match|notmatch|like|notlike|contains|replace|not|and|or|is|as|ErrorAction|Recurse|Force|Encoding|TotalCount|Tail|Pattern|Path|LiteralPath)\b/,
   /2>\s*\$/,
