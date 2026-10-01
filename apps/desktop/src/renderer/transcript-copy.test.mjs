@@ -7,7 +7,7 @@ import { installTestDom } from './test-support/test-dom.mjs';
 installTestDom(null, {
   html: '<!doctype html><html><body></body></html>',
   jsdom: { pretendToBeVisual: true },
-  expose: ['HTMLElement', 'HTMLInputElement', 'HTMLTextAreaElement', 'navigator'],
+  expose: ['HTMLElement', 'HTMLInputElement', 'HTMLTextAreaElement', 'MutationObserver', 'navigator'],
 });
 const { copyTextToClipboard } = await import('./text-format.ts');
 const { CopyControl } = await import('./transcript-primitives.tsx');
@@ -314,7 +314,13 @@ test('tool non-terminal output copies exactly', async () => {
   }
 });
 
-test('per-file diff copy writes only that file patch, and retries after denial', async () => {
+test('per-file diff copy writes only that file patch, and retries after denial', async (context) => {
+  const { createCanvas } = await import('@napi-rs/canvas');
+  context.mock.method(window.HTMLCanvasElement.prototype, 'getContext', function (kind) {
+    return createCanvas(this.width, this.height).getContext(kind);
+  });
+  // Exercise the loaded diff, not only its Suspense fallback.
+  await import('./DiffView.lazy.tsx');
   const firstPatch = [
     'diff --git a/a.txt b/a.txt',
     '--- a/a.txt',
@@ -341,6 +347,7 @@ test('per-file diff copy writes only that file patch, and retries after denial',
   });
   const view = await mountSurface(React.createElement(CodeDiff, { patch: firstPatch + secondPatch }));
   try {
+    assert.equal(view.host.querySelector('.diff-loading'), null);
     assert.equal(view.buttons('.diff-copy').length, 2);
     await view.click('.diff-copy', 1);
     await view.click('.diff-copy', 1);
