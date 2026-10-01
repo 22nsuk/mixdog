@@ -27,16 +27,19 @@ export function createWorkerIndex({ dataDir, cfgMod, mgr, tags, tagAgents, tagCw
   const activeWorkerKeys = new Set();
 
   function readWorkerRows(context = {}) {
-    const rows = store.readAll();
+    const { rows, tombstones: savedTombstones } = store.readSnapshot();
     if (rows.length === 0) return rows;
-    const tombstones = new Map(readAllTagTombstones().map((row) => [tagTombstoneKey(row), row]));
+    const tombstones = new Map(recoverTombstoneOwners(savedTombstones).map((row) => [tagTombstoneKey(row), row]));
     return rows.filter(
       (row) => rowMatchesContext(row, context) && !tombstoneBlocksWork(row, findTagTombstone(row, tombstones))
     );
   }
 
   function readAllTagTombstones() {
-    const rows = store.readTombstones();
+    return recoverTombstoneOwners(store.readTombstones());
+  }
+
+  function recoverTombstoneOwners(rows) {
     if (!rows.some((row) => !clean(row.parentSessionId || row.ownerSessionId))) return rows;
     const sessions = typeof mgr.listSessions === 'function' ? mgr.listSessions({ includeClosed: true }) : [];
     // Resolve legacy ownership against all sessions, never just the caller's

@@ -1,6 +1,8 @@
 import { open } from 'node:fs/promises';
 import { hashText } from './hash-utils.mjs';
+import { runResultCacheInFlight } from './cache-layers.mjs';
 import {
+  canonicalCachePath,
   getReadRangeIndex,
   nearestReadRangeAnchor,
   maybeRecordReadRangeAnchor,
@@ -13,6 +15,18 @@ import { READ_MAX_SCAN_BYTES, READ_STREAM_TIMEOUT_MS } from './read-constants.mj
 export async function readSourceWindows(path, intervals, { signal } = {}) {
   signal?.throwIfAborted();
   if (!intervals.length) return new Map();
+  const snapshot = intervals.map(({ start, end }) => ({ start, end }));
+  const key = `source-windows:${canonicalCachePath(path)}:${JSON.stringify(snapshot.map((w) => [w.start, w.end]))}`;
+  const shared = await runResultCacheInFlight(
+    key,
+    ({ signal: sharedSignal }) => scanSourceWindows(path, snapshot, sharedSignal),
+    { signal, scopes: [path] }
+  );
+  return new Map(shared);
+}
+
+async function scanSourceWindows(path, intervals, signal) {
+  signal?.throwIfAborted();
   const handle = await open(path, 'r');
   try {
     const st = await handle.stat();

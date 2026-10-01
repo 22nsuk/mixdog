@@ -5,10 +5,22 @@ export function createSessionJobs(waitMs = 6_000) {
     settled: Promise<boolean>;
   }
   const sessions = new Map<string, Set<Job>>();
-  const unconfirmed = new Set<string>();
+  // Per session: how many jobs finished without proving their worker stopped.
+  const unconfirmed = new Map<string, number>();
   return {
     sessionIds(): string[] {
-      return [...new Set([...sessions.keys(), ...unconfirmed])];
+      return [...new Set([...sessions.keys(), ...unconfirmed.keys()])];
+    },
+    /** Forgets unconfirmed sessions and returns how many jobs that covered.
+     *  Does nothing while any elevated job is still pending (its launcher has
+     *  not settled). Safe because the cancel file is already written and the
+     *  elevated child cancels itself through it, or by its own deadline. */
+    releaseUnconfirmed(): number {
+      if (sessions.size) return 0;
+      let released = 0;
+      for (const count of unconfirmed.values()) released += count;
+      unconfirmed.clear();
+      return released;
     },
     assertClear(): void {
       if (unconfirmed.size) {
@@ -33,7 +45,7 @@ export function createSessionJobs(waitMs = 6_000) {
         finish(confirmed: boolean): void {
           if (finished) return;
           finished = true;
-          if (!confirmed) unconfirmed.add(sessionId);
+          if (!confirmed) unconfirmed.set(sessionId, (unconfirmed.get(sessionId) ?? 0) + 1);
           resolve(confirmed);
           jobs.delete(job);
           if (!jobs.size) sessions.delete(sessionId);

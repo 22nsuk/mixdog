@@ -159,12 +159,20 @@ not as two blocks joined.
 
 ## Foreground vs background
 
-- Use the visible foreground page for shared-screen work, a requested visual
-  result, or the user's next action. `open` with `tab` reveals that exact page
-  and retains it for user handoff; `background:false` is a temporary reveal.
-- For result-only work, prefer a named `background:true` page; keep the user's
-  current page intact. Later calls may omit `background`: naming a support page
-  does not promote it. Reporting a result does not require revealing a page.
+- Default to named `background:true` pages; the panel stays closed and the
+  user's current page stays intact. If the answer can be given in the
+  conversation, keep the page hidden even when it produced the answer;
+  screenshots, reports, and result-only actions never need a reveal.
+- Reveal a page only with `open` and its `tab`, and only when the page itself
+  is what the user needs after the turn:
+  - **Deliverable** — the user asked to see, show, or keep a page open, or the
+    page is the output: an edited document or dashboard, a cart or checkout,
+    a submitted form's result.
+  - **Handoff** — the user must act on the page: sign-in, CAPTCHA, 2FA,
+    payment, approval, or an unfinished workflow they continue.
+- When the user refers to the page already visible in this session's panel,
+  act on that page instead of opening another.
+- Later calls may omit `background`: naming a support page does not promote it.
 - Background pages run concurrently, so independent background work can share
   one assistant turn.
 - Pages, tabs, URLs, and targets are session-local; sign-in state, cookies,

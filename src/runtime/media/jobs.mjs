@@ -11,6 +11,7 @@ import { MAX_GENERATED_MEDIA_BYTES } from './download.mjs';
 import { mediaError, resolveMediaRequest } from './lanes.mjs';
 import { saveMediaAsset } from './store.mjs';
 import { setMediaDefault } from './defaults.mjs';
+import { recordMediaUsage } from './media-usage.mjs';
 
 const JOBS = new Map();
 // Finished jobs stay readable for a while so a slow poller still sees the
@@ -77,7 +78,16 @@ async function runAdapter({ lane, kind, model, requestModel, prompt, options, re
  * Validate + start one generation. Returns the initial snapshot immediately;
  * the caller polls getMediaJob for progress and the finished asset id.
  */
-export async function startMediaJob({ lane: laneId, kind, model, prompt, options = {}, references = [] } = {}) {
+export async function startMediaJob({
+  lane: laneId,
+  kind,
+  model,
+  prompt,
+  options = {},
+  references = [],
+  sessionId = '',
+  sourceType = '',
+} = {}) {
   const text = String(prompt || '').trim();
   if (!text) throw mediaError('prompt is required', 'MEDIA_PROMPT_REQUIRED');
   if (text.length > MAX_PROMPT_CHARS) throw mediaError('prompt is too long', 'MEDIA_PROMPT_TOO_LONG');
@@ -128,13 +138,31 @@ export async function startMediaJob({ lane: laneId, kind, model, prompt, options
     controller,
   };
   JOBS.set(job.id, job);
-  void runJob(job, resolved, { requestModel: modelEntry?.requestModel, options, references: refs });
+  void runJob(job, resolved, {
+    requestModel: modelEntry?.requestModel,
+    options,
+    references: refs,
+    sessionId,
+    sourceType,
+  });
   return snapshot(job);
 }
 
 /** Drive one started job to a terminal state; never rejects. */
-async function runJob(job, resolved, { requestModel, options, references }) {
+async function runJob(job, resolved, { requestModel, options, references, sessionId, sourceType }) {
   const { controller } = job;
+  // One ledger row per generation. The ChatGPT lane bills the orchestrator
+  // model that ran the hosted tool, not the "auto" image route.
+  const record = (usage) =>
+    recordMediaUsage({
+      lane: job.lane,
+      model: job.model,
+      pricingModel: job.lane === 'openai-oauth' ? requestModel : undefined,
+      usage,
+      sessionId,
+      sourceType,
+      durationMs: Date.now() - job.startedAt,
+    });
   try {
     const result = await runAdapter({
       lane: resolved.lane,
@@ -154,6 +182,8 @@ async function runJob(job, resolved, { requestModel, options, references }) {
         if (next > job.progress) job.progress = next;
       },
     });
+    // Billed once the provider returned a result, whatever happens to the bytes next.
+    await record(result?.usage);
     if (!Buffer.isBuffer(result?.bytes) || !result.bytes.length || result.bytes.length > MAX_GENERATED_MEDIA_BYTES) {
       throw mediaError('generated media exceeds the media size limit', 'MEDIA_RESULT_TOO_LARGE', 502);
     }
@@ -175,6 +205,8 @@ async function runJob(job, resolved, { requestModel, options, references }) {
     job.status = 'done';
   } catch (err) {
     const canceled = controller.signal.aborted || err?.code === 'MEDIA_CANCELED' || err?.name === 'AbortError';
+    // A failure is recorded only when the provider reported usage for it.
+    if (err?.usage) await record(err.usage);
     job.status = canceled ? 'canceled' : 'failed';
     job.error = canceled ? 'canceled' : String(err?.message || err).slice(0, 500);
     job.errorCode = err?.code || null;

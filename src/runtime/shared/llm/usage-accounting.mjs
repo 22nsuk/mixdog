@@ -4,6 +4,13 @@ import { withUsageContext } from './usage-context.mjs';
 import { ACCOUNT_PROVIDERS } from '../provider-accounts.mjs';
 import { currentProviderAccountId } from '../provider-auth-binding.mjs';
 
+// Results and errors already written. A provider-local re-send (model
+// fallback, catalog retry) runs its own accounting and its result or error
+// then returns through the enclosing send, which must not write it again.
+const recorded = new WeakSet();
+const hasTokens = (usage) =>
+  ['inputTokens', 'outputTokens', 'cachedTokens', 'cacheWriteTokens'].some((key) => Number(usage?.[key]) > 0);
+
 /**
  * Runs at the common provider boundary, not inside optional diagnostic IO.
  * Provider-local retries remain owned by the provider. Accounting failure must
@@ -12,7 +19,9 @@ import { currentProviderAccountId } from '../provider-auth-binding.mjs';
 export async function accountProviderSend(provider, instance, send, model, opts = {}) {
   const requestId = randomUUID();
   const startedAt = Date.now();
-  const sessionId = opts.sessionId || opts.session?.id;
+  // usageSessionId: a request isolated under its own provider session id
+  // (compaction's `:compact`) whose spend belongs to the source session.
+  const sessionId = opts.usageSessionId || opts.sessionId || opts.session?.id;
   const sourceType = opts.session?.sourceType || opts.sourceType || opts.requestKind || '';
   const inputTokensInclusive = instance.constructor?.inputExcludesCache !== true;
   let ledger;
@@ -30,16 +39,18 @@ export async function accountProviderSend(provider, instance, send, model, opts 
     sourceType,
     inputTokensInclusive,
   };
-  const record = async (result) => {
+  const record = async (result, id, owner) => {
     if (!result?.usage) return;
     // A nested send (e.g. a fallback model re-send) already stamped its own
     // final attempt's tier; the outer context only saw the abandoned attempt.
     result.requestServiceTier ??= identity.requestServiceTier || '';
+    if (recorded.has(owner)) return;
     if (openingError) throw openingError;
     if (!ledger) return;
+    recorded.add(owner);
     const usage = result.usage;
     const row = makeUsageRecord({
-      id: result.responseId ? undefined : requestId,
+      id: result.responseId ? undefined : id,
       ts: Date.now(),
       provider,
       model: result.model || model,
@@ -68,23 +79,32 @@ export async function accountProviderSend(provider, instance, send, model, opts 
     // SQLite write no longer runs on the event loop.
     await ledger.recordQueued(row);
   };
-  const save = async (result) => {
+  const save = async (result, id = requestId, owner = result) => {
     try {
-      await record(result);
+      await record(result, id, owner);
     } catch (error) {
       result.usageAccountingError = String(error?.message || error);
       process.stderr.write(`[usage-ledger] RECORD NOT SAVED: ${result.usageAccountingError}\n`);
+    }
+  };
+  const saveAbandoned = async () => {
+    for (const [index, attempt] of (identity.abandonedUsage || []).entries()) {
+      if (hasTokens(attempt.usage)) await save(attempt, `${requestId}:abandoned:${index}`);
     }
   };
   let result;
   try {
     result = await withUsageContext(identity, send);
   } catch (error) {
+    await saveAbandoned();
     // Only provider-reported partial usage is recordable; never invent
     // tokens for a failed request or reinterpret an error as a success.
     if (error?.usage) await save(error);
+    else if (hasTokens(error?.partialUsage))
+      await save({ usage: error.partialUsage, model: error.partialModel }, requestId, error);
     throw error;
   }
+  await saveAbandoned();
   await save(result);
   return result;
 }

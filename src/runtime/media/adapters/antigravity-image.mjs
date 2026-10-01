@@ -11,6 +11,7 @@ import { randomUUID } from 'node:crypto';
 import { resolveAntigravityAuth } from '../auth.mjs';
 import { timeoutSignal } from '../bounded-signal.mjs';
 import { upstreamError } from '../upstream-error.mjs';
+import { geminiUsage } from '../media-usage.mjs';
 import { geminiImageRequestBody, pickGeminiImagePart } from './gemini-image.mjs';
 import { CONTENT_ENDPOINTS, antigravityHeaders } from '../../agent/orchestrator/providers/antigravity-oauth-tokens.mjs';
 import { frameAndParseSse } from '../../agent/orchestrator/providers/lib/sse-framing.mjs';
@@ -35,6 +36,7 @@ function antigravityImageRequestBody({ projectId, model, prompt, options = {}, r
 export function antigravityImageParts(sseText) {
   const parts = [];
   let failure = null;
+  let usageMetadata = null;
   for (const event of frameAndParseSse(sseText).events) {
     if (event.error) continue;
     const value = event.value;
@@ -43,10 +45,12 @@ export function antigravityImageParts(sseText) {
     const chunk = value?.response && typeof value.response === 'object' ? value.response : value;
     const candidate = chunk?.candidates?.[0];
     parts.push(...(candidate?.content?.parts || []));
+    // usageMetadata is cumulative; the last chunk that carries it is the total.
+    if (chunk?.usageMetadata) usageMetadata = chunk.usageMetadata;
     const blocked = chunk?.promptFeedback?.blockReason;
     if (blocked && !failure) failure = `prompt blocked (${blocked})`;
   }
-  return { parts, failure };
+  return { parts, failure, usage: geminiUsage(usageMetadata) };
 }
 
 export async function generateImage(
@@ -68,6 +72,6 @@ export async function generateImage(
     signal: timeoutSignal(signal, REQUEST_TIMEOUT_MS),
   });
   if (!res.ok) throw upstreamError('Antigravity image', res.status, await res.text().catch(() => ''));
-  const { parts, failure } = antigravityImageParts(await res.text());
-  return pickGeminiImagePart(parts, 'Antigravity', failure);
+  const { parts, failure, usage } = antigravityImageParts(await res.text());
+  return pickGeminiImagePart(parts, 'Antigravity', failure, usage);
 }

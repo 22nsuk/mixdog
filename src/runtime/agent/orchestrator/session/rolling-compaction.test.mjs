@@ -137,6 +137,7 @@ test('maintenance summarization is isolated from the main request and its provid
       content: `MAINTENANCE_SOURCE_${i}`.padEnd(1600, '.'),
     }))
   );
+  session.sourceType = 'memory-cycle';
   const original = structuredClone(session);
   let sent = 0;
   const maintenance = {
@@ -155,6 +156,9 @@ test('maintenance summarization is isolated from the main request and its provid
       assert.equal(opts.session.provider, this.name);
       assert.equal(opts.session.id, `${session.id}:compact`);
       assert.equal(opts.sessionId, `${session.id}:compact`);
+      // Isolated provider state, but the spend is the source session's.
+      assert.equal(opts.usageSessionId, session.id);
+      assert.equal(opts.session.sourceType, 'memory-cycle');
       for (const key of ['apiKey', 'baseUrl', 'providerState', 'onTextDelta', 'onUsageDelta']) {
         assert.equal(opts[key], undefined, key);
       }

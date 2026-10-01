@@ -66,6 +66,7 @@ async function apply_patch(rawArgs, cwd, options = {}) {
     basePath,
     dryRun,
     readStateScope,
+    abortSignal,
     options,
     runBatch: () =>
       runCodexBatch({

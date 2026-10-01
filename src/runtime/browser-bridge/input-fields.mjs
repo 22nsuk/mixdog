@@ -404,7 +404,7 @@ export const BROWSER_INPUT_FIELDS = {
     background: {
       type: 'boolean',
       description:
-        'true creates/targets a hidden support page; false reveals it; omitted never promotes a named one. open without true keeps it for user handoff.',
+        'true creates/targets a hidden support page; false reveals it until task end; omitted never promotes a named one. open without true keeps it for user handoff.',
     },
   },
 };

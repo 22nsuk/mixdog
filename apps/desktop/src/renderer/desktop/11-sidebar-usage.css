@@ -230,7 +230,9 @@
 .sidebar-usage-meter > b {
   color: var(--mx-text);
   font-size: var(--mx-font-minor);
-  font-weight: var(--mx-weight-semibold);
+  /* One weight under the provider names, so each row reads name first and
+     the figure second (user: % 가 좀 굵다). */
+  font-weight: var(--mx-weight-medium);
   line-height: var(--mx-line-micro);
   text-align: right;
   font-variant-numeric: tabular-nums;
@@ -420,9 +422,7 @@
   display: block;
   overflow: hidden;
   color: var(--mx-text);
-  /* ITEM tier (chrome ramp): 13px full ink. 14px rows crowded the 14/600
-     category headings — Korean titles especially read a size class larger
-     than the latin automation group names (user: 왜 세션네임은 크지). */
+  /* ITEM tier (chrome ramp): 14px, one size over the 13px group labels. */
   font-size: var(--mx-font-item);
   font-weight: var(--mx-weight-regular);
   line-height: var(--mx-line-ui);

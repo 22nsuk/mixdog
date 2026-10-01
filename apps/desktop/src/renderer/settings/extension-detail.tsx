@@ -43,6 +43,7 @@ export function ExtensionRow({
       data-extension-row={title}
       data-enabled={enabled ? 'true' : 'false'}
       aria-label={title}
+      data-tooltip={description || undefined}
       disabled={busy}
       onClick={onOpen}
       {...dataAttributes}

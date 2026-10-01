@@ -273,7 +273,7 @@ export function WorkflowsPane({ api = window.mixdogDesktop, active = true }: { a
         key={agent.id}
         className="schedules-row utilities-row sidebar-resource-row workflows-agent-summary-row"
         data-enabled={disabled ? 'false' : 'true'}
-        data-tooltip={t('Agent settings')}
+        data-tooltip={disabled ? t('Disabled') : t('Agent settings')}
         disabled={busy}
         aria-label={t('Edit {{name}}', { name: agent.label })}
         onClick={() => void openAgentEditor(agent.id, agent.label, agent.custom)}
@@ -299,7 +299,7 @@ export function WorkflowsPane({ api = window.mixdogDesktop, active = true }: { a
         data-agent-id={agent.id}
         data-enabled={disabled ? 'false' : 'true'}
         style={{ order: defaultAgentOrder.orderedIds.indexOf(agent.id) }}
-        data-tooltip={t('Agent settings')}
+        data-tooltip={disabled ? t('Disabled') : t('Agent settings')}
         disabled={busy}
         aria-label={t('Edit {{name}}', { name: agent.label })}
         onClick={() =>
@@ -420,6 +420,7 @@ export function WorkflowsPane({ api = window.mixdogDesktop, active = true }: { a
                       className="schedules-row utilities-row sidebar-resource-row"
                       disabled={busy}
                       aria-label={t('Edit workflow {{name}}', { name })}
+                      data-tooltip={workflow.description ? t(String(workflow.description)) : undefined}
                       onClick={() => void openEditor(id, name, custom)}
                       {...workflowOrder.getReorderProps(id)}
                     >

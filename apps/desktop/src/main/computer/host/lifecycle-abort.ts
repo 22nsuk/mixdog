@@ -17,7 +17,9 @@ import type { createComputerCommandQueue } from './command-queue';
 import type { InputRecoveryState } from './execution-state';
 import type { LifecycleContext, SessionLifecycleHost } from './session-lifecycle';
 
-const ABORT_CLEANUP_TIMEOUT_MS = 5_000;
+// Covers PowerShell's Add-Type compile plus the sweep's 2 s wait for the
+// user's own keys (the Stop chord) to lift.
+const ABORT_CLEANUP_TIMEOUT_MS = 7_000;
 
 export type RetiredChild = Parameters<typeof waitForComputerWorkerExit>[0];
 type CommandQueue = ReturnType<typeof createComputerCommandQueue>;

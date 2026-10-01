@@ -101,9 +101,15 @@ export function createWorkerRowStore(file) {
     return rows;
   }
 
+  // Rows and tombstones must come from the same read/projection. In
+  // particular, do not stat and reload the file between the two collections.
+  function readSnapshot() {
+    const rows = readAll();
+    return { rows, tombstones: (projectedView() || cache)?.tombstones || [] };
+  }
+
   function readTombstones() {
-    readAll();
-    return (projectedView() || cache)?.tombstones || [];
+    return readSnapshot().tombstones;
   }
 
   // Single writer path: the mutator runs now over keyed maps against the
@@ -113,6 +119,7 @@ export function createWorkerRowStore(file) {
 
   return {
     readAll,
+    readSnapshot,
     readTombstones,
     write,
     /** Resolves once every write so far is on disk. */

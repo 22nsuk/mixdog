@@ -39,12 +39,16 @@ public static class OwnershipFixture {
         delegate(MixNativeInput.INPUT[] inputs) { throw new System.Exception("lost delivery receipt"); });
     } catch (System.Exception) { }
     try {
-      MixNativeInput.ReleaseOwned(tag, delegate(MixNativeInput.INPUT[] inputs) { released++; return 1; });
+      MixNativeInput.ReleaseOwned(tag, delegate(MixNativeInput.INPUT[] inputs) { released++; return 1; },
+        delegate() { return true; });
       throw new System.Exception("missing ownership uncertainty");
     } catch (System.Exception error) {
       if (!error.Message.StartsWith("input_cleanup_unconfirmed:")) throw;
     }
     if (released != 2) throw new System.Exception("guessed an unacknowledged prefix");
+    MixNativeInput.ReleaseOwned(tag, delegate(MixNativeInput.INPUT[] inputs) { released++; return 1; },
+      delegate() { return false; });
+    if (released != 2) throw new System.Exception("replayed after the receipt reset");
   }
 }`;
   const quote = (value) => `'${value.replaceAll("'", "''")}'`;

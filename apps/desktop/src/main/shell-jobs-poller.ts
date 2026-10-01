@@ -106,8 +106,15 @@ export function createShellJobsPoller({ getEngineState, loadModule, onChange }: 
   // the aggregate alone cannot say whose shell is running.
   let sessions: ReadonlyMap<string, ShellJobsStatus> = new Map();
   let modulePromise: Promise<StatuslineSegmentsModule> | null = null;
+  let running = false;
+  let inFlight = false;
+  // An engine event landed during a poll: one immediate follow-up is needed.
+  let followUp = false;
+  // Bumped on every start/stop so a late poll can tell it is stale.
+  let generation = 0;
 
   function schedule(immediate = false): void {
+    if (!running || inFlight) return;
     const state = getEngineState();
     if (!state) return;
     if (timer) clearTimeout(timer);
@@ -122,18 +129,42 @@ export function createShellJobsPoller({ getEngineState, loadModule, onChange }: 
     timer.unref?.();
   }
 
+  function currentOwnerPid(): number {
+    const state = getEngineState();
+    return Number(state?.ownerClientHostPid || state?.clientHostPid) || 0;
+  }
+
+  function loadOnce(): Promise<StatuslineSegmentsModule> {
+    if (!modulePromise) {
+      const loading = loadModule();
+      modulePromise = loading;
+      // A rejected load is not cached: the next poll retries.
+      loading.catch(() => {
+        if (modulePromise === loading) modulePromise = null;
+      });
+    }
+    return modulePromise;
+  }
+
   async function poll(): Promise<void> {
     // Attached-viewer sessions mirror the OWNER's pid (live-share frames): the
     // registry's jobs belong to that process, not this one.
-    const state = getEngineState();
-    const ownerPid = Number(state?.ownerClientHostPid || state?.clientHostPid) || 0;
+    const ownerPid = currentOwnerPid();
     if (!ownerPid) {
       schedule();
       return;
     }
+    const myGeneration = generation;
+    inFlight = true;
+    let rerun = false;
     try {
-      modulePromise ??= loadModule();
-      const module = await modulePromise;
+      const module = await loadOnce();
+      if (myGeneration !== generation) return;
+      if (currentOwnerPid() !== ownerPid) {
+        // The owner changed while loading: never publish the previous owner's data.
+        rerun = true;
+        return;
+      }
       const value = module.shellJobsStatus({ clientHostPid: ownerPid });
       const next = normalizedStatus(value);
       const nextSessions = normalizedSessions(value?.sessions);
@@ -147,7 +178,13 @@ export function createShellJobsPoller({ getEngineState, loadModule, onChange }: 
       // The strip is optional: engine activity stays publishable when the
       // external runtime module is unavailable.
     } finally {
-      schedule();
+      // A stale poll (stopped or restarted meanwhile) must not touch the new lifecycle.
+      if (myGeneration === generation) {
+        inFlight = false;
+        const immediate = rerun || followUp;
+        followUp = false;
+        schedule(immediate);
+      }
     }
   }
 
@@ -164,16 +201,25 @@ export function createShellJobsPoller({ getEngineState, loadModule, onChange }: 
     },
     start(): void {
       this.stop();
+      running = true;
       schedule(true);
     },
     stop(): void {
-      if (!timer) return;
-      clearTimeout(timer);
+      running = false;
+      generation += 1;
+      inFlight = false;
+      followUp = false;
+      if (timer) clearTimeout(timer);
       timer = null;
       delayMs = 0;
     },
     /** An engine event may shorten the desired delay — re-arm when it does. */
     onEngineEvent(): void {
+      if (!running) return;
+      if (inFlight) {
+        followUp = true;
+        return;
+      }
       const state = getEngineState();
       if (!state) return;
       const desired = shellJobsPollDelay(state, status.count);

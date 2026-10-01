@@ -46,16 +46,13 @@ const STAT_CACHE = new Map(); // fullPath → { ts, stat }
 const STAT_CACHE_TTL_MS = 5_000;
 const STAT_CACHE_MAX_ENTRIES = 2_000;
 const RAW_CONTENT_CACHE = new Map(); // fullPath → { ts, mtimeMs, ctimeMs, size, rawBuf }
-const RAW_CONTENT_INFLIGHT = new Map(); // canonical path → { generation, promise }
+const RAW_CONTENT_INFLIGHT = new Map(); // canonical path → { path, promise }
 const RAW_CONTENT_CACHE_TTL_MS = 30_000;
 // 64: a parallel read batch fanning out over a component directory easily
 // tops 16 files; at 16 the batch thrashed its own cache before re-reads hit.
 // The 64MB byte cap below still bounds memory.
 const RAW_CONTENT_CACHE_MAX_ENTRIES = 64;
-const PATH_MUTATION_GENERATIONS = new Map(); // canonical path/root → monotonic generation
-const PATH_MUTATION_GENERATION_MAX_ENTRIES = 4096;
-let PATH_MUTATION_GLOBAL_GENERATION = 0;
-const READ_ONLY_STAT_INFLIGHT = new Map(); // kind + canonical path → { generation, promise }
+const READ_ONLY_STAT_INFLIGHT = new Map(); // kind + canonical path → { path, promise }
 const RAW_CONTENT_CACHE_MAX_BYTES = envByteBudget(
   'MIXDOG_RAW_CONTENT_CACHE_MAX_BYTES',
   'MIXDOG_RAW_CONTENT_CACHE_MAX_MB',
@@ -72,25 +69,6 @@ function cachePathsOverlap(a, b) {
   if (!a || !b) return false;
   if (a === b) return true;
   return a.startsWith(b.endsWith(sep) ? b : `${b}${sep}`) || b.startsWith(a.endsWith(sep) ? a : `${a}${sep}`);
-}
-
-function bumpPathMutationGeneration(path) {
-  const key = canonicalCachePath(path);
-  PATH_MUTATION_GENERATIONS.set(key, (PATH_MUTATION_GENERATIONS.get(key) || 0) + 1);
-  while (PATH_MUTATION_GENERATIONS.size > PATH_MUTATION_GENERATION_MAX_ENTRIES) {
-    const oldest = PATH_MUTATION_GENERATIONS.keys().next().value;
-    if (!oldest) break;
-    PATH_MUTATION_GENERATIONS.delete(oldest);
-  }
-}
-
-function getPathMutationGeneration(path) {
-  const key = canonicalCachePath(path);
-  let generation = PATH_MUTATION_GLOBAL_GENERATION;
-  for (const [changedPath, value] of PATH_MUTATION_GENERATIONS) {
-    if (cachePathsOverlap(key, changedPath)) generation += value;
-  }
-  return generation;
 }
 
 function cacheEntryOverlapsPaths(entry, affectedPaths) {
@@ -237,12 +215,12 @@ export async function runResultCacheInFlight(key, compute, options = {}) {
   return subscribeResultCacheInFlight(entry, subscriberSignal);
 }
 
-// A concurrent caller joins the read already in flight for this key instead
-// of issuing a second syscall; a mutation bumps the path generation, so an
-// entry recorded before it is never joined.
-async function runInFlightForGeneration(inFlight, key, generation, start) {
+// Invalidation detaches only affected in-flight entries. New readers never
+// join a pre-mutation operation, while its existing subscribers still finish.
+// Lookups need no scan of the project's historical mutations on every read.
+async function runPathInFlight(inFlight, key, path, start) {
   const existing = inFlight.get(key);
-  if (existing?.generation === generation) return await existing.promise;
+  if (existing) return await existing.promise;
   const promise = Promise.resolve()
     .then(start)
     .finally(() => {
@@ -250,23 +228,21 @@ async function runInFlightForGeneration(inFlight, key, generation, start) {
         inFlight.delete(key);
       }
     });
-  inFlight.set(key, { generation, promise });
+  inFlight.set(key, { path, promise });
   return await promise;
 }
 
 export async function runRawContentInFlight(fullPath, loader = fsPromises.readFile) {
   const key = canonicalCachePath(fullPath);
-  return await runInFlightForGeneration(RAW_CONTENT_INFLIGHT, key, getPathMutationGeneration(key), () =>
-    loader(fullPath)
-  );
+  return await runPathInFlight(RAW_CONTENT_INFLIGHT, key, key, () => loader(fullPath));
 }
 
 export async function runReadOnlyStatInFlight(fullPath, loader = fsPromises.stat, kind = 'stat') {
   const canonicalPath = canonicalCachePath(fullPath);
-  return await runInFlightForGeneration(
+  return await runPathInFlight(
     READ_ONLY_STAT_INFLIGHT,
     `${kind}|${canonicalPath}`,
-    getPathMutationGeneration(canonicalPath),
+    canonicalPath,
     () => loader(fullPath)
   );
 }
@@ -484,8 +460,8 @@ function cacheInvalidateAll() {
   STAT_CACHE.clear();
   RAW_CONTENT_CACHE.clear();
   RAW_CONTENT_CACHE_BYTES = 0;
-  PATH_MUTATION_GENERATIONS.clear();
-  PATH_MUTATION_GLOBAL_GENERATION += 1;
+  RAW_CONTENT_INFLIGHT.clear();
+  READ_ONLY_STAT_INFLIGHT.clear();
   runExtraInvalidationListeners();
 }
 
@@ -494,6 +470,11 @@ function cacheInvalidatePaths(paths) {
   if (affectedPaths.length === 0) {
     cacheInvalidateAll();
     return;
+  }
+  for (const inFlight of [RAW_CONTENT_INFLIGHT, READ_ONLY_STAT_INFLIGHT]) {
+    for (const [key, entry] of inFlight) {
+      if (affectedPaths.some((affected) => cachePathsOverlap(entry.path, affected))) inFlight.delete(key);
+    }
   }
   for (const [key, entry] of RESULT_CACHE_INFLIGHT) {
     const scopes = Array.isArray(entry.scopes) ? entry.scopes : [];
@@ -522,7 +503,6 @@ function cacheInvalidatePaths(paths) {
   }
   for (const affected of affectedPaths) {
     deleteReadRangeIndexForPath(affected);
-    bumpPathMutationGeneration(affected);
   }
   runExtraInvalidationListeners(affectedPaths);
 }

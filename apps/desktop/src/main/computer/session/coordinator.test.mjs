@@ -225,13 +225,13 @@ test('a cleanup with no session or pause behind it stays hidden, even when it fa
     finish(true);
     assert.equal(computerUseOverlayPresentation(coordinator.snapshot(), 'ko-KR').visible, false);
 
-    // No work is left to control: the next command retries the recovery and
-    // reports its failure, so nothing undismissable stays on screen.
+    // Input stays blocked after a failed cleanup, so the pill remains as the way out.
     const failing = coordinator.beginCleanup('session-idle-failure');
     failing(false);
     const failed = computerUseOverlayPresentation(coordinator.snapshot(), 'ko-KR');
     assert.equal(coordinator.snapshot().cleanupState, 'failed');
-    assert.equal(failed.visible, false);
+    assert.equal(failed.visible, true);
+    assert.deepEqual(failed.sessionIds, []);
   } finally {
     coordinator.reset();
   }

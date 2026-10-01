@@ -14,11 +14,13 @@ import { isUncOrSmbPath, resolveSearchScope } from '../search-path-diagnostics.m
 import { buildGrepRgArgs } from '../search-builders.mjs';
 import { runRgWindowedLines } from '../native-search-runner.mjs';
 import { statReachable } from '../fs-reachability.mjs';
+import { runSharedNativeScan } from './shared-native-scan.mjs';
 import { markScopedCacheIncomplete } from '../../../session/cache/scoped-cache-outcome.mjs';
 import { GREP_CONTEXT_MAX, hasUnsupportedRipgrepRegex } from '../arg-guard.mjs';
 import { resolveSearchWindow } from './search-input-helpers.mjs';
 import { formatGrepFanoutSections, formatGrepOutput, grepNoMatchesBody } from './grep-output.mjs';
 import { expandGrepAnchorContextOutput } from './grep-context-expander.mjs';
+import { resolveGrepScope } from './grep-request.mjs';
 
 // Case-insensitive path keys on Windows, where rg echoes the operand path
 // in whatever case the caller wrote it.
@@ -30,12 +32,11 @@ function pathKey(value) {
 // The single-pattern request the combined path[] pass can answer, parsed
 // the way the canonical single-path parsing in search-grep-tool.mjs does
 // (keep in sync); null when the arguments fall outside its narrow
-// eligibility: single pattern, no glob/type, default flags, content-ish or
+// eligibility: single pattern, no type, default flags, content-ish or
 // files_with_matches mode. MIXDOG_GREP_PATH_COMBINED=0 disables.
 function combinedPathRequest(args, defaultHeadLimit) {
   if (
     process.env.MIXDOG_GREP_PATH_COMBINED === '0' ||
-    args.glob ||
     args.type ||
     args.multiline === true ||
     args['-o'] === true ||
@@ -81,8 +82,7 @@ function combinedPathRequest(args, defaultHeadLimit) {
 // order; null when one is a glob, unreachable, or on a share — the legacy
 // fan-out owns those diagnostics.
 async function resolvePathRoots(list, workDir) {
-  const roots = [];
-  for (const p of list) {
+  const roots = await Promise.all(list.map(async (p) => {
     const cleaned = normalizeInputPath(p);
     if (hasGlobMagic(cleaned)) return null;
     const resolved = resolveSearchScope(cleaned, workDir);
@@ -93,11 +93,21 @@ async function resolvePathRoots(list, workDir) {
     } catch {
       return null;
     }
-    roots.push({
+    return {
       arg: p,
       abs: normalizeOutputPath(isAbsolute(resolved) ? await trueCasePath(resolved) : resolved),
       isDir: st.isDirectory(),
-    });
+    };
+  }));
+  if (roots.some((root) => !root)) return null;
+  // An overlapping operand would scan a file twice and then attribute both
+  // copies to each containing section. Keep independent scope semantics.
+  for (let i = 0; i < roots.length; i++) {
+    const left = pathKey(roots[i].abs).replace(/\/+$/, '');
+    for (let j = i + 1; j < roots.length; j++) {
+      const right = pathKey(roots[j].abs).replace(/\/+$/, '');
+      if (left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`)) return null;
+    }
   }
   return roots;
 }
@@ -190,17 +200,23 @@ async function runCombinedPathFanout({ args, list, workDir, options, callContext
   const roots = await resolvePathRoots(list, workDir);
   if (!roots) return null;
   const { headLimit, offset } = request;
-  const rgArgs = combinedPathRgArgs(args, request, roots, workDir);
+  const rgArgs = await combinedPathRgArgs(args, request, roots, workDir);
+  if (!rgArgs) return null;
   const perWindow = headLimit === Infinity ? 300 : offset + headLimit + 4;
   const cap = Math.min(4000, Math.max(400, perWindow * roots.length));
   let streamed;
   try {
-    streamed = await runRgWindowedLines(
-      rgArgs,
-      { cwd: workDir, signal: options.signal },
-      { offset: 0, limit: cap, summaryLimit: 0 }
-    );
+    const runWindowedLines =
+      typeof options.__runRgWindowedLines === 'function' ? options.__runRgWindowedLines : runRgWindowedLines;
+    streamed = await runSharedNativeScan(runWindowedLines, {
+      cwd: workDir,
+      argv: rgArgs,
+      window: { offset: 0, limit: cap, summaryLimit: 0 },
+      scopes: roots.map((root) => root.abs),
+      signal: options.signal,
+    });
   } catch {
+    options.signal?.throwIfAborted();
     return null;
   }
   if (!streamed.complete || streamed.partial) return null;
@@ -211,26 +227,36 @@ async function runCombinedPathFanout({ args, list, workDir, options, callContext
 }
 
 // One rg invocation over every root's files at once.
-function combinedPathRgArgs(args, request, roots, workDir) {
-  return buildGrepRgArgs({
-    patterns: [request.pattern],
-    includeNoise: args.include_noise === true,
-    text: args.text === true,
-    searchPath: workDir,
-    globPatterns: [],
-    outputMode: request.outMode,
-    caseInsensitive: request.caseInsensitive,
-    showLineNumbers: true,
-    beforeN: null,
-    afterN: null,
-    contextN: null,
-    multilineMode: false,
-    fileType: '',
-    onlyMatching: false,
-    pcre2: false,
-    withFilename: true,
-    candidateFiles: roots.map((r) => r.abs),
-  });
+async function combinedPathRgArgs(args, request, roots, workDir) {
+  const perRoot = await Promise.all(roots.map(async (root) => {
+    const scope = await resolveGrepScope({ ...args, path: root.arg }, workDir);
+    if (scope.result !== undefined) return null;
+    return buildGrepRgArgs({
+      patterns: [request.pattern],
+      includeNoise: args.include_noise === true,
+      text: args.text === true,
+      searchPath: isAbsolute(scope.searchPath) ? root.abs : scope.searchPath,
+      // Match buildGrepScope: an explicit file operand wins over its glob.
+      globPatterns: root.isDir ? scope.normalizedGlobPatterns : [],
+      outputMode: request.outMode,
+      caseInsensitive: request.caseInsensitive,
+      showLineNumbers: true,
+      beforeN: null,
+      afterN: null,
+      contextN: null,
+      multilineMode: false,
+      fileType: '',
+      onlyMatching: false,
+      pcre2: false,
+      withFilename: true,
+    }).slice(0, -1);
+  }));
+  if (perRoot.some((argv) => !argv)) return null;
+  const first = JSON.stringify(perRoot[0]);
+  // Native filters are rooted at each operand. Only identical normalized
+  // rules (including explicit noise-directory exceptions) may share a scan.
+  if (perRoot.some((argv) => JSON.stringify(argv) !== first)) return null;
+  return [...perRoot[0], ...roots.map((root) => root.abs)];
 }
 
 // The per-root sections in argument order; roots without a hit collapse
@@ -252,6 +278,7 @@ async function renderCombinedPathSections(request, roots, byRoot, bodyContext) {
 // recursion bottoms out after one level. Results retain input order even
 // though every path starts immediately.
 export async function runGrepPathFanout(input) {
+  input.options.signal?.throwIfAborted();
   const combined = await runCombinedPathFanout(input);
   if (combined !== null) return combined;
   const { args, list, workDir, executeChildBuiltinTool, readStateScope, options, callContextCharBudget } = input;

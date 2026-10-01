@@ -94,15 +94,15 @@ test('user input after dispatch is preserved rather than restored over', async (
   );
 });
 
-test('visible foreground input returns the real pointer to where the user left it', async () => {
+test('a finished foreground click hands back the pointer and the focus the user left', async () => {
   const calls = [];
   const resolver = createInputResolution({
     sessionIdFor: () => 'test',
     callPowerShell: async (request) => {
-      calls.push(request.action);
-      // Only the recovery call puts the borrowed pointer back.
+      calls.push(request);
+      // Only the recovery call puts the borrowed pointer and focus back.
       return request.action === 'restore_input_state'
-        ? { ok: true, result: { ...state, synthetic_input: true } }
+        ? { ok: true, result: { ...state, foreground_window_id: 'hwnd:0x2', synthetic_input: true } }
         : { ok: true, result: { ...state, cursor_x: 3100, cursor_y: 1200, synthetic_input: true } };
     },
   });
@@ -114,7 +114,12 @@ test('visible foreground input returns the real pointer to where the user left i
   );
   assert.equal(result.ok, true);
   assert.equal(result.cursor_restored, true);
-  assert.deepEqual(calls, ['input_recovery_state', 'restore_input_state']);
+  assert.equal(result.focus_restored, true);
+  assert.deepEqual(
+    calls.map((call) => call.action),
+    ['input_recovery_state', 'restore_input_state']
+  );
+  assert.equal(calls[1].restore_focus, true, 'the user keeps typing into their own window');
 });
 
 test('explicit focus preparation is not immediately undone by recovery', async () => {
@@ -141,7 +146,8 @@ test('only target or observed owner relationship counts as preserved foreground'
         result: { ...state, foreground_window_id: 'hwnd:0x999', foreground_within_target: owned },
       }),
     });
-    const result = await resolver.verifyInputRecovery({ action: 'click' }, 'hwnd:0x1', original, {});
+    // More input follows in the same sequence, so focus stays with the target.
+    const result = await resolver.verifyInputRecovery({ action: 'click' }, 'hwnd:0x1', original, {}, {}, true);
     assert.equal(result.ok, owned);
     assert.equal(result.focus_preserved_for_followup, owned);
   }
@@ -157,7 +163,7 @@ test('synthetic cursor recovery carries an exact last-input watermark to native 
         ok: true,
         result:
           request.action === 'restore_input_state'
-            ? { ...state, input_tick: 200, restored_target: 'preserved' }
+            ? { ...state, foreground_window_id: 'hwnd:0x2', input_tick: 200, restored_target: 'original' }
             : { ...state, cursor_x: 300, input_tick: 200, synthetic_input: true },
       };
     },
@@ -232,7 +238,7 @@ test('refused input preserves pre-action focus rather than forcing the older ses
 });
 
 for (const action of ['mouse_move', 'invoke']) {
-  test(`${action} keeps foreground target ready for subsequent actions`, async () => {
+  test(`${action} keeps foreground target ready for the next step of its sequence`, async () => {
     const calls = [];
     const resolver = createInputResolution({
       sessionIdFor: () => 'test',
@@ -241,14 +247,21 @@ for (const action of ['mouse_move', 'invoke']) {
         return { ok: true, result: state };
       },
     });
-    const result = await resolver.verifyInputRecovery({ action, delivery: 'foreground' }, 'hwnd:0x1', original, {});
+    const result = await resolver.verifyInputRecovery(
+      { action, delivery: 'foreground' },
+      'hwnd:0x1',
+      original,
+      {},
+      {},
+      true
+    );
     assert.equal(result.ok, true);
     assert.equal(result.focus_preserved_for_followup, true);
     assert.deepEqual(calls, ['input_recovery_state']);
   });
 }
 
-test('a keyboard-opened owned dialog retains focus for follow-up without restoring another window', async () => {
+test('a keyboard-opened owned dialog keeps focus for the next step of its sequence', async () => {
   const calls = [];
   const resolver = createInputResolution({
     sessionIdFor: () => 'test',
@@ -261,14 +274,16 @@ test('a keyboard-opened owned dialog retains focus for follow-up without restori
     { action: 'key', delivery: 'foreground' },
     'hwnd:0x1',
     original,
-    {}
+    {},
+    {},
+    true
   );
   assert.equal(result.ok, true);
   assert.equal(result.focus_preserved_for_followup, true);
   assert.deepEqual(calls, ['input_recovery_state']);
 });
 
-test('closing a dialog preserves input evidence and accepts only its previously observed owner', async () => {
+test('closing a dialog returns focus to the user and leaves it alone once it is already there', async () => {
   for (const foreground of ['hwnd:0x2', 'hwnd:0x999']) {
     const calls = [];
     const resolver = createInputResolution({
@@ -292,12 +307,47 @@ test('closing a dialog preserves input evidence and accepts only its previously 
       { ...original, targetOwnerWindowId: 'hwnd:0x2' },
       {}
     );
+    // hwnd:0x2 is where the user was; any other landing is drawn back there.
     assert.equal(result.ok, foreground === 'hwnd:0x2');
-    assert.equal(result.target_closed, true);
-    assert.equal(calls.length, 1, 'a completed dialog action must not refocus or send another input');
+    if (foreground === 'hwnd:0x2') assert.equal(calls.length, 1, 'focus already home must not be touched');
+    else assert.equal(calls[1].restore_focus, true);
     assert.equal(calls[0].after_input, true);
     assert.equal(calls[0].window_id, 'hwnd:0x1');
   }
+});
+
+test('a click that closes its dialog puts the pointer back', async () => {
+  const calls = [];
+  const resolver = createInputResolution({
+    sessionIdFor: () => 'test',
+    callPowerShell: async (request) => {
+      calls.push(request);
+      const restored = request.action === 'restore_input_state';
+      return {
+        ok: true,
+        result: {
+          ...state,
+          target_exists: false,
+          foreground_window_id: 'hwnd:0x2',
+          foreground_within_target: false,
+          cursor_x: restored ? 10 : 640,
+          cursor_y: restored ? 20 : 480,
+        },
+      };
+    },
+  });
+  const result = await resolver.verifyInputRecovery(
+    { action: 'click', delivery: 'foreground' },
+    'hwnd:0x1',
+    { ...original, targetOwnerWindowId: 'hwnd:0x2' },
+    {}
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.cursor_restored, true);
+  assert.deepEqual(
+    calls.map((call) => call.action),
+    ['input_recovery_state', 'restore_input_state']
+  );
 });
 
 test('closed-dialog recovery still rejects observer loss and intervening user input', async () => {
@@ -351,11 +401,14 @@ test('a foreground launcher click may hand focus to its OS-confirmed child proce
         };
       },
     });
+    // Within a sequence the launched child keeps the focus it was handed.
     const result = await resolver.verifyInputRecovery(
       { action: 'click', delivery: 'foreground' },
       'hwnd:0x1',
       original,
-      {}
+      {},
+      {},
+      true
     );
     assert.equal(result.ok, expected);
     assert.equal(result.code, code);

@@ -2,6 +2,7 @@
 // target), then apply it in one shot under path locks with all-or-nothing
 // rollback.
 import { parsePatch } from 'diff';
+import { throwIfAborted } from '../../../../../shared/abort-race.mjs';
 import { withBuiltinPathLocks } from '../../builtin.mjs';
 import { withAdvisoryLocks } from '../../builtin/advisory-lock.mjs';
 import { wrapPatchMutationOutput } from '../mutation-output.mjs';
@@ -155,7 +156,7 @@ export async function runCodexBatch({ batch, basePath, v4aConvertOpts, rejectedV
 // it whenever the batch fails — by returned Error text OR by a thrown error
 // (V4A rename, persistence) — so mode:"atomic" really is all-or-nothing
 // instead of leaving an earlier commit in place.
-export function applyCodexBatchWithRollback({ batch, basePath, dryRun, readStateScope, options, runBatch }) {
+export function applyCodexBatchWithRollback({ batch, basePath, dryRun, readStateScope, abortSignal, options, runBatch }) {
   const { lockPaths, v4aRenamePlan } = batch;
   const registerUiDiff = (rollbackSnapshots) =>
     registerCommittedPatchUiDiff({
@@ -168,6 +169,7 @@ export function applyCodexBatchWithRollback({ batch, basePath, dryRun, readState
     });
   return withBuiltinPathLocks(lockPaths, () =>
     withAdvisoryLocks(lockPaths, async () => {
+      throwIfAborted(abortSignal);
       let rollbackSnapshots = [];
       if (!dryRun) {
         try {

@@ -294,10 +294,14 @@ test('category rows rank by size, mark empty rows, and close the entry list', as
   assert.equal(document.querySelector('.context-detail-empty'), null);
   assert.equal(document.querySelector('button[data-context-key="messages"]').getAttribute('aria-pressed'), 'true');
   assert.equal(document.querySelector('.context-detail-bar h3').textContent, t('Messages'));
-  // Two role groups, both open under the threshold; the assistant turn names
-  // the tool result it carries.
+  // Two role groups, both closed until their heads are clicked; the assistant
+  // turn names the tool result it carries.
   const heads = [...document.querySelectorAll('.context-entry-group-head > span')].map((node) => node.textContent);
   assert.deepEqual(heads, [t('User'), t('Assistant')]);
+  assert.equal(document.querySelectorAll('.context-entry-list button:not(.context-entry-group-head)').length, 0);
+  await act(async () => {
+    for (const head of document.querySelectorAll('.context-entry-group-head')) head.click();
+  });
   const labels = [...document.querySelectorAll('.context-entry-list button:not(.context-entry-group-head) > span')].map(
     (node) => node.textContent
   );

@@ -170,8 +170,8 @@
 }
 .usage-chip b {
   color: var(--mx-success);
-  font-size: var(--mx-font-minor);
-  font-weight: var(--mx-weight-semibold);
+  font-size: var(--mx-font-meta);
+  font-weight: var(--mx-weight-medium);
 }
 .usage-chip[data-tone="warn"] b {
   color: var(--mx-warning);
@@ -1254,8 +1254,9 @@
 /* Over the model layers the meter's top edge takes a neutral ink: in the
    provider's own colour it matched the first model's layer. */
 .quota-trend[data-stacked="true"] .quota-chart-line {
-  stroke: var(--mx-text-soft);
-  stroke-width: 1.25;
+  stroke: var(--mx-text);
+  stroke-width: 1.5;
+  stroke-opacity: 0.85;
 }
 /* Now: a hairline, with the time still to come faintly shaded after it. */
 .quota-chart-now {

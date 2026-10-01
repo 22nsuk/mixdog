@@ -45,6 +45,10 @@ const LIVE_CONTROL = 'button, input, select, textarea, a[href], [role="button"],
 const EDGE = 12;
 const GAP = 14;
 const PAD = 6;
+// Rail list rows sit 4px apart, so a lit row keeps a 2px vertical margin
+// inside that gap instead of reaching into its neighbours.
+const LIST_ROW = '.schedules-row';
+const LIST_ROW_PAD_Y = 2;
 
 function findTarget(target: string | readonly string[]): HTMLElement | null {
   for (const selector of typeof target === 'string' ? [target] : target) {
@@ -269,11 +273,12 @@ export function StarterTour({
         const view = scroller?.getBoundingClientRect();
         const top = view ? Math.max(box.top, view.top) : box.top;
         const bottom = view ? Math.min(box.bottom, view.bottom) : box.bottom;
+        const padY = element?.matches(LIST_ROW) ? LIST_ROW_PAD_Y : PAD;
         const next = {
-          top: top - PAD,
+          top: top - padY,
           left: box.left - PAD,
           width: box.width + PAD * 2,
-          height: Math.max(0, bottom - top) + PAD * 2,
+          height: Math.max(0, bottom - top) + padY * 2,
         };
         setTarget((current) => (sameBox(current, next) ? current : next));
         setReady(true);

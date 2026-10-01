@@ -20,9 +20,6 @@ export function scopedCacheGeneration() {
 // sessionId -> Map<key, { content, ts, firstToolUseId, depRoots }>
 const _scopedBySession = new Map();
 
-// sessionId -> Map<absPath, Set<cacheKey>>  — reverse index for O(1) path-targeted invalidation
-const _scopedReverseIdx = new Map();
-
 function _canonicalArgs(args) {
   if (args === null || args === undefined) return '';
   if (typeof args !== 'object') return String(args);
@@ -243,16 +240,6 @@ function _pathTouchesRoot(absPath, root) {
   );
 }
 
-function _dropScopedEntry(sessionId, key) {
-  _scopedBySession.get(sessionId)?.delete(key);
-  const index = _scopedReverseIdx.get(sessionId);
-  if (!index) return;
-  for (const [path, keys] of index) {
-    keys.delete(key);
-    if (keys.size === 0) index.delete(path);
-  }
-}
-
 /**
  * Look up a cached result for a deterministic multi-file-scope tool. Returns
  * null on miss. On hit returns the full entry
@@ -265,7 +252,7 @@ export function tryScopedToolCached({ sessionId, toolName, args, cwd, touch = tr
   const key = _scopedKey(toolName, args, cwd);
   const entry = map.get(key);
   if (!entry || Date.now() - entry.ts >= SCOPED_CACHE_TTL_MS) {
-    if (entry) _dropScopedEntry(sessionId, key);
+    if (entry) map.delete(key);
     return null;
   }
   if (touch) {
@@ -301,33 +288,12 @@ export function setScopedToolCached({
     _scopedBySession.set(sessionId, map);
   }
   const depRoots = _scopedDependencyRoots(toolName, args, cwd);
-  if (
-    !setBoundedTextCacheEntry(
-      map,
-      key,
-      { content, ts: Date.now(), firstToolUseId: toolUseId || null, depRoots },
-      { maxEntries: MAX_PER_SESSION, onEvict: (evictedKey) => _dropScopedEntry(sessionId, evictedKey) }
-    )
-  )
-    return;
-  // Register key in reverse index for dependency roots. Exact root hits use
-  // O(1) lookup; touched files under a root are caught by the small prefix scan
-  // in clearScopedToolsForSessionPaths (MAX_PER_SESSION is 100).
-  let ridx = _scopedReverseIdx.get(sessionId);
-  if (!ridx) {
-    ridx = new Map();
-    _scopedReverseIdx.set(sessionId, ridx);
-  }
-  const _registerAbs = (abs) => {
-    if (!abs || typeof abs !== 'string') return;
-    let s = ridx.get(abs);
-    if (!s) {
-      s = new Set();
-      ridx.set(abs, s);
-    }
-    s.add(key);
-  };
-  for (const dep of depRoots) _registerAbs(dep);
+  setBoundedTextCacheEntry(
+    map,
+    key,
+    { content, ts: Date.now(), firstToolUseId: toolUseId || null, depRoots },
+    { maxEntries: MAX_PER_SESSION }
+  );
 }
 
 /**
@@ -338,78 +304,51 @@ export function clearScopedToolsForSession(sessionId) {
   if (!sessionId) return;
   mutationGeneration += 1;
   _scopedBySession.delete(sessionId);
-  _scopedReverseIdx.delete(sessionId);
 }
 
 /**
- * Targeted scoped-cache invalidation: evict only entries whose cache
- * key is associated with at least one of the given touched paths. Uses a
- * reverse index (absPath → Set<cacheKey>) for exact root hits plus a bounded
- * root-prefix scan for files nested under cached directories/globs. Full wipe
+ * Targeted scoped-cache invalidation: evict only entries whose registered
+ * dependency roots contain, or are contained by, at least one of the given
+ * touched paths (single bounded pass; MAX_PER_SESSION entries). Full wipe
  * when paths cannot be resolved.
  */
 export function clearScopedToolsForSessionPaths(sessionId, touchedPaths, cwd) {
   if (!sessionId || !Array.isArray(touchedPaths) || touchedPaths.length === 0) return;
   mutationGeneration += 1;
-  const map = _scopedBySession.get(sessionId);
-  if (!map) return;
-  const absPaths = touchedCacheKeys(touchedPaths, cwd);
-  if (absPaths.length === 0) {
-    // Fallback: can't resolve — full wipe.
-    _scopedBySession.delete(sessionId);
-    _scopedReverseIdx.delete(sessionId);
-    return;
-  }
-  const ridx = _scopedReverseIdx.get(sessionId);
-  const evictedKeys = new Set();
-  for (const abs of absPaths) evictScopedEntriesForPath(map, ridx, abs, evictedKeys);
-  // Remove evicted keys from any other reverse-index sets they appeared in; prune empty Sets.
-  if (ridx && evictedKeys.size > 0) {
-    for (const [absKey, keySet] of ridx) {
-      for (const k of evictedKeys) keySet.delete(k);
-      if (keySet.size === 0) ridx.delete(absKey);
-    }
-  }
+  if (!_scopedBySession.has(sessionId)) return;
+  clearSessionForAbsPaths(sessionId, touchedCacheKeys(touchedPaths, cwd));
 }
 
-// The normalized absolute cache keys of the touched paths; unresolvable
-// entries are dropped.
+// Normalized, deduplicated absolute cache keys of the touched paths;
+// unresolvable entries are dropped.
 function touchedCacheKeys(touchedPaths, cwd) {
   const base = cwd && typeof cwd === 'string' ? cwd : process.cwd();
-  return touchedPaths
-    .map((p) => {
-      if (typeof p !== 'string' || p.length === 0) return null;
-      try {
-        return _normalizeCacheKey(_pathNorm(_pathIsAbs(p) ? p : _pathResolve(base, p)));
-      } catch {
-        return null;
-      }
-    })
-    .filter(Boolean);
+  const out = new Set();
+  for (const p of touchedPaths) {
+    if (typeof p !== 'string' || p.length === 0) continue;
+    try {
+      out.add(_normalizeCacheKey(_pathNorm(_pathIsAbs(p) ? p : _pathResolve(base, p))));
+    } catch {
+      /* unresolvable: dropped */
+    }
+  }
+  out.delete('');
+  return [...out];
 }
 
-// Evicts every entry keyed to `abs` in the reverse index, then every entry
-// whose dependency roots cover it. An index miss may still touch a cached
-// directory/root dependency (e.g. grep path:"src" then edit src/a.mjs); the
-// prefix scan is bounded by MAX_PER_SESSION and prevents stale scoped hits.
-function evictScopedEntriesForPath(map, ridx, abs, evictedKeys) {
-  const keys = ridx ? ridx.get(abs) : null;
-  if (keys && keys.size > 0) {
-    for (const key of keys) {
-      if (map.has(key)) {
-        map.delete(key);
-        evictedKeys.add(key);
-      }
-    }
-    keys.clear();
-    ridx.delete(abs);
+// Evicts the session's entries whose dependency roots touch any of the
+// already-normalized `absPaths` in a single pass. Empty `absPaths` means the
+// paths were unresolvable: full wipe.
+function clearSessionForAbsPaths(sessionId, absPaths) {
+  if (absPaths.length === 0) {
+    _scopedBySession.delete(sessionId);
+    return;
   }
+  const map = _scopedBySession.get(sessionId);
+  if (!map) return;
   for (const [key, entry] of map) {
     const roots = Array.isArray(entry?.depRoots) ? entry.depRoots : [];
-    if (roots.some((root) => _pathTouchesRoot(abs, root))) {
-      map.delete(key);
-      evictedKeys.add(key);
-    }
+    if (roots.some((root) => absPaths.some((abs) => _pathTouchesRoot(abs, root)))) map.delete(key);
   }
 }
 
@@ -418,8 +357,10 @@ function evictScopedEntriesForPath(map, ridx, abs, evictedKeys) {
 // that no watcher reports.
 registerCacheInvalidationListener((paths) => {
   mutationGeneration += 1;
-  for (const sessionId of _scopedBySession.keys()) {
-    if (paths?.length) clearScopedToolsForSessionPaths(sessionId, paths);
-    else clearScopedToolsForSession(sessionId);
+  if (paths?.length) {
+    const absPaths = touchedCacheKeys(paths);
+    for (const sessionId of [..._scopedBySession.keys()]) clearSessionForAbsPaths(sessionId, absPaths);
+  } else {
+    for (const sessionId of [..._scopedBySession.keys()]) clearScopedToolsForSession(sessionId);
   }
 });

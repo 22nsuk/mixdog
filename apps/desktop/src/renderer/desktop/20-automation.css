@@ -207,7 +207,7 @@
 /* Past runs are CHILD items: one size and one ink step under their group,
    so the group names carry the list (importance = ink, user rule). */
 .automation-group-past .session-row-copy b {
-  font-size: var(--mx-font-minor);
+  font-size: var(--mx-font-meta);
   color: var(--mx-text-soft);
 }
 /* The editor's composer-footer clone uses the same flat chip skin as the

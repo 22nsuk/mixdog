@@ -40,6 +40,35 @@ export function billableInputTokensForProvider(provider, inputTokens, cacheReadT
 }
 
 /**
+ * Media billed by something other than the text token slots: image/video output
+ * tokens, whole images, or video seconds (per resolution when the catalog lists
+ * one). A used unit without a catalog rate is reported missing, never free.
+ */
+function mediaCharges(meta, media, imageOut, videoOut) {
+  const n = (value) => (Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : 0);
+  const out = { usd: 0, charged: false, missing: [], rates: {} };
+  const bill = (amount, key, rate, scale = 1) => {
+    if (amount <= 0) return;
+    out.charged = true;
+    if (rate == null) out.missing.push(key);
+    else {
+      out.usd += (amount * rate) / scale;
+      out.rates[key] = rate;
+    }
+  };
+  bill(imageOut, 'outputImageCostPerM', meta.outputImageCostPerM, 1_000_000);
+  bill(videoOut, 'outputVideoCostPerM', meta.outputVideoCostPerM, 1_000_000);
+  bill(n(media.images), 'outputCostPerImage', meta.outputCostPerImage);
+  const resolution = String(media.resolution || '').toLowerCase();
+  bill(
+    n(media.seconds),
+    'outputCostPerSecond',
+    meta.outputCostPerSecondByResolution?.[resolution] ?? meta.outputCostPerSecond
+  );
+  return out;
+}
+
+/**
  * Price normalized token slots once. Null means unknown, not a free request.
  * Rates are returned so a durable record keeps the price applied at ingestion.
  * Historical imports use current catalog rates as estimates, not old invoices.
@@ -68,6 +97,15 @@ export function priceUsage(args) {
     ...(args.serviceTier ? { serviceTier: args.serviceTier } : {}),
     ...(written1h ? { cacheWrite1hTokens: written1h } : {}),
   };
+  // A provider-billed figure for a media request (e.g. xAI cost_in_usd_ticks)
+  // is the price, with or without a catalog row.
+  const media = args.media || null;
+  if (typeof media?.reportedCostUsd === 'number' && Number.isFinite(media.reportedCostUsd) && media.reportedCostUsd >= 0)
+    return {
+      input,
+      costUsd: Number(media.reportedCostUsd.toFixed(6)),
+      rates: { ...provenance, pricingSource: 'provider' },
+    };
   if (args.inputTokensKnown === false || !meta)
     return {
       input,
@@ -107,7 +145,11 @@ export function priceUsage(args) {
   // Fast mode bills 2x standard rates on every fast-capable Opus.
   if (anthropicFast) multiplier *= 2;
   const keys = PRICING_RATE_KEYS;
-  const tokens = [input, n(args.outputTokens), cached, written - written1h];
+  // Image/video output tokens bill above the text output rate; the row still
+  // carries the full output count.
+  const imageOut = media ? Math.min(n(media.outputImageTokens), n(args.outputTokens)) : 0;
+  const videoOut = media ? Math.min(n(media.outputVideoTokens), n(args.outputTokens) - imageOut) : 0;
+  const tokens = [input, n(args.outputTokens) - imageOut - videoOut, cached, written - written1h];
   const tierRates = ratesForPrompt(rateMeta, promptTokens);
   const rates = {
     ...provenance,
@@ -116,6 +158,10 @@ export function priceUsage(args) {
   if (written1h) rates.cacheWrite1hCostPerM = rates.inputCostPerM === null ? null : rates.inputCostPerM * 2;
   const missingRates = keys.filter((key, i) => tokens[i] > 0 && rates[key] === null);
   if (written1h && rates.cacheWrite1hCostPerM === null) missingRates.push('cacheWrite1hCostPerM');
+  const charge = media ? mediaCharges(meta, media, imageOut, videoOut) : { usd: 0, charged: false, missing: [] };
+  missingRates.push(...charge.missing);
+  if (media && !charge.charged && tokens.every((amount) => amount === 0) && !written1h)
+    return { input, costUsd: null, rates: { ...rates, unpricedReason: 'usage-not-reported' } };
   if (missingRates.length) {
     rates.unpricedReason = 'missing-rate';
     rates.missingRates = missingRates;
@@ -124,8 +170,9 @@ export function priceUsage(args) {
   const costUsd =
     (tokens.reduce((sum, amount, i) => sum + amount * (rates[keys[i]] ?? 0), 0) +
       written1h * (rates.cacheWrite1hCostPerM ?? 0)) /
-    1_000_000;
-  return { input, costUsd: Number(costUsd.toFixed(6)), rates };
+      1_000_000 +
+    charge.usd;
+  return { input, costUsd: Number(costUsd.toFixed(6)), rates: { ...rates, ...charge.rates } };
 }
 
 /**

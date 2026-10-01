@@ -409,7 +409,7 @@
   padding-top: 0;
 }
 .workbench-side-section-body > .utility-dock .utility-dock-pane[data-tab="agents"] {
-  padding-top: 12px;
+  padding-top: var(--mx-rail-panel-content-top);
 }
 .workbench-side-section-body > .utility-dock .dock-scm-toolbar {
   box-sizing: border-box;

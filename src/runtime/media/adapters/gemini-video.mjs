@@ -12,7 +12,9 @@ import { boundedSignal } from '../bounded-signal.mjs';
 import { decodeBase64Media, downloadGeminiMedia } from '../download.mjs';
 import { mediaError } from '../lanes.mjs';
 import { upstreamError } from '../upstream-error.mjs';
+import { interactionsUsage, withReportedUsage } from '../media-usage.mjs';
 
+const VEO_DEFAULT_SECONDS = 8;
 const BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
 const OMNI_TIMEOUT_MS = 600_000;
 const POLL_INTERVAL_MS = 8_000;
@@ -54,14 +56,15 @@ async function generateViaOmni({ model, prompt, options, references = [], signal
   });
   if (!res.ok) throw upstreamError('Gemini Omni video', res.status, await res.text().catch(() => ''));
   const data = await res.json();
+  const usage = interactionsUsage(data?.usage);
   for (const step of data?.steps || []) {
     const content = Array.isArray(step?.content) ? step.content : [step?.content].filter(Boolean);
     const video = content.find((item) => item?.type === 'video' && typeof item?.data === 'string');
     if (video) {
-      return { bytes: decodeBase64Media(video.data, 'Gemini Omni video'), mime: video.mime_type || 'video/mp4' };
+      return { bytes: decodeBase64Media(video.data, 'Gemini Omni video'), mime: video.mime_type || 'video/mp4', usage };
     }
   }
-  throw mediaError('Gemini Omni returned no video data', 'MEDIA_EMPTY_RESULT', 502);
+  throw withReportedUsage(mediaError('Gemini Omni returned no video data', 'MEDIA_EMPTY_RESULT', 502), usage);
 }
 
 async function generateViaVeo({ model, prompt, options, references = [], signal, onProgress, key }) {
@@ -114,13 +117,20 @@ async function generateViaVeo({ model, prompt, options, references = [], signal,
     const sample = data?.response?.generateVideoResponse?.generatedSamples?.[0] || data?.response?.generatedVideos?.[0];
     const uri = sample?.video?.uri || sample?.video?.fileUri;
     if (!uri) throw mediaError('Veo finished without a video URI', 'MEDIA_EMPTY_RESULT', 502);
-    return {
-      // The download is part of the generation budget: unbounded, it held an
-      // active job slot (and the upstream connection) open indefinitely after
-      // the poll loop finished.
-      bytes: await downloadGeminiMedia(uri, { key, signal: boundedSignal(signal, deadline, TOTAL_TIMEOUT_MS) }),
-      mime: 'video/mp4',
-    };
+    // Veo reports no usage; it bills per generated second. The response does
+    // not echo the length, so the requested one (default 8s) is the billed one.
+    // A failed download still leaves the generated seconds billed.
+    const usage = { seconds: parameters.durationSeconds || VEO_DEFAULT_SECONDS, resolution: parameters.resolution || '720p' };
+    // The download is part of the generation budget: unbounded, it held an
+    // active job slot (and the upstream connection) open indefinitely after
+    // the poll loop finished.
+    const bytes = await downloadGeminiMedia(uri, {
+      key,
+      signal: boundedSignal(signal, deadline, TOTAL_TIMEOUT_MS),
+    }).catch((error) => {
+      throw withReportedUsage(error, usage);
+    });
+    return { bytes, mime: 'video/mp4', usage };
   }
 }
 

@@ -122,7 +122,8 @@
   color: var(--mx-text);
   background: transparent;
   box-shadow: none;
-  font-weight: var(--mx-weight-semibold);
+  /* The same 500 selection weight the workspace tabs use. */
+  font-weight: var(--mx-weight-medium);
 }
 .workbench-search-mode button[aria-selected="true"]::after,
 .dock-scm-tab[aria-checked="true"]::after,

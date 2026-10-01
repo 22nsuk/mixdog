@@ -5,6 +5,32 @@ the Unreleased section is empty, and stamps it with the released version.
 
 ## Unreleased
 
+- Media generation records one usage row per image or video job with the
+  tokens, images, seconds and cost the provider reported, so Gemini,
+  Antigravity, Codex and xAI media appear in usage and cost totals alongside
+  text models. Media rates come from the published price catalog.
+
+- Computer Use Stop and Resume recover cleanly after a failed cleanup: idle
+  workers are retired instead of timing out, and a user's Stop or Resume
+  clears the stale "input not confirmed released" state.
+
+- Sessions waiting on background shell jobs show as waiting rather than idle,
+  and the shell job indicator no longer shows a previous owner's jobs or loses
+  updates that arrive during a poll. Session and agent lists skip redundant
+  redraws when nothing changed. The usage chart, rail pages, workspace tabs,
+  extension lists and dialogs have refreshed styling.
+
+- Identical concurrent grep and read scans share one native scan, cached
+  results are invalidated per path after edits, and a canceled patch stops
+  before writing further files. Code graph search matches Windows paths
+  regardless of case, separators, verbatim (`\\?\`) and UNC prefixes. A
+  failing pre-tool hook now blocks the tool instead of letting it run.
+
+- The browser skill keeps pages in the background unless the page itself is
+  the deliverable or the user must act on it. Desktop development
+  (`npm run dev`) and the Windows direct E2E scripts run in a fresh isolated
+  profile on CDP port `9342`.
+
 ## v1.0.2 - 2026-10-01
 
 - Transcript copy buttons can write to the clipboard from the trusted desktop

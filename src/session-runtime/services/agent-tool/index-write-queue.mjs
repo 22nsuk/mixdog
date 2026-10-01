@@ -51,6 +51,38 @@ function recordOps(args, run) {
   });
 }
 
+/**
+ * Collapse a sequence of op sets into one op set per argument slot with the
+ * same sequential outcome: every key ever deleted is deleted (so a foreign
+ * writer's key is still removed), then each surviving key is set once with its
+ * final value, ordered as sequential insertion would leave it (an overwrite
+ * keeps its position, a delete/reinsert moves to the end). Set adds are unioned.
+ */
+function compactOps(batch) {
+  const slots = [];
+  for (const ops of batch) {
+    ops.forEach((op, index) => {
+      if (!op) return;
+      let slot = slots[index];
+      if (!slot) {
+        slot = slots[index] = op.add ? { add: new Set() } : { del: new Set(), final: new Map() };
+      }
+      if (slot.add) {
+        for (const value of op.add) slot.add.add(value);
+        return;
+      }
+      for (const key of op.del) {
+        slot.del.add(key);
+        slot.final.delete(key);
+      }
+      for (const [key, json] of op.set) slot.final.set(key, json);
+    });
+  }
+  return slots.map((slot) =>
+    !slot ? null : slot.add ? { add: slot.add } : { del: slot.del, set: slot.final }
+  );
+}
+
 function replayOps(ops, args) {
   args.forEach((arg, index) => {
     const op = ops[index];
@@ -62,6 +94,10 @@ function replayOps(ops, args) {
       for (const value of op.add) arg.add(value);
     }
   });
+}
+
+function replayBatch(batch, args) {
+  replayOps(compactOps(batch), args);
 }
 
 /**
@@ -99,9 +135,7 @@ export function createIndexWriteQueue({ file, rewrite, readDoc, onPersisted = ()
         await updateJsonAtomic(
           file,
           (cur) =>
-            rewrite(cur, (...args) => {
-              for (const ops of batch) replayOps(ops, args);
-            }),
+            rewrite(cur, (...args) => replayBatch(batch, args)),
           { lock: true }
         );
         return;
@@ -153,9 +187,7 @@ export function createIndexWriteQueue({ file, rewrite, readDoc, onPersisted = ()
       updateJsonAtomicSync(
         file,
         (cur) =>
-          rewrite(cur, (...args) => {
-            for (const set of ops) replayOps(set, args);
-          }),
+          rewrite(cur, (...args) => replayBatch(ops, args)),
         { lock: true, timeoutMs: EXIT_LOCK_TIMEOUT_MS }
       );
     } catch {

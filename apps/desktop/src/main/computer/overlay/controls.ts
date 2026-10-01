@@ -77,6 +77,12 @@ export function createComputerOverlayController(controls: ComputerUseOverlayCont
     state() {
       return { busy, error };
     },
+    /** A failure only means something while its pause or cleanup lasts; once
+     *  the desktop is back in the agent's hands, the pill must not keep
+     *  asking the user to check it. */
+    clearResolvedError(): void {
+      if (!busy) error = '';
+    },
     invoke(action: OverlayAction, sessionIds: string[], generation = 0): Promise<void> {
       if (action !== 'stop') return run(action, sessionIds, generation);
       // A repeated press joins the same stop; it must not advance the takeover

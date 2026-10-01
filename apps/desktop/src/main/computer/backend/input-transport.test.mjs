@@ -87,10 +87,17 @@ public static class TransportFixture {
     } catch (System.Exception error) { Require(error.Message.StartsWith("input_cleanup_unconfirmed:"), error.Message); }
     Require(attempts == 3 && enter && rightControlExtended, "cleanup did not release exactly the owned inputs");
     try {
-      MixNativeInput.ReleaseOwned(ownedMarker, delegate(MixNativeInput.INPUT[] inputs) { attempts++; return 1; });
+      MixNativeInput.ReleaseOwned(ownedMarker, delegate(MixNativeInput.INPUT[] inputs) { attempts++; return 1; },
+        delegate() { return true; });
       throw new System.Exception("missing latched cleanup failure");
     } catch (System.Exception error) { Require(error.Message.StartsWith("input_cleanup_unconfirmed:"), error.Message); }
-    Require(attempts == 3, "failed emergency release was retried");
+    Require(attempts == 3, "failed emergency release was retried while a key is held");
+    MixNativeInput.ReleaseOwned(ownedMarker, delegate(MixNativeInput.INPUT[] inputs) { attempts++; return 1; },
+      delegate() { return false; });
+    Require(attempts == 3, "reset receipt replayed a release");
+    MixNativeInput.ReleaseOwned(ownedMarker, delegate(MixNativeInput.INPUT[] inputs) { attempts++; return 1; },
+      delegate() { return true; });
+    Require(attempts == 3, "receipt was not reset to empty");
   }
 }`;
   const encoded = Buffer.from(fixture).toString('base64');

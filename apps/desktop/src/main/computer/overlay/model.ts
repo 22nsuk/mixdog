@@ -76,7 +76,12 @@ export function computerUseOverlayPresentation(
   // and nothing outlives the work: a cleanup Stop could not confirm is retried
   // by the next command instead of holding an undismissable pill on screen.
   const stopping = snapshot.userControlActive && snapshot.takeoverReason === 'user_stop';
-  const paused = snapshot.userControlActive && !stopping;
+  // Input is blocked while the user holds control or a cleanup failure is
+  // latched; the pill is then the way out, unless a Stop is still in flight
+  // without an error.
+  const inputBlocked = snapshot.userControlActive || snapshot.cleanupState === 'failed';
+  const stopInFlight = stopping && !control.error;
+  const paused = snapshot.userControlActive && (!stopping || Boolean(control.error));
   const attention = Boolean(snapshot.attentionRequired) || Boolean(control.error);
   // A command runs for a few hundred milliseconds, so a held target (the grace
   // period after the last command) keeps the controls reachable between
@@ -91,7 +96,9 @@ export function computerUseOverlayPresentation(
   if (attention) title = ko ? '확인 필요' : 'Check';
   else if (paused) title = ko ? '일시정지' : 'Paused';
   return {
-    visible: !stopping && (working || holding || waiting || Boolean(snapshot.attentionRequired)),
+    visible:
+      !stopInFlight &&
+      (working || holding || waiting || Boolean(snapshot.attentionRequired) || inputBlocked),
     sessionIds,
     title,
     // Per-session colours only carry meaning while several agents work at once;

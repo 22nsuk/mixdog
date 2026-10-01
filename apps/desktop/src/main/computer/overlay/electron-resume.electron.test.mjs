@@ -73,7 +73,7 @@ for (const softwareRendering of [false, true]) {
     skip: process.platform !== 'win32',
   }, async () => {
     const { result, clickMode } = await runFixture('electron-resume', softwareRendering);
-    assert.equal(result.stopped, 3);
+    assert.equal(result.stopped, 4);
     assert.equal(result.paused, 0);
     assert.equal(result.visible, false);
     assert.equal(result.font.covered, true);

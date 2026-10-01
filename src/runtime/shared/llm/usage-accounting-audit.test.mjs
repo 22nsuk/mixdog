@@ -1,11 +1,14 @@
 import './usage-test-support.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { UsageLedger, makeUsageRecord } from './usage-ledger.mjs';
 import { repairUsageLedger, usageLedgerIntegrity } from './usage-ledger-repair.mjs';
 import { accountProviderSend } from './usage-accounting.mjs';
 import { importTraceRow } from './usage-ledger-import.mjs';
-import { noteRequestServiceTier } from './usage-context.mjs';
+import { noteAbandonedUsage, noteRequestServiceTier } from './usage-context.mjs';
 import { usageStatsSnapshot } from '../../../session-runtime/services/usage-stats-model.mjs';
 import { resolveUsageStatsPeriod } from '../../../session-runtime/services/usage-stats-period.mjs';
 
@@ -103,6 +106,70 @@ test('each send records the tier its own final attempt sent, under concurrency a
     {}
   );
   assert.equal(nested.requestServiceTier, '');
+});
+
+test('re-sent, abandoned and failed attempts each reach the ledger exactly once', async (t) => {
+  const path = join(mkdtempSync(join(tmpdir(), 'mixdog-usage-attempts-')), 'ledger.sqlite');
+  const priorPath = process.env.MIXDOG_USAGE_LEDGER_PATH;
+  process.env.MIXDOG_USAGE_LEDGER_PATH = path;
+  t.after(() => {
+    if (priorPath === undefined) delete process.env.MIXDOG_USAGE_LEDGER_PATH;
+    else process.env.MIXDOG_USAGE_LEDGER_PATH = priorPath;
+  });
+  const model = 'claude-opus-4-8';
+  const instance = { constructor: { inputExcludesCache: true } };
+  const usage = (input) => ({
+    inputTokens: input,
+    outputTokens: 1,
+    cachedTokens: 0,
+    cacheWriteTokens: 1000,
+    cacheWrite1hTokens: 1000,
+  });
+  const send = (sessionId, inner) => accountProviderSend('anthropic-oauth', instance, inner, model, { sessionId });
+  // A fallback re-send returns its own result through the enclosing send.
+  await send('audit-resend', () => send('audit-resend', async () => ({ model, usage: usage(10) })));
+  // A retried stream attempt was billed before the retry replaced it.
+  await send('audit-abandoned', async () => {
+    noteAbandonedUsage(usage(20), model);
+    noteAbandonedUsage({ inputTokens: 0, outputTokens: 0, cachedTokens: 0, cacheWriteTokens: 0 }, model);
+    return { model, usage: usage(30) };
+  });
+  // A cut-off stream surfaces its partial usage on the error through both sends.
+  const cut = Object.assign(new Error('cut'), { partialUsage: usage(40), partialModel: model });
+  await assert.rejects(
+    send('audit-failed', () =>
+      send('audit-failed', async () => {
+        throw cut;
+      })
+    ),
+    (error) => error === cut
+  );
+  const ledger = new UsageLedger(path);
+  t.after(() => ledger.close());
+  const inputs = (sessionId) =>
+    ledger.db
+      .prepare('SELECT input FROM events WHERE session_id=? ORDER BY input')
+      .all(sessionId)
+      .map((row) => row.input);
+  assert.deepEqual(inputs('audit-resend'), [10]);
+  assert.deepEqual(inputs('audit-abandoned'), [20, 30]);
+  assert.deepEqual(inputs('audit-failed'), [40]);
+});
+
+test('trace import prices the 1-hour cache-write share from the raw usage', () => {
+  const imported = importTraceRow({
+    kind: 'usage_raw',
+    ts: Date.now(),
+    model: 'claude-opus-4-8',
+    input_tokens: 100,
+    cache_write_tokens: 1000,
+    output_tokens: 0,
+    payload: {
+      provider: 'anthropic-oauth',
+      raw_usage: { cache_creation: { ephemeral_1h_input_tokens: 1000, ephemeral_5m_input_tokens: 0 } },
+    },
+  });
+  assert.equal(imported.costUsd, 0.0105); // 100*5/M + 1000*(2*5)/M
 });
 
 test('Grok prices the requested SKU while retaining the actual response model; imports preserve it', () => {

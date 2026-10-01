@@ -6,6 +6,7 @@
  * The plot is a stretched viewBox with non-scaling strokes; every label is
  * HTML laid over it, so text never stretches with the plot.
  */
+import { curveMonotoneX, line as pathLine } from 'd3-shape';
 import { useId, type CSSProperties } from 'react';
 import { t, uiFormatLocale } from './i18n';
 import { modelDisplayName } from './provider-display';
@@ -56,31 +57,95 @@ function pointList(value: unknown): Point[] {
 
 const coordinate = (value: number) => value.toFixed(1);
 
-/** The measured and unmeasured strokes of a meter path and the area under it. */
-function meterPaths(points: Point[], x: (time: number) => number, y: (value: number) => number) {
+// The meters report whole percents: a rise of one step is the reading
+// catching up with use that went on through the hold before it.
+const METER_STEP = 1;
+
+/** The meter without the holds that end in a one-step rise: each reading
+ *  runs straight on to the next instead of sitting flat and then jumping, so
+ *  the line climbs instead of stair-stepping (user: 차트선이 너무 안 이쁜데). */
+function smoothMeter(points: Point[]): Point[] {
+  const kept: Point[] = [];
+  let hold: Point | null = null;
+  for (const point of points) {
+    const last = kept.at(-1);
+    if (last && point[2] === MEASURED && point[1] === last[1]) {
+      hold = point;
+      continue;
+    }
+    if (hold) {
+      const rise = point[1] - hold[1];
+      if (!(point[2] === MEASURED && rise > 0 && rise <= METER_STEP)) kept.push(hold);
+      hold = null;
+    }
+    kept.push(point);
+  }
+  if (hold) kept.push(hold);
+  return kept;
+}
+
+type Vertex = [number, number, number];
+type Run = { kind: number; curve: boolean; coords: Array<[number, number]> };
+
+const curved = pathLine().curve(curveMonotoneX).digits(1);
+const straight = pathLine().digits(1);
+
+/** A pen-down stretch as runs sharing their ends: measured stretches curve
+ *  through their vertices without overshooting them; gaps and same-instant
+ *  drops stay straight. */
+function runsOf(vertices: Vertex[]): Run[] {
+  const runs: Run[] = [];
+  for (let index = 1; index < vertices.length; index += 1) {
+    const [fromX, fromY] = vertices[index - 1];
+    const [toX, toY, mark] = vertices[index];
+    const kind = mark === UNMEASURED ? UNMEASURED : MEASURED;
+    const curve = kind === MEASURED && toX > fromX;
+    const last = runs.at(-1);
+    if (last && last.kind === kind && last.curve === curve) last.coords.push([toX, toY]);
+    else
+      runs.push({
+        kind,
+        curve,
+        coords: [
+          [fromX, fromY],
+          [toX, toY],
+        ],
+      });
+  }
+  return runs;
+}
+
+const draw = (run: Run) => (run.curve ? curved : straight)(run.coords) ?? '';
+/** Runs joined into one continuous edge. */
+const edge = (runs: Run[]) => runs.map((run, index) => (index ? `L${draw(run).slice(1)}` : draw(run))).join('');
+const reversed = (runs: Run[]) => [...runs].reverse().map((run) => ({ ...run, coords: [...run.coords].reverse() }));
+
+/** The measured and unmeasured strokes through `upper` and the area down to
+ *  `lower`, both read at the times and pen marks of `list`. */
+function meterPaths(
+  list: Point[],
+  x: (time: number) => number,
+  y: (value: number) => number,
+  upper: number[],
+  lower: number[]
+) {
   let measured = '';
   let unmeasured = '';
   let area = '';
-  let open = -1;
-  let previous: Point | null = null;
-  for (const point of points) {
-    const px = coordinate(x(point[0]));
-    const py = coordinate(y(point[1]));
-    if (!previous || point[2] === MOVE) {
-      if (previous) area += `L${coordinate(x(previous[0]))},${HEIGHT}Z`;
-      area += `M${px},${HEIGHT}L${px},${py}`;
-      open = -1;
-    } else {
-      const kind = point[2] === UNMEASURED ? UNMEASURED : MEASURED;
-      const start = open === kind ? '' : `M${coordinate(x(previous[0]))},${coordinate(y(previous[1]))}`;
-      if (kind === UNMEASURED) unmeasured += `${start}L${px},${py}`;
-      else measured += `${start}L${px},${py}`;
-      open = kind;
-      area += `L${px},${py}`;
+  let start = 0;
+  for (let end = 1; end <= list.length; end += 1) {
+    if (end < list.length && list[end][2] !== MOVE) continue;
+    const from = start;
+    const at = (values: number[]) =>
+      list.slice(from, end).map((point, index): Vertex => [x(point[0]), y(values[from + index]), point[2]]);
+    const top = runsOf(at(upper));
+    for (const run of top) {
+      if (run.kind === UNMEASURED) unmeasured += draw(run);
+      else measured += draw(run);
     }
-    previous = point;
+    if (top.length) area += `${edge(top)}L${edge(reversed(runsOf(at(lower)))).slice(1)}Z`;
+    start = end;
   }
-  if (previous) area += `L${coordinate(x(previous[0]))},${HEIGHT}Z`;
   return { measured, unmeasured, area };
 }
 
@@ -167,7 +232,14 @@ export function QuotaTrend({
   const left = (time: number) => `${(x(time) / WIDTH) * 100}%`;
   const line = (list: Array<[number, number]>) =>
     list.map(([time, value], index) => `${index ? 'L' : 'M'}${coordinate(x(time))},${coordinate(y(value))}`).join('');
-  const paths = meterPaths(points, x, y);
+  const meter = smoothMeter(points);
+  const paths = meterPaths(
+    meter,
+    x,
+    y,
+    meter.map((point) => point[1]),
+    meter.map(() => 0)
+  );
   const resetAt = statsNumber(focus.resetAt);
   const runsOutAt = statsNumber(forecast.exhaustAt);
   const runsOutLabel = runsOutAt ? t('Runs out {{time}}', { time: quotaClock(runsOutAt, now) }) : '';
@@ -217,32 +289,31 @@ export function QuotaTrend({
       list: pointList(entry.points).map(([time, value]): [number, number] => [time, value]),
     };
   });
-  // The models are read sparsely and the meter densely, so each instant's
-  // shares are scaled to the meter there: the stack's top IS the meter line,
-  // step for step, instead of a straight run between model readings cutting
-  // across its steps (user: 좀 안 이쁜데).
-  const meter = points.map(([time, value]): [number, number] => [time, value]);
+  // The models are read sparsely and the meter densely, so the layers are
+  // stacked at the meter's own vertices with each one's shares scaled to the
+  // meter there: the stack's top IS the meter line, curve for curve, and the
+  // layer edges bend with it (user: 좀 안 이쁜데).
   const modelEnd = Math.max(0, ...models.map((entry) => entry.list.at(-1)?.[0] ?? 0));
-  const stackTimes = [
-    ...new Set([...models.flatMap((entry) => entry.list.map(([time]) => time)), ...meter.map(([time]) => time)]),
-  ]
-    .filter((time) => time <= modelEnd)
-    .sort((a, b) => a - b);
-  const scale = stackTimes.map((time) => {
+  const stackPoints = meter.filter(([time]) => time <= modelEnd);
+  // The layers run on to the models' last reading, the meter held there.
+  const stackTail = stackPoints.at(-1);
+  if (stackTail && stackTail[0] < modelEnd) {
+    const held = lineValue(
+      meter.map(([time, value]): [number, number] => [time, value]),
+      modelEnd
+    );
+    stackPoints.push([modelEnd, held, MEASURED]);
+  }
+  const scale = stackPoints.map(([time, value]) => {
     const total = models.reduce((sum, entry) => sum + shareAt(entry.list, time), 0);
-    return total > 0 && meter.length ? shareAt(meter, time) / total : 1;
+    return total > 0 ? value / total : 1;
   });
-  let below = stackTimes.map(() => 0);
+  let below = stackPoints.map(() => 0);
   const stacks = models.map((entry) => {
-    const top = stackTimes.map((time, index) => below[index] + shareAt(entry.list, time) * scale[index]);
-    const upper = stackTimes.map((time, index): [number, number] => [time, top[index]]);
-    const floor = stackTimes
-      .map((time, index) => `L${coordinate(x(time))},${coordinate(y(below[index]))}`)
-      .reverse()
-      .join('');
+    const top = stackPoints.map(([time], index) => below[index] + shareAt(entry.list, time) * scale[index]);
+    const { area } = meterPaths(stackPoints, x, y, top, below);
     below = top;
-    const edge = stackTimes.length ? line(upper) : '';
-    return { ...entry, edge, area: edge ? `${edge}${floor}Z` : '' };
+    return { ...entry, area };
   });
   const stacked = stacks.some((entry) => entry.area);
   // The legend names the models only; the forecast, pace and unmeasured

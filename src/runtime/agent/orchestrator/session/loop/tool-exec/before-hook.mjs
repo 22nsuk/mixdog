@@ -3,7 +3,7 @@
  * ask for approval before the tool runs.
  */
 import { resolvePreToolAskApproval } from '../tool-helpers.mjs';
-import { runAbortable } from '../../../../../shared/abort-race.mjs';
+import { runAbortable, throwIfAborted } from '../../../../../shared/abort-race.mjs';
 
 const isArgsObject = (value) => value && typeof value === 'object' && !Array.isArray(value);
 
@@ -67,8 +67,12 @@ export async function applyBeforeToolHook({
       const denied = await askApproval(call, { callerSessionId, executeOpts, toolApprovalHook, decision });
       if (denied) return denied;
     }
-  } catch {
-    // Hooks are policy extensions. A broken hook must not wedge the agent loop.
+  } catch (error) {
+    throwIfAborted(executeOpts.signal);
+    // A failed policy check fails closed: the tool must not run.
+    return {
+      denial: `Error: tool "${name}" denied: PreToolUse policy check failed: ${error?.message || String(error)}`,
+    };
   }
   return call;
 }

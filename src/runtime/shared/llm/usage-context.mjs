@@ -11,3 +11,9 @@ export const noteRequestServiceTier = (tier) => {
   const identity = context.getStore();
   if (identity) identity.requestServiceTier = tier || '';
 };
+// A provider-local retry abandons an attempt the provider still billed; the
+// enclosing send records it alongside its own final usage.
+export const noteAbandonedUsage = (usage, model) => {
+  const identity = context.getStore();
+  if (identity && usage) (identity.abandonedUsage ||= []).push({ usage, model });
+};

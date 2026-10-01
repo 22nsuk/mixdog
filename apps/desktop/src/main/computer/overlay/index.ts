@@ -41,6 +41,7 @@ export function createComputerUseOverlay(controls: ComputerUseOverlayControls, l
     controller,
     presentation: () => latestPresentation,
     isDisposed: () => disposed,
+    requestRender: () => scheduleRender(),
   });
   const fade = createOverlayFade({ liveEntries: windows.liveEntries, visible: () => latestPresentation.visible });
 
@@ -64,6 +65,7 @@ export function createComputerUseOverlay(controls: ComputerUseOverlayControls, l
   };
 
   const render = async (): Promise<void> => {
+    ensureShortcut();
     const currentRender = ++renderRevision;
     const revision = latestSnapshot.revision;
     const presentation = computerUseOverlayPresentation(latestSnapshot, locale, controller.state());
@@ -108,20 +110,35 @@ export function createComputerUseOverlay(controls: ComputerUseOverlayControls, l
   const unsubscribe = computerUseCoordinator.subscribe((snapshot) => {
     if (latestSnapshot.userControlActive && !snapshot.userControlActive) windows.resetRendererFailures();
     latestSnapshot = snapshot;
+    if (!snapshot.userControlActive && snapshot.cleanupState === 'ready') controller.clearResolvedError();
     scheduleRender();
   });
-  const shortcutRegistered = globalShortcut.register(STOP_SHORTCUT, () => {
-    // The pill leaves between commands, but a turn that used the computer can
-    // still use it again: the emergency Stop reaches every such session.
-    if (latestPresentation.visible || latestPresentation.sessionIds.length > 0 || latestSnapshot.userControlActive) {
-      stop();
+  let shortcutRegistered = false;
+  let shortcutWarned = false;
+  /** Another process may own the chord; retry on every render until it is ours. */
+  const ensureShortcut = (): void => {
+    if (shortcutRegistered || disposed) return;
+    shortcutRegistered = globalShortcut.register(STOP_SHORTCUT, () => {
+      // The pill leaves between commands, but a turn that used the computer can
+      // still use it again: the emergency Stop reaches every such session.
+      if (
+        latestPresentation.visible ||
+        latestPresentation.sessionIds.length > 0 ||
+        latestSnapshot.userControlActive ||
+        latestSnapshot.cleanupState !== 'ready'
+      ) {
+        stop();
+      }
+    });
+    if (shortcutRegistered) shortcutWarned = false;
+    else if (!shortcutWarned) {
+      // The pill's Stop control still works, but the documented emergency exit
+      // does not, so the failure stays visible (once per state change).
+      shortcutWarned = true;
+      console.warn('[computer-overlay] stop_shortcut_unavailable', STOP_SHORTCUT);
     }
-  });
-  if (!shortcutRegistered) {
-    // Another process owns the chord. The pill's Stop control still works, but
-    // the documented emergency exit does not, so the failure stays visible.
-    console.warn('[computer-overlay] stop_shortcut_unavailable', STOP_SHORTCUT);
-  }
+  };
+  ensureShortcut();
   const onDisplaysChanged = (): void => {
     if (disposed) return;
     if (latestPresentation.visible) {

@@ -19,8 +19,12 @@ const HOST_ACTION_LISTS = [
 
 test('every held-key action reaches each host list that dispatches keys', async () => {
   // A held key is foreground-only, so the background sequence list is not one of
-  // its layers; every other list must still recognise it.
-  for (const file of HOST_ACTION_LISTS.filter((name) => name !== 'backend/sources/sequence.ps1')) {
+  // its layers, and action-sets no longer keeps a key list of its own; every
+  // other list must still recognise it.
+  const keyLists = HOST_ACTION_LISTS.filter(
+    (name) => name !== 'backend/sources/sequence.ps1' && name !== 'host/action-sets.ts'
+  );
+  for (const file of keyLists) {
     const source = await readFile(new URL(`../${file}`, import.meta.url), 'utf8');
     for (const action of ['key_down', 'key_up']) {
       assert.ok(source.includes(`'${action}'`), `${file} enumerates key actions but is missing ${action}`);

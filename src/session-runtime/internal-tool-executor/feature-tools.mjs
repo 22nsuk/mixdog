@@ -27,7 +27,15 @@ export function createFeatureToolHandlers({ rt, setupTool, officeToolsEnabled, m
     media: async (args, { callerCtx, callerCwd }) => {
       requireEnabled(callerCtx, mediaToolEnabled, 'media');
       const { executeMediaTool } = await import('../../runtime/media/tool.mjs');
-      return await executeMediaTool(args, { cwd: callerCwd, signal: signalFor(callerCtx) });
+      const { getSession } = await import('../../runtime/agent/orchestrator/session/manager/session-crud.mjs');
+      // Generation spend is attributed to the calling session in the usage ledger.
+      const sessionId = sessionIdFor(callerCtx) || '';
+      return await executeMediaTool(args, {
+        cwd: callerCwd,
+        signal: signalFor(callerCtx),
+        sessionId,
+        sourceType: (sessionId && getSession(sessionId)?.sourceType) || '',
+      });
     },
     tidy: async (args, { callerCtx, callerCwd }) => {
       requireEnabled(callerCtx, tidyToolEnabled, 'tidy');

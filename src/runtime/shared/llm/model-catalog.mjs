@@ -26,7 +26,7 @@ import {
   cachedProviderModelListsSync,
   providerCachedModelsSync,
 } from './provider-catalog-cache.mjs';
-import { litellmPricing, modelsDevPricing, PRICING_RATE_KEYS } from './model-pricing-rates.mjs';
+import { litellmMediaPricing, litellmPricing, modelsDevPricing, PRICING_RATE_KEYS } from './model-pricing-rates.mjs';
 // Both overlays are narrowed to their read surface before becoming resident;
 // the disk caches below still receive the full payload.
 import { projectLitellmCatalog, projectModelsDevCatalog } from './model-catalog-projection.mjs';
@@ -597,6 +597,7 @@ function _normalize(entry) {
     contextWindow: entry.max_input_tokens || entry.max_tokens || null,
     outputTokens: entry.max_output_tokens || null,
     ...litellmPricing(entry),
+    ...litellmMediaPricing(entry),
     ...(PRICING_RATE_KEYS.some((key) => fastPricing[key] != null) ? { fastPricing } : {}),
     ...(entry.off_peak_multiplier ? { offPeakMultiplier: entry.off_peak_multiplier } : {}),
     supportsVision: entry.supports_vision === true,

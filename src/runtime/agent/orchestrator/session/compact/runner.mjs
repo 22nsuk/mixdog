@@ -133,7 +133,12 @@ function summarySendOpts(opts) {
     onSteerMessage: undefined,
     signal: combinedSignal(opts.signal || opts.sendOpts?.signal || null, opts.timeoutMs || HANDOFF_TIMEOUT_MAX_MS),
   };
-  if (opts.sessionId) sendOpts.sessionId = `${opts.sessionId}:compact`;
+  // The `:compact` id isolates provider state (cache, socket pool); the
+  // spend still belongs to the source session.
+  if (opts.sessionId) {
+    sendOpts.sessionId = `${opts.sessionId}:compact`;
+    sendOpts.usageSessionId = opts.sessionId;
+  }
   if (opts.promptCacheKey || opts.sendOpts?.promptCacheKey) {
     sendOpts.promptCacheKey = `${opts.promptCacheKey || opts.sendOpts.promptCacheKey}:compact`;
   }

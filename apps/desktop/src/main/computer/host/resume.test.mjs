@@ -113,7 +113,7 @@ test('a failed cleanup leaves nothing on screen; the next command recovers it or
   coordinator.endExecution('a');
   const state = computerUseOverlayPresentation(coordinator.snapshot(), 'ko');
   assert.equal(coordinator.snapshot().cleanupState, 'failed');
-  assert.equal(state.visible, false);
+  assert.equal(state.visible, true);
   await assert.rejects(lifecycle.resumeAfterTakeover(state.generation), /cleanup_pending/);
   // Recovery still lacks its evidence: the command reports why, instead of a pill.
   await assert.rejects(

@@ -4,7 +4,7 @@ param(
     [string]$Duration = '',
     [double]$IntervalSeconds = 0,
     [switch]$SourceMode,
-    [int]$Port = 9341,
+    [int]$Port = 9342,
     [string]$ProjectPath
 )
 
@@ -69,18 +69,19 @@ if ($Iterations -eq 0 -and $durationMs -eq 0) {
     throw 'Specify at least one iteration or a duration.'
 }
 
+# The shared helper checks the CDP port and creates a unique isolated profile.
+# A nonzero exit (for example a busy port) aborts before any artifact exists.
+$profileHelper = Join-Path $PSScriptRoot 'dev-profile.mjs'
+$helperOutput = & node.exe $profileHelper --env-json --port $Port
+if ($LASTEXITCODE -ne 0) { throw "Isolated profile helper failed (exit $LASTEXITCODE) for port $Port." }
+$isolatedEnv = ($helperOutput -join "`n") | ConvertFrom-Json
+$profilePath = [string]$isolatedEnv.MIXDOG_DESKTOP_USER_DATA
+
 $electron = Join-Path $desktopDir 'node_modules\electron\dist\electron.exe'
 if (-not (Test-Path -LiteralPath $electron)) { throw "Electron is missing: $electron" }
 $electronVite = Join-Path $desktopDir 'node_modules\electron-vite\bin\electron-vite.js'
 if ($SourceMode -and -not (Test-Path -LiteralPath $electronVite)) {
     throw "electron-vite is missing: $electronVite"
-}
-
-$running = @(Get-CimInstance Win32_Process | Where-Object {
-        $_.ExecutablePath -eq $electron -and $_.CommandLine -notmatch '--type='
-    })
-if ($running.Count) {
-    throw "Close the existing Mixdog Desktop window before direct E2E. PID(s): $($running.ProcessId -join ', ')"
 }
 
 $artifactDir = Join-Path $desktopDir 'artifacts'
@@ -96,18 +97,26 @@ $runs = [Collections.Generic.List[object]]::new()
 $peakRssMb = 0.0
 $appProcess = $null
 $caughtError = $null
-$previousProjectsFile = [Environment]::GetEnvironmentVariable('MIXDOG_PROJECTS_FILE', 'Process')
-$previousDisableProjectMarkers = [Environment]::GetEnvironmentVariable('MIXDOG_DISABLE_PROJECT_MARKERS', 'Process')
-$isolatedProjectsFile = Join-Path $artifactDir "direct-e2e-$stamp.projects.json"
+$envPattern = '^(MIXDOG_|ELECTRON_)'
+$previousEnv = @{}
+foreach ($entry in [Environment]::GetEnvironmentVariables('Process').GetEnumerator()) {
+    if ([string]$entry.Key -match $envPattern) { $previousEnv[[string]$entry.Key] = [string]$entry.Value }
+}
+$originalLocation = (Get-Location).Path
 
 try {
-    # Keep real settings/sessions/runtime coverage, but isolate the project
-    # catalog and marker writes so a probe path can never become a user project.
-    $env:MIXDOG_PROJECTS_FILE = $isolatedProjectsFile
-    $env:MIXDOG_DISABLE_PROJECT_MARKERS = '1'
+    foreach ($key in @($previousEnv.Keys)) {
+        [Environment]::SetEnvironmentVariable($key, $null, 'Process')
+    }
+    foreach ($property in $isolatedEnv.PSObject.Properties) {
+        if ($property.Name -match $envPattern) {
+            [Environment]::SetEnvironmentVariable($property.Name, [string]$property.Value, 'Process')
+        }
+    }
+    Set-Location -LiteralPath $desktopDir
     $launcher = if ($SourceMode) { (Get-Command node.exe -ErrorAction Stop).Source } else { $electron }
     $launcherArgs = if ($SourceMode) {
-        @($electronVite, '.', '--remoteDebuggingPort', [string]$Port, '--clearScreen', 'false')
+        @("`"$electronVite`"", '.', '--remoteDebuggingPort', [string]$Port, '--clearScreen', 'false')
     }
     else {
         @('.', "--remote-debugging-port=$Port")
@@ -121,7 +130,8 @@ try {
     do {
         Start-Sleep -Milliseconds 100
         if ($appProcess.HasExited) {
-            throw "Mixdog exited before CDP became available (exit $($appProcess.ExitCode))."
+            $startupStderr = if (Test-Path -LiteralPath $stderrPath) { (Get-Content -LiteralPath $stderrPath -Raw) } else { '' }
+            throw "Mixdog exited before CDP became available (exit $($appProcess.ExitCode)). Startup stderr: $startupStderr"
         }
         try {
             $targets = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/json/list" -TimeoutSec 2
@@ -186,18 +196,15 @@ catch {
     $caughtError = $_
 }
 finally {
-    if ($null -eq $previousProjectsFile) {
-        Remove-Item Env:MIXDOG_PROJECTS_FILE -ErrorAction SilentlyContinue
+    foreach ($entry in [Environment]::GetEnvironmentVariables('Process').GetEnumerator()) {
+        if ([string]$entry.Key -match $envPattern) {
+            [Environment]::SetEnvironmentVariable([string]$entry.Key, $null, 'Process')
+        }
     }
-    else {
-        $env:MIXDOG_PROJECTS_FILE = $previousProjectsFile
+    foreach ($key in $previousEnv.Keys) {
+        [Environment]::SetEnvironmentVariable($key, $previousEnv[$key], 'Process')
     }
-    if ($null -eq $previousDisableProjectMarkers) {
-        Remove-Item Env:MIXDOG_DISABLE_PROJECT_MARKERS -ErrorAction SilentlyContinue
-    }
-    else {
-        $env:MIXDOG_DISABLE_PROJECT_MARKERS = $previousDisableProjectMarkers
-    }
+    Set-Location -LiteralPath $originalLocation
     $watch.Stop()
     if ($appProcess -and -not $appProcess.HasExited) {
         if ($SourceMode) {
@@ -226,7 +233,8 @@ finally {
         schemaVersion       = 1
         accepted            = $null -eq $caughtError
         error               = if ($caughtError) { [string]$caughtError.Exception.Message } else { $null }
-        mode                = if ($SourceMode) { 'source-direct-user-environment' } else { 'direct-user-environment' }
+        mode                = if ($SourceMode) { 'source-direct-isolated-profile' } else { 'direct-isolated-profile' }
+        profilePath         = $profilePath
         startedUtc          = $startedAt.ToString('o')
         completedUtc        = [DateTime]::UtcNow.ToString('o')
         elapsedSeconds      = [Math]::Round($watch.Elapsed.TotalSeconds, 3)

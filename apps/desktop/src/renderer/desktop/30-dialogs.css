@@ -634,23 +634,26 @@ html:not([data-mixdog-mobile-tabs]) :is(.session-sidebar, .session-sidebar-panel
   gap: var(--mx-rail-list-gap);
 }
 /* ── Rail type ramp ──────────────────────────────────────────────────────
-   Shared left/right/bottom ladder: panel 15 > category 14 > item/tab/group
-   13 > meta 12. Text walks the 12px gutter; trailing actions land on the
-   shared right column. */
+   Shared left/right/bottom ladder: panel title 16/600 > item and tab 14/400
+   > supporting line 13. Every group label above a list wears the
+   --mx-rail-label-* tokens (01-tokens.css), so the hierarchy no longer flips
+   as the panel changes (user: 텍스트 위계 정리, 규칙 정리). Text walks the
+   12px gutter; trailing actions land on the shared right column. */
 .session-sidebar .sidebar-recent-heading {
   padding-inline: 0;
 }
 .session-sidebar-panels .workflows-section-head h2,
 .utility-dock .workflows-section-head h2 {
-  font-size: var(--mx-font-category);
-  font-weight: var(--mx-weight-semibold);
-  color: var(--mx-text);
+  font-size: var(--mx-rail-label-size);
+  font-weight: var(--mx-rail-label-weight);
+  color: var(--mx-rail-label-ink);
 }
-/* Agent groups are session entities, not categories. Semibold distinguishes
-   the group label from its 13/400 agent cards without promoting it to 14px. */
+/* An Agents-dock session name groups its agents, so it wears the same group
+   label as every other panel heading. */
 .utility-dock .agent-activity-page .agent-session-heading h2 {
-  font-size: var(--mx-font-item);
-  font-weight: var(--mx-weight-semibold);
+  font-size: var(--mx-rail-label-size);
+  font-weight: var(--mx-rail-label-weight);
+  color: var(--mx-rail-label-ink);
 }
 
 /* ── Color roles ───────────────────────────────────────────────────────────

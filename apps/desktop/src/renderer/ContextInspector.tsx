@@ -54,7 +54,6 @@ const GROUP_LABELS: Record<string, string> = {
 // Groups a category's entries in a fixed reading order: what always costs
 // first, what was loaded next, and what costs nothing last.
 const GROUP_ORDER = ['native', 'active', 'loaded', 'overhead', 'deferred'];
-const COLLAPSE_THRESHOLD = 12;
 // Tool names shown on a turn's sub-line before the tail becomes "+N".
 const TOOL_SUMMARY_LIMIT = 3;
 
@@ -318,11 +317,9 @@ export function ContextInspector({
       return sumTokens(bRows) - sumTokens(aRows);
     });
     const grouped = ordered.length > 1;
-    let largest = '';
-    if (grouped) {
-      largest = ordered.reduce((best, current) => (sumTokens(current[1]) > sumTokens(best[1]) ? current : best))[0];
-    }
-    const isOpen = (key: string) => expanded[key] ?? (entries.length <= COLLAPSE_THRESHOLD || key === largest);
+    // Every group starts closed and opens only when its head is clicked
+    // (user: 카테고리 누르면 타입이 열려있냐 다 닫혀있지 않고).
+    const isOpen = (key: string) => expanded[key] ?? false;
     const row = (entry: Entry) => (
       <button
         type="button"

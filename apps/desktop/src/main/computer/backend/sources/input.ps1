@@ -675,7 +675,7 @@ function Get-PointArg($req) {
 # The user and the agent share one physical mouse and keyboard. Physical input
 # within this window means the user is working, so foreground actions hold
 # until the user pauses instead of fighting them for the cursor.
-$UserInputIdleMs = 1500
+$UserInputIdleMs = 3000
 $UserInputWaitMaxMs = 30000
 
 function Get-PhysicalInputIdleMs {

@@ -10,6 +10,7 @@ import { boundedSignal, timeoutSignal } from '../bounded-signal.mjs';
 import { decodeBase64Media, downloadPublicMedia } from '../download.mjs';
 import { mediaError } from '../lanes.mjs';
 import { upstreamError } from '../upstream-error.mjs';
+import { withReportedUsage, xaiUsage } from '../media-usage.mjs';
 
 const POLL_INTERVAL_MS = 4_000;
 const START_TIMEOUT_MS = 60_000;
@@ -72,6 +73,7 @@ export async function generateImage({ lane, model, prompt, options = {}, referen
     bytes: decodeBase64Media(entry.b64_json, 'xAI image'),
     mime: entry.mime_type || 'image/png',
     revisedPrompt: entry.revised_prompt || null,
+    usage: xaiUsage(data?.usage),
   };
 }
 
@@ -114,18 +116,29 @@ export async function generateVideo({ lane, model, prompt, options = {}, referen
     if (typeof data?.progress === 'number' && typeof onProgress === 'function') onProgress(data.progress);
     if (data?.status === 'done') {
       const url = data?.video?.url;
-      if (!url) throw mediaError('xAI video finished without a URL', 'MEDIA_EMPTY_RESULT', 502);
+      // The billed cost (when reported) is the price; seconds + resolution
+      // let the catalog's per-second rate price it otherwise.
+      const seconds = Number(data?.video?.duration) || duration;
+      const usage = { ...xaiUsage(data?.usage), seconds, resolution };
+      if (!url) throw withReportedUsage(mediaError('xAI video finished without a URL', 'MEDIA_EMPTY_RESULT', 502), usage);
+      const bytes = await downloadPublicMedia(url, { signal, label: 'xAI video' }).catch((error) => {
+        throw withReportedUsage(error, usage);
+      });
       return {
-        bytes: await downloadPublicMedia(url, { signal, label: 'xAI video' }),
+        bytes,
         mime: 'video/mp4',
-        durationSeconds: Number(data?.video?.duration) || duration,
+        durationSeconds: seconds,
+        usage,
       };
     }
     if (data?.status === 'failed' || data?.status === 'expired') {
-      throw mediaError(
-        `xAI video ${data.status}${data?.error?.code ? `: ${data.error.code}` : ''}`,
-        'MEDIA_UPSTREAM_FAILED',
-        502
+      throw withReportedUsage(
+        mediaError(
+          `xAI video ${data.status}${data?.error?.code ? `: ${data.error.code}` : ''}`,
+          'MEDIA_UPSTREAM_FAILED',
+          502
+        ),
+        xaiUsage(data?.usage)
       );
     }
   }

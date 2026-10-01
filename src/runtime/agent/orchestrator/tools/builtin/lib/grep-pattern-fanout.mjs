@@ -9,6 +9,7 @@ import { GREP_AUTO_CONTEXT_LINES, trueCasePath } from '../path-utils.mjs';
 import { buildGrepRgArgs } from '../search-builders.mjs';
 import { runRgWindowedLines } from '../native-search-runner.mjs';
 import { statReachable } from '../fs-reachability.mjs';
+import { runSharedNativeScan } from './shared-native-scan.mjs';
 import {
   dedupeFanoutMatchLines,
   formatGrepFanoutSections,
@@ -67,13 +68,15 @@ async function fanoutPrefilterCandidates(request) {
       multilineMode,
       withFilename: false,
     });
-    const pre = await request.runWindowedLines(
-      prefilterArgs,
-      { cwd: scope.cwd, signal: options.signal },
+    const pre = await runSharedNativeScan(request.runWindowedLines, {
+      cwd: scope.cwd,
+      argv: prefilterArgs,
       // Whole-scope fallback pass: the broad admission lane keeps it
       // from competing with interactive searches for disk bandwidth.
-      { offset: 0, limit: GREP_FANOUT_PREFILTER_FILE_CAP, summaryLimit: 0, bulkHint: true }
-    );
+      window: { offset: 0, limit: GREP_FANOUT_PREFILTER_FILE_CAP, summaryLimit: 0, bulkHint: true },
+      scopes: [grepResolvedPath],
+      signal: options.signal,
+    });
     return pre.complete && !pre.partial ? pre.lines : null;
   } catch {
     options.signal?.throwIfAborted();
@@ -245,11 +248,13 @@ async function streamCombinedLines(request, scope) {
   const combinedCap = Math.min(4000, Math.max(400, perPatternWindow * patterns.length));
   const combinedBulkHint = request.normalizedGlobPatterns.length === 0 && !request.fileType;
   try {
-    return await request.runWindowedLines(
-      combinedArgs,
-      { cwd: scope.cwd, signal: options.signal },
-      { offset: 0, limit: combinedCap, summaryLimit: 0, bulkHint: combinedBulkHint }
-    );
+    return await runSharedNativeScan(request.runWindowedLines, {
+      cwd: scope.cwd,
+      argv: combinedArgs,
+      window: { offset: 0, limit: combinedCap, summaryLimit: 0, bulkHint: combinedBulkHint },
+      scopes: [request.grepResolvedPath],
+      signal: options.signal,
+    });
   } catch {
     options.signal?.throwIfAborted();
     return null;

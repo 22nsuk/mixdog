@@ -8,6 +8,7 @@ import { countLabel, formatNativeSummary, kindLabel, traceNativeApply } from './
 import { unlink } from 'node:fs/promises';
 import { dirname as pathDirname } from 'node:path';
 import { performance } from 'node:perf_hooks';
+import { throwIfAborted } from '../../../../shared/abort-race.mjs';
 import {
   normalizeOutputPath,
   invalidateBuiltinResultCache,
@@ -154,6 +155,7 @@ export async function dispatchNativePatch({
         dryRun,
         fuzzy: fuzz > 0,
         readStateScope,
+        signal,
       });
       if (!/^Error:/i.test(String(recovered || '').trimStart())) {
         return `${recovered}\n[native transport unavailable; create-only patch completed with the JS engine]`;
@@ -326,19 +328,19 @@ function findParsedForRow(row, parsed, basePath) {
   return null;
 }
 
-async function applyJsParsedEntry(entry, basePath, { dryRun, fuzzy, readStateScope }) {
+async function applyJsParsedEntry(entry, basePath, { dryRun, fuzzy, readStateScope, signal }) {
   const kind = classifyEntry(entry);
   const headerName = entryHeaderName(entry, kind);
   const fullPath = resolveEntryPath(basePath, headerName);
   const displayPath = normalizeOutputPath(stripDiffPrefix(headerName));
-  if (kind === 'create') await applyJsCreateEntry(entry, fullPath, displayPath, { dryRun, readStateScope });
-  else if (kind === 'delete') await applyJsDeleteEntry(fullPath, displayPath, { dryRun, readStateScope });
-  else await applyJsUpdateEntry(entry, fullPath, displayPath, { dryRun, fuzzy, readStateScope });
+  if (kind === 'create') await applyJsCreateEntry(entry, fullPath, displayPath, { dryRun, readStateScope, signal });
+  else if (kind === 'delete') await applyJsDeleteEntry(fullPath, displayPath, { dryRun, readStateScope, signal });
+  else await applyJsUpdateEntry(entry, fullPath, displayPath, { dryRun, fuzzy, readStateScope, signal });
   const { added, removed } = countHunkChanges(entry.hunks);
   return { kind, fullPath, displayPath, added, removed };
 }
 
-async function applyJsCreateEntry(entry, fullPath, displayPath, { dryRun, readStateScope }) {
+async function applyJsCreateEntry(entry, fullPath, displayPath, { dryRun, readStateScope, signal }) {
   // Add File is create-only. atomicWrite checks the absent-target
   // expectation again so a file appearing after preflight is not replaced.
   assertAddTargetAbsent(fullPath, displayPath);
@@ -350,9 +352,11 @@ async function applyJsCreateEntry(entry, fullPath, displayPath, { dryRun, readSt
   }
   const content = joinTextLinesForPatch(addedLines);
   if (dryRun) return;
+  throwIfAborted(signal);
   mkdirSync(pathDirname(fullPath), { recursive: true });
   try {
     await atomicWrite(fullPath, content, {
+      signal,
       sessionId: readStateScope,
       expectedTargetSnapshot: { exists: false },
     });
@@ -369,16 +373,17 @@ async function applyJsCreateEntry(entry, fullPath, displayPath, { dryRun, readSt
   recordReadSnapshotForPath(fullPath, readStateScope, { source: 'apply_patch_js', isPartialView: false });
 }
 
-async function applyJsDeleteEntry(fullPath, displayPath, { dryRun, readStateScope }) {
+async function applyJsDeleteEntry(fullPath, displayPath, { dryRun, readStateScope, signal }) {
   lstatRegularPatchFile(fullPath, displayPath);
   if (dryRun) return;
+  throwIfAborted(signal);
   await unlink(fullPath);
   invalidateBuiltinResultCache([fullPath]);
   markCodeGraphDirtyPaths([fullPath]);
   clearReadSnapshotForPath(fullPath, readStateScope);
 }
 
-async function applyJsUpdateEntry(entry, fullPath, displayPath, { dryRun, fuzzy, readStateScope }) {
+async function applyJsUpdateEntry(entry, fullPath, displayPath, { dryRun, fuzzy, readStateScope, signal }) {
   const preMutationStat = lstatRegularPatchFile(fullPath, displayPath);
   const { writePath, snapshotStat } = resolvePatchWriteTarget(fullPath, displayPath, preMutationStat);
   // Rewrite path: decode by BOM, re-encode into the same codec, and keep every
@@ -393,11 +398,13 @@ async function applyJsUpdateEntry(entry, fullPath, displayPath, { dryRun, fuzzy,
   });
   const content = encodePatchTargetContent(joinTextLinesForPatch(updatedLines), rawEnc);
   if (dryRun) return;
+  throwIfAborted(signal);
   // The expected-target snapshot closes the read→write window: if anything
   // rewrote this file after we read it, the write fails instead of silently
   // clobbering it (and instead of inheriting a stale "body delivered" claim).
   try {
     await atomicWrite(writePath, content, {
+      signal,
       sessionId: readStateScope,
       expectedTargetSnapshot: snapshotStat
         ? {
@@ -427,13 +434,14 @@ async function applyJsUpdateEntry(entry, fullPath, displayPath, { dryRun, fuzzy,
   });
 }
 
-export async function dispatchJsPatchEntries({ rows, parsed, basePath, dryRun, fuzzy, readStateScope }) {
+export async function dispatchJsPatchEntries({ rows, parsed, basePath, dryRun, fuzzy, readStateScope, signal }) {
   const applied = [];
   for (const row of rows || []) {
     const entry = findParsedForRow(row, parsed, basePath);
     if (!entry) throw new Error(`apply_patch: missing parsed entry for ${row.displayPath}`);
     try {
-      applied.push(await applyJsParsedEntry(entry, basePath, { dryRun, fuzzy, readStateScope }));
+      throwIfAborted(signal);
+      applied.push(await applyJsParsedEntry(entry, basePath, { dryRun, fuzzy, readStateScope, signal }));
     } catch (err) {
       return `Error: ${err?.message || String(err)}`;
     }

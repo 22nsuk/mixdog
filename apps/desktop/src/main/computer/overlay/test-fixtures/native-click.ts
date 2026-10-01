@@ -9,7 +9,11 @@ export type NativeOverlayClickMode = 'desktop-hit-test' | 'locked-session';
  * the user's cursor, activate a window, or inject global desktop input. */
 export async function nativeOverlayClick(
   windowId: bigint,
-  point: { x: number; y: number }
+  point: { x: number; y: number },
+  /** Deliver the press the way Windows does when the pill's top-level window owns
+   *  the hit test: that window answers activation with MA_NOACTIVATEANDEAT, so the
+   *  button-down is discarded and only the release arrives. */
+  eatenPress = false
 ): Promise<NativeOverlayClickMode> {
   const script = `
 $ErrorActionPreference = 'Stop'
@@ -51,7 +55,7 @@ public static class OverlayClickFixture {
     StringBuilder className = new StringBuilder(160); GetClassName(window, className, className.Capacity);
     return className.ToString();
   }
-  public static string Click(long handle, int x, int y, uint owner, int waitMs) {
+  public static string Click(long handle, int x, int y, uint owner, int waitMs, bool eatenPress) {
     SetThreadDpiAwarenessContext(new IntPtr(-4));
     IntPtr root = new IntPtr(handle);
     uint pid; GetWindowThreadProcessId(root, out pid);
@@ -96,14 +100,17 @@ public static class OverlayClickFixture {
     // Windows asks this before delivering a real click to an inactive window.
     // Posting button messages alone would miss a control that eats activation clicks.
     UIntPtr activation;
-    if (SendMessageTimeout(target, 0x0021, new UIntPtr(unchecked((ulong)root.ToInt64())),
+    if (SendMessageTimeout(eatenPress ? root : target, 0x0021, new UIntPtr(unchecked((ulong)root.ToInt64())),
         new IntPtr(0x02010001), 3, 1000, out activation) == IntPtr.Zero)
       throw new Exception("fixture mouse activation check timed out");
-    if (activation.ToUInt64() != 3)
-      throw new Exception("fixture must accept a click without activation: WM_MOUSEACTIVATE=" + activation.ToUInt64());
+    // 3 = MA_NOACTIVATE, 4 = MA_NOACTIVATEANDEAT; anything else activates the pill.
+    ulong answer = activation.ToUInt64();
+    if (answer != 3 && answer != 4 || eatenPress && answer != 4)
+      throw new Exception("fixture must accept a click without activation: WM_MOUSEACTIVATE=" + answer);
     IntPtr packed = new IntPtr((point.Y << 16) | (point.X & 65535));
+    // MA_NOACTIVATEANDEAT discards the button-down; Windows still delivers the move and release.
     if (!PostMessage(target, 0x0200, IntPtr.Zero, packed)
-        || !PostMessage(target, 0x0201, new IntPtr(1), packed))
+        || (answer == 3 && !PostMessage(target, 0x0201, new IntPtr(1), packed)))
       throw new Exception("fixture mouse press failed");
     // A person's press spans frames. Back-to-back messages hide an :active
     // animation that moves the hit target away before the button is released.
@@ -115,7 +122,7 @@ public static class OverlayClickFixture {
   }
 }
 '@
-Write-Output ('OVERLAY_CLICK_MODE ' + [OverlayClickFixture]::Click(${windowId}, ${point.x}, ${point.y}, ${process.pid}, 3000))
+Write-Output ('OVERLAY_CLICK_MODE ' + [OverlayClickFixture]::Click(${windowId}, ${point.x}, ${point.y}, ${process.pid}, 3000, $${eatenPress}))
 `;
   const { stdout } = await promisify(execFile)(
     'powershell.exe',

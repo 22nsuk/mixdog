@@ -9,7 +9,6 @@ import { computerActionsWith, computerActionHas } from '../../../../../../src/ru
 export const HOST_WARMUP_SESSION_ID = '__computer_host_warmup__';
 
 export const OBSERVATION_BOUND_INPUT_ACTIONS = new Set(computerActionsWith('observationBound'));
-export const FOCUS_CONTINUATION_ACTIONS = new Set(computerActionsWith('focusContinuation'));
 export const AUTO_CAPTURE_ACTIONS = new Set(computerActionsWith('autoCapture'));
 export const READ_ACTIONS = new Set(computerActionsWith('hostRead'));
 
@@ -28,10 +27,6 @@ export const PIXEL_INPUT_ACTIONS = new Set([
   'mouse_up',
   'mouse_move',
 ]);
-
-/** Keyboard actions whose foreground delivery keeps focus on the target for
- *  the follow-up instead of restoring the previous foreground. */
-export const FOREGROUND_KEY_ACTIONS = new Set(['key', 'key_down', 'key_up', 'type']);
 
 export function isComputerLifecycleControl(command: ComputerCommand): boolean {
   return computerActionHas(String(command.action || ''), 'lifecycle');

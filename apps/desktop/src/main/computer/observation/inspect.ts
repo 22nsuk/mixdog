@@ -103,7 +103,7 @@ function diagnoseReport(diagnosis: Diagnosis): ComputerCommandResult {
             }
           : {}),
         focus_cursor_restore: false,
-        focus_recovery: 'session_release',
+        focus_recovery: 'immediate',
         cursor_recovery: 'restore_position_and_appearance',
         app_owned_electron_text: true,
         browser_content_route: 'preserve_selected_session',

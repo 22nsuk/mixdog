@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -34,6 +35,7 @@ import { shellJobsStatusEqual } from '../shared/shell-jobs-status.ts';
 import { shouldOfferSessionInheritance } from './session-inheritance.ts';
 import { DESKTOP_TOAST_EVENT } from './desktop-toasts.tsx';
 import { AGENT_GROUP_EXPANSION_EVENT, AgentGroupsMenu } from './agent-group-visibility.tsx';
+import i18n from './i18n.ts';
 
 function installDom() {
   const { restore } = installTestDom(null, { jsdom: { url: 'http://localhost/' }, expose: ['navigator'] });
@@ -46,6 +48,24 @@ function installDom() {
 test('missing liveness is unknown, and execution capacity waits are queued', () => {
   assert.equal(desktopAgentActivityState({ status: 'unknown', stage: 'unknown' }), 'unknown');
   assert.equal(desktopAgentActivityState({ status: 'running', stage: 'resource_wait' }), 'queued');
+});
+
+test('shell waits preserve running, queued, unknown and cancellation states', () => {
+  for (const [status, expected] of [
+    ['running', 'running'],
+    ['queued', 'queued'],
+    ['unknown', 'unknown'],
+    ['cancelled', 'cancelled'],
+    ['cancel-unconfirmed', 'cancel-unconfirmed'],
+  ]) {
+    assert.equal(
+      desktopAgentActivityState({ status, stage: status, shellJobCount: 1 }, { unread: true }),
+      expected
+    );
+  }
+  assert.equal(desktopAgentActivityState({ status: 'idle', shellJobCount: 1 }, { unread: true }), 'waiting');
+  assert.equal(desktopAgentActivityState({ status: 'idle', shellJobCount: 0 }, { unread: true }), 'done');
+  assert.equal(desktopAgentActivityState({ status: 'idle', shellJobCount: 0 }), 'idle');
 });
 
 async function expandAllAgentGroups() {
@@ -1260,6 +1280,82 @@ test('Agents keep sibling statuses independent under one owner', async () => {
   }
 });
 
+test('Korean Agents pane distinguishes shell work waits, unread completion and idle after reading', async () => {
+  const dom = installDom();
+  const previousLanguage = i18n.language;
+  i18n.addResourceBundle(
+    'ko',
+    'translation',
+    JSON.parse(readFileSync(new URL('./locales/ko.json', import.meta.url), 'utf8'))
+  );
+  const agent = (sessionId, parentSessionId, shellJobCount = 0) => ({
+    tag: sessionId,
+    agent: parentSessionId ? 'worker' : 'lead',
+    sessionId,
+    ownerSessionId: parentSessionId ? 'lead-shell' : sessionId,
+    parentSessionId,
+    status: 'idle',
+    stage: 'idle',
+    shellJobCount,
+  });
+  let pool = [
+    agent('lead-shell', null),
+    agent('worker-shell', 'lead-shell', 1),
+    agent('unrelated', null),
+  ];
+  let push;
+  window.mixdogDesktop = {
+    async listAgentPool() {
+      return pool;
+    },
+    subscribeAgentPool(listener) {
+      push = listener;
+      return () => {};
+    },
+  };
+  const sessions = ['lead-shell', 'unrelated'].map((id) => ({
+    id, title: id, preview: '', updatedAt: 1, messageCount: 1,
+  }));
+  const renderPane = async (unreadSessionIds) => {
+    await act(async () => dom.root.render(React.createElement(AgentActivityPane, {
+      active: false, sessions, unreadSessionIds,
+    })));
+  };
+  const assertStatus = (id, state, text) => {
+    const status = document.querySelector(`[data-agent-session-id="${id}"] .agent-activity-elapsed`);
+    assert.equal(status.dataset.state, state);
+    assert.equal(status.textContent, text);
+  };
+  const setShellCounts = async (lead, worker) => {
+    pool = pool.map((entry) => ({
+      ...entry,
+      shellJobCount: entry.sessionId === 'lead-shell' ? lead : entry.sessionId === 'worker-shell' ? worker : 0,
+    }));
+    await act(async () => push(pool));
+  };
+  try {
+    await i18n.changeLanguage('ko');
+    await renderPane(new Set(['lead-shell', 'worker-shell']));
+    // A folded child's shell still keeps its parent waiting.
+    assertStatus('lead-shell', 'waiting', '작업 대기');
+    assertStatus('unrelated', 'idle', '대기 중');
+    await expandAllAgentGroups();
+    assertStatus('worker-shell', 'waiting', '작업 대기');
+    await setShellCounts(1, 0);
+    assertStatus('lead-shell', 'waiting', '작업 대기');
+    assertStatus('worker-shell', 'done', '작업 완료');
+    await setShellCounts(0, 0);
+    assertStatus('lead-shell', 'done', '작업 완료');
+    await renderPane(new Set());
+    assertStatus('lead-shell', 'idle', '대기 중');
+    assertStatus('worker-shell', 'idle', '대기 중');
+  } finally {
+    await act(async () => dom.root.unmount());
+    await i18n.changeLanguage(previousLanguage);
+    dom.close();
+  }
+});
+
 for (const outcome of ['idle', 'cancelled']) {
   test(`Agents wait for nested work, including folded rows, until it is ${outcome}`, async () => {
     const dom = installDom();
@@ -1323,28 +1419,28 @@ for (const outcome of ['idle', 'cancelled']) {
     try {
       // Waiting is real work, not an unread-message indicator.
       await renderPane(new Set());
-      assertStatus('lead-a', 'waiting', 'Waiting for agents');
+      assertStatus('lead-a', 'waiting', 'Waiting for tasks');
       await expandAllAgentGroups();
-      assertStatus('parent-a', 'waiting', 'Waiting for agents');
+      assertStatus('parent-a', 'waiting', 'Waiting for tasks');
       assertStatus('worker-a', 'queued', 'Queued');
       await renderPane(new Set(['lead-a', 'parent-a', 'worker-a']));
-      assertStatus('lead-a', 'waiting', 'Waiting for agents');
-      assertStatus('parent-a', 'waiting', 'Waiting for agents');
+      assertStatus('lead-a', 'waiting', 'Waiting for tasks');
+      assertStatus('parent-a', 'waiting', 'Waiting for tasks');
 
       await arrow('parent-a', 'ArrowLeft');
       assert.equal(row('worker-a'), null);
       await setWorkerStatus('running');
-      assertStatus('lead-a', 'waiting', 'Waiting for agents');
-      assertStatus('parent-a', 'waiting', 'Waiting for agents');
+      assertStatus('lead-a', 'waiting', 'Waiting for tasks');
+      assertStatus('parent-a', 'waiting', 'Waiting for tasks');
       // The root and group share one fold; a second collapse remains harmless.
       await arrow('lead-a', 'ArrowLeft');
       await arrow('lead-a', 'ArrowLeft');
       assert.equal(row('parent-a'), null);
-      assertStatus('lead-a', 'waiting', 'Waiting for agents');
+      assertStatus('lead-a', 'waiting', 'Waiting for tasks');
 
       if (outcome === 'cancelled') {
         await setWorkerStatus('cancel-unconfirmed');
-        assertStatus('lead-a', 'waiting', 'Waiting for agents');
+        assertStatus('lead-a', 'waiting', 'Waiting for tasks');
       }
       await setWorkerStatus(outcome);
       assertStatus('lead-a', 'done', 'Task complete');
@@ -1532,7 +1628,7 @@ test('cancellation is its own lifecycle state, never queued, running, done or id
 });
 
 test("waiting for descendants overrides completion, not the parent's own work or cancellation", () => {
-  const options = { unread: true, waitingForAgents: true };
+  const options = { unread: true, waitingForTasks: true };
   assert.equal(desktopAgentActivityState({ status: 'idle' }, options), 'waiting');
   assert.equal(desktopAgentActivityState({ status: 'completed' }, options), 'waiting');
   assert.equal(desktopAgentActivityState({ status: 'queued' }, options), 'queued');

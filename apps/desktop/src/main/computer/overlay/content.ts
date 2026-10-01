@@ -91,14 +91,27 @@ export function overlayScript(locale = 'en'): string {
         if (sequence === requestSequence) { pending = ''; render(); }
       }
     };
-    stopControl.onpointerdown = report('stop');
-    stopControl.onclick = () => { void send('stop'); };
-    resumeControl.onpointerdown = report('resume');
-    resumeControl.onclick = () => { void send('resume'); };
+    // This window never activates, and Windows lets it answer a press with
+    // MA_NOACTIVATEANDEAT: the button-down is discarded and only the release
+    // arrives. A release on a control that saw no press is that click.
+    let pressed = null;
+    const bind = (control, action) => {
+      control.onpointerdown = () => { pressed = control; report(action)(); };
+      control.onpointerup = () => {
+        if (pressed === control) return;
+        report(action)();
+        void send(action);
+      };
+      control.onclick = () => { void send(action); };
+    };
+    bind(stopControl, 'stop');
+    bind(resumeControl, 'resume');
+    document.addEventListener('pointerup', () => { pressed = null; });
     window.mixdogComputerOverlay = (next) => {
       if (next.renderRevision < renderedRevision) return;
       renderedRevision = next.renderRevision;
-      if (next.generation !== state.generation) failed = false;
+      // The host keeps every control failure as attention while it matters.
+      if (next.generation !== state.generation || !next.attention) failed = false;
       state = next;
       document.body.classList.remove('hiding');
       document.documentElement.style.setProperty('--accent', state.accent || '#58a6ff');

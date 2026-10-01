@@ -24,6 +24,7 @@ import {
 } from './retry-classifier.mjs';
 import { _classifyMidstreamError, _midstreamSleepWithAbort, stampAnthropicStreamOutcome } from './anthropic-sse.mjs';
 import { notifyCurrentAnthropicRateLimit } from './admission-scheduler.mjs';
+import { noteAbandonedUsage } from '../../../shared/llm/usage-context.mjs';
 
 export function createAnthropicMidState(attemptIndex) {
   return {
@@ -144,7 +145,7 @@ export function createAnthropicMidstreamRecovery({
    * `{ retry: false, value }` when a non-streaming replay produced the turn,
    * and throws the (stamped) error when the turn is over.
    */
-  const onStreamError = async ({ err, midState, controller, response, attemptIndex }) => {
+  const decideStreamError = async ({ err, midState, controller, response, attemptIndex }) => {
     // Canonical stream-outcome contract: stamp before ANY safety
     // decision below. The parser's stamped verdict (when present)
     // is authoritative — coarse midState.partialToolCall must not
@@ -307,6 +308,14 @@ export function createAnthropicMidstreamRecovery({
       } catch {}
     }
     throw err;
+  };
+
+  // A thrown error carries its partial usage to the send's accounting; an
+  // attempt replaced by a retry or a non-streaming replay is noted here.
+  const onStreamError = async (args) => {
+    const decision = await decideStreamError(args);
+    noteAbandonedUsage(args.err?.partialUsage, args.err?.partialModel);
+    return decision;
   };
 
   const exhaustedError = () => firstAttemptError || new Error(unreachableMessage);

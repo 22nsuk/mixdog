@@ -172,6 +172,26 @@ void app
         stopReceived = undefined;
       }
       assert.equal(stopped, 2, 'native Stop click must survive the takeover state change');
+      // Where the top-level pill window owns the hit test, Windows discards the
+      // button-down; the release alone must still reach Stop.
+      const eatenAck = new Promise<void>((resolve, reject) => {
+        stopReceived = resolve;
+        nativeDeadline = setTimeout(() => reject(new Error('eaten-press Stop acknowledgement missing')), 10_000);
+      });
+      try {
+        await Promise.all([
+          nativeOverlayClick(
+            handle.length === 8 ? handle.readBigUInt64LE() : BigInt(handle.readUInt32LE()),
+            screen.dipToScreenPoint({ x: windowX + point.x, y: windowY + point.y }),
+            true
+          ),
+          eatenAck,
+        ]);
+      } finally {
+        clearTimeout(nativeDeadline);
+        stopReceived = undefined;
+      }
+      assert.equal(stopped, 3, 'a release whose press Windows discarded must still stop');
       assert.equal(paused, 0, 'the overlay never pauses');
       assert.equal(window.isFocused(), false, 'Stop must not activate its window');
       window.hide();
@@ -256,7 +276,7 @@ void app
       }
       await clickStop(revision++);
       assert.equal(paused, 0);
-      assert.equal(stopped, 3);
+      assert.equal(stopped, 4);
       assert.equal(window.isVisible(), false);
       await emit(
         process.stdout,

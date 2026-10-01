@@ -280,7 +280,7 @@ function jobView(job) {
   };
 }
 
-async function generate(args, { cwd, signal, deps }) {
+async function generate(args, { cwd, signal, deps, sessionId, sourceType }) {
   const kind = clean(args.kind);
   if (!MEDIA_KINDS.includes(kind)) throw new MediaToolError(`generate requires kind: ${MEDIA_KINDS.join(' | ')}`);
   const prompt = clean(args.prompt);
@@ -314,7 +314,16 @@ async function generate(args, { cwd, signal, deps }) {
     quality: clean(args.quality),
   });
   const references = await readReferences(args.references, cwd, model.controls);
-  const started = await jobs.startMediaJob({ lane: lane.id, kind, model: modelId, prompt, options, references });
+  const started = await jobs.startMediaJob({
+    lane: lane.id,
+    kind,
+    model: modelId,
+    prompt,
+    options,
+    references,
+    sessionId,
+    sourceType,
+  });
   const base = { lane: lane.id, model: modelId, laneSource, options, referenceCount: references.length, prompt };
   if (args.wait === false) {
     return {
@@ -371,7 +380,10 @@ async function cancel(args, { deps }) {
   return { ok: true, ...jobView(jobs.getMediaJob(id)), canceled: canceled === true };
 }
 
-export async function executeMediaTool(args = {}, { cwd = process.cwd(), signal = null, deps = null } = {}) {
+export async function executeMediaTool(
+  args = {},
+  { cwd = process.cwd(), signal = null, deps = null, sessionId = '', sourceType = '' } = {}
+) {
   const action = clean(args.action).toLowerCase();
   try {
     if (!MEDIA_ACTIONS.includes(action))
@@ -388,7 +400,7 @@ export async function executeMediaTool(args = {}, { cwd = process.cwd(), signal 
         ),
       });
     }
-    if (action === 'generate') return mediaToolResult(await generate(args, { cwd, signal, deps }));
+    if (action === 'generate') return mediaToolResult(await generate(args, { cwd, signal, deps, sessionId, sourceType }));
     if (action === 'status') return mediaToolResult(await status(args, { cwd, deps }));
     return mediaToolResult(await cancel(args, { deps }));
   } catch (error) {

@@ -65,8 +65,11 @@ export function createToolGate({ loadConfig, loadRules, runEventHandlers, emit, 
       return standardDecision(agg, input) ?? legacyDecision(cfg, input);
     } catch (error) {
       throwIfAborted(signal);
-      emit('hook:error', { name: input.name || input.tool_name || 'tool', error: error?.message || String(error) });
-      return null;
+      const message = error?.message || String(error);
+      emit('hook:error', { name: input.name || input.tool_name || 'tool', error: message });
+      const reason = `PreToolUse policy check failed: ${message}`;
+      emit('tool:deny', { ...identityOf(input), reason });
+      return { action: 'deny', reason };
     }
   };
 }

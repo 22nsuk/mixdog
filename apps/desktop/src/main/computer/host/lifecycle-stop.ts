@@ -63,10 +63,24 @@ export function createSessionStop(
     });
   }
 
-  async function recoverLatchedCleanup(): Promise<void> {
+  /** `userAcknowledged`: the user pressed Stop/Resume, which acknowledges they
+   *  have recovered the affected window, so the unconfirmed-release latches
+   *  clear once the sweep below confirms. Automatic recoveries never do. */
+  async function recoverLatchedCleanup(userAcknowledged = false): Promise<void> {
+    // An idle resident worker never exits on its own — the warmup worker, or
+    // one a recovery read just started. Waiting for it is a guaranteed timeout,
+    // so retire every worker no command is running on before demanding exit.
+    for (const [sessionId, child] of [...host.powerShellBySession]) {
+      if (activeExecutionsBySession.has(sessionId)) continue;
+      host.retirePowerShell(child, new Error('computer_worker_reclaimed: cleanup recovery retired an idle worker'));
+      host.releaseSessionState(sessionId, host.releaseCaptureSession);
+    }
     const workersExited = host.waitForResidentWorkersExit
       ? await host.waitForResidentWorkersExit(STOP_WORKER_EXIT_TIMEOUT_MS)
       : true;
+    // Workers have exited; unconfirmed elevated sessions would otherwise keep
+    // listing as live. A still-pending elevated job is left in place.
+    if (workersExited && userAcknowledged) host.releaseUnconfirmedElevated?.();
     if (!workersExited || host.elevatedSessionIds().length > 0) {
       throw new Error(
         'computer_abort_cleanup_unconfirmed: input workers are still running; press Ctrl+Alt+Esc (emergency Stop) again once they exit'
@@ -77,6 +91,7 @@ export function createSessionStop(
     }
     // The global ownership ledger cannot prove a target-local window message
     // released its key/button. Worker exit must not erase that uncertainty.
+    if (userAcknowledged) host.clearUnconfirmedBackgroundInput?.();
     if (host.hasUnconfirmedBackgroundInput?.()) {
       throw new Error(
         'computer_background_cleanup_unconfirmed: target-local input release is unconfirmed; user recovery of the affected window is required before an approved host restart'
@@ -90,7 +105,6 @@ export function createSessionStop(
   }
 
   async function stopAllComputerSessions(resume = true, turnsStopped?: Promise<void>): Promise<void> {
-    const generation = coordinator.snapshot().takeoverGeneration;
     const sessionIds = new Set([
       ...host.powerShellBySession.keys(),
       ...host.elevatedSessionIds(),
@@ -107,7 +121,7 @@ export function createSessionStop(
           .map((sessionId) => abortComputerSession({ action: 'session_abort', session_id: sessionId }))
       );
       if (stopped.some((result) => result.status === 'rejected') || coordinator.snapshot().cleanupState === 'failed') {
-        await recoverLatchedCleanup();
+        await recoverLatchedCleanup(resume);
       }
     };
     // Daemon cancellation cannot serialize or bypass native cleanup. Either
@@ -120,7 +134,9 @@ export function createSessionStop(
     }
     if (resume) {
       stopUnconfirmed = false;
-      coordinator.resumeAfterUserTakeover(generation);
+      // Stop has ended every session, so it releases whatever pause is current:
+      // aborting a latched session re-pauses (a newer generation) on its own.
+      coordinator.resumeAfterUserTakeover(coordinator.snapshot().takeoverGeneration);
     }
   }
 
@@ -149,7 +165,7 @@ export function createSessionStop(
   /** The overlay's Resume: a latched cleanup gets its verified recovery first,
    *  then the paused task continues from the generation the user saw. */
   async function resumeByUser(generation: number): Promise<void> {
-    if (coordinator.snapshot().cleanupState === 'failed') await recoverLatchedCleanup();
+    if (coordinator.snapshot().cleanupState === 'failed') await recoverLatchedCleanup(true);
     await resumeAfterTakeover(generation);
   }
 

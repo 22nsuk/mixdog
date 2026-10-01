@@ -124,6 +124,10 @@ const LITELLM_NUMBER_FIELDS = [
   'output_cost_per_token',
   'cache_read_input_token_cost',
   'cache_creation_input_token_cost',
+  'output_cost_per_image',
+  'output_cost_per_image_token',
+  'output_cost_per_video_token',
+  'output_cost_per_second',
 ];
 // _normalize tests each of these with `=== true`, so only a true value carries
 // information; anything else is indistinguishable from absent.
@@ -148,9 +152,10 @@ function projectLitellmRow(row) {
   // litellmPricing), not just the base price.
   for (const [field, value] of Object.entries(row)) {
     if (
-      /^(?:input_cost_per_token|output_cost_per_token|cache_read_input_token_cost|cache_creation_input_token_cost)(?:_above_\d+k_tokens)?(?:_priority)?$/.test(
+      (/^(?:input_cost_per_token|output_cost_per_token|cache_read_input_token_cost|cache_creation_input_token_cost)(?:_above_\d+k_tokens)?(?:_priority)?$/.test(
         field
-      ) &&
+      ) ||
+        /^output_cost_per_second_\w+$/.test(field)) &&
       typeof value === 'number' &&
       Number.isFinite(value)
     )

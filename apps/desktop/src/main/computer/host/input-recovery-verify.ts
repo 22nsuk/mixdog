@@ -9,7 +9,6 @@
  */
 import { elapsedMs } from '../shared/common';
 import type { ComputerCommand } from '../shared/types';
-import { FOCUS_CONTINUATION_ACTIONS, FOREGROUND_KEY_ACTIONS } from './action-sets';
 import type { InputRecoveryState } from './execution-state';
 import { readInputRecovery } from './input-recovery-read';
 import type { InputResolutionHost } from './input-resolution';
@@ -25,19 +24,19 @@ interface RecoveryCheck {
   inputRecovery: InputRecoveryState;
   timings: Record<string, number>;
   nativeResult: Record<string, unknown>;
-  /** Visible input retains target focus for the action that follows it. */
+  /** Focus stays on the target only for an explicit focus request or the next
+   *  step of the same sequence; otherwise the user's window gets it back. */
   preserveFocusForFollowup: boolean;
   /** More input follows in this sequence, so the pointer stays where it acts. */
   holdCursor: boolean;
   readbackError: string;
 }
 
-function preservesFocusForFollowup(command: ComputerCommand): boolean {
-  return (
-    command.action === 'focus_window' ||
-    FOCUS_CONTINUATION_ACTIONS.has(String(command.action || '')) ||
-    (command.delivery === 'foreground' && FOREGROUND_KEY_ACTIONS.has(command.action))
-  );
+/** Between separate commands the agent thinks for seconds while the user keeps
+ *  typing; focus left on the target would take that typing. Every foreground
+ *  command re-activates its own target, so nothing needs it held. */
+function preservesFocusForFollowup(command: ComputerCommand, inputContinues: boolean): boolean {
+  return command.action === 'focus_window' || inputContinues;
 }
 
 const withReadback = (check: RecoveryCheck) => (check.readbackError ? { readback_error: check.readbackError } : {});
@@ -70,11 +69,17 @@ function readbackVerdict(check: RecoveryCheck, current: InputRecoveryState): Ver
     };
   }
   if (current.targetExists === false) {
+    // Focus that belongs back with the user's own window is returned by the
+    // general restore; the owner is home only when the closed window held it.
+    if (!check.preserveFocusForFollowup && inputRecovery.restoreWindowId !== check.targetWindowId) return null;
     // The owner was recorded before dispatch, not inferred from the new
     // foreground. A missing observer or intervening user input still fails above.
     const returnedToOwner =
       Boolean(inputRecovery.targetOwnerWindowId) && current.foregroundWindowId === inputRecovery.targetOwnerWindowId;
     const cursorUnchanged = cursorMatches(current, inputRecovery);
+    // A click that closed its window still borrowed the pointer; focus is
+    // already home, so the caller puts only the pointer back.
+    if (returnedToOwner && !cursorUnchanged) return null;
     return {
       ok: returnedToOwner && cursorUnchanged,
       target_closed: true,
@@ -210,7 +215,7 @@ export async function verifyInputRecovery(
     inputRecovery,
     timings,
     nativeResult,
-    preserveFocusForFollowup: preservesFocusForFollowup(command),
+    preserveFocusForFollowup: preservesFocusForFollowup(command, holdCursor),
     holdCursor,
     readbackError: '',
   };
@@ -231,6 +236,23 @@ export async function verifyInputRecovery(
     }
     const early = readbackVerdict(check, current);
     if (early) return early;
+    if (current.targetExists === false && check.preserveFocusForFollowup) {
+      ({ current } = await reassertInputState(host, check, current));
+      const observed =
+        current.inputObserverReady === true &&
+        current.inputMonitorId === inputRecovery.inputMonitorId &&
+        current.inputUserSequence === inputRecovery.inputUserSequence;
+      const returnedToOwner = current.foregroundWindowId === inputRecovery.targetOwnerWindowId;
+      const cursorRestored = cursorMatches(current, inputRecovery);
+      return {
+        ok: observed && returnedToOwner && cursorRestored,
+        target_closed: true,
+        focus_preserved_for_followup: returnedToOwner,
+        cursor_restored: cursorRestored,
+        reasserted: true,
+        ...withReadback(check),
+      };
+    }
     let reasserted = false;
     let restoredTarget = '';
     const focusDrifted = current.foregroundWindowId !== inputRecovery.restoreWindowId;

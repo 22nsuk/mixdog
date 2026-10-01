@@ -7,7 +7,7 @@ import type { WorkspaceTab } from './nav-types';
  * its favicon+close floor while inactive tabs interpolate down to the
  * sliver. The rounded-down remainder is re-granted +1px
  * left-to-right. */
-const TAB_STANDARD_WIDTH = 160;
+const TAB_STANDARD_WIDTH = 200;
 const TAB_MIN_ACTIVE_WIDTH = 56;
 const TAB_MIN_INACTIVE_WIDTH = 28;
 /* Glyph-only floor, matched by the tab's CSS min-width. The sliver floor

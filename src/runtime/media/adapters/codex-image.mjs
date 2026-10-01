@@ -12,6 +12,7 @@ import { timeoutSignal } from '../bounded-signal.mjs';
 import { decodeBase64Media } from '../download.mjs';
 import { mediaError } from '../lanes.mjs';
 import { upstreamError } from '../upstream-error.mjs';
+import { responsesUsage, withReportedUsage } from '../media-usage.mjs';
 import { CODEX_OAUTH_ORIGINATOR, CODEX_RESPONSES_URL } from '../../agent/orchestrator/providers/openai-oauth.mjs';
 import {
   codexUserAgent,
@@ -32,6 +33,12 @@ function imageTool(options = {}) {
 
 function collectImage(event, state) {
   const item = event?.item;
+  // Terminal Responses events carry the orchestrator's token usage. It does
+  // not include the hosted image tool's own tokens.
+  if (['response.completed', 'response.failed', 'response.incomplete'].includes(event?.type)) {
+    state.usage = responsesUsage(event?.response?.usage) || state.usage;
+    return;
+  }
   if (event?.type === 'response.output_item.done' && item?.type === 'image_generation_call') {
     if (typeof item.result === 'string' && item.result.length > 0) state.final = item.result;
     if (typeof item.model === 'string') state.actualModel = item.model;
@@ -142,12 +149,16 @@ export async function generateImage(
 
   const b64 = state.final || state.partial;
   if (!b64) {
-    throw mediaError(`ChatGPT returned no image data${failure ? `: ${failure}` : ''}`, 'MEDIA_EMPTY_RESULT', 502);
+    throw withReportedUsage(
+      mediaError(`ChatGPT returned no image data${failure ? `: ${failure}` : ''}`, 'MEDIA_EMPTY_RESULT', 502),
+      state.usage
+    );
   }
   return {
     bytes: decodeBase64Media(b64, 'ChatGPT image'),
     mime: 'image/png',
     revisedPrompt: state.revisedPrompt,
     actualModel: state.actualModel || null,
+    usage: state.usage || null,
   };
 }

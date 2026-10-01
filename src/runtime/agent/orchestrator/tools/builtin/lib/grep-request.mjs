@@ -90,7 +90,7 @@ function rebaseAbsoluteGlob(glob, rootFwd) {
   };
 }
 
-async function resolveGrepScope(args, workDir) {
+export async function resolveGrepScope(args, workDir) {
   let searchPath = args.path || '.';
   const rawGlobs = uniqueStrings(stringList(args.glob).map(normalizeInputPath));
   if (hasGlobMagic(searchPath)) {

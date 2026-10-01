@@ -11,6 +11,7 @@ import { timeoutSignal } from '../bounded-signal.mjs';
 import { decodeBase64Media } from '../download.mjs';
 import { mediaError } from '../lanes.mjs';
 import { upstreamError } from '../upstream-error.mjs';
+import { geminiUsage, withReportedUsage } from '../media-usage.mjs';
 
 const BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
 const REQUEST_TIMEOUT_MS = 180_000;
@@ -51,20 +52,25 @@ async function post(model, key, body, signal, fetchFn) {
  * First inline image among a candidate's parts. A text-only answer is the
  * model's refusal and surfaces as such; it is never retried.
  */
-export function pickGeminiImagePart(parts, label, failure = null) {
+export function pickGeminiImagePart(parts, label, failure = null, usage = null) {
   const image = parts.find((part) => part?.inlineData?.data);
   if (!image) {
     const refusal = failure || parts.find((part) => typeof part?.text === 'string' && part.text.trim())?.text || '';
-    throw mediaError(
-      `${label} returned no image data${refusal ? `: ${String(refusal).slice(0, 200)}` : ''}`,
-      'MEDIA_EMPTY_RESULT',
-      502
+    throw withReportedUsage(
+      mediaError(
+        `${label} returned no image data${refusal ? `: ${String(refusal).slice(0, 200)}` : ''}`,
+        'MEDIA_EMPTY_RESULT',
+        502
+      ),
+      usage
     );
   }
   return {
     bytes: decodeBase64Media(image.inlineData.data, `${label} image`),
     mime: image.inlineData.mimeType || 'image/png',
     revisedPrompt: null,
+    // Without reported tokens the one image is priced per image, if the catalog lists it.
+    usage: usage || { images: 1 },
   };
 }
 
@@ -76,5 +82,10 @@ export async function generateImage(
   const res = await post(model, key, geminiImageRequestBody(prompt, options, references), signal, fetchFn);
   if (!res.ok) throw upstreamError('Gemini image', res.status, await res.text().catch(() => ''));
   const data = await res.json();
-  return pickGeminiImagePart(data?.candidates?.[0]?.content?.parts || [], 'Gemini');
+  return pickGeminiImagePart(
+    data?.candidates?.[0]?.content?.parts || [],
+    'Gemini',
+    null,
+    geminiUsage(data?.usageMetadata)
+  );
 }

@@ -9,8 +9,7 @@ import { beginPaneDrag, finishPaneDrag, type PaneDragSession } from './pane-drag
 import type { DesktopAgentPoolRow, DesktopSessionSummary } from '../shared/contract';
 import {
   desktopAgentActivityState,
-  isActiveDesktopAgentEntry,
-  isCancelUnconfirmedDesktopAgentEntry,
+  hasPendingDesktopAgentWork,
 } from '../shared/agent-activity';
 import { sessionSummaryTitle } from '../shared/session-title.mjs';
 import { t } from './i18n';
@@ -54,7 +53,7 @@ function AgentPoolRow({
   setSize,
   tabIndex,
   unread = false,
-  waitingForAgents = false,
+  waitingForTasks = false,
   descendantCount = 0,
   onPrefetchSession,
   onOpenLeadSession,
@@ -77,7 +76,7 @@ function AgentPoolRow({
   tabIndex?: number;
   /** Unseen activity is a completion only after descendant work has settled. */
   unread?: boolean;
-  waitingForAgents?: boolean;
+  waitingForTasks?: boolean;
   descendantCount?: number;
   onPrefetchSession?(sessionId: string): void;
   onOpenLeadSession?(sessionId: string): void;
@@ -87,7 +86,7 @@ function AgentPoolRow({
   // stopped agent can never borrow the running timer or the "Completed" notice
   // (an agent cancelled mid-turn still carries stage `running`, and one
   // cancelled while waiting still carries stage `queued`).
-  const state = desktopAgentActivityState(agent, { unread, waitingForAgents });
+  const state = desktopAgentActivityState(agent, { unread, waitingForTasks });
   const queued = state === 'queued';
   const running = state === 'running';
   const role = agentRoleLabel(agent.agent || agent.tag);
@@ -113,7 +112,7 @@ function AgentPoolRow({
   // A finished turn, not a generic success: the row says WORK is done (user:
   // 완료보다 작업 완료), and the toast keeps 'Completed'.
   else if (done) elapsed = t('Task complete');
-  else if (state === 'waiting') elapsed = t('Waiting for agents');
+  else if (state === 'waiting') elapsed = t('Waiting for tasks');
   else if (state === 'unknown') elapsed = t('Unknown');
   const modelLabel = modelDisplayName(String(agent.model || ''), String(agent.provider || ''));
   const effortValue = String(agent.effort || '').trim();
@@ -348,9 +347,7 @@ function AgentActivityTree({
           ownerSessionId={group.ownerId}
           descendantCount={descendantCount}
           unread={unreadSessionIds?.has(node.sessionId) === true}
-          waitingForAgents={flattenAgentActivityNodes(node.children).some(
-            ({ agent }) => isActiveDesktopAgentEntry(agent) || isCancelUnconfirmedDesktopAgentEntry(agent)
-          )}
+          waitingForTasks={flattenAgentActivityNodes(node.children).some(({ agent }) => hasPendingDesktopAgentWork(agent))}
           onPrefetchSession={onPrefetchSession}
           onOpenLeadSession={onOpenLeadSession}
           onOpenSession={onOpenSession}

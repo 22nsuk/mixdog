@@ -271,6 +271,57 @@ test('Stop clears a latched cleanup failure only after every worker exited and h
   coordinator.assertAutomationAllowed();
 });
 
+test('the next command recovers a latched failure even while idle workers are resident', async () => {
+  const coordinator = new ComputerUseCoordinator();
+  // A recovery read (list_windows) and the warmup leave idle workers that never exit on their own.
+  const idle = { killed: false, exitCode: null, signalCode: null };
+  const warmup = { killed: false, exitCode: null, signalCode: null };
+  const live = new Map([
+    ['reader', idle],
+    ['__computer_host_warmup__', warmup],
+  ]);
+  const released = [];
+  const ran = [];
+  const host = createSessionLifecycle({
+    coordinator,
+    execution: createExecutionState(),
+    powerShellBySession: live,
+    workerLastUsedAt: new Map(),
+    retirePowerShell(child) {
+      child.killed = true;
+      child.exitCode = 0;
+      for (const [id, value] of live) if (value === child) live.delete(id);
+    },
+    callPowerShell: async () => ({ ok: true }),
+    cancelElevatedSession: async () => true,
+    elevatedSessionIds: () => [],
+    sessionIdFor: (command) => command.session_id,
+    releaseSessionState: (id) => released.push(id),
+    invalidateWorkerGeneration() {},
+    releaseCaptureSession() {},
+    cleanupInput: async () => true,
+    waitForResidentWorkersExit: async () => [idle, warmup].every((child) => child.exitCode !== null),
+    runCommand: async (command) => {
+      ran.push(command.action);
+      return { text: 'ok' };
+    },
+    recaptureRequiredReply: async () => null,
+  });
+  try {
+    coordinator.pauseForUser('input_cleanup_unconfirmed', []);
+    coordinator.beginCleanup('stale')(false);
+    assert.equal(coordinator.snapshot().cleanupState, 'failed');
+    await host.executeSerialized({ action: 'capture', session_id: 'reader' });
+    assert.equal(coordinator.snapshot().cleanupState, 'ready');
+    assert.equal(coordinator.snapshot().userControlActive, false);
+    assert.equal(idle.killed && warmup.killed, true);
+    assert.deepEqual(released.sort(), ['__computer_host_warmup__', 'reader']);
+    assert.deepEqual(ran, ['capture']);
+  } finally {
+    coordinator.reset();
+  }
+});
+
 test('a takeover whose first cleanup fails on timing clears its own barrier', async () => {
   const coordinator = new ComputerUseCoordinator();
   const execution = createExecutionState();
@@ -385,4 +436,57 @@ test('abort keeps target acquisition and resume blocked until worker exit AND in
   coordinator.resumeAfterUserTakeover();
   await host.claimComputerTargets({ session_id: 'b' }, ['hwnd:0x1']);
   coordinator.reset();
+});
+
+function latchedHost(latches) {
+  const coordinator = new ComputerUseCoordinator();
+  const host = createSessionLifecycle({
+    coordinator,
+    execution: createExecutionState(),
+    powerShellBySession: new Map(),
+    workerLastUsedAt: new Map(),
+    retirePowerShell() {},
+    callPowerShell: async () => ({ ok: true }),
+    cancelElevatedSession: async () => true,
+    elevatedSessionIds: () => (latches.elevated ? ['a'] : []),
+    sessionIdFor: (command) => command.session_id,
+    releaseSessionState() {},
+    invalidateWorkerGeneration() {},
+    releaseCaptureSession() {},
+    waitForResidentWorkersExit: async () => true,
+    cleanupInput: async () => true,
+    hasUnconfirmedBackgroundInput: () => latches.background,
+    clearUnconfirmedBackgroundInput: () => {
+      latches.background = false;
+    },
+    releaseUnconfirmedElevated: () => {
+      latches.elevated = false;
+    },
+    runCommand: async () => ({ text: '' }),
+    recaptureRequiredReply: async () => null,
+  });
+  coordinator.pauseForUser('user_stop', ['a']);
+  coordinator.beginCleanup('background')(false);
+  return { host, coordinator };
+}
+
+test('a user Stop clears background and elevated unconfirmed latches after a confirmed sweep', async () => {
+  const latches = { background: true, elevated: true };
+  const { host, coordinator } = latchedHost(latches);
+  // The original abort already latched; the user's Stop is the later recovery.
+  await assert.rejects(host.abortComputerSession({ action: 'session_abort', session_id: 'a' }));
+  // The abort of the latched session re-pauses (a newer takeover generation);
+  // one press still clears the latches and hands the desktop back.
+  await host.stopAllComputerSessions();
+  assert.deepEqual(latches, { background: false, elevated: false });
+  assert.equal(coordinator.snapshot().cleanupState, 'ready');
+  assert.equal(coordinator.snapshot().userControlActive, false);
+});
+
+test('authorization-change stop and the next agent command never clear the latches', async () => {
+  const latches = { background: true, elevated: true };
+  const { host } = latchedHost(latches);
+  await assert.rejects(host.stopAllComputerSessions(false), /computer_abort_cleanup_unconfirmed|computer_background/);
+  await assert.rejects(host.executeSerialized({ action: 'type', session_id: 'a' }), /computer_/);
+  assert.deepEqual(latches, { background: true, elevated: true });
 });

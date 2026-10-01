@@ -2,6 +2,7 @@
 // JS writer split. Both the Codex batch and the ordered sequence share these
 // apply semantics.
 import { parsePatch } from 'diff';
+import { throwIfAborted } from '../../../../shared/abort-race.mjs';
 import { symlinkWriteTarget } from '../builtin/atomic-write.mjs';
 import { dispatchNativePatch, dispatchJsPatchEntries } from './dispatch.mjs';
 import { patchTargetUsesUtf16 } from './matcher.mjs';
@@ -33,6 +34,7 @@ export function parseConvertedUnifiedPatch(unified) {
 // whether earlier waves already committed to disk.
 export async function applyParsedWave({ parsed: wparsed, entries: wentries, headerRewrites: whr }, basePath, opts) {
   const { fuzz, rejectPartial, dryRun, fuzzy, readStateScope, abortSignal } = opts;
+  throwIfAborted(abortSignal);
   // Create entries use the JS atomic writer even inside the base path. Its
   // expected-absent snapshot makes Add File create-only under external races;
   // the native patch engine intentionally supports overwrite-style additions.
@@ -47,6 +49,7 @@ export async function applyParsedWave({ parsed: wparsed, entries: wentries, head
   // binary that predates this build's byte-fidelity contract is not used at
   // all — everything takes the JS writer instead.
   const engineContractOk = await nativePatchSessionSatisfiesContract();
+  throwIfAborted(abortSignal);
   // Codec routing only concerns entries that REWRITE bytes; a delete does not.
   // An unverified engine, however, must receive no work at all — deletes
   // included — so the whole wave takes the JS writer.
@@ -117,6 +120,7 @@ export async function applyParsedWave({ parsed: wparsed, entries: wentries, head
       dryRun,
       fuzzy,
       readStateScope,
+      signal: abortSignal,
     });
     if (isPatchErrorText(jsResult)) return { executor, error: jsResult };
     resultParts.push(jsResult);

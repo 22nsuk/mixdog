@@ -9,6 +9,7 @@ import type {
 import { isSessionId } from './desktop-state';
 import { sessionIdOf } from './session-host-transport';
 import { reconcileSessionProjection, reconcileTranscriptItems } from './state-delta';
+import { canonicalJson } from '../shared/remote-view-resume';
 import { estimateRetainedChars } from '../shared/retained-value-weight';
 import { transcriptItemsDigest } from '../../../../src/standalone/session-state-patch.mjs';
 
@@ -86,6 +87,52 @@ function emitIsolated<T>(listeners: Set<(value: T) => void>, value: T): void {
   }
 }
 
+/** A catalog listener set that skips a delivery its listener already holds.
+ *  Baselines are signatures (strings), never the mutable input rows. */
+class CatalogChannel<T> {
+  private readonly listeners = new Set<(value: T) => void>();
+  private readonly baselines = new Map<(value: T) => void, { signature: string; sequence: number }>();
+  private sequence = 0;
+
+  subscribe(listener: (value: T) => void): () => void {
+    this.listeners.add(listener);
+    this.baselines.delete(listener);
+    return () => {
+      this.listeners.delete(listener);
+      this.baselines.delete(listener);
+    };
+  }
+
+  clear(): void {
+    this.listeners.clear();
+    this.baselines.clear();
+  }
+
+  publish(value: T): void {
+    if (this.listeners.size === 0) return;
+    const signature = canonicalJson(value);
+    const sequence = ++this.sequence;
+    for (const listener of [...this.listeners]) {
+      if (!this.listeners.has(listener)) continue;
+      const held = this.baselines.get(listener);
+      // A reentrant publication may already have delivered newer data.
+      if (held && held.sequence > sequence) continue;
+      const baseline = { signature, sequence };
+      this.baselines.set(listener, baseline);
+      // Even an unchanged reentrant publication supersedes an older outer
+      // one; advance its sequence without redelivering the same rows.
+      if (held?.signature === signature) continue;
+      try {
+        listener(value);
+      } catch {
+        // A failed delivery must be retryable. Do not discard a newer
+        // baseline installed by a reentrant successful publication.
+        if (this.baselines.get(listener) === baseline) this.baselines.delete(listener);
+      }
+    }
+  }
+}
+
 function emptySessionSnapshot(id: string): SessionSnapshot {
   return { sessionId: id, items: [], queued: [] } as SessionSnapshot;
 }
@@ -124,8 +171,8 @@ export class SessionHostPublication {
   private readonly maxUnwatchedEntries: number;
   private readonly recoveringSessionIds = new Set<string>();
   private readonly listeners = new Set<(snapshot: SessionSnapshot) => void>();
-  private readonly sessionListeners = new Set<(sessions: DesktopSessionSummary[]) => void>();
-  private readonly agentPoolListeners = new Set<(agents: DesktopAgentPoolRow[]) => void>();
+  private readonly sessionCatalog = new CatalogChannel<DesktopSessionSummary[]>();
+  private readonly agentPoolCatalog = new CatalogChannel<DesktopAgentPoolRow[]>();
   private readonly sessionStateListeners = new Set<(update: DesktopSessionStateUpdate) => void>();
   private remoteSessionId = '';
   shellSnapshot: SessionSnapshot = null;
@@ -202,13 +249,11 @@ export class SessionHostPublication {
   }
 
   subscribeSessions(listener: (sessions: DesktopSessionSummary[]) => void): () => void {
-    this.sessionListeners.add(listener);
-    return () => this.sessionListeners.delete(listener);
+    return this.sessionCatalog.subscribe(listener);
   }
 
   subscribeAgentPool(listener: (agents: DesktopAgentPoolRow[]) => void): () => void {
-    this.agentPoolListeners.add(listener);
-    return () => this.agentPoolListeners.delete(listener);
+    return this.agentPoolCatalog.subscribe(listener);
   }
 
   subscribeSessionStates(listener: (update: DesktopSessionStateUpdate) => void): () => void {
@@ -262,11 +307,11 @@ export class SessionHostPublication {
   }
 
   publishSessions(sessions: DesktopSessionSummary[]): void {
-    emitIsolated(this.sessionListeners, sessions);
+    this.sessionCatalog.publish(sessions);
   }
 
   publishAgents(agents: DesktopAgentPoolRow[]): void {
-    emitIsolated(this.agentPoolListeners, agents);
+    this.agentPoolCatalog.publish(agents);
   }
 
   applySessionResult(
@@ -455,8 +500,8 @@ export class SessionHostPublication {
 
   clearListeners(): void {
     this.listeners.clear();
-    this.sessionListeners.clear();
-    this.agentPoolListeners.clear();
+    this.sessionCatalog.clear();
+    this.agentPoolCatalog.clear();
     this.sessionStateListeners.clear();
   }
 

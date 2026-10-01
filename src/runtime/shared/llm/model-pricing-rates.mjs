@@ -51,6 +51,27 @@ export function litellmPricing(entry, suffix = '') {
   };
 }
 
+/**
+ * Non-token media rates published by LiteLLM: USD per generated image, USD per
+ * generated video second (optionally per resolution, `output_cost_per_second_<res>`),
+ * and USD/M for image / video output tokens, which bill above the text output rate.
+ */
+export function litellmMediaPricing(entry) {
+  const perM = (value) => (validRate(value) ? value * 1_000_000 : null);
+  const byResolution = {};
+  for (const [key, value] of Object.entries(entry || {})) {
+    const match = key.match(/^output_cost_per_second_(.+)$/);
+    if (match && validRate(value)) byResolution[match[1].toLowerCase()] = value;
+  }
+  return {
+    outputImageCostPerM: perM(entry?.output_cost_per_image_token),
+    outputVideoCostPerM: perM(entry?.output_cost_per_video_token),
+    outputCostPerImage: validRate(entry?.output_cost_per_image) ? entry.output_cost_per_image : null,
+    outputCostPerSecond: validRate(entry?.output_cost_per_second) ? entry.output_cost_per_second : null,
+    outputCostPerSecondByResolution: byResolution,
+  };
+}
+
 export function modelsDevPricing(cost) {
   // Structured tiers supersede the older context_over_200k compatibility
   // field; it can coexist with a tier whose actual boundary is not 200k.

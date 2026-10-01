@@ -78,6 +78,8 @@ function summarizeConversation(target, ctx) {
   );
   const summarySession = {
     id: `${sessionId || 'unknown'}:compact`,
+    // Usage attribution: background sessions stay background.
+    sourceType: sessionRef?.sourceType,
     provider: target.providerName,
     model: target.model,
     cwd: sessionRef?.cwd,

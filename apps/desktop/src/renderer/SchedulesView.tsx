@@ -645,6 +645,7 @@ export function SchedulesPane({
                   key={name}
                   className="schedules-row utilities-row sidebar-resource-row"
                   data-enabled={enabled ? 'true' : 'false'}
+                  data-tooltip={enabled ? undefined : t('Disabled')}
                   disabled={busy}
                   onClick={() => {
                     setError('');

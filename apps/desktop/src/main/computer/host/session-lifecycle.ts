@@ -43,6 +43,8 @@ export interface SessionLifecycleHost
   cleanupInput?: (recovery: InputRecoveryState | undefined, restoreDesktop: boolean) => Promise<boolean>;
   hasUnconfirmedBackgroundInput?: WorkerPool['hasUnconfirmedBackgroundInput'];
   waitForResidentWorkersExit?: WorkerPool['waitForResidentWorkersExit'];
+  clearUnconfirmedBackgroundInput?: WorkerPool['clearUnconfirmedBackgroundInput'];
+  releaseUnconfirmedElevated?: WorkerPool['releaseUnconfirmedElevated'];
   recordDiagnostic?: (sessionId: string, record: Record<string, unknown>) => void;
   pauseWaitMs?: number;
 }

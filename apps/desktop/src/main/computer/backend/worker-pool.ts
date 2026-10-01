@@ -658,6 +658,16 @@ export function createWorkerPool(host: WorkerPoolHost) {
     retirePowerShell,
     hasUnconfirmedBackgroundInput: (sessionId?: string) =>
       sessionId === undefined ? unconfirmedBackgroundSessions.size > 0 : unconfirmedBackgroundSessions.has(sessionId),
+    /** User-acknowledged recovery only: forgets background input whose
+     *  target-local release could not be proven. */
+    clearUnconfirmedBackgroundInput(): void {
+      unconfirmedBackgroundSessions.clear();
+    },
+    /** User-acknowledged recovery only: releases unconfirmed elevated sessions
+     *  and their slots, unless an elevated job is still pending. */
+    releaseUnconfirmedElevated(): void {
+      elevatedSlots -= elevatedJobs.releaseUnconfirmed() * 3;
+    },
     callPowerShell,
     callPowerShellElevated,
     cancelElevatedSession: elevatedJobs.cancel,

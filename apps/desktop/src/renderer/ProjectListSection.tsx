@@ -813,6 +813,7 @@ export function ProjectListSection({
           <button
             type="button"
             className="schedules-row utilities-row projects-row"
+            data-tooltip={t('Used for every project.')}
             onClick={() => openEdit(null, t('Common Memory'))}
           >
             <span className="sidebar-resource-icon" aria-hidden="true">
@@ -839,6 +840,7 @@ export function ProjectListSection({
                 className={`schedules-row utilities-row projects-row${selected ? ' selected' : ''}`}
                 aria-current={selected ? 'page' : undefined}
                 aria-label={t('Edit {{name}}', { name: title })}
+                data-tooltip={project.path}
                 onClick={() => openEdit(project.path, title)}
                 {...projectOrder.getReorderProps(project.path)}
               >

@@ -487,6 +487,14 @@ npm install
 npm run dev
 ```
 
+Desktop development uses a fresh, isolated test profile on each launch, including
+its data, daemon and tool connections. It does not copy the installed app's
+settings or sign-ins. The profile path is printed and retained in the system
+temporary directory for diagnosis. CDP uses port `9342`; if it is occupied, reuse
+the running test app or choose another port with `npm run dev -- --port 9343`.
+On Windows, `npm run e2e:direct` and `npm run e2e:direct:source` also use isolated
+profiles and port `9342` (override with `-- -Port 9343`).
+
 Both packages discover `*.test.mjs` and `*-test.mjs` under their `src/` and
 `scripts/` directories. Fast, slow, and live tests run in separate lanes;
 live checks need their corresponding built artifacts or services. See

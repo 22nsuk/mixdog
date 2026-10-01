@@ -416,6 +416,14 @@ html[data-mixdog-mobile-tabs] .mobile-tab-card > header > button svg {
 html[data-mixdog-mobile-tabs] .session-sidebar .session-panel-header {
   height: 48px;
 }
+/* The touch tier keeps its own panel start; the desktop surface now opens
+   under the 52px band instead. */
+html[data-mixdog-mobile-tabs] .session-sidebar-surface {
+  top: 36px;
+}
+html[data-mixdog-mobile-tabs] {
+  --mx-rail-panel-content-top: 12px;
+}
 /* Tier 2 for the shared title-row slot: EVERY panel that owns it draws the
    same +. Sessions had the 44 box while Projects/Schedules/Webhooks arrived
    at their desktop 28, so the control changed size as the panel changed. */

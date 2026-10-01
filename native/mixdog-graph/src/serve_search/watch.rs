@@ -382,11 +382,79 @@ fn apply_watch_event(store: &Arc<FileListStore>, event: notify::Result<notify::E
         // reusable.
         store.affected_roots(&paths)
     };
-    if !changed.is_empty() {
+    let notify_paths = select_notification_paths(&paths, &changed);
+    if !notify_paths.is_empty() {
         write_response(&serde_json::json!({
             "event": "invalidate",
-            "paths": changed.iter().map(|path| wire_path(path)).collect::<Vec<_>>()
+            "paths": notify_paths.iter().map(|path| wire_path(path)).collect::<Vec<_>>()
         }));
+    }
+}
+
+/// Exact changed paths for ordinary events; the affected roots when the
+/// boundary is unknown (no paths) or an ignore-rule file changed. Nothing is
+/// sent when no watched root was affected.
+fn select_notification_paths<'a>(
+    paths: &'a [PathBuf],
+    affected_roots: &'a [PathBuf],
+) -> &'a [PathBuf] {
+    if affected_roots.is_empty() {
+        return &[];
+    }
+    if paths.is_empty() || paths.iter().any(|path| is_ignore_rule_path(path)) {
+        return affected_roots;
+    }
+    paths
+}
+
+#[cfg(test)]
+mod notification_selection_tests {
+    use super::*;
+
+    fn p(s: &str) -> PathBuf {
+        PathBuf::from(s)
+    }
+
+    #[test]
+    fn exact_paths_not_roots() {
+        let roots = vec![p("/r")];
+        let paths = vec![p("/r/a/x.txt")];
+        assert_eq!(select_notification_paths(&paths, &roots), paths);
+    }
+
+    #[test]
+    fn siblings_are_not_included() {
+        let roots = vec![p("/r")];
+        let paths = vec![p("/r/a/x.txt")];
+        let out = select_notification_paths(&paths, &roots);
+        assert!(!out.contains(&p("/r/a/y.txt")));
+        assert!(!out.contains(&p("/r")));
+    }
+
+    #[test]
+    fn rename_keeps_both_endpoints() {
+        let roots = vec![p("/r")];
+        let paths = vec![p("/r/old.txt"), p("/r/new.txt")];
+        assert_eq!(select_notification_paths(&paths, &roots), paths);
+    }
+
+    #[test]
+    fn ignore_rule_change_notifies_roots() {
+        let roots = vec![p("/r")];
+        let paths = vec![p("/r/sub/.gitignore"), p("/r/sub/a.txt")];
+        assert_eq!(select_notification_paths(&paths, &roots), roots);
+    }
+
+    #[test]
+    fn unknown_boundary_notifies_roots() {
+        let roots = vec![p("/r"), p("/q")];
+        assert_eq!(select_notification_paths(&[], &roots), roots);
+    }
+
+    #[test]
+    fn no_affected_roots_sends_nothing() {
+        assert!(select_notification_paths(&[p("/r/a.txt")], &[]).is_empty());
+        assert!(select_notification_paths(&[], &[]).is_empty());
     }
 }
 

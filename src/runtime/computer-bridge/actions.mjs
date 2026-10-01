@@ -72,19 +72,6 @@ for (const name of [
       'key',
     ].includes(name),
     focusGuard: ['invoke', 'set_value', 'toggle'].includes(name),
-    focusContinuation: [
-      'invoke',
-      'click',
-      'double_click',
-      'right_click',
-      'middle_click',
-      'triple_click',
-      'mouse_down',
-      'mouse_up',
-      'mouse_move',
-      'drag',
-      'scroll',
-    ].includes(name),
     policy: 'act',
   });
 }

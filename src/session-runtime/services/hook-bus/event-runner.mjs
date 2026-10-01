@@ -11,8 +11,8 @@ import { parseHandlerOutput } from './handlers.mjs';
 import { createHandlerDispatch } from './handler-dispatch.mjs';
 import { handlerDedupeKey, shellCountFor } from './rules.mjs';
 
-// A failed run is reported as a hook:error and skipped; returns the message
-// or null when the run produced usable output.
+// A failed run is reported as a hook:error and blocks PreToolUse; other events
+// skip it. Returns the message or null when the run produced usable output.
 function runFailure(run, handler) {
   if (run.timedOut)
     return `hook ${shellCountFor(handler)} timed out: ${handler.command || handler.url || handler.type}`;
@@ -21,6 +21,12 @@ function runFailure(run, handler) {
     return (run.stderr || '').trim() || `hook exited ${run.exitCode}`;
   }
   return null;
+}
+
+function failClosed(agg, message) {
+  agg.blocked = true;
+  agg.reason = `PreToolUse policy check failed: ${message}`;
+  return agg;
 }
 
 function foldParsedOutput(agg, parsed) {
@@ -90,12 +96,14 @@ export function createEventRunner({ loadConfig, emit, cursor, pluginData, prompt
       } catch (error) {
         throwIfAborted(signal);
         emit('hook:error', { name: payload.tool_name || eventName, error: error?.message || String(error) });
+        if (eventName === 'PreToolUse') return failClosed(agg, error?.message || String(error));
         continue;
       }
       if (!run) continue;
       const failure = runFailure(run, handler);
       if (failure) {
         emit('hook:error', { name: payload.tool_name || eventName, error: failure });
+        if (eventName === 'PreToolUse') return failClosed(agg, failure);
         continue;
       }
       foldParsedOutput(agg, parseHandlerOutput(run, eventName));

@@ -43,6 +43,7 @@ export function importTraceRow(row) {
     uncachedInputTokens: raw ? (row.uncached_input_tokens ?? payload.uncached_input_tokens) : undefined,
     cacheReadTokens: raw ? row.cached_tokens : row.cacheReadTokens,
     cacheWriteTokens: raw ? row.cache_write_tokens : row.cacheWriteTokens,
+    cacheWrite1hTokens: raw ? payload.raw_usage?.cache_creation?.ephemeral_1h_input_tokens : undefined,
     costUsd: raw ? undefined : row.costUsd,
     sessionId: row.session_id || row.sessionId,
     sourceType: row.sourceType || row.source_type || payload.sourceType || payload.source_type,

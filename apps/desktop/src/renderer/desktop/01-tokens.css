@@ -114,6 +114,22 @@
      large (user: 이건 또 너무 커) — in a roomier band (--mx-rail-panel-band). */
   --mx-rail-panel-title: 16px;
   --mx-rail-panel-band: 52px;
+  /* Air between that band and a panel's first box. The band's own lower
+     half already leaves ~16px under the title, so the content adds only a
+     small step — every rail page (Sessions, Agents, Schedules, Workflows,
+     Projects, Extensions) opens on this one value (user: 패널 헤더와 아래가
+     넓다). */
+  --mx-rail-panel-content-top: 4px;
+  /* Rail GROUP LABEL — the one style every list heading in a side panel
+     wears (Sessions 자동화/최근, Workflows 작업 규칙/기본 에이전트/에이전트,
+     Extensions 빌트인/플러그인, the Agents dock's session names). Change it
+     here only; the panels read these three values and declare no type of
+     their own. What groups ranks ABOVE what it groups (user: 묶는 게 위),
+     so every cue points one way: heavier AND brighter than the 14/400 rows,
+     one size under the 16px panel title. */
+  --mx-rail-label-size: var(--mx-font-item);
+  --mx-rail-label-weight: var(--mx-weight-semibold);
+  --mx-rail-label-ink: var(--mx-text);
   /* Page-scale titles and figures: the Settings page title, the large
      command dialogs (Context, Usage, Doctor) and a dashboard card's figure.
      A clear step over the 16 panel tier, as the Fluent subtitle (20/28),

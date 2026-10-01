@@ -57,7 +57,26 @@ public static class MixNativeInput
     static System.Collections.Generic.List<INPUT> ReadOwned(
       System.IO.MemoryMappedFiles.MemoryMappedViewAccessor view, System.IntPtr marker)
     {
-        if (view.ReadInt32(0) != 0) throw new System.Exception("input_cleanup_unconfirmed: native delivery receipt is uncertain");
+        return ReadOwned(view, marker, AnyKeyHeld);
+    }
+    static System.Collections.Generic.List<INPUT> ReadOwned(
+      System.IO.MemoryMappedFiles.MemoryMappedViewAccessor view, System.IntPtr marker, System.Func<bool> anyKeyHeld)
+    {
+        if (view.ReadInt32(0) != 0)
+        {
+            // An uncertain receipt (killed mid-SendInput, or a failed release) is
+            // settled by physical evidence: once no key is down there is nothing
+            // left to release, so the receipt resets to empty. A key still held
+            // keeps it latched.
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            while (anyKeyHeld())
+            {
+                if (clock.ElapsedMilliseconds >= HeldKeyReleaseWaitMs)
+                    throw new System.Exception("input_cleanup_unconfirmed: native delivery receipt is uncertain");
+                System.Threading.Thread.Sleep(50);
+            }
+            WriteOwned(view, new System.Collections.Generic.List<INPUT>());
+        }
         int count = view.ReadInt32(4);
         if (count < 0 || count > 256) throw new System.Exception("input_cleanup_unconfirmed: invalid input ownership receipt");
         var result = new System.Collections.Generic.List<INPUT>();
@@ -262,14 +281,30 @@ public static class MixNativeInput
         }
         catch (System.IO.FileNotFoundException)
         {
-            for (int key = 1; key < 256; key++)
+            // Without a receipt any held key blocks recovery. The user's own chord
+            // (the Ctrl+Alt+Esc that started this Stop) is still down at first, so
+            // give physical keys a moment to lift; a stuck key still fails here.
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            while (AnyKeyHeld())
             {
-                if ((GetAsyncKeyState(key) & 0x8000) != 0)
+                if (clock.ElapsedMilliseconds >= HeldKeyReleaseWaitMs)
                     throw new System.Exception("input_cleanup_unconfirmed: ownership receipt is unavailable while input is held");
+                System.Threading.Thread.Sleep(50);
             }
         }
     }
+    const int HeldKeyReleaseWaitMs = 2000;
+    static bool AnyKeyHeld()
+    {
+        for (int key = 1; key < 256; key++)
+            if ((GetAsyncKeyState(key) & 0x8000) != 0) return true;
+        return false;
+    }
     public static void ReleaseOwned(System.IntPtr marker, System.Func<INPUT[], uint> transmit)
+    {
+        ReleaseOwned(marker, transmit, AnyKeyHeld);
+    }
+    public static void ReleaseOwned(System.IntPtr marker, System.Func<INPUT[], uint> transmit, System.Func<bool> anyKeyHeld)
     {
         InitializeOwnership(marker);
         using (var mutex = OwnershipLock(marker))
@@ -277,7 +312,7 @@ public static class MixNativeInput
             {
                 using (var view = ownership.CreateViewAccessor())
                 {
-                    var releases = ReadOwned(view, marker);
+                    var releases = ReadOwned(view, marker, anyKeyHeld);
                     // Each release updates the shared receipt, including on partial failure.
                     try
                     {
