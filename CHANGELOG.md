@@ -5,6 +5,8 @@ the Unreleased section is empty, and stamps it with the released version.
 
 ## Unreleased
 
+## v1.0.4 - 2026-10-01
+
 - Model pickers refresh as soon as a provider changes. Browser-based OAuth
   sign-ins (OpenAI, Grok, Cursor, Antigravity) and account switches now
   reload the picker immediately instead of after a restart, and a provider
