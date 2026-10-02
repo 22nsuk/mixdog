@@ -9,7 +9,7 @@ import { promisify } from 'node:util';
 import test from 'node:test';
 
 test('one-shot senders retain the original observer across processes and reject same-tick intervention', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
   timeout: 30_000,
 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'mixdog-shared-observer-'));

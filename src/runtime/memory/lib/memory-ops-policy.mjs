@@ -3,7 +3,8 @@ import { __mixdogMemoryLog } from './memory-log.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { mixdogHome } from '../../shared/plugin-paths.mjs';
-import { throwIfAborted } from './memory-cycle2-shared.mjs';
+import { throwIfAborted } from './memory-cycle-shared.mjs';
+import { flushSearchEmbeddings } from './memory-embed.mjs';
 import { isSkippedWatchPath, isTranscriptJsonlName } from './ingest/transcript-discovery.mjs';
 
 function normalizeBackfillWindow(value) {
@@ -80,7 +81,7 @@ export async function runFullBackfill(
     ingestTranscriptFile,
     cwdFromTranscriptPath,
     runCycle1,
-    runCycle2,
+    flushEmbeddings = flushSearchEmbeddings,
     now = Date.now(),
     projectsRoot = null,
     workspaceCwd = null,
@@ -91,8 +92,8 @@ export async function runFullBackfill(
   if (typeof ingestTranscriptFile !== 'function') {
     throw new Error('runFullBackfill: ingestTranscriptFile required');
   }
-  if (typeof runCycle1 !== 'function' || typeof runCycle2 !== 'function') {
-    throw new Error('runFullBackfill: runCycle1/runCycle2 required');
+  if (typeof runCycle1 !== 'function') {
+    throw new Error('runFullBackfill: runCycle1 required');
   }
 
   const normalizedWindow = normalizeBackfillWindow(window);
@@ -158,16 +159,13 @@ export async function runFullBackfill(
     prevUnclassified = nextUnclassified;
   }
 
-  let reviewed = 0;
   try {
     throwIfAborted(signal);
-    const c2 = await runCycle2(db, config?.cycle2 || {}, { signal });
-    reviewed = Number(c2?.processed ?? 0);
-    if (c2?.ok === false) throw new Error(c2.error || 'cycle2 failed');
+    await flushEmbeddings(db, { signal });
   } catch (err) {
     throwIfAborted(signal);
-    errors.push({ stage: 'cycle2', error: err.message });
-    __mixdogMemoryLog(`[backfill] cycle2 error: ${err.message}\n`);
+    errors.push({ stage: 'embedding', error: err.message });
+    __mixdogMemoryLog(`[backfill] embedding error: ${err.message}\n`);
   }
 
   const unclassified = await countUnclassified(db);
@@ -179,7 +177,6 @@ export async function runFullBackfill(
     files: selected.length,
     ingested,
     cycle1_iters: cycle1Iters,
-    reviewed,
     unclassified,
   };
 }

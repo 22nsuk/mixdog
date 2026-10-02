@@ -60,16 +60,22 @@ export function createSessionOps(deps) {
     if (getActiveTurnCount() > 0) {
       return { changed: false, reason: 'compact skipped: turn in progress' };
     }
-    // Manual compact bypasses loop.mjs, so its PreCompact/PostCompact never
-    // fire here — dispatch them explicitly via the session-property hooks.
+    // Dispatch PreCompact only after the manager's savings gate. A skipped
+    // auto-clear must not run hooks, invalidate context or schedule reminders.
+    const trigger = options.requireReduction === true ? 'auto_clear' : 'manual';
+    const result = await mgr.compactSessionMessages(session.id, {
+      requireReduction: options.requireReduction === true,
+      onStageChange: async () => {
+        try {
+          await session.preCompactHook?.({ trigger });
+        } catch {
+          /* best-effort: PreCompact hook must never break compact */
+        }
+      },
+    });
+    if (result?.skipped) return result;
     try {
-      await session.preCompactHook?.({ trigger: 'manual' });
-    } catch {
-      /* best-effort: PreCompact hook must never break manual compact */
-    }
-    const result = await mgr.compactSessionMessages(session.id);
-    try {
-      await session.postCompactHook?.({ trigger: 'manual' });
+      await session.postCompactHook?.({ trigger });
     } catch {
       /* best-effort: PostCompact hook must never break manual compact */
     }

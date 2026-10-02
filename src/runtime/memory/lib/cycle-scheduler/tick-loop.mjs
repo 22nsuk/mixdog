@@ -30,12 +30,10 @@ export function createCycleTickLoop({
     setConfig(mainConfig);
     const cyclesOn = memoryCyclesEnabled();
     const cycle1Ms = parseInterval(mainConfig?.cycle1?.interval || '10m');
-    const cycle2Ms = parseInterval(mainConfig?.cycle2?.interval || '1h');
     const now = Date.now();
     const last = await getCycleLastRun();
     if (cyclesOn) {
       if (periodicCycleDue(last.cycle1, startedAt, cycle1Ms, now)) await enqueue.enqueueScheduledCycle1(cycle1Ms);
-      if (periodicCycleDue(last.cycle2, startedAt, cycle2Ms, now)) await enqueue.enqueueScheduledCycle2(cycle2Ms);
     }
     await probeBacklog(now);
   }

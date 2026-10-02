@@ -12,7 +12,7 @@ import { NATIVE_CAPTURE_WORK_MS } from '../shared/capture-attempts.ts';
 import { probeWindowsGraphicsCapture } from './fixtures/wgc-capability.mjs';
 
 test('WGC captures a covered fixture without foreign pixels, preserves foreground and rejects changed geometry', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
   timeout: 120_000,
 }, async (t) => {
   // Everything below needs an OS that can actually hand out a capture item and

@@ -8,15 +8,11 @@ import { createRoutePickers } from './route-pickers.mjs';
 import { createSettingsPicker } from './settings-picker.mjs';
 import { createSlashDispatch } from './slash-dispatch.mjs';
 import { createThemeEffortPickers } from './theme-effort-pickers.mjs';
+import { waitUntil } from '../../runtime/shared/wait-until.test-support.mjs';
 
 function deferred() {
   return Promise.withResolvers();
 }
-
-const flush = async () => {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await new Promise((resolve) => setImmediate(resolve));
-};
 
 function createPanelHost() {
   let current = null;
@@ -157,8 +153,10 @@ test('Model save hands the Settings panel back on the keypress, before the write
   assert.equal(host.current()?.title, 'Settings');
   assert.notEqual(host.current(), HANDOFF);
 
+  // The picker's own .then on the write was registered first, so it has run
+  // by the time this await resumes.
   saveGate.resolve(true);
-  await flush();
+  await saveGate.promise;
   assert.equal(host.current()?.title, 'Settings');
   assert.notEqual(host.current(), HANDOFF);
 });
@@ -197,8 +195,7 @@ test('Workflow and output-style saves keep the Settings handoff visible until th
   assert.equal(workflowHost.current(), HANDOFF);
 
   workflowGate.resolve({ id: 'solo' });
-  await flush();
-  assert.equal(workflowHost.current()?.title, 'Settings');
+  await waitUntil(() => workflowHost.current()?.title === 'Settings', { message: 'workflow handoff returns' });
 
   const styleHost = createPanelHost();
   const styleGate = deferred();
@@ -218,8 +215,7 @@ test('Workflow and output-style saves keep the Settings handoff visible until th
   assert.equal(styleHost.current(), HANDOFF);
 
   styleGate.resolve({ current: { id: 'simple', label: 'Simple' } });
-  await flush();
-  assert.equal(styleHost.current()?.title, 'Settings');
+  await waitUntil(() => styleHost.current()?.title === 'Settings', { message: 'output-style handoff returns' });
 });
 
 test('Theme selection hands directly to Settings without a null panel', () => {
@@ -288,8 +284,9 @@ test('slash option entry keeps a loading panel until the async picker paints', a
   assert.equal(host.current()?.loading, true);
 
   openGate.resolve();
-  await flush();
-  assert.equal(host.current()?.title, 'Workflow');
+  await waitUntil(() => host.current()?.title === 'Workflow' && host.current()?._kind === undefined, {
+    message: 'async picker paints',
+  });
   assert.equal(host.current()?._kind, undefined);
   assert.ok(host.current()?.items.length > 0);
 });
@@ -298,14 +295,16 @@ test('Esc on slash loading prevents the pending picker from appearing later', as
   supersedePanelEpoch();
   const host = createPanelHost();
   const openGate = deferred();
+  let pendingPaint;
   const { runSlashCommand } = workflowSlashDispatch(host, () => {
     const own = host.surface.claim();
-    return openGate.promise.then(() =>
+    pendingPaint = openGate.promise.then(() =>
       own.paint({
         title: 'Workflow',
         items: [{ value: 'solo', label: 'Solo' }],
       })
     );
+    return pendingPaint;
   });
 
   runSlashCommand('workflow');
@@ -315,6 +314,6 @@ test('Esc on slash loading prevents the pending picker from appearing later', as
   assert.equal(host.current(), null);
 
   openGate.resolve();
-  await flush();
+  await pendingPaint;
   assert.equal(host.current(), null);
 });

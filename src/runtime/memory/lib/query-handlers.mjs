@@ -26,7 +26,7 @@ import { readRawRowsInWindow } from './query-raw-window.mjs';
 import { recallSessionRows } from './query-session-recall.mjs';
 import { recallCoreRows } from './query-core-recall.mjs';
 import { browseEntries } from './query-window-browse.mjs';
-import { throwIfAborted } from './memory-cycle2-shared.mjs';
+import { throwIfAborted } from './memory-cycle-shared.mjs';
 
 /** Cold-recall log throttle: one line per 10s window per memory runtime. */
 function createColdRecallNote(log) {

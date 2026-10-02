@@ -15,7 +15,7 @@ import { resolveMaintenanceRoute } from '../maintenance-route.mjs';
  *
  * Hidden maintenance roles mirror public spawning precedence:
  * `agents.<role>` (including the `agents.maintenance` alias) → workflow route →
- * maintenance route → Main. The cycle1/2/3 agents share the memory knob via
+ * maintenance route → Main. Maintenance agents share the memory knob via
  * their `maintKey: 'memory'` override. Scheduler and webhook are unchanged.
  */
 // A maintenance slot value is a direct route when it carries provider+model.

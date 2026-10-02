@@ -2,7 +2,7 @@
 // the advisory lock and request coalescing; _runCycle1Impl orchestrates one
 // run out of the cycle1/ modules (plan, rows, window, result).
 import { __mixdogMemoryLog } from './memory-log.mjs';
-import { createSemaphore, throwIfAborted } from './memory-cycle2-shared.mjs';
+import { createSemaphore, throwIfAborted } from './memory-cycle-shared.mjs';
 
 import { CYCLE1_INPUT_TOKEN_BUDGET, cycle1SourceBudget, partitionCycle1Rows } from './memory-chunk-quality.mjs';
 import { callAgentDispatch } from './agent-ipc.mjs';

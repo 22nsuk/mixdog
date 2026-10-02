@@ -11,9 +11,3 @@ export function scheduledCycle1Signature(config) {
     maxConcurrent: undefined,
   });
 }
-
-export function scheduledCycle2Signature(config) {
-  return makeCycleRequestSignature('cycle2', config, {
-    concurrency: undefined,
-  });
-}

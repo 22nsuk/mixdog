@@ -18,7 +18,7 @@ test('integration: live pwsh no-match search head (findstr) exits 1', (t) => {
 });
 
 test('integration: shell keeps a failed PowerShell pipeline producer exit', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
 }, async () => {
   const result = normalizeToolEnvelope(
     await executeBashTool(

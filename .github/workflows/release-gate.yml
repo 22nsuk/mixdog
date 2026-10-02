@@ -219,6 +219,12 @@ jobs:
     if: needs.changes.outputs.runtime == 'true'
     timeout-minutes: 20
     runs-on: macos-14
+    # Sharded like the Linux runtime job: the unsharded lane was the gate's
+    # critical path.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -248,8 +254,8 @@ jobs:
           restore-keys: spawn-test-cargo-${{ runner.os }}-
       - name: Build the native spawn test binary
         run: npm run build:spawn:test
-      - name: Run the default test lane
-        run: npm test
+      - name: Run the default test lane (shard ${{ matrix.shard }}/2)
+        run: npm test -- --test-shard=${{ matrix.shard }}/2
 
   # The macOS/Linux Computer Use backend: unit tests on both systems, and on
   # Linux a real X11 session (Xvfb with a window manager) in which a GTK

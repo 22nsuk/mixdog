@@ -64,8 +64,8 @@ export function shellJobsStatus({ clientHostPid, sessionId } = {}) {
 }
 
 // Memory cycle L2 segment source. The daemon-hosted memory runtime writes
-// data/memory-cycle-state.json on every cycle start/finish (index.mjs
-// _writeCycleStateFile) — no HTTP call from the statusline path. Cached at
+// data/memory-cycle-state.json on every cycle start/finish through the
+// cycle-scheduler health ledger — no HTTP call from the statusline path. Cached at
 // the same 1s cadence as the shell segment. Shows a single unified "Memory"
 // segment: running (spinner + elapsed) or backlog warning (yellow count).
 let _memoryCycleSegmentCache = { at: 0, value: null };
@@ -102,10 +102,10 @@ async function refreshMemoryCycleStatus() {
       // drop the spinner immediately instead of waiting out the 10-minute
       // window. Pid-less markers (older daemons) keep the time-based guard.
       const ownerAlive = !Number(running?.pid) || isPidAlive(Number(running.pid));
-      if (fresh && ownerAlive && running?.cycle && Number(running.started_at) > 0) {
+      if (fresh && ownerAlive && running?.cycle === 'cycle1' && Number(running.started_at) > 0) {
         value = { kind: 'running', startedAt: Number(running.started_at) };
       } else if (fresh) {
-        const pending = Math.max(Number(backlog?.unchunked) || 0, Number(backlog?.cycle2_pending) || 0);
+        const pending = Number(backlog?.unchunked) || 0;
         if (pending > MEMORY_CYCLE_BACKLOG_WARN) value = { kind: 'backlog', pending };
       }
     }

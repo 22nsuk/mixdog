@@ -38,7 +38,7 @@ async function fixture(t) {
 
 for (const directory of [false, true]) {
   test(`existing ${directory ? 'directory' : 'file'} ACL tightening removes inherited and explicit foreign grants`, {
-    skip: process.platform !== 'win32',
+    skip: process.platform !== 'win32' && 'Windows only',
   }, async (t) => {
     const root = await fixture(t);
     const path = join(root, 'protected');
@@ -54,7 +54,7 @@ for (const directory of [false, true]) {
 }
 
 test('failed ACL tightening cannot restore broad parent permissions on a protected secret', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
 }, async (t) => {
   const root = await fixture(t);
   const path = join(root, 'protected');

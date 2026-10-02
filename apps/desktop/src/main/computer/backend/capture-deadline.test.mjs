@@ -51,7 +51,7 @@ async function run(script, input = '') {
 }
 
 test('bounded WinRT waits cancel once, distinguish settled cancellation and never accept late work', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
   timeout: 90_000,
 }, async () => {
   const wait = PS_SESSION.slice(
@@ -109,7 +109,7 @@ $values | ConvertTo-Json -Compress
 
 // Three sequential fixtures, so this one carries three fixture budgets.
 test('native capture replies preserve cleanup evidence and retire only unconfirmed workers', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
   timeout: 200_000,
 }, async () => {
   const loop = PS_RUNTIME.slice(PS_RUNTIME.indexOf('[Console]::OutputEncoding'));

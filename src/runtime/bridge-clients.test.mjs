@@ -37,6 +37,7 @@ import {
   validateComputerToolArgs,
 } from './computer-bridge/action-schema.mjs';
 import { COMPUTER_DEFAULT_DELIVERY } from './computer-bridge/core-actions.mjs';
+import { waitUntil } from './shared/wait-until.test-support.mjs';
 import { TOOL_DEFS as COMPUTER_TOOL_DEFS } from './computer-bridge/tool-defs.mjs';
 
 const CLIENTS = [
@@ -173,7 +174,10 @@ test('browser tool contract exposes generation-bound actions and bounded observa
   // Method lives in the built-in browser-use skill; the description is contract only.
   assert.ok(BROWSER_TOOL_DEFS[0].description.includes('browser-use skill'));
   assert.ok(!BROWSER_TOOL_DEFS[0].description.includes('fill.fields'));
-  assert.ok(BROWSER_TOOL_DEFS[0].description.length < 1000);
+  assert.ok(
+    BROWSER_TOOL_DEFS[0].description.length < 1000,
+    `browser tool description is ${BROWSER_TOOL_DEFS[0].description.length} chars; budget 1000 — trim the description or justify raising the budget`
+  );
   // The preview routes directly by capability, not through mandatory failed probes.
   assert.match(BROWSER_TOOL_DEFS[0].description.slice(0, 200), /directly for rendered, signed-in or interactive pages/);
   assert.match(
@@ -1690,7 +1694,10 @@ test('computer tool contract exposes stable targets, frames, and explicit delive
   assert.ok(!COMPUTER_TOOL_DEFS[0].description.includes('never move, resize'));
   assert.ok(!COMPUTER_TOOL_DEFS[0].description.includes('Screen content'));
   assert.ok(!COMPUTER_TOOL_DEFS[0].description.includes('Never call the bridge'));
-  assert.ok(COMPUTER_TOOL_DEFS[0].description.length < 1000);
+  assert.ok(
+    COMPUTER_TOOL_DEFS[0].description.length < 1000,
+    `computer tool description is ${COMPUTER_TOOL_DEFS[0].description.length} chars; budget 1000 — trim the description or justify raising the budget`
+  );
 });
 
 test('computer act result is normalized to actions plus one observation', () => {
@@ -2118,7 +2125,9 @@ test('bridge clients authenticate and preserve text plus image results', async (
     await new Promise((resolve) => setTimeout(resolve, 40));
     assert.equal(seen.filter((entry) => entry.body.action === 'session_release').length, 0);
     assert.equal(deferComputerSessionRelease('computer-session-1', 20), true);
-    await new Promise((resolve) => setTimeout(resolve, 40));
+    await waitUntil(() => seen.some((entry) => entry.body.action === 'session_release'), {
+      message: 'deferred session release sent',
+    });
     assert.equal(seen.filter((entry) => entry.body.action === 'session_release').length, 1);
     assert.equal(await releaseComputerSession('computer-session-1'), true);
     assert.equal(await releaseComputerSession('computer-session-1'), true);
@@ -2692,7 +2701,9 @@ test('computer client skips the deferred release for sessions that never reached
     // quiet as well.
     await executeComputerTool({ action: 'list', input: { kind: 'windows' } }, { sessionId: 'used-once-session' });
     assert.equal(deferComputerSessionRelease('used-once-session', 20), true);
-    await new Promise((resolve) => setTimeout(resolve, 40));
+    await waitUntil(() => seen.some((body) => body.action === 'session_release'), {
+      message: 'deferred session release sent',
+    });
     assert.deepEqual(
       seen.map((body) => body.action),
       ['list_windows', 'session_release']

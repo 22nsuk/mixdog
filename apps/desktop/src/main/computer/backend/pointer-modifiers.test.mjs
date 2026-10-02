@@ -8,7 +8,7 @@ import test from 'node:test';
 import { PS_INPUT } from './ps-input.ts';
 
 test('pointer modifiers apply to the gesture and all owned keys release after partial failure', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
   timeout: 20000,
 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'mixdog-pointer-modifiers-'));

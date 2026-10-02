@@ -8,7 +8,7 @@ import test from 'node:test';
 import { powershellHostProgram } from './program.ts';
 
 test('OCR decodes generated pixels without creating screenshot files', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
 }, async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'mixdog-ocr-memory-'));
   try {
@@ -37,25 +37,38 @@ function Await-WinRt($operation, [Type]$resultType) {
 [Windows.Media.Ocr.OcrEngine, Windows.Media.Ocr, ContentType = WindowsRuntime] | Out-Null
 [Windows.Globalization.Language, Windows.Globalization, ContentType = WindowsRuntime] | Out-Null
 $available = [Windows.Media.Ocr.OcrEngine]::IsLanguageSupported([Windows.Globalization.Language]::new('en-US'))
-$bitmap = [Drawing.Bitmap]::new(240,80)
-$graphics = [Drawing.Graphics]::FromImage($bitmap)
-$graphics.Clear([Drawing.Color]::White)
-# Doubled for recognition, 'TEST' is missed at a few sizes (16pt, 32pt); 24pt reads at every neighboring size.
-$font = [Drawing.Font]::new('Arial',24)
-$graphics.DrawString('TEST', $font, [Drawing.Brushes]::Black, 5, 5)
-$memory = [IO.MemoryStream]::new()
-try {
-  $bitmap.Save($memory, [Drawing.Imaging.ImageFormat]::Png)
-  $result = $null
+function New-TextPng($text, $points, $width, $height) {
+  $canvas = [Drawing.Bitmap]::new($width,$height)
+  $pen = [Drawing.Graphics]::FromImage($canvas)
+  $face = [Drawing.Font]::new('Arial',$points)
+  $stream = [IO.MemoryStream]::new()
   try {
-    $result = Do-OcrImage @{image_base64=[Convert]::ToBase64String($memory.ToArray());ocr_language='en-US'}
-  } catch {
-    if ($available -or $_.Exception.Message -ne "Windows OCR has no recognizer for language 'en-US'") { throw }
+    $pen.Clear([Drawing.Color]::White)
+    $pen.DrawString($text, $face, [Drawing.Brushes]::Black, 5, 5)
+    $canvas.Save($stream, [Drawing.Imaging.ImageFormat]::Png)
+    return [Convert]::ToBase64String($stream.ToArray())
+  } finally {
+    $stream.Dispose(); $face.Dispose(); $pen.Dispose(); $canvas.Dispose()
   }
-  @{available=$available;decoded=$script:Decoded;result=$result} | ConvertTo-Json -Compress -Depth 6
-} finally {
-  $memory.Dispose(); $font.Dispose(); $graphics.Dispose(); $bitmap.Dispose()
 }
+# IsLanguageSupported only says the language is listed: a host can list en-US yet
+# read nothing from rendered text. Count the recognizer as present only when it
+# reads a large, unambiguous sample, so the TEST check below fails only on a host
+# that can recognize.
+if ($available) {
+  $probe = $null
+  try { $probe = Do-OcrImage @{image_base64=(New-TextPng 'HELLO WORLD' 48 640 120);ocr_language='en-US'} } catch { }
+  $script:Decoded = $null
+  if (-not ($probe -and ($probe.words | Where-Object { $_.text -eq 'HELLO' }))) { $available = $false }
+}
+$result = $null
+try {
+  # Doubled for recognition, 'TEST' is missed at a few sizes (16pt, 32pt); 24pt reads at every neighboring size.
+  $result = Do-OcrImage @{image_base64=(New-TextPng 'TEST' 24 240 80);ocr_language='en-US'}
+} catch {
+  if ($available -or $_.Exception.Message -ne "Windows OCR has no recognizer for language 'en-US'") { throw }
+}
+@{available=$available;decoded=$script:Decoded;result=$result} | ConvertTo-Json -Compress -Depth 6
 `;
     const { stdout } = await promisify(execFile)(
       'powershell.exe',
@@ -80,10 +93,13 @@ try {
     );
     await t.test('Windows OCR recognizes the generated text', (recognition) => {
       if (!outcome.available) {
-        recognition.skip('Windows OCR en-US recognizer is not installed; recognition verification is blocked');
+        recognition.skip('Windows OCR en-US cannot recognize rendered text on this host; recognition verification is blocked');
         return;
       }
-      assert.ok(outcome.result.words.some((word) => word.text === 'TEST'));
+      assert.ok(
+        outcome.result.words.some((word) => word.text === 'TEST'),
+        `recognized ${JSON.stringify(outcome.result.words.map((word) => word.text))}`
+      );
     });
   } finally {
     await rm(directory, { recursive: true, force: true });

@@ -1,9 +1,10 @@
-// Search-history maintenance: summarization and relationship/index maintenance.
+// Search-history maintenance: summarization and embedding maintenance.
 export {
   syncRootEmbedding,
   flushEmbeddingDirty,
+  flushSearchEmbeddings,
   flushRawEmbeddings,
   inferChunkProjectId,
 } from './memory-embed.mjs';
 export { runCycle1 } from './memory-cycle1.mjs';
-export { runCycle2, parseInterval } from './memory-cycle2.mjs';
+export { parseInterval } from './memory-cycle-shared.mjs';

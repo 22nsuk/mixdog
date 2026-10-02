@@ -3,7 +3,7 @@
 // through the LLM, commit each chunk as one transaction, and mark what was
 // left out. Rows within the window are one session in chronological order.
 import { __mixdogMemoryLog } from '../memory-log.mjs';
-import { throwIfAborted } from '../memory-cycle2-shared.mjs';
+import { throwIfAborted } from '../memory-cycle-shared.mjs';
 import { assessChunkQuality, generateCycle1Chunks } from '../memory-chunk-quality.mjs';
 import { inferChunkProjectId, syncRootEmbedding } from '../memory-embed.mjs';
 import { isStructurallyUnchunkableInput, markOmittedRows, markTerminalRows, selectRootId } from './cycle1-rows.mjs';
@@ -42,7 +42,7 @@ async function commitCycle1Chunk(db, chunk, rootId, memberIds) {
       `UPDATE entries
        SET chunk_root = $1, is_root = 1, element = $2, category = $3, summary = $4,
            status = 'pending', project_id = $5,
-           last_seen_at = $7, chunk_quality = $8::jsonb, cycle2_reviewed_at = NULL, duplicate_of = NULL
+           last_seen_at = $7, chunk_quality = $8::jsonb, duplicate_of = NULL
        WHERE id = $6`,
       [rootId, element, category, summary, projectId, rootId, Date.now(), JSON.stringify(quality)]
     );

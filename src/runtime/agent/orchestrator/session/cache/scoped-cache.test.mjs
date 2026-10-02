@@ -57,14 +57,14 @@ test('unobserved external changes have a bounded reuse window', () => {
   }
 });
 
-test('Windows aliases invalidate the same scope', { skip: process.platform !== 'win32' }, () => {
+test('Windows aliases invalidate the same scope', { skip: process.platform !== 'win32' && 'Windows only' }, () => {
   const spec = request('case', 'Src');
   setScopedToolCached({ ...spec, content: 'before' });
   clearScopedToolsForSessionPaths(spec.sessionId, [resolve(root, 'SRC/a.ts').toUpperCase()]);
   assert.equal(tryScopedToolCached(spec), null);
 });
 
-test('case-sensitive platforms keep distinct paths distinct', { skip: process.platform === 'win32' }, () => {
+test('case-sensitive platforms keep distinct paths distinct', { skip: process.platform === 'win32' && 'Windows only' }, () => {
   const spec = request('case', 'Src');
   setScopedToolCached({ ...spec, content: 'before' });
   clearScopedToolsForSessionPaths(spec.sessionId, [resolve(root, 'src/a.ts')]);

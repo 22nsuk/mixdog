@@ -326,6 +326,7 @@ function freshContextTail(source, budgetTokens, preserveConversation, opts) {
     contextWindow: opts.contextWindow || budgetTokens,
     sessionId: opts.sessionId,
     preserveConversation,
+    preview: opts.preview === true,
   });
   const latestUser = latestActualUserInstructionMessage(source.live);
   const latestIndex = execution.messages.findLastIndex(
@@ -505,10 +506,13 @@ function freshSkillBudget(targetBudget, budget, committed) {
 // must fit before any summary is admitted.
 function freshContextLayout(source, budgetTokens, opts) {
   const handoffText = String(opts.handoffText || '').trim();
-  const summaryMessage = handoffText
+  // The preview carries the real summary envelope but no invented AI text.
+  // Its caller adds the summary output ceiling to the resulting token estimate.
+  const replaceConversation = !!handoffText || (opts.preview === true && opts.previewSummary === true);
+  const summaryMessage = replaceConversation
     ? fitFreshContextSummaryMessage(source.live, handoffText, Number.MAX_SAFE_INTEGER)
     : source.previousSummaryMessage;
-  const tail = freshContextTail(source, budgetTokens, !handoffText, opts);
+  const tail = freshContextTail(source, budgetTokens, !replaceConversation, opts);
   const stableAck = tail.latestUser && summaryMessage ? { role: 'assistant', content: '.' } : null;
   const stableHead = [
     ...source.protectedPrefix,

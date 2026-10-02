@@ -9,7 +9,7 @@ import { PS_RUNTIME } from './ps-runtime.ts';
 import { PS_INPUT } from './ps-input.ts';
 
 test('session release restores focus only while the original input observation still owns it', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
   timeout: 20000,
 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'mixdog-focus-ownership-'));

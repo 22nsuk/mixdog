@@ -57,6 +57,7 @@ export function createAutoClearOps(bag, { reset, kickDrain }) {
   // Only an actual compaction resets the visible transcript; an unchanged
   // success keeps it. The model transcript always belongs to runtime.compact.
   function applyAutoClearUi(result) {
+    if (result.changed === false) return false;
     const compactChanged = result.changed !== false;
     if (compactChanged) {
       reset.resetStats();
@@ -68,6 +69,7 @@ export function createAutoClearOps(bag, { reset, kickDrain }) {
       stats: { ...getState().stats },
     });
     pushItem({ kind: 'statusdone', id: nextId(), label: 'Auto-clear complete' });
+    return true;
   }
 
   // Flush a deferred cleared-session UI sync once the active turn has settled.
@@ -77,8 +79,7 @@ export function createAutoClearOps(bag, { reset, kickDrain }) {
     const { result } = flags.pendingClearedSessionUi;
     flags.pendingClearedSessionUi = null;
     flags.autoClearInFlight = false;
-    applyAutoClearUi(result);
-    pushNotice(LATE_COMPLETION_NOTICE, 'info');
+    if (applyAutoClearUi(result)) pushNotice(LATE_COMPLETION_NOTICE, 'info');
   }
 
   function onLateCompact(lateResult) {
@@ -86,8 +87,7 @@ export function createAutoClearOps(bag, { reset, kickDrain }) {
       // Do not wipe items/queued or force busy=false mid-turn.
       flags.pendingClearedSessionUi = { result: lateResult };
     } else {
-      applyAutoClearUi(lateResult);
-      pushNotice(LATE_COMPLETION_NOTICE, 'info');
+      if (applyAutoClearUi(lateResult)) pushNotice(LATE_COMPLETION_NOTICE, 'info');
     }
   }
 
@@ -95,7 +95,7 @@ export function createAutoClearOps(bag, { reset, kickDrain }) {
   // late completion can reset the UI. Never follow compact with clear:
   // that would discard conversation/execution records the compactor kept.
   async function compactWithinTimeout(compactTimeoutMs) {
-    const compactPromise = runtime.compact().then((result) => {
+    const compactPromise = runtime.compact({ requireReduction: true }).then((result) => {
       if (!result) throw new Error('no active session');
       if (result.error) throw new Error(result.error);
       return result;
@@ -161,8 +161,7 @@ export function createAutoClearOps(bag, { reset, kickDrain }) {
       // Without this, long idle clears can look like a frozen prompt followed by
       // an already-complete status row.
       await new Promise((resolve) => setTimeout(resolve, 0));
-      applyAutoClearUi(await compactWithinTimeout(compactTimeoutMs));
-      return true;
+      return applyAutoClearUi(await compactWithinTimeout(compactTimeoutMs));
     } catch (error) {
       const message = presentErrorText(error, { surface: 'compact' });
       pushItem({

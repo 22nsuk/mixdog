@@ -414,7 +414,7 @@ test('a sync waiter fails fast while an async acquisition is still publishing th
 });
 
 test('secret writes fail closed without publishing when Windows ACL tooling is unavailable', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
 }, (t) => {
   const { dir, path } = fixture(t);
   const source = `
@@ -450,7 +450,7 @@ test('secret writes fail closed without publishing when Windows ACL tooling is u
 });
 
 test('secret create-only publication never weakens the published file ACL during cleanup', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
 }, (t) => {
   const { dir, path } = fixture(t);
   const source = `

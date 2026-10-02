@@ -9,10 +9,9 @@ const BACKLOG_WARN_FAILURES = 5;
 export function createCycleHealthLedger({ cycleStateFile, log }) {
   const health = {
     cycle1: { last_success_at: 0, last_error_at: 0, last_error: null, consecutive_failures: 0 },
-    cycle2: { last_success_at: 0, last_error_at: 0, last_error: null, consecutive_failures: 0 },
   };
   let running = null; // { cycle, started_at, pid }
-  let backlog = { unchunked: 0, cycle2_pending: 0, at: 0 };
+  let backlog = { unchunked: 0, at: 0 };
   let lastWarnAt = 0;
 
   function write() {
@@ -74,7 +73,6 @@ export function createCycleHealthLedger({ cycleStateFile, log }) {
   // state file reports 0 until the next run.
   function hydrateSuccess(last) {
     if (last?.cycle1 > 0 && !health.cycle1.last_success_at) health.cycle1.last_success_at = last.cycle1;
-    if (last?.cycle2 > 0 && !health.cycle2.last_success_at) health.cycle2.last_success_at = last.cycle2;
     write();
   }
 

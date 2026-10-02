@@ -1,6 +1,6 @@
 // Characterization of the cycle scheduler's run machinery: cycle1 coalescing
-// + caller deadline, health ledger / state file, cycle2 scheduled catch-up
-// drain with retry cap, backlog probe + raw-embed flush, and start/stop.
+// + caller deadline, health ledger / state file, retry cap,
+// backlog probe + raw-embed flush, and start/stop.
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -25,7 +25,6 @@ function makeHarness(t, overrides = {}) {
     readState: () => JSON.parse(readFileSync(join(dir, 'state.json'), 'utf8')),
     retryTasks: [],
     runCycle1: async () => ({ processed: 1, chunks: 1, skipped: 0, sessions: 1 }),
-    runCycle2: async () => ({ ok: true, processed: 1 }),
   };
   const db = {
     query: async (sql, params) => {
@@ -44,14 +43,9 @@ function makeHarness(t, overrides = {}) {
     readMainConfig: () => h.config ?? {},
     memoryCyclesEnabled: () => true,
     getCycle1CallLlm: () => 'llm1',
-    getCycle2CallLlm: () => 'llm2',
     runCycle1: (...args) => {
       record('runCycle1', args[1], args[2]);
       return h.runCycle1(...args);
-    },
-    runCycle2: (...args) => {
-      record('runCycle2', args[1], args[2]);
-      return h.runCycle2(...args);
     },
     parseInterval: () => 60_000,
     flushRawEmbeddings: async () => {
@@ -66,7 +60,6 @@ function makeHarness(t, overrides = {}) {
     },
     cancelCoalescedCycleRetries: () => record('cancelRetries'),
     scheduledCycle1Signature: () => 'sig1',
-    scheduledCycle2Signature: () => 'sig2',
     cycleStateFile: h.cycleStateFile,
     ...overrides,
   });
@@ -153,12 +146,12 @@ test('a skipped-in-flight scheduled cycle1 re-arms the coalesced retry up to the
   await h.scheduler.checkCycles();
   assert.deepEqual(
     h.retryTasks.map((entry) => entry.kind),
-    ['cycle1', 'cycle2']
+    ['cycle1']
   );
   await h.retryTasks[0].task();
-  assert.equal(h.retryTasks.length, 3, 'attempt 1 re-armed');
-  await h.retryTasks[2].task();
-  assert.equal(h.retryTasks.length, 3, 'attempt 2 exceeds maxRetries=1');
+  assert.equal(h.retryTasks.length, 2, 'attempt 1 re-armed');
+  await h.retryTasks[1].task();
+  assert.equal(h.retryTasks.length, 2, 'attempt 2 exceeds maxRetries=1');
   assert.ok(h.logs.includes('[cycle1] scheduled queue retry cap reached\n'));
   assert.deepEqual(h.named('runCycle1')[0][1], {
     min_batch: 20,
@@ -171,68 +164,9 @@ test('a skipped-in-flight scheduled cycle1 re-arms the coalesced retry up to the
   assert.equal(typeof h.named('runCycle1')[0][2].onCoalescedSuccess, 'function');
 });
 
-test('the scheduled cycle2 task drains catch-up passes while roots remain and finalizes success', async (t) => {
-  const h = makeHarness(t, { claimAndMarkScheduledCycle: async () => ({ claimed: true }) });
-  h.config = { cycle2: { catchup_passes: 3 } };
-  h.runCycle2 = async (_db, _config, options) => {
-    const result = { ok: true, processed: 4 };
-    await options.onCoalescedSuccess(result);
-    return result;
-  };
-  await h.scheduler.checkCycles();
-  h.calls.length = 0;
-  h.counts.push(7, 0);
-  await h.retryTasks[1].task();
-  const runs = h.named('runCycle2');
-  assert.equal(runs.length, 2, 'stops once no pending roots remain');
-  assert.deepEqual(
-    runs.map((entry) => entry[2].catchUpDrainPass),
-    [false, true]
-  );
-  assert.equal(runs[0][2].callLlm, 'llm2');
-  assert.equal(runs[0][2].coalescedRetry, true);
-  assert.deepEqual(
-    h.named('setCycleLastRun').map((entry) => [entry[1], entry[2] === '' ? '' : typeof entry[2]]),
-    [
-      ['cycle2', 'number'],
-      ['cycle2_last_error', ''],
-      ['cycle2', 'number'],
-      ['cycle2_last_error', ''],
-    ]
-  );
-  assert.ok(h.logs.includes('[cycle2] catch-up pass 1/3: processed=4 pending=7\n'));
-  assert.ok(h.logs.includes('[cycle2] catch-up pass 2/3: processed=4 pending=0\n'));
-  assert.equal(h.scheduler.getCycleHealth().cycle2.consecutive_failures, 0);
-  assert.equal(h.scheduler.getCycleRunning(), null);
-  assert.equal(h.readState().running, null);
-});
-
-test('a failed scheduled cycle2 pass finalizes the error once and stops draining; a thrown pass marks failure', async (t) => {
-  const h = makeHarness(t, { claimAndMarkScheduledCycle: async () => ({ claimed: true }) });
-  h.runCycle2 = async () => ({ ok: false, error: 'review failed' });
-  await h.scheduler.checkCycles();
-  h.calls.length = 0;
-  await h.retryTasks[1].task();
-  assert.equal(h.named('runCycle2').length, 1);
-  assert.deepEqual(
-    h.named('setCycleLastRun').map((entry) => [entry[1], entry[2]]),
-    [['cycle2_last_error', 'review failed']]
-  );
-  assert.equal(h.scheduler.getCycleHealth().cycle2.last_error, 'review failed');
-  assert.ok(h.logs.includes('[cycle2] failed: review failed\n'));
-
-  h.runCycle2 = async () => {
-    throw new Error('db gone');
-  };
-  await h.retryTasks[1].task();
-  assert.equal(h.scheduler.getCycleHealth().cycle2.consecutive_failures, 2);
-  assert.ok(h.logs.includes('[cycle2] scheduled queue failed: db gone\n'));
-  assert.equal(h.scheduler.getCycleRunning(), null);
-});
-
 test('checkCycles snapshots the backlog, flushes raw embeddings once while in flight, and warns above the threshold', async (t) => {
   const h = makeHarness(t);
-  h.counts.push(600, 10, 501);
+  h.counts.push(600, 10);
   await h.scheduler.checkCycles();
   assert.deepEqual(h.named('setConfig').length, 1);
   const snapshot = h.scheduler.getCycleBacklogSnapshot();
@@ -240,13 +174,12 @@ test('checkCycles snapshots the backlog, flushes raw embeddings once while in fl
     {
       unchunked: snapshot.unchunked,
       unchunked_eligible: snapshot.unchunked_eligible,
-      cycle2_pending: snapshot.cycle2_pending,
     },
-    { unchunked: 600, unchunked_eligible: 10, cycle2_pending: 501 }
+    { unchunked: 600, unchunked_eligible: 10 }
   );
   assert.deepEqual(h.readState().backlog, snapshot);
   assert.equal(h.named('flushRawEmbeddings').length, 1);
-  assert.ok(h.logs.some((line) => line.includes('backlog unchunked=600 eligible=10 cycle2_pending=501')));
+  assert.ok(h.logs.some((line) => line.includes('backlog unchunked=600 eligible=10')));
   await sleep(0);
   assert.ok(h.logs.includes('[embed] raw fallback flush attempted=2 embedded=1\n'));
 });
@@ -259,8 +192,8 @@ test('startCycles clears a stale running marker, hydrates health from the last-r
   assert.equal(h.readState().running, null);
   await sleep(0);
   assert.equal(h.scheduler.getCycleHealth().cycle1.last_success_at, 111);
-  assert.equal(h.scheduler.getCycleHealth().cycle2.last_success_at, 222);
-  assert.equal(h.readState().cycles.cycle2.last_success_at, 222);
+  assert.equal(h.scheduler.getCycleHealth().cycle2, undefined);
+  assert.equal(h.readState().cycles.cycle2, undefined);
   h.scheduler.stopCycles();
   assert.deepEqual(h.named('cancelRetries'), [['cancelRetries']]);
   h.scheduler.resetInFlight();

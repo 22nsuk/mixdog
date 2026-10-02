@@ -8,7 +8,7 @@ import test from 'node:test';
 import { MIXDOG_HOST_CSHARP } from './native-source.ts';
 
 test('drag completion and interrupted movement both end with release feedback', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
   timeout: 30000,
 }, async () => {
   // Execute the actual gesture with an isolated input transport, never user32.

@@ -82,7 +82,7 @@ test('runFullBackfill scope=workspace only ingests transcripts from the workspac
             return 1;
           },
           runCycle1: async () => ({ processed: 0 }),
-          runCycle2: async () => ({ processed: 0 }),
+          flushEmbeddings: async () => ({ succeeded: 0 }),
         }
       );
       return { seen, res };

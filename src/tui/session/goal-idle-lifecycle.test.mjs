@@ -4,9 +4,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { createGoalRuntime } from '../../runtime/agent/orchestrator/runtime-core/goal-runtime.mjs';
+import { waitUntil } from '../../runtime/shared/wait-until.test-support.mjs';
 import { createGoalContinuation } from './goal-continuation.mjs';
 
+// The lane schedules its next continuation with one setImmediate queued
+// before this one, so (FIFO) it has already run when this resolves. Used only
+// to assert that NOTHING was queued; positive assertions poll with waitUntil.
 const tick = () => new Promise(setImmediate);
+const pendingCount = (f, n) => waitUntil(() => f.pending.length === n, { message: `pending queue length ${n}` });
 
 function fixture(t) {
   const dataDir = mkdtempSync(join(tmpdir(), 'goal-idle-lifecycle-'));
@@ -72,7 +77,6 @@ test('completed duration work waits on the deadline timer without generating mor
   });
   t.mock.timers.tick(1_000);
   await reached;
-  await tick();
   assert.equal(f.state.goal.status, 'duration_reached');
   assert.equal(f.pending.length, 1);
   assert.equal(f.pending[0].mode, 'goal-closeout');
@@ -92,18 +96,16 @@ test('new work wakes a duration wait without extending the approved budget', asy
     })
   ).goal;
   f.state.busy = false;
-  await tick();
+  await pendingCount(f, 1);
   // A settled list earns one review turn first; this test covers the wake that
   // follows it, so consume that entry before adding the new work.
-  assert.equal(f.pending.length, 1);
   f.pending.length = 0;
   await f.call({
     action: 'update_tasks',
     tasks: [{ text: 'User-approved additional check', status: 'pending' }],
   });
-  await tick();
+  await pendingCount(f, 1);
   assert.equal(f.state.goal.timeLimitMs, created.timeLimitMs);
-  assert.equal(f.pending.length, 1);
   assert.equal(f.pending[0].mode, 'goal-continuation');
   assert.equal(f.controller.shouldRunGoalContinuation(f.pending[0]), true);
 });
@@ -118,9 +120,8 @@ test('a settled duration list gets one review turn before the deadline wait', as
     tasks: [{ text: 'Verified deliverable', status: 'completed' }],
   });
   f.state.busy = false;
-  await tick();
+  await pendingCount(f, 1);
   assert.equal(f.runtime.continuation(f.sessionId).reason, 'idle-review');
-  assert.equal(f.pending.length, 1);
   assert.equal(f.pending[0].mode, 'goal-continuation');
   assert.match(f.pending[0].content, /set_tasks/);
 
@@ -176,8 +177,7 @@ test('an automatic turn without a tool call waits instead of prompting the unfin
 
   // A changed list wakes it.
   await f.call({ action: 'update_tasks', tasks: [{ text: 'User-approved follow-up', status: 'pending' }] });
-  await tick();
-  assert.equal(f.pending.length, 1);
+  await pendingCount(f, 1);
 
   // So does a user turn, even one that called no tool.
   await automaticTurn({ automatic: true, toolCalls: 0 });
@@ -215,8 +215,7 @@ test('duration waiting cannot suppress unfinished work, objective review, or max
         await f.call({ action: 'block', blocker: 'External approval service unavailable' });
       f.state.busy = false;
       f.controller.scheduleGoalContinuation();
-      await tick();
-      assert.equal(f.pending.length, 1);
+      await pendingCount(f, 1);
       assert.equal(f.controller.shouldRunGoalContinuation(f.pending[0]), true);
     });
   }

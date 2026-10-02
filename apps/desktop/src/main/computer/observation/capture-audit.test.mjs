@@ -668,7 +668,7 @@ test('failed accessibility workers permit fresh pixels and OCR without replaying
 });
 
 test('another session changing a resolved target during preparation still prevents dispatch', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
 }, async () => {
   const f = fixture();
   const command = { action: 'key', keys: '{TAB}', window_id: 'hwnd:0x1', session_id: 'a' };
@@ -701,7 +701,7 @@ test('another session changing a resolved target during preparation still preven
 });
 
 test('bounded zoom derives authorization from its original frame, not an extra window selector', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
 }, async () => {
   const f = fixture();
   const shot = await f.run(() =>

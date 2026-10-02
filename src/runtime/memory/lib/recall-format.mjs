@@ -307,7 +307,7 @@ function rowMembers(r, { includeRootSource, sourceWindow }) {
 
 // Chunks present: each member is its own line. The root row is a grouping
 // artifact for retrieval — the caller wants the chunk content (cycle1 raw),
-// not the cycle2-compressed summary.
+// not the stored summary.
 function memberUnits(r, members, render, preserveSource) {
   return members.map((m, memberIndex) => {
     const source = String(m.content ?? '');

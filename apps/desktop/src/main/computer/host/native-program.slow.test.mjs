@@ -9,7 +9,7 @@ import { ABORT_CLEANUP_PROGRAM } from '../backend/program.ts';
 import { runComputerProbe } from './fixtures/probe-runner.mjs';
 
 test('generated abort cleanup program compiles', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
   timeout: 30_000,
 }, async () => {
   const invokeStart = ABORT_CLEANUP_PROGRAM.indexOf('[MixdogAbortCleanup]::Run(');
@@ -31,7 +31,7 @@ test('generated abort cleanup program compiles', {
 });
 
 test('generated Windows input host refuses unarmed keyboard and pointer input', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
   timeout: 200_000,
 }, async () => {
   const probe = (await readFile(new URL('./fixtures/native-safety.ps1', import.meta.url), 'utf8')).replace(

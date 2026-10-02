@@ -198,7 +198,7 @@ for (const asynchronous of [false, true]) {
 }
 
 test('Windows timeout cleanup does not target an already-closed child again', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
 }, async (t) => {
   const child = controlledChild(t);
   child.pid = 246810;

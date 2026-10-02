@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, readdir, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative } from 'node:path';
@@ -8,7 +8,12 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import test from 'node:test';
 
-import { assertDebugPortAvailable, createIsolatedDevEnv } from './dev-profile.mjs';
+import {
+  assertDebugPortAvailable,
+  createIsolatedDevEnv,
+  createPersistentDevEnv,
+  persistentDevProfileDir,
+} from './dev-profile.mjs';
 
 const exec = promisify(execFile);
 const helper = fileURLToPath(new URL('./dev-profile.mjs', import.meta.url));
@@ -69,6 +74,24 @@ test('dev environment isolates every store and connection from the installed par
   ]) assert.notEqual(env[key], second[key], key);
 });
 
+test('kept dev profile is reused across launches and keeps its data', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'mixdog-dev-kept-test-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const parent = { PATH: process.env.PATH, LOCALAPPDATA: root, MIXDOG_DATA_DIR: 'live-data' };
+  const profile = persistentDevProfileDir('default', parent);
+  assert.equal(profile, join(root, 'mixdog-dev', 'default'));
+  const first = await createPersistentDevEnv(parent, profile);
+  assert.equal(first.MIXDOG_DESKTOP_USER_DATA, profile);
+  assert.notEqual(first.MIXDOG_DATA_DIR, 'live-data');
+  await writeFile(join(first.MIXDOG_DATA_DIR, 'marker.json'), '{}');
+  const second = await createPersistentDevEnv(parent, profile);
+  assert.deepEqual(second, first);
+  assert.equal(await readFile(join(second.MIXDOG_DATA_DIR, 'marker.json'), 'utf8'), '{}');
+  for (const name of ['../live', '', '-x', 'a/b']) {
+    assert.throws(() => persistentDevProfileDir(name, parent), /Profile name/, name);
+  }
+});
+
 test('occupied debug port fails immediately rather than attaching to another app', async (t) => {
   const port = await occupiedPort(t);
   await assert.rejects(assertDebugPortAvailable(port), /EADDRINUSE/);
@@ -97,7 +120,7 @@ test('profile CLI emits isolated child environment from a different working dire
   const port = server.address().port;
   await new Promise((resolve) => server.close(resolve));
   const { stdout, stderr } = await exec(process.execPath, [
-    helper, '--env-json', '--port', String(port),
+    helper, '--env-json', '--fresh', '--port', String(port),
   ], {
     cwd: root,
     env: {

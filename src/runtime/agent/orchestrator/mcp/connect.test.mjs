@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { pathToFileURL } from 'node:url';
 import test, { mock } from 'node:test';
+import { waitUntil } from '../../../shared/wait-until.test-support.mjs';
 
 // connectServer builds SDK clients/transports from config: the SDK modules are
 // replaced with recording fakes so the handshake, registration, timeout and
@@ -231,7 +232,7 @@ test('a hung handshake fails on the startup budget and tears the pending transpo
     assert.match(error.failures[0].msg, /"slow" startup exceeded 20ms budget/);
     return true;
   });
-  await new Promise((resolve) => setTimeout(resolve, 5));
+  await waitUntil(() => clients[0].closed, { message: 'timed-out client closed' });
   assert.equal(clients[0].closed, true);
   assert.deepEqual(getMcpTools(scopeId), []);
 });

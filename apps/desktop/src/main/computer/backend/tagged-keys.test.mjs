@@ -8,7 +8,7 @@ import test from 'node:test';
 import { MIXDOG_HOST_CSHARP } from './native-source.ts';
 
 test('tagged key streams preserve grouping, repeats and literal escapes; invalid streams emit nothing; release survives interruption', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'mixdog-tagged-keys-'));
   try {

@@ -27,7 +27,6 @@ export async function ensureEntriesSchema(db, dimCount) {
       score         REAL,
       last_seen_at  BIGINT,
       reviewed_at   BIGINT,
-      cycle2_reviewed_at BIGINT,
       error_count   INTEGER NOT NULL DEFAULT 0,
       embedding     halfvec(${dimCount}),
       summary_hash  TEXT,

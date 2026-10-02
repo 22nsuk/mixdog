@@ -33,7 +33,7 @@ function stateAdapters() {
 }
 
 // The command router refuses every command off Windows before any routing runs.
-const WINDOWS_ONLY = { skip: process.platform !== 'win32' };
+const WINDOWS_ONLY = { skip: process.platform !== 'win32' && 'Windows only' };
 
 test('semantic input does not move a duplicate display pointer before native dispatch', WINDOWS_ONLY, async () => {
   let dispatched = 0;

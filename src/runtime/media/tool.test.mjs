@@ -90,7 +90,8 @@ test('media is one deferred tool whose description names no lane', () => {
   assert.equal(TOOL_DEFS[0].name, 'media');
   assert.deepEqual(TOOL_DEFS[0].inputSchema.properties.action.enum, MEDIA_ACTIONS);
   assert.doesNotMatch(TOOL_DEFS[0].description, /grok|gemini|openai|kling/i);
-  assert.ok(JSON.stringify(TOOL_DEFS[0]).length < 3000);
+  const size = JSON.stringify(TOOL_DEFS[0]).length;
+  assert.ok(size < 3000, `media tool schema is ${size} chars; budget 3000 — trim the description or justify raising the budget`);
 });
 
 test("list narrows: lanes → models for a kind → one model's controls, signed-out lanes only named", () => {

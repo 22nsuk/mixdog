@@ -8,7 +8,7 @@ import test, { after } from 'node:test';
 import { powershellHostProgram } from './program.ts';
 
 const execute = promisify(execFile);
-const windows = { skip: process.platform !== 'win32', timeout: 20_000 };
+const windows = { skip: process.platform !== 'win32' && 'Windows only', timeout: 20_000 };
 const directory = await mkdtemp(join(tmpdir(), 'mixdog-input-audit-'));
 after(() => rm(directory, { recursive: true, force: true }));
 const sourcePath = join(directory, 'backend.ps1');

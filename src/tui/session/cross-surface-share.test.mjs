@@ -4,8 +4,11 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { attachCrossSurfaceShare } from './cross-surface-share.mjs';
 import { createSharedDirWatch } from './shared-dir-watch.mjs';
+import { waitUntil } from '../../runtime/shared/wait-until.test-support.mjs';
 
-// Lets settled drains release their in-flight slot (setImmediate is not mocked).
+// Drains already-resolved microtasks of the synchronous mock drains below (their
+// debounce timers are mocked; setImmediate is not), so settled drains release
+// their in-flight slot. Deterministic: no real I/O is awaited.
 const flushMicrotasks = () => new Promise((resolve) => setImmediate(resolve));
 
 // fs.watch stand-in: records every underlying handle and lets the test fire
@@ -172,7 +175,7 @@ test('the attach tick drains the owner spool and disposes the share once the sto
       },
     });
     mock.timers.tick(3000);
-    await new Promise((resolve) => setImmediate(resolve));
+    await waitUntil(() => log.some((entry) => entry[0] === 'drain'), { message: 'owner spool drained' });
     const enqueued = log.find((entry) => entry[0] === 'enqueue');
     assert.deepEqual(enqueued, ['enqueue', 'from desktop', { fast: true, displayText: 'from desktop', id: 'inj-1' }]);
     assert.ok(log.some((entry) => entry[0] === 'drain'));

@@ -72,7 +72,7 @@ if ($Iterations -eq 0 -and $durationMs -eq 0) {
 # The shared helper checks the CDP port and creates a unique isolated profile.
 # A nonzero exit (for example a busy port) aborts before any artifact exists.
 $profileHelper = Join-Path $PSScriptRoot 'dev-profile.mjs'
-$helperOutput = & node.exe $profileHelper --env-json --port $Port
+$helperOutput = & node.exe $profileHelper --env-json --fresh --port $Port
 if ($LASTEXITCODE -ne 0) { throw "Isolated profile helper failed (exit $LASTEXITCODE) for port $Port." }
 $isolatedEnv = ($helperOutput -join "`n") | ConvertFrom-Json
 $profilePath = [string]$isolatedEnv.MIXDOG_DESKTOP_USER_DATA

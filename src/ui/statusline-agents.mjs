@@ -15,7 +15,6 @@ import { positiveInt } from '../runtime/shared/numbers.mjs';
 // from the worker list by default, and the short label they render as.
 const MAINTENANCE_AGENT_LABELS = new Map([
   ['cycle1-agent', 'cycle1'],
-  ['cycle2-agent', 'cycle2'],
 ]);
 const DEFAULT_HIDDEN_STATUSLINE_AGENTS = Object.freeze([...MAINTENANCE_AGENT_LABELS.keys()]);
 const TERMINAL_AGENT_STATUS = /idle|done|complete|success|closed|error|fail|cancel|killed|timeout/i;

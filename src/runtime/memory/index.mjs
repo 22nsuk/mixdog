@@ -51,7 +51,7 @@ import {
   shutdownEmbeddingProvider,
   warmupEmbeddingProvider,
 } from './lib/embedding-provider.mjs';
-import { runCycle1, runCycle2, parseInterval, flushEmbeddingDirty, flushRawEmbeddings } from './lib/memory-cycle.mjs';
+import { runCycle1, parseInterval, flushEmbeddingDirty, flushRawEmbeddings } from './lib/memory-cycle.mjs';
 import { callAgentDispatch } from './lib/agent-ipc.mjs';
 import {
   cancelCoalescedCycleRetries,
@@ -73,7 +73,7 @@ import {
 import { writeJsonAtomicSync } from '../shared/atomic-file.mjs';
 import { safeIpcSend } from '../shared/safe-ipc-send.mjs';
 import { resolvePluginData, mixdogHome } from '../shared/plugin-paths.mjs';
-import { scheduledCycle1Signature, scheduledCycle2Signature } from './lib/cycle-signatures.mjs';
+import { scheduledCycle1Signature } from './lib/cycle-signatures.mjs';
 import { createTranscriptIngest } from './lib/transcript-ingest.mjs';
 import { createCycleLlmAdapters } from './lib/cycle-llm-adapters.mjs';
 import { createCycleScheduler } from './lib/cycle-scheduler.mjs';
@@ -333,20 +333,15 @@ async function getCycleLastRun() {
     const obj = JSON.parse(raw);
     return {
       cycle1: Number(obj.cycle1) || 0,
-      cycle2: Number(obj.cycle2) || 0,
       // Heartbeat (every attempt, success or skip) is tracked separately from
       // the success timestamps above so a long string of failed/skipped runs
       // cannot disguise itself as a healthy keeper.
       cycle1_heartbeat: Number(obj.cycle1_heartbeat) || 0,
-      // Last cycle2 failure message; cleared to '' on success.
-      cycle2_last_error: typeof obj.cycle2_last_error === 'string' ? obj.cycle2_last_error : '',
     };
   } catch {
     return {
       cycle1: 0,
-      cycle2: 0,
       cycle1_heartbeat: 0,
-      cycle2_last_error: '',
     };
   }
 }
@@ -373,7 +368,7 @@ async function refreshCoreMemorySnapshot(reason = 'mutation') {
 const CYCLE_STATE_FILE = path.join(DATA_DIR, 'memory-cycle-state.json');
 
 const _cycleLlmAdapters = createCycleLlmAdapters({ callAgentDispatch });
-const { getCycle1CallLlm, getCycle2CallLlm } = _cycleLlmAdapters;
+const { getCycle1CallLlm } = _cycleLlmAdapters;
 
 const _cycleScheduler = createCycleScheduler({
   getDb: () => db,
@@ -388,9 +383,7 @@ const _cycleScheduler = createCycleScheduler({
   readMainConfig,
   memoryCyclesEnabled,
   getCycle1CallLlm,
-  getCycle2CallLlm,
   runCycle1,
-  runCycle2,
   parseInterval,
   flushRawEmbeddings,
   claimAndMarkScheduledCycle,
@@ -398,13 +391,11 @@ const _cycleScheduler = createCycleScheduler({
   scheduleCoalescedCycleRetry,
   cancelCoalescedCycleRetries,
   scheduledCycle1Signature,
-  scheduledCycle2Signature,
   cycleStateFile: CYCLE_STATE_FILE,
 });
-// Cycle1 run primitives + cycle2 finalize used by MCP action handlers below.
+// Cycle1 run primitives used by MCP action handlers below.
 const _startCycle1Run = _cycleScheduler.startCycle1Run;
 const _awaitCycle1Run = _cycleScheduler.awaitCycle1Run;
-const _finalizeCycle2Run = _cycleScheduler.finalizeCycle2Run;
 
 // Transcript watcher lifecycle stays in the facade (owns _transcriptIngest);
 // the cycle tick loop start/stop is delegated to the scheduler.
@@ -509,10 +500,8 @@ const _actionHandlers = createMemoryActionHandlers({
   dumpSessionRootChunks,
   awaitCycle1Run: _awaitCycle1Run,
   startCycle1Run: _startCycle1Run,
-  finalizeCycle2Run: _finalizeCycle2Run,
   refreshCoreMemoryFile: refreshCoreMemorySnapshot,
   getSchedulerCycle1InFlight: () => _cycleScheduler.getCycle1InFlight(),
-  getCycle2CallLlm,
   ingestTranscriptFile,
   cwdFromTranscriptPath,
 });

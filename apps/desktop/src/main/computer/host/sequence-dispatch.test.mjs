@@ -30,7 +30,7 @@ const scope = {
   observedAt: Date.now(),
   inputObservation: { ready: true, monitor: 'fixture', sequence: 0 },
 };
-const WINDOWS_ONLY = { skip: process.platform !== 'win32' };
+const WINDOWS_ONLY = { skip: process.platform !== 'win32' && 'Windows only' };
 
 function fixture(replyFor) {
   const requests = [];

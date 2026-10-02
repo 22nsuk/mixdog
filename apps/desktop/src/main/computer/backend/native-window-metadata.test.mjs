@@ -8,7 +8,7 @@ import test from 'node:test';
 import { MIXDOG_HOST_CSHARP } from './native-source.ts';
 
 test('native metadata identifies the process parent and reads OBJID_MENU without traversing a client provider', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'mixdog-native-window-metadata-'));
   try {

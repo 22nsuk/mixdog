@@ -4,7 +4,9 @@ import test from 'node:test';
 import { runComputerProbe } from './fixtures/probe-runner.mjs';
 
 test('live clipboard write preserves and restores the user clipboard', {
-  skip: process.platform !== 'win32' || process.env.MIXDOG_COMPUTER_LIVE_CLIPBOARD !== '1',
+  skip:
+    (process.platform !== 'win32' && 'Windows only') ||
+    (process.env.MIXDOG_COMPUTER_LIVE_CLIPBOARD !== '1' && 'set MIXDOG_COMPUTER_LIVE_CLIPBOARD=1 to run'),
   timeout: 200_000,
 }, async () => {
   const clipboard = await readFile(new URL('./fixtures/live-clipboard.ps1', import.meta.url), 'utf8');

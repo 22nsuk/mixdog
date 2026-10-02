@@ -4,7 +4,7 @@ import { embedTexts, getEmbeddingModelId, holdEmbeddingWarm } from './embedding-
 import { embeddingToSql } from './memory.mjs';
 import { createHash } from 'node:crypto';
 import { pruneEmbeddingCache, resolveEmbeddingCacheMaxRows } from './embedding-cache-retention.mjs';
-import { throwIfAborted, markStoreFault } from './memory-cycle2-shared.mjs';
+import { throwIfAborted, markStoreFault } from './memory-cycle-shared.mjs';
 
 // Restart-survivable embedding dedup cache (DDL created on first flush).
 // Keyed per-db handle so a second DB instance in the same process re-runs the
@@ -633,6 +633,19 @@ async function syncBatchEmbeddings(db, ids, options = {}) {
     }
   }
   return writtenIds;
+}
+
+// Explicit maintenance must propagate partial failures and caller cancellation,
+// including callers sharing a flush that was started without their signal.
+export async function flushSearchEmbeddings(db, options = {}) {
+  const result = await flushEmbeddingDirty(db, options);
+  throwIfAborted(options.signal);
+  if (result?.timedOut || result?.failed?.length) {
+    throw new Error(
+      `embedding maintenance incomplete: failed=${result.failed?.length || 0} timedOut=${Boolean(result.timedOut)}`
+    );
+  }
+  return result;
 }
 
 // Embeds one root; true when its fresh vector was written.

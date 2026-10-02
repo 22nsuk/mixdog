@@ -4,13 +4,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { Worker } from 'node:worker_threads';
+import { waitUntil } from '../../../runtime/shared/wait-until.test-support.mjs';
 import { createSpillWriter } from './spill-writer.mjs';
 
 // The writer retires its worker thread once every write has settled and it
 // stayed idle, respawns transparently on the next write without losing or
 // reordering pages, and dispose always ends the thread.
-
-const settle = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function fakeWorkers() {
   const workers = [];
@@ -35,7 +34,12 @@ function fakeWorkers() {
         worker.terminated = true;
         // A real worker reports its exit; the writer must ignore it for a
         // worker it retired itself.
-        setImmediate(() => handlers.exit?.(1));
+        worker.exitReported = new Promise((resolve) =>
+          setImmediate(() => {
+            handlers.exit?.(1);
+            resolve();
+          })
+        );
       },
       unref: () => {},
     };
@@ -60,21 +64,9 @@ function pageRecords(dir, from, to) {
   return records;
 }
 
-async function drained(writer) {
-  const deadline = Date.now() + 3000;
-  while (writer.pendingCount > 0) {
-    if (Date.now() > deadline) throw new Error('writes did not drain');
-    await settle(5);
-  }
-}
+const drained = (writer) => waitUntil(() => writer.pendingCount === 0, { message: 'writes did not drain' });
 
-async function until(predicate, label) {
-  const deadline = Date.now() + 5000;
-  while (!predicate()) {
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`);
-    await settle(5);
-  }
-}
+const until = (predicate, label) => waitUntil(predicate, { message: label });
 
 const tempDir = (context) => {
   const dir = mkdtempSync(join(tmpdir(), 'mixdog-spill-writer-test-'));
@@ -97,7 +89,7 @@ test('an idle writer retires its worker and restarts on the next write without l
 
   await until(() => !writer.workerAlive, 'idle retirement');
   assert.equal(workers[0].terminated, true);
-  await settle(10); // the retired worker's exit event must not respawn or fail anything
+  await workers[0].exitReported; // the retired worker's exit event must not respawn or fail anything
   assert.equal(workers.length, 1);
 
   const second = pageRecords(dir, 4, 6);
@@ -131,7 +123,6 @@ test('a write arriving before the idle deadline keeps the same worker', async (c
   const [a, b] = pageRecords(dir, 1, 2);
   writer.enqueue(a);
   await drained(writer);
-  await settle(20);
   writer.enqueue(b);
   await drained(writer);
   assert.equal(workers.length, 1);
@@ -151,7 +142,7 @@ test('dispose ends the worker thread even while it is busy or idle-armed', async
   assert.equal(writer.workerAlive, false);
   assert.equal(workers[0].terminated, true);
   assert.equal(writer.pendingCount, 0);
-  await settle(10);
+  await workers[0].exitReported;
   assert.equal(workers.length, 1, 'dispose never respawns');
 });
 

@@ -44,13 +44,11 @@ test('maintenance agents are labelled once and idle workers drop out', () => {
   const { maintenance, runningWorkers } = classifyAgentWorkers([
     { tag: 'cycle1:1', agent: 'cycle1-agent', status: 'running' },
     { tag: 'cycle1:2', agent: 'cycle1-agent', status: 'running' },
-    { tag: 'cycle2:1', agent: 'cycle2-agent', status: 'running' },
     { tag: 'worker-c', status: 'running' },
     { tag: 'worker-d', status: 'idle' },
   ]);
-  assert.equal(maintenance.length, 2);
+  assert.equal(maintenance.length, 1);
   assert.match(maintenance[0], /cycle1/);
-  assert.match(maintenance[1], /cycle2/);
   assert.deepEqual(
     runningWorkers.map((worker) => worker.tag),
     ['worker-c']

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 
+import { waitUntil } from '../runtime/shared/wait-until.test-support.mjs';
 import { createSessionService } from './session-service.mjs';
 import { applySessionStatePatch } from './session-state-patch.mjs';
 
@@ -64,7 +65,7 @@ test('a paging view receives a bounded tail, live patches against it, and older 
     // A live append travels as a suffix patch against the tail-only baseline.
     frames.length = 0;
     live.append(item('i100'));
-    await delay(10);
+    await waitUntil(() => frames.length > 0, { message: 'live append published' });
     const appended = frames.at(-1);
     assert.equal(appended.baseRevision, revision);
     assert.deepEqual(appended.patch.itemsAppend, { from: 32, values: [item('i100')] });
@@ -85,7 +86,7 @@ test('a paging view receives a bounded tail, live patches against it, and older 
     // Live work arriving after the page still patches the grown baseline.
     frames.length = 0;
     live.append(item('i101'));
-    await delay(10);
+    await waitUntil(() => frames.length > 0, { message: 'live append published' });
     const afterPage = frames.at(-1);
     assert.equal(afterPage.baseRevision, revision);
     assert.deepEqual(afterPage.patch.itemsAppend, { from: 64, values: [item('i101')] });
@@ -160,7 +161,7 @@ test('a view that requests no window keeps the whole transcript (old clients)', 
     assert.equal(paging.full.items.length, 100);
     frames.length = 0;
     live.append(item('i100'));
-    await delay(10);
+    await waitUntil(() => frames.length > 0, { message: 'live append published' });
     assert.deepEqual(frames.at(-1).patch.itemsAppend, { from: 100, values: [item('i100')] });
   } finally {
     await service.stop('test complete');
@@ -193,7 +194,7 @@ test('a resumed runtime pages older durable history in front of its restored ite
     assert.equal(first.full.transcriptHasOlder, true, 'restored from message 80: older history exists');
     const releasedBefore = forgotten.length;
     const page = await service.readSession({ sessionId: id, transcriptItemLimit: 52 });
-    await delay(0);
+    await waitUntil(() => forgotten.length > releasedBefore, { message: 'cold projection released' });
     assert.deepEqual(
       ids(page.full.items),
       Array.from({ length: 52 }, (_, index) => restoredId(48 + index))
@@ -460,7 +461,7 @@ test('a cold tail view keeps its byte-budgeted window when the session is loaded
     await service.subscribeSession({ sessionId: id, ...TAIL, ...OPEN }, { clientToken: 'desktop' });
     // A submit/configure on the cold session loads its runtime (512 items).
     await service.readSession({ sessionId: id, action: 'getAutoClear', ...OPEN });
-    await delay(5);
+    await waitUntil(() => frames.some(({ targets }) => targets.includes('desktop')), { message: 'adopted view frame' });
     const first = frames.find(({ targets }) => targets.includes('desktop'))?.frame;
     assert.ok(first?.full, 'the adopted view receives a full first frame');
     // 16 rows of ~60 KB fit the 1 MB budget; never the 512-row restore (~31 MB).
@@ -479,7 +480,7 @@ test('an old whole-transcript cold view still receives the whole restored transc
     await service.subscribeSession({ sessionId: id, ...OPEN }, { clientToken: 'old-phone' });
     await service.readSession({ sessionId: id, action: 'getAutoClear', ...OPEN });
     runtimes.at(-1).append(item('live-row'));
-    await delay(5);
+    await waitUntil(() => frames.some(({ targets }) => targets.includes('old-phone')), { message: 'old-phone frame' });
     const first = frames.find(({ targets }) => targets.includes('old-phone'))?.frame;
     assert.equal(first.full.items.length, 301, 'the whole resume page, unchanged');
     assert.equal('transcriptHasOlder' in first.full, false);
@@ -502,7 +503,7 @@ test('an external worker view and the runtime that later owns it serve the cold 
     // A daemon runtime then materializes the address and takes over the view.
     frames.length = 0;
     await service.readSession({ sessionId: id, action: 'getAutoClear', ...OPEN });
-    await delay(5);
+    await waitUntil(() => frames.some(({ targets }) => targets.includes('desktop')), { message: 'owner frame' });
     const owned = frames.find(({ targets }) => targets.includes('desktop'))?.frame;
     assert.ok(owned, 'the owner publishes to the adopted view');
     assert.ok(frameBytes(owned) < 1_100_000, `owner frame ${frameBytes(owned)} bytes`);
@@ -532,8 +533,9 @@ test('a tail window grown by appends goes out whole only within its byte budget'
     assert.equal(first.full.items.length, 4);
     // Thirty 40 KB rows land as small suffix patches (1.2 MB of window).
     for (let index = 0; index < 30; index += 1) {
+      const published = frames.length;
       live.append(item(`g${index}`, 'g'.repeat(40_000)));
-      await delay(1);
+      await waitUntil(() => frames.length > published, { message: 'row published' });
     }
     const appended = frames.filter(({ targets }) => targets.includes('desktop'));
     assert.ok(appended.every(({ frame }) => frame.patch?.itemsAppend?.values.length <= 1));
@@ -558,7 +560,7 @@ test('a tail window grown by appends goes out whole only within its byte budget'
     // Later rows are ordinary suffix patches again, for both views.
     frames.length = 0;
     live.append(item('after'));
-    await delay(5);
+    await waitUntil(() => frames.length > 0, { message: 'row published' });
     assert.deepEqual(frames.at(-1).frame.patch.itemsAppend, { from: 24, values: [item('after')] });
 
     // A resync read (stale baseline) is budgeted too.
@@ -567,7 +569,10 @@ test('a tail window grown by appends goes out whole only within its byte budget'
 
     // Rows too large for the budget: the cut keeps the eight-row minimum.
     for (let index = 0; index < 12; index += 1) live.append(item(`h${index}`, 'h'.repeat(300_000)));
-    await delay(5);
+    await waitUntil(
+      () => frames.some(({ frame }) => (frame.patch?.itemsAppend?.values ?? []).some((row) => row.id === 'h11')),
+      { message: 'last oversized row published' }
+    );
     const huge = await service.subscribeSession({ sessionId: id, ...TAIL }, { clientToken: 'tablet' });
     assert.deepEqual(
       ids(huge.full.items),
@@ -600,11 +605,11 @@ test('cold projections are released when the session goes live or its last view 
     await delay(0);
     assert.deepEqual(forgotten, [], 'another cold view still reads it');
     await service.unsubscribeSession({ sessionId: coldId }, second);
-    await delay(0);
+    await waitUntil(() => forgotten.length > 0, { message: 'last cold view released' });
     assert.deepEqual(forgotten, [coldId]);
 
     await service.createSession({ sessionId: liveId });
-    await delay(0);
+    await waitUntil(() => forgotten.length > 1, { message: 'live session releases its cold projection' });
     assert.deepEqual(forgotten, [coldId, liveId]);
   } finally {
     await service.stop('test complete');

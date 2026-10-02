@@ -3,9 +3,12 @@ import { test } from 'node:test';
 
 import { createIdleReclaim, purgeRendererMemory } from './idle-reclaim.ts';
 
-const tick = (ms = 5) => new Promise((resolve) => setTimeout(resolve, ms));
+// The release is a pure logic timer, so the tests drive it with mock timers
+// instead of sleeping on the real clock.
+const elapse = (t, ms = 1) => t.mock.timers.tick(ms);
 
-function harness(overrides = {}) {
+function harness(t, overrides = {}) {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const calls = [];
   const state = { focused: false };
   const reclaim = createIdleReclaim({
@@ -19,74 +22,74 @@ function harness(overrides = {}) {
   return { calls, state, reclaim };
 }
 
-test('releases once the unfocused window has stayed quiet', async () => {
-  const { calls, reclaim } = harness();
+test('releases once the unfocused window has stayed quiet', async (t) => {
+  const { calls, reclaim } = harness(t);
   reclaim.onBlur();
-  await tick();
+  elapse(t);
   assert.equal(calls.length, 1);
 });
 
-test('keeps the heap while the window is focused', async () => {
-  const { calls, state, reclaim } = harness();
+test('keeps the heap while the window is focused', async (t) => {
+  const { calls, state, reclaim } = harness(t);
   state.focused = true;
   reclaim.onBlur();
-  await tick();
+  elapse(t);
   assert.equal(calls.length, 0);
 });
 
-test('an unreadable window counts as focused', async () => {
-  const { calls, reclaim } = harness({
+test('an unreadable window counts as focused', async (t) => {
+  const { calls, reclaim } = harness(t, {
     isFocused: () => {
       throw new Error('window is gone');
     },
   });
   reclaim.onBlur();
-  await tick();
+  elapse(t);
   assert.equal(calls.length, 0);
 });
 
-test('never releases in the middle of a turn', async () => {
-  const { calls, reclaim } = harness();
+test('never releases in the middle of a turn', async (t) => {
+  const { calls, reclaim } = harness(t);
   reclaim.onSnapshot({ busy: true });
   reclaim.onBlur();
-  await tick();
+  elapse(t);
   assert.equal(calls.length, 0);
   // The turn ending re-arms the timer on the still-unfocused window.
   reclaim.onSnapshot({ busy: false });
-  await tick();
+  elapse(t);
   assert.equal(calls.length, 1);
 });
 
-test('releases once per quiet stretch', async () => {
-  const { calls, reclaim } = harness();
+test('releases once per quiet stretch', async (t) => {
+  const { calls, reclaim } = harness(t);
   reclaim.onBlur();
-  await tick();
+  elapse(t);
   reclaim.onBlur();
-  await tick();
+  elapse(t);
   assert.equal(calls.length, 1);
   // Focus refills what was dropped, so the next background stretch earns one.
   reclaim.onFocus();
   reclaim.onBlur();
-  await tick();
+  elapse(t);
   assert.equal(calls.length, 2);
 });
 
-test('a fresh turn earns another release after it settles', async () => {
-  const { calls, reclaim } = harness();
+test('a fresh turn earns another release after it settles', async (t) => {
+  const { calls, reclaim } = harness(t);
   reclaim.onBlur();
-  await tick();
+  elapse(t);
   assert.equal(calls.length, 1);
   reclaim.onSnapshot({ commandBusy: true });
   reclaim.onSnapshot({ commandBusy: false });
-  await tick();
+  elapse(t);
   assert.equal(calls.length, 2);
 });
 
-test('dispose cancels a pending release', async () => {
-  const { calls, reclaim } = harness({ delayMs: 20 });
+test('dispose cancels a pending release', async (t) => {
+  const { calls, reclaim } = harness(t, { delayMs: 20 });
   reclaim.onBlur();
   reclaim.dispose();
-  await tick(40);
+  elapse(t, 40);
   assert.equal(calls.length, 0);
 });
 

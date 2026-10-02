@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 
+import { waitForQuiet } from '../runtime/shared/wait-until.test-support.mjs';
 import { createSessionService } from './session-service.mjs';
 import { applySessionStatePatch, diffSessionState, transcriptItemsDigest } from './session-state-patch.mjs';
 
@@ -110,7 +110,8 @@ test('a live page reaches prepend-capable views as the revealed rows; other view
     await service.createSession({ sessionId: id });
     const tail = await service.subscribeSession({ sessionId: id, ...TAIL, transcriptPrepend: true }, desktop);
     await service.subscribeSession({ sessionId: id, ...TAIL }, terminal);
-    await delay(5);
+    // Let the subscribe frames land before the page read's frames are isolated.
+    await waitForQuiet(() => frames.length, { quietMs: 10 });
     frames.length = 0;
     const answer = await service.readSession(
       { sessionId: id, ...page(32), baseRevision: tail.revision, transcriptPrepend: true },

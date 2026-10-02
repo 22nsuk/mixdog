@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { waitUntil } from '../../runtime/shared/wait-until.test-support.mjs';
 import { createUsageContextPanels } from './usage-context-panels.mjs';
 
 // Pins the /usage and /context panel builders: the rows and detail the
@@ -225,7 +226,7 @@ test('openContextPicker paints nothing when the claim was lost during the fetch'
   assert.deepEqual(prompts, []);
 });
 
-const tick = () => new Promise((resolve) => setTimeout(resolve, 10));
+const until = (predicate, message) => waitUntil(predicate, { message });
 
 test('openUsagePanel streams dashboard updates through the usage claim', async () => {
   const surface = createSurface();
@@ -256,7 +257,7 @@ test('openUsagePanel streams dashboard updates through the usage claim', async (
       total: null,
     },
   ]);
-  await tick();
+  await until(() => surface.usagePaints.length >= 3, 'dashboard updates painted');
   assert.deepEqual(requests, [true]);
   assert.deepEqual(surface.usagePaints.slice(1), [
     { title: 'partial', rows: [1] },
@@ -265,7 +266,7 @@ test('openUsagePanel streams dashboard updates through the usage claim', async (
   assert.deepEqual(closes, []);
 
   panels.openUsagePanel('');
-  await tick();
+  await until(() => requests.length >= 2, 'second dashboard request');
   assert.deepEqual(requests, [true, false]);
 });
 
@@ -273,7 +274,7 @@ test('openUsagePanel closes the panel and notifies when the dashboard is unavail
   const unavailable = createStore({ getUsageDashboard: async () => null });
   const first = createPanels({ surface: createSurface(), store: unavailable });
   first.panels.openUsagePanel();
-  await tick();
+  await until(() => unavailable.notices.length > 0, 'unavailable notice');
   assert.deepEqual(first.closes, [1]);
   assert.deepEqual(unavailable.notices, [['usage dashboard unavailable', 'warn']]);
 
@@ -284,7 +285,7 @@ test('openUsagePanel closes the panel and notifies when the dashboard is unavail
   });
   const second = createPanels({ surface: createSurface(), store: failing });
   second.panels.openUsagePanel();
-  await tick();
+  await until(() => failing.notices.length > 0, 'failure notice');
   assert.deepEqual(second.closes, [1]);
   assert.deepEqual(failing.notices, [['usage failed: quota api down', 'error']]);
 });

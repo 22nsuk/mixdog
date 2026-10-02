@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createBrowserGuestCdp } from './cdp.ts';
 import { BrowserGuestStateStore } from './guest-state.ts';
+import { waitUntil } from '../../../../../src/runtime/shared/wait-until.test-support.mjs';
 
 function fixture(send) {
   const state = new BrowserGuestStateStore();
@@ -14,6 +15,9 @@ function fixture(send) {
   return { guest, cdp, debug: { sendCommand: send }, state };
 }
 
+// Drains the already-resolved microtasks of the mocked CDP transport (no real
+// I/O is involved) before asserting that a fenced call stayed undispatched.
+// Anything expected to HAPPEN is awaited with waitUntil instead.
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
 test('a script held by an open dialog is not terminated, so the answer still reaches the page', async () => {
@@ -55,7 +59,7 @@ test('local input admission is checked again after transport cleanup and immedia
   });
   const rejected = assert.rejects(input, /page changed/);
   try {
-    await tick();
+    await tick(); // negative: the fenced input must not have dispatched
     current = false;
     running.resolve({});
     await rejected;
@@ -105,7 +109,7 @@ test('script cancellation terminates the owning CDP target and fences page reuse
       idle = true;
     });
     const next = cdp.sendCdp(guest, debug, 'Input.insertText', {}, 1000);
-    await tick();
+    await waitUntil(() => calls.length >= 2, { message: 'terminateExecution dispatched' });
     assert.deepEqual(calls, [
       { name: method, sessionId: 'child-frame' },
       { name: 'Runtime.terminateExecution', sessionId: 'child-frame' },

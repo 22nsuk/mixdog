@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { createWorkerPool } from './worker-pool.ts';
 
-test('retiring a host worker releases its session and process', { skip: process.platform !== 'win32' }, async () => {
+test('retiring a host worker releases its session and process', { skip: process.platform !== 'win32' && 'Windows only' }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'mixdog-computer-worker-pool-'));
   const retiredSessions = [];
   const pool = createWorkerPool({
@@ -41,7 +41,7 @@ test('retiring a host worker releases its session and process', { skip: process.
 });
 
 test('a per-command timeout retires a stuck provider instead of waiting for the global ceiling', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'mixdog-computer-worker-timeout-'));
   const pool = createWorkerPool({
@@ -70,7 +70,7 @@ test('a per-command timeout retires a stuck provider instead of waiting for the 
 });
 
 test('first use starts one native worker and never refills an unused spare', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'mixdog-computer-worker-demand-'));
   const pool = createWorkerPool({

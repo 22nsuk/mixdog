@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
-import { setTimeout as delay } from 'node:timers/promises';
 import React from 'react';
 import { Text, render } from 'ink';
 import { usePromptDraftFlow } from './use-prompt-draft-flow.mjs';
+import { waitUntil } from '../../runtime/shared/wait-until.test-support.mjs';
 
 // The prompt cancel paths and the slash-palette accept, mounted through the
 // real hook. App re-creates the pickers, setters and the slash dispatcher every
@@ -86,10 +86,11 @@ function mount(context, { providerPrompt, settingsPrompt }) {
     stdout.end();
   });
   const rerender = async (tag) => {
+    const before = control.api;
     view.rerender(element(tag));
-    await delay(30);
+    await waitUntil(() => control.api !== before, { message: `rerender ${tag}` });
   };
-  return { control, calls, refs, rerender, settle: () => delay(30) };
+  return { control, calls, refs, rerender, settle: () => waitUntil(() => control.api, { message: 'hook mounted' }) };
 }
 
 test('cancel paths and palette accept reach the prompt setters, pickers and dispatcher', async (context) => {

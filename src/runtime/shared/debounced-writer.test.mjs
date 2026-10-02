@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import { setImmediate, setTimeout } from 'node:timers/promises';
 import test from 'node:test';
 import { createDebouncedWriter } from './debounced-writer.mjs';
+import { waitUntil } from './wait-until.test-support.mjs';
 
 function deferred() {
   let resolve;
@@ -20,9 +20,8 @@ test('a debounce burst writes only its last value', async () => {
   });
   writer.schedule('first');
   writer.schedule('last');
-  await setTimeout(20);
+  await waitUntil(() => writes.length > 0 && !writer.hasPending(), { message: 'debounced write landed' });
   assert.deepEqual(writes, ['last']);
-  assert.equal(writer.hasPending(), false);
 });
 
 test('overlapping flushes share a drain and serialize newer pending values', async () => {
@@ -38,7 +37,7 @@ test('overlapping flushes share a drain and serialize newer pending values', asy
   });
   writer.schedule('first');
   const flushed = writer.flush();
-  await setImmediate();
+  await waitUntil(() => writes.length === 1, { message: 'first write started' });
   writer.schedule('last');
   assert.equal(writer.flush(), flushed);
   assert.deepEqual(writes, ['first']);
@@ -74,8 +73,10 @@ test('failed writes retain the latest value without a hot retry loop', async () 
 test('synchronous flush never overtakes an asynchronous writer', async () => {
   const first = deferred();
   const writes = [];
+  let started = false;
   const writer = createDebouncedWriter({
     write: async (value) => {
+      started = true;
       await first.promise;
       writes.push(value);
     },
@@ -84,7 +85,7 @@ test('synchronous flush never overtakes an asynchronous writer', async () => {
   });
   writer.schedule('old');
   const flushed = writer.flush();
-  await setImmediate();
+  await waitUntil(() => started, { message: 'old write started' });
   writer.schedule('new');
   assert.equal(
     writer.flushSyncIfIdle((value) => writes.push(value)),
@@ -132,7 +133,7 @@ test('a completed write cannot clear a same-value update queued while it was run
   });
   writer.schedule(value);
   const flushed = writer.flush();
-  await setImmediate();
+  await waitUntil(() => writes.length === 1, { message: 'first write started' });
   value.setting = 'new';
   writer.schedule(value);
   first.resolve();
@@ -154,7 +155,7 @@ for (const synchronous of [false, true]) {
     });
     writer.schedule('first');
     const flushed = writer.flush();
-    await setImmediate();
+    await waitUntil(() => writes.length === 1, { message: 'first write started' });
     const observer = first.promise.then(async () => {
       writer.schedule('next');
       if (synchronous) writer.flushSyncIfIdle((value) => writes.push(value));
@@ -163,8 +164,7 @@ for (const synchronous of [false, true]) {
     first.resolve();
     await Promise.all([flushed, observer]);
     // Even a deferred synchronous flush must retain its scheduled write.
-    await setTimeout(20);
+    await waitUntil(() => writes.length === 2 && !writer.hasPending(), { message: 'retained write landed' });
     assert.deepEqual(writes, ['first', 'next']);
-    assert.equal(writer.hasPending(), false);
   });
 }

@@ -62,7 +62,7 @@ test('secret writes preserve exact bytes and recover after a rejected predecesso
 
 for (const existing of [false, true]) {
   test(`Windows ${existing ? 'existing credential read' : 'credential publication'} removes broad read grants`, {
-    skip: process.platform !== 'win32',
+    skip: process.platform !== 'win32' && 'Windows only',
   }, async (t) => {
     const root = await fixture(t);
     const path = join(root, 'credential');

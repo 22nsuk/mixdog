@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { composeSystemPrompt, loadScopedRoleInstructions } from './collect.mjs';
+import { getHiddenAgent, listHiddenAgentNames } from '../internal-agents.mjs';
 
 test('response language closes the environment block, after every English session line', () => {
   const { sessionMarkerCore, sessionEnvironment, sessionMarker } = composeSystemPrompt({
@@ -56,4 +57,16 @@ test('maintenance cycle1 prompt uses role rules without the public catalog', () 
     loadScopedRoleInstructions('cycle1-agent'),
     sessionMarkerCore.slice('# Active Workflow: Solo\n\n---\n\n'.length)
   );
+});
+
+test('retired review roles are absent from the registry and generated system instructions', () => {
+  assert.equal(getHiddenAgent('cycle2-agent'), null);
+  assert.equal(listHiddenAgentNames().includes('cycle2-agent'), false);
+  for (const agent of ['cycle1-agent', 'title-agent']) {
+    assert.equal(getHiddenAgent(agent)?.kind, 'maintenance');
+    const instructions = loadScopedRoleInstructions(agent);
+    assert.match(instructions, new RegExp(`## ${agent}\\n`));
+    assert.doesNotMatch(instructions, /cycle2-agent|keep\|merge\|lineage/);
+  }
+  assert.doesNotMatch(loadScopedRoleInstructions(null), /## cycle2-agent\b/);
 });

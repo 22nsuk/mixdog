@@ -2,17 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createSessionOAuthFlowRegistry } from './oauth-flows.mjs';
+import { waitUntil } from '../../runtime/shared/wait-until.test-support.mjs';
 
-async function settle() {
-  await new Promise((resolve) => setTimeout(resolve, 0));
-}
+const flowState = (registry, flow, state) =>
+  waitUntil(() => registry.status(flow.flowId).state === state, { message: `flow ${state}` });
 
 test('OAuth flow records null completion and rejection as terminal failures', async () => {
   const registry = createSessionOAuthFlowRegistry();
   const empty = Promise.withResolvers();
   const first = registry.register({ provider: 'openai-oauth', waitForCallback: empty.promise });
   empty.resolve(null);
-  await settle();
+  await flowState(registry, first, 'failed');
   assert.deepEqual(
     { state: registry.status(first.flowId).state, error: registry.status(first.flowId).error },
     { state: 'failed', error: 'OAuth login did not complete.' }
@@ -21,7 +21,7 @@ test('OAuth flow records null completion and rejection as terminal failures', as
   const rejected = Promise.withResolvers();
   const second = registry.register({ provider: 'grok-oauth', waitForCallback: rejected.promise });
   rejected.reject(new Error('token exchange rejected'));
-  await settle();
+  await flowState(registry, second, 'failed');
   assert.deepEqual(
     { state: registry.status(second.flowId).state, error: registry.status(second.flowId).error },
     { state: 'failed', error: 'token exchange rejected' }
@@ -50,13 +50,12 @@ test('OAuth flow cancellation remains queryable and duplicate provider login sup
       secondWait.resolve(null);
     },
   });
-  await settle();
-  assert.equal(registry.status(first.flowId).state, 'cancelled');
+  await flowState(registry, first, 'cancelled');
   assert.equal(registry.status(second.flowId).state, 'pending');
   assert.equal(cancelled, 1);
 
   await registry.cancel(second.flowId);
-  await settle();
+  await flowState(registry, second, 'cancelled');
   assert.equal(registry.status(second.flowId).state, 'cancelled');
   assert.equal(cancelled, 2);
   registry.cancelAll();
@@ -74,7 +73,7 @@ test('OAuth flow expiry remains queryable and cancels provider work', async () =
       waiting.resolve(null);
     },
   });
-  await new Promise((resolve) => setTimeout(resolve, 20));
+  await flowState(registry, flow, 'expired');
   const status = registry.status(flow.flowId);
   assert.equal(status.state, 'expired');
   assert.equal(status.error, 'OAuth login expired.');
@@ -117,8 +116,10 @@ test('manual OAuth completion cannot run twice or lose to its callback settling 
 
   const first = registry.complete(flow.flowId, 'authorization-code');
   await assert.rejects(registry.complete(flow.flowId, 'authorization-code'), /already being completed/);
+  // The registry's own .then on the callback was registered first, so it has
+  // run once this await resumes.
   callback.resolve(null);
-  await settle();
+  await callback.promise;
   assert.equal(registry.status(flow.flowId).state, 'pending');
   exchange.resolve(true);
   assert.equal((await first).state, 'complete');

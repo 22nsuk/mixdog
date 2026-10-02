@@ -1,20 +1,18 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { setImmediate as nextTurn, setTimeout as delay } from 'node:timers/promises';
 import { shouldSupersedePanelEpoch, supersedePanelEpoch } from './panel-epoch.mjs';
 import { createPanelSurface } from './panel-surface.mjs';
 import { createProviderSetupPicker } from './provider-setup-picker.mjs';
+import { waitUntil } from '../../runtime/shared/wait-until.test-support.mjs';
 
 // The Provider setup picker cluster against a fake store: what the main list
 // and the per-provider action panels paint, where Enter/Esc navigate, which
 // prompts open, and how daemon acks (forget, OAuth login) settle.
 
-const flush = async (rounds = 8) => {
-  for (let i = 0; i < rounds; i += 1) {
-    await delay(0);
-    await nextTurn();
-  }
-};
+// Daemon acks and reopen navigation run off the keypress; wait for the panel
+// they paint rather than for a fixed number of event-loop turns.
+const panelIs = (h, key) => waitUntil(() => h.current()?.pickerKey === key, { message: key });
+const titleIs = (h, title) => waitUntil(() => h.current()?.title === title, { message: title });
 
 const SETUP = {
   api: [
@@ -65,7 +63,6 @@ function createHarness({ store: overrides = {}, setup = SETUP } = {}) {
 test('main list: continue row first when a return target exists, then API-key and OAuth providers', async () => {
   const h = createHarness();
   await h.openProviderSetupPicker({ returnTo: () => {} });
-  await flush();
   const list = h.current();
   assert.equal(list.title, 'Providers');
   assert.equal(list.pickerKey, 'providers-main:root');
@@ -88,7 +85,6 @@ test('Esc on the main list closes the surface and prefers onCancel over returnTo
   const h = createHarness();
   const calls = [];
   await h.openProviderSetupPicker({ returnTo: () => calls.push('returnTo'), onCancel: () => calls.push('onCancel') });
-  await flush();
   h.current().onCancel();
   assert.deepEqual(calls, ['onCancel']);
   assert.equal(h.current(), null);
@@ -96,7 +92,6 @@ test('Esc on the main list closes the surface and prefers onCancel over returnTo
   const g = createHarness();
   const returned = [];
   await g.openProviderSetupPicker({ returnTo: () => returned.push(1) });
-  await flush();
   g.current().onCancel();
   assert.deepEqual(returned, [1]);
 });
@@ -104,7 +99,6 @@ test('Esc on the main list closes the surface and prefers onCancel over returnTo
 test('API-key actions: replace/delete for a stored key, add/get for OpenCode Go', async () => {
   const h = createHarness();
   await h.openProviderSetupPicker({});
-  await flush();
 
   h.select(h.row('api:openai'));
   let panel = h.current();
@@ -121,7 +115,7 @@ test('API-key actions: replace/delete for a stored key, add/get for OpenCode Go'
 
   // Esc returns to the main list with the row remembered.
   panel.onCancel();
-  await flush();
+  await panelIs(h, 'providers-main:api:openai');
   assert.equal(h.current().title, 'Providers');
   assert.equal(h.current().pickerKey, 'providers-main:api:openai');
   assert.equal(h.current().items[h.current().initialIndex].value, 'api:openai');
@@ -140,7 +134,6 @@ test('API-key actions: replace/delete for a stored key, add/get for OpenCode Go'
 test('set-key hands the surface to the API-key prompt with mode and console URL', async () => {
   const h = createHarness();
   await h.openProviderSetupPicker({});
-  await flush();
   h.select(h.row('api:opencode-go'));
   h.select(h.row('set-key'));
   assert.equal(h.current(), null, 'surface released to the prompt');
@@ -151,8 +144,7 @@ test('set-key hands the surface to the API-key prompt with mode and console URL'
   assert.equal(prompt.keyUrl, 'https://opencode.ai/keys');
   assert.equal(prompt.envName, '');
 
-  h.openProviderSetupPicker({});
-  await flush();
+  await h.openProviderSetupPicker({});
   h.select(h.row('api:openai'));
   h.select(h.row('set-key'));
   assert.equal(h.prompts.at(-1).mode, 'replace');
@@ -172,22 +164,19 @@ test('forget-key: the ack clears model caches and reopens the list; a failure re
     },
   });
   await h.openProviderSetupPicker({});
-  await flush();
   h.select(h.row('api:openai'));
   h.select(h.row('forget-key'));
   assert.deepEqual(forgotten, ['openai']);
   assert.equal(h.current(), null, 'nothing navigates before the ack');
   gate.resolve();
-  await flush();
+  await titleIs(h, 'Providers');
   assert.deepEqual(h.cacheClears, ['all']);
-  assert.equal(h.current().title, 'Providers');
 
   const failing = createHarness({ store: { forgetProviderAuth: async () => Promise.reject(new Error('boom')) } });
   await failing.openProviderSetupPicker({});
-  await flush();
   failing.select(failing.row('api:openai'));
   failing.select(failing.row('forget-key'));
-  await flush();
+  await titleIs(failing, 'Provider · OpenAI');
   assert.deepEqual(failing.notices.at(-1), ['auth-forget failed: boom', 'error']);
   assert.equal(failing.current().title, 'Provider · OpenAI');
   assert.deepEqual(failing.cacheClears, []);
@@ -197,7 +186,6 @@ test('OAuth actions: Login only when signed out, legacy login shows progress the
   const gate = Promise.withResolvers();
   const h = createHarness({ store: { loginOAuthProvider: () => gate.promise } });
   await h.openProviderSetupPicker({});
-  await flush();
   h.select(h.row('oauth:anthropic-oauth'));
   let panel = h.current();
   assert.equal(panel.title, 'Provider · Anthropic');
@@ -211,22 +199,19 @@ test('OAuth actions: Login only when signed out, legacy login shows progress the
   assert.equal(panel.pickerKey, 'providers-oauth-progress:oauth:anthropic-oauth');
   assert.equal(panel.items[0].value, 'waiting');
   gate.resolve();
-  await flush();
+  await panelIs(h, 'providers-oauth-result:oauth:anthropic-oauth:ok');
   panel = h.current();
-  assert.equal(panel.pickerKey, 'providers-oauth-result:oauth:anthropic-oauth:ok');
   assert.equal(panel.description, 'Anthropic login complete.');
   assert.equal(panel.help, 'Enter Refresh Providers · Esc Providers');
   assert.deepEqual(h.cacheClears, ['all']);
   h.select(panel.items[0]);
-  await flush();
-  assert.equal(h.current().title, 'Providers');
+  await titleIs(h, 'Providers');
 
   const failing = createHarness({ store: { loginOAuthProvider: async () => Promise.reject(new Error('denied')) } });
   await failing.openProviderSetupPicker({});
-  await flush();
   failing.select(failing.row('oauth:anthropic-oauth'));
   failing.select(failing.row('login-oauth'));
-  await flush();
+  await panelIs(failing, 'providers-oauth-result:oauth:anthropic-oauth:fail');
   panel = failing.current();
   assert.equal(panel.pickerKey, 'providers-oauth-result:oauth:anthropic-oauth:fail');
   assert.equal(panel.description, 'OAuth login failed: denied');
@@ -238,13 +223,12 @@ test('OAuth progress Back returns to the actions and turns the late ack into a n
   const gate = Promise.withResolvers();
   const h = createHarness({ store: { loginOAuthProvider: () => gate.promise } });
   await h.openProviderSetupPicker({});
-  await flush();
   h.select(h.row('oauth:anthropic-oauth'));
   h.select(h.row('login-oauth'));
   h.select(h.row('back'));
   assert.equal(h.current().pickerKey, 'providers-action:oauth:anthropic-oauth');
   gate.resolve();
-  await flush();
+  await waitUntil(() => h.notices.length > 0, { message: 'late ack notice' });
   assert.equal(h.current().pickerKey, 'providers-action:oauth:anthropic-oauth', 'no result panel after Back');
   assert.deepEqual(h.notices.at(-1), ['Anthropic login complete', 'info']);
 });
@@ -261,10 +245,9 @@ test('interactive OAuth login hands over to the code prompt and the callback sho
     },
   });
   await h.openProviderSetupPicker({});
-  await flush();
   h.select(h.row('oauth:anthropic-oauth'));
   h.select(h.row('login-oauth'));
-  await flush();
+  await waitUntil(() => h.prompts.length > 0, { message: 'oauth-code prompt' });
   assert.equal(h.current(), null, 'surface released to the code prompt');
   const prompt = h.prompts.at(-1);
   assert.equal(prompt.kind, 'oauth-code');
@@ -274,9 +257,8 @@ test('interactive OAuth login hands over to the code prompt and the callback sho
   assert.equal(h.notices.at(-1)[1], 'info');
 
   callback.resolve({ ok: true });
-  await flush();
+  await panelIs(h, 'providers-oauth-result:oauth:anthropic-oauth:ok');
   assert.deepEqual(h.cacheClears, ['all']);
-  assert.equal(h.current().pickerKey, 'providers-oauth-result:oauth:anthropic-oauth:ok');
   assert.equal(h.current().description, 'Anthropic login complete');
 });
 
@@ -289,7 +271,6 @@ test('a provider fetch failure reports and leaves the loading panel', async () =
     },
   });
   await h.openProviderSetupPicker({});
-  await flush();
   assert.deepEqual(h.notices, [['providers failed: offline', 'error']]);
   assert.equal(h.current().pickerKey, 'providers-loading');
 });

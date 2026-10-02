@@ -165,6 +165,36 @@ function freshContextBudget({ compactPolicy, sessionRef, provider, compactBudget
   return { contextWindow, hardBudget, conversationInput, conversationTokens, conversationThresholdTokens };
 }
 
+function freshContextBuildOptions({ compactPolicy = {}, sessionId, goalReminderText, activeTurn }, budget) {
+  return {
+    reserveTokens: compactPolicy.reserveTokens,
+    maxBudgetTokens: budget.hardBudget,
+    force: true,
+    contextWindow: budget.contextWindow,
+    sessionId,
+    latestUserPrefix: goalReminderText,
+    activeTurn,
+  };
+}
+
+// Compare like-for-like local estimates, not billed prompt tokens against a
+// rebuilt local estimate. Use the actual rules, including recovery references,
+// retained skills, summary framing and active-turn continuation. No AI or
+// archive writes are allowed here. Unknown summary text reserves the existing
+// output ceiling instead of assuming a compression ratio.
+export function previewFreshContextCompaction(input) {
+  const budget = freshContextBudget(input);
+  const summaryTriggered = budget.conversationTokens >= budget.conversationThresholdTokens;
+  const result = freshContextCompactMessages(input.messages, input.compactBudgetTokens, {
+    ...freshContextBuildOptions(input, budget),
+    preview: true,
+    previewSummary: summaryTriggered,
+  });
+  const beforeTokens = estimateMessagesTokens(input.messages);
+  const afterTokens = estimateMessagesTokens(result.messages) + (summaryTriggered ? SUMMARY_OUTPUT_TOKENS : 0);
+  return { beforeTokens, afterTokens, reducesTokens: afterTokens < beforeTokens, summaryTriggered };
+}
+
 export async function runFreshContextCompact({
   sessionRef,
   messages,
@@ -180,23 +210,34 @@ export async function runFreshContextCompact({
   config,
   getProviderFn,
   initProvidersFn,
+  requireReduction = false,
 } = {}) {
   const startedAt = Date.now();
   signal?.throwIfAborted();
   const { contextWindow, hardBudget, conversationInput, conversationTokens, conversationThresholdTokens } =
     freshContextBudget({ compactPolicy, sessionRef, provider, compactBudgetTokens, messages });
   const summaryTriggered = conversationTokens >= conversationThresholdTokens;
-  const build = (handoffText) =>
-    freshContextCompactMessages(messages, compactBudgetTokens, {
-      reserveTokens: compactPolicy.reserveTokens,
-      maxBudgetTokens: hardBudget,
-      force: true,
+  const build = (handoffText) => {
+    const result = freshContextCompactMessages(messages, compactBudgetTokens, {
+      ...freshContextBuildOptions(
+        { compactPolicy, sessionId, goalReminderText, activeTurn },
+        { contextWindow, hardBudget }
+      ),
       handoffText,
-      contextWindow,
-      sessionId,
-      latestUserPrefix: goalReminderText,
-      activeTurn,
     });
+    // A generated summary can differ from its prediction. Never replace the
+    // original with an automatic result that is equal-sized or larger.
+    if (requireReduction && estimateMessagesTokens(result.messages) >= estimateMessagesTokens(messages)) {
+      return {
+        ...result,
+        messages,
+        freshContext: false,
+        skipped: true,
+        diagnostics: { ...result.diagnostics, noOp: true, reason: 'no_token_reduction' },
+      };
+    }
+    return result;
+  };
   const pipeline = {
     mode: summaryTriggered ? 'conversation-summary' : 'rules',
     conversationTokens,

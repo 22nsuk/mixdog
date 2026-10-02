@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { EventEmitter } from 'node:events';
 import { createBrowserFrameCollector } from './document-frames.ts';
+import { waitUntil } from '../../../../../src/runtime/shared/wait-until.test-support.mjs';
 
+// Drains the already-resolved microtasks of the mocked CDP calls (no real I/O)
+// before asserting that a pending collection has not finished.
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
 test('ready frames start without a slow sibling and collected output keeps frame order under bounded concurrency', async () => {
@@ -42,14 +45,13 @@ test('ready frames start without a slow sibling and collected output keeps frame
     },
   });
   const pending = collect(new EventEmitter(), 'test-expression');
-  await tick();
+  await waitUntil(() => trees.length >= 5, { message: 'ready frames started' });
   assert.deepEqual(trees, ['root', 'b', 'c', 'd', 'e']);
   readiness.resolve();
-  await tick();
-  assert.equal(active, 4);
+  await waitUntil(() => active === 4, { message: 'four concurrent reads' });
   gates.get('c').resolve();
   gates.get('b').resolve();
-  await tick();
+  await waitUntil(() => gates.size === frameIds.length, { message: 'every frame read started' });
   for (const gate of gates.values()) gate.resolve();
   assert.deepEqual(await pending, frameIds);
   assert.equal(peak, 4);

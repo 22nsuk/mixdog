@@ -8,7 +8,7 @@ import test from 'node:test';
 import { PS_INPUT } from './ps-input.ts';
 
 test('covered semantic click prepares focus then rechecks before physical movement', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
   timeout: 30000,
 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'mixdog-foreground-order-'));

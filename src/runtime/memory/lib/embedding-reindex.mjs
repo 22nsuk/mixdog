@@ -1,4 +1,4 @@
-import { throwIfAborted } from './memory-cycle2-shared.mjs';
+import { throwIfAborted } from './memory-cycle-shared.mjs';
 
 const DEFAULT_PASS_PAUSE_MS = 1_000;
 

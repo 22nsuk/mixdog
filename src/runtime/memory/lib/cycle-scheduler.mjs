@@ -2,7 +2,7 @@
 //
 // Owns the mutually-referential cycle machinery: the cycle-health ledger and
 // run-state file, the cycle1 outer coalesce layer, the scheduled enqueue /
-// retry paths for cycle1/2, checkCycles(), and the self-rescheduling tick
+// retry paths for cycle1, checkCycles(), and the self-rescheduling tick
 // loop. The phases live under cycle-scheduler/. index.mjs keeps lifecycle
 // ownership by injecting live getters (getDb/getConfig/setConfig) plus the
 // cycle runners and LLM adapters.
@@ -15,15 +15,14 @@
 //   log                -> __mixdogMemoryLog
 //   getCycleLastRun / setCycleLastRun -> meta-backed cycle timestamps
 //   readMainConfig / memoryCyclesEnabled -> config-flag helpers
-//   getCycle{1,2}CallLlm -> in-process LLM adapters
-//   runCycle1 / runCycle2 / parseInterval / flushRawEmbeddings
+//   getCycle1CallLlm -> in-process LLM adapter
+//   runCycle1 / parseInterval / flushRawEmbeddings
 //   claimAndMarkScheduledCycle / resolveCoalesceMaxRetries /
 //     scheduleCoalescedCycleRetry -> coalesced queue primitives
-//   scheduledCycle{1,2}Signature -> queue signatures
+//   scheduledCycle1Signature -> queue signature
 //   cycleStateFile -> path to memory-cycle-state.json
 import { createCycleHealthLedger } from './cycle-scheduler/health-ledger.mjs';
 import { createCycle1Runs } from './cycle-scheduler/cycle1-runs.mjs';
-import { createCycle2Runs } from './cycle-scheduler/cycle2-runs.mjs';
 import { createScheduledEnqueue } from './cycle-scheduler/scheduled-enqueue.mjs';
 import { createBacklogProbe } from './cycle-scheduler/backlog-probe.mjs';
 import { createCycleTickLoop } from './cycle-scheduler/tick-loop.mjs';
@@ -42,9 +41,7 @@ export function createCycleScheduler(deps) {
     readMainConfig,
     memoryCyclesEnabled,
     getCycle1CallLlm,
-    getCycle2CallLlm,
     runCycle1,
-    runCycle2,
     parseInterval,
     flushRawEmbeddings,
     claimAndMarkScheduledCycle,
@@ -52,7 +49,6 @@ export function createCycleScheduler(deps) {
     scheduleCoalescedCycleRetry,
     cancelCoalescedCycleRetries,
     scheduledCycle1Signature,
-    scheduledCycle2Signature,
     cycleStateFile,
   } = deps;
 
@@ -68,15 +64,12 @@ export function createCycleScheduler(deps) {
     setCycleLastRun,
     ...queue,
   });
-  const cycle2 = createCycle2Runs({ ledger, getDb, log, getCycle2CallLlm, runCycle2, setCycleLastRun, ...queue });
   const enqueue = createScheduledEnqueue({
     getDb,
     getConfig,
     claimAndMarkScheduledCycle,
     scheduledCycle1Signature,
-    scheduledCycle2Signature,
     scheduleScheduledCycle1: cycle1.scheduleScheduledCycle1,
-    scheduleScheduledCycle2: cycle2.scheduleScheduledCycle2,
   });
   const backlog = createBacklogProbe({ getDb, ledger, log, flushRawEmbeddings });
   const tick = createCycleTickLoop({
@@ -97,7 +90,6 @@ export function createCycleScheduler(deps) {
   // running state.
   function resetInFlight() {
     cycle1.reset();
-    cycle2.reset();
     backlog.reset();
     tick.reset();
     ledger.resetRunning();
@@ -113,7 +105,6 @@ export function createCycleScheduler(deps) {
     // run primitives used by MCP action handlers
     startCycle1Run: cycle1.startCycle1Run,
     awaitCycle1Run: cycle1.awaitCycle1Run,
-    finalizeCycle2Run: cycle2.finalizeCycle2Run,
     periodicCycle1Config: enqueue.periodicCycle1Config,
     // lifecycle
     startCycles: tick.start,

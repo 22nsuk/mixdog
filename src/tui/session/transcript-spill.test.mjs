@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import test from 'node:test';
+import { waitUntil } from '../../runtime/shared/wait-until.test-support.mjs';
 import { createTranscriptSpillBuffer } from './transcript-spill.mjs';
 
 // The spill buffer with an in-process fake worker: whole chunks leave the live
@@ -44,15 +45,7 @@ function fakeWorkers(behaviorFor = () => 'ok') {
 
 const items = (count) => Array.from({ length: count }, (_, i) => ({ id: `it_${i}`, n: i }));
 const ids = (list) => list.map((item) => item.id);
-const settle = (ms = 30) => new Promise((resolve) => setTimeout(resolve, ms));
-
-async function drained(buffer) {
-  const deadline = Date.now() + 3000;
-  while (buffer.pendingWriteCount > 0) {
-    if (Date.now() > deadline) throw new Error('writes did not drain');
-    await settle(5);
-  }
-}
+const drained = (buffer) => waitUntil(() => buffer.pendingWriteCount === 0, { message: 'writes did not drain' });
 
 test('capLive spills whole chunks into pages and paging restores them with overlap', async (context) => {
   const { factory, workers } = fakeWorkers();

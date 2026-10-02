@@ -3,7 +3,7 @@
 // session fetch with its starvation backfill, session grouping, and the
 // terminal / omitted sentinel updates.
 import { __mixdogMemoryLog } from '../memory-log.mjs';
-import { throwIfAborted } from '../memory-cycle2-shared.mjs';
+import { throwIfAborted } from '../memory-cycle-shared.mjs';
 import { CYCLE1_OMITTED_COOLDOWN_MS } from './cycle1-plan.mjs';
 
 export function isStructurallyUnchunkableInput(row) {

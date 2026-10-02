@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 
+import { waitUntil } from '../runtime/shared/wait-until.test-support.mjs';
 import { createSessionService } from './session-service.mjs';
 
 const TAIL = { transcriptItemLimit: 32, transcriptByteBudget: 1_000_000 };
@@ -44,8 +44,7 @@ test('a vanished viewing client releases the wire projection; the runtime stays 
     // And the next turn's rows keep flowing as patches.
     state = { ...state, items: [...state.items, item('next')] };
     listener();
-    await delay(5);
-    assert.equal(service.status.projected, 1);
+    await waitUntil(() => service.status.projected === 1, { message: 'projection rebuilt for the next turn' });
   } finally {
     await service.stop('test complete');
   }

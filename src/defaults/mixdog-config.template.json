@@ -7,7 +7,6 @@
   },
   "channels": {},
   "memory": {
-    "cycle1": { "interval": "10m" },
-    "cycle2": { "interval": "1h" }
+    "cycle1": { "interval": "10m" }
   }
 }

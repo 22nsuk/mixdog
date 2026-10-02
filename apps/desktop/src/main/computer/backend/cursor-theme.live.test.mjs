@@ -8,7 +8,9 @@ import test from 'node:test';
 import { MIXDOG_HOST_CSHARP } from './native-source.ts';
 
 test('real Windows cursor changes and restores after normal completion and worker-tree termination', {
-  skip: process.platform !== 'win32' || process.env.MIXDOG_CURSOR_LIVE_TEST !== '1',
+  skip:
+    (process.platform !== 'win32' && 'Windows only') ||
+    (process.env.MIXDOG_CURSOR_LIVE_TEST !== '1' && 'set MIXDOG_CURSOR_LIVE_TEST=1 to run'),
   timeout: 45000,
 }, async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'mixdog-cursor-live-'));

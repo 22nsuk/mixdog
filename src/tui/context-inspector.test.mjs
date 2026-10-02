@@ -9,6 +9,7 @@ import { build } from 'esbuild';
 import React from 'react';
 import { render } from 'ink';
 import stringWidth from 'string-width';
+import { waitUntil } from '../runtime/shared/wait-until.test-support.mjs';
 
 test('TUI inspector navigates metadata, fetches on Enter, and bounds narrow previews', async (context) => {
   // The bundle is written inside the project so its imports resolve against
@@ -67,18 +68,18 @@ test('TUI inspector navigates metadata, fetches on Enter, and bounds narrow prev
     stdin.end();
     stdout.end();
   });
-  const settle = () => new Promise((resolve) => setTimeout(resolve, 80));
-  await settle();
+  const painted = (predicate, message) => waitUntil(() => predicate(screen), { message });
+  await painted((frame) => frame !== '', 'first frame');
   assert.equal(calls.length, 0);
   assert.doesNotMatch(screen, /PRIVATE_PREVIEW/);
   assert.doesNotMatch(screen, /Estimated usage by category/, 'the legacy grid must not duplicate the inspector');
   stdin.write('\r');
-  await settle();
+  await painted((frame) => /Instructions/.test(frame), 'metadata frame');
   assert.match(screen, /Instructions/);
   assert.equal(calls.length, 0);
   screen = '';
   stdin.write('\r');
-  await settle();
+  await painted((frame) => /PRIVATE_PREVIEW/.test(frame), 'preview frame');
   assert.deepEqual(calls, [{ id: 'message:0', revision: 'tui-first' }]);
   assert.match(screen, /PRIVATE_PREVIEW/);
   const lines = stripVTControlCharacters(screen).split('\n');
@@ -89,7 +90,7 @@ test('TUI inspector navigates metadata, fetches on Enter, and bounds narrow prev
   );
   screen = '';
   stdin.write('\x1b[D');
-  await settle();
+  await painted((frame) => /Instructions/.test(frame) && !/PRIVATE_PREVIEW/.test(frame), 'metadata frame again');
   assert.match(screen, /Instructions/);
   assert.doesNotMatch(screen, /PRIVATE_PREVIEW/);
 });

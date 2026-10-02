@@ -1,7 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { MEMORY_STORE_FAULT_CODE, MemoryStoreFault, isStoreFault, markStoreFault } from './memory-cycle2-shared.mjs';
+import {
+  MEMORY_STORE_FAULT_CODE,
+  MemoryStoreFault,
+  isStoreFault,
+  markStoreFault,
+  parseInterval,
+} from './memory-cycle-shared.mjs';
 
 test('a foreign error is never classified by its text', () => {
   // The exact former marker text, now owned by nobody: a provider/DB error that
@@ -70,4 +76,11 @@ test('an explicitly tagged cross-realm fault is recognised without instanceof', 
   });
   assert.equal(crossRealm instanceof MemoryStoreFault, false);
   assert.equal(isStoreFault(crossRealm), true);
+});
+
+test('maintenance intervals retain their units and reject invalid values', () => {
+  assert.equal(parseInterval('10m'), 600_000);
+  assert.equal(parseInterval('1.5h'), 5_400_000);
+  assert.equal(parseInterval('25ms'), 25);
+  assert.throws(() => parseInterval('tomorrow'), /invalid interval/);
 });

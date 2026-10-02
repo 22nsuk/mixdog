@@ -1,5 +1,6 @@
 // electron-vite configuration for the desktop app.
 // Third-party derivation notices: NOTICE.md at the repository root.
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
 
@@ -209,12 +210,29 @@ const firstScreenHints: Plugin = {
   },
 };
 
+// `electron-vite dev` empties out/main on every main build, deleting the
+// plain-Node desktop service bundle (daemon.cjs) that production builds add
+// afterwards with build-daemon.mjs. Without it the dev app never finishes
+// desktop init. Rebuild it after each development main build, before
+// Electron starts.
+const devDesktopServiceBundle: Plugin = {
+  name: 'mixdog-dev-desktop-service',
+  apply: (_config, { mode }) => mode === 'development',
+  closeBundle() {
+    execFileSync(process.execPath, [resolve(__dirname, 'scripts/build-daemon.mjs')], { stdio: 'inherit' });
+  },
+};
+
 export default defineConfig({
   main: buildTargetEnabled('main') ? {
     // qrcode is bundled, not resolved from the shipped node_modules: an
     // installed shell once lost its transitive deps (dijkstrajs, pngjs) and
     // the pairing QR silently never rendered. Pure JS, so bundling is safe.
-    plugins: [computerSourceVitePlugin(), externalizeDepsPlugin({ exclude: ['qrcode'] })],
+    plugins: [
+      computerSourceVitePlugin(),
+      externalizeDepsPlugin({ exclude: ['qrcode'] }),
+      devDesktopServiceBundle,
+    ],
     build: {
       rollupOptions: {
         input: {

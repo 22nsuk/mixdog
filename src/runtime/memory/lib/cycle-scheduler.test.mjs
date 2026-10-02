@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { createCycleScheduler } from './cycle-scheduler.mjs';
 import { createCycleLlmAdapters } from './cycle-llm-adapters.mjs';
-import { scheduledCycle1Signature, scheduledCycle2Signature } from './cycle-signatures.mjs';
+import { scheduledCycle1Signature } from './cycle-signatures.mjs';
 import { claimAndMarkScheduledCycle } from './memory-cycle-requests.mjs';
 
 test('old configuration cannot schedule a retired cycle or mutate CORE', async (t) => {
@@ -15,7 +15,7 @@ test('old configuration cannot schedule a retired cycle or mutate CORE', async (
   const claimed = [];
   const scheduled = [];
   const db = { query: async () => ({ rows: [{ c: 0 }] }) };
-  const { parseInterval } = await import('./memory-cycle2.mjs');
+  const { parseInterval } = await import('./memory-cycle-shared.mjs');
   const scheduler = createCycleScheduler({
     getDb: () => db,
     getConfig: () => config,
@@ -28,7 +28,6 @@ test('old configuration cannot schedule a retired cycle or mutate CORE', async (
     parseInterval,
     cycleStateFile: join(dir, 'state.json'),
     scheduledCycle1Signature,
-    scheduledCycle2Signature,
     claimAndMarkScheduledCycle: async (_db, kind) => {
       claimed.push(kind);
       return { claimed: true };
@@ -42,13 +41,14 @@ test('old configuration cannot schedule a retired cycle or mutate CORE', async (
     },
   });
   await scheduler.checkCycles();
-  assert.deepEqual(claimed, ['cycle1', 'cycle2']);
-  assert.deepEqual(scheduled, ['cycle1', 'cycle2']);
-  assert.deepEqual(Object.keys(scheduler.getCycleHealth()), ['cycle1', 'cycle2']);
+  assert.deepEqual(claimed, ['cycle1']);
+  assert.deepEqual(scheduled, ['cycle1']);
+  assert.deepEqual(Object.keys(scheduler.getCycleHealth()), ['cycle1']);
+  await assert.rejects(claimAndMarkScheduledCycle(db, 'cycle2', 1000), /invalid cycle/);
   await assert.rejects(claimAndMarkScheduledCycle(db, 'cycle3', 1000), /invalid cycle/);
 });
 
-test('maintenance LLM adapters expose only the two supported roles', async () => {
+test('maintenance LLM adapters dispatch only summarization', async () => {
   const calls = [];
   const adapters = createCycleLlmAdapters({
     callAgentDispatch: async (request, prompt) => {
@@ -56,11 +56,10 @@ test('maintenance LLM adapters expose only the two supported roles', async () =>
       return 'done';
     },
   });
-  assert.deepEqual(Object.keys(adapters), ['getCycle1CallLlm', 'getCycle2CallLlm']);
+  assert.deepEqual(Object.keys(adapters), ['getCycle1CallLlm']);
   await adapters.getCycle1CallLlm()({}, 'summarize');
-  await adapters.getCycle2CallLlm()({}, 'review history');
   assert.deepEqual(
     calls.map((call) => call.request.agent),
-    ['cycle1-agent', 'cycle2-agent']
+    ['cycle1-agent']
   );
 });

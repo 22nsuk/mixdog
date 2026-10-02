@@ -11,7 +11,7 @@ import {
 import { searchRelevantHybrid } from './memory-recall-store.mjs';
 import { retrieveEntries } from './memory-retrievers.mjs';
 import { compareRecallByScore, compareRecallNewestFirst } from './recall-order.mjs';
-import { throwIfAborted } from './memory-cycle2-shared.mjs';
+import { throwIfAborted } from './memory-cycle-shared.mjs';
 import { expandRecallEventContext } from './recall-event-context.mjs';
 import { insertTraceEvents } from './trace-store.mjs';
 import {

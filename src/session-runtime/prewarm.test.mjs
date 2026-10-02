@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { waitUntil } from '../runtime/shared/wait-until.test-support.mjs';
 import { createPrewarmSchedulers } from './prewarm.mjs';
 
 test('first-visible code graph prewarm overlaps an active turn', async () => {
@@ -41,7 +42,7 @@ test('first-visible code graph prewarm overlaps an active turn', async () => {
 
   schedulers.scheduleCodeGraphPrewarm(100, 'cwd');
   schedulers.scheduleCodeGraphPrewarm(0, 'first-visible');
-  await new Promise((resolve) => setTimeout(resolve, 25));
+  await waitUntil(() => calls.length > 0, { message: 'first-visible prewarm ran' });
 
   assert.deepEqual(calls, [cwd]);
   assert.equal(

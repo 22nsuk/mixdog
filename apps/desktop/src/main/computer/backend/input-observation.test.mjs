@@ -8,7 +8,7 @@ import test from 'node:test';
 import { MIXDOG_HOST_CSHARP } from './native-source.ts';
 
 test('native input ledger uses event origin, retains physical intervention, and handles tick wrap', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'mixdog-input-ledger-'));
   try {

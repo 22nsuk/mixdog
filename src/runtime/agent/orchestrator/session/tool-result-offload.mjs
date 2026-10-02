@@ -190,10 +190,12 @@ function buildPreview(text, maxChars = TOOL_RESULT_PREVIEW_CHARS) {
   };
 }
 
-function artifactMeta(sessionId, toolCallId, channel, content) {
+function artifactMeta(sessionId, toolCallId, channel, content, preview = false) {
   if (!sessionId || !toolCallId || typeof content !== 'string') return null;
   const sha256 = createHash('sha256').update(content, 'utf8').digest('hex');
-  const dir = ensureToolResultsDir(sessionId);
+  const dir = preview
+    ? join(getPluginData(), 'tool-results', safeSessionSegment(sessionId))
+    : ensureToolResultsDir(sessionId);
   return {
     stream: channel,
     path: join(dir, artifactIdentity(sha256)),
@@ -206,6 +208,12 @@ function artifactMeta(sessionId, toolCallId, channel, content) {
 
 function artifactShapeMatches(meta, info) {
   return info.isFile() && info.size === meta.bytes;
+}
+
+// Same content-addressed reference as persistence, without creating a directory
+// or a file. Compaction previews must not archive a transcript they will keep.
+export function previewToolResultArtifact({ sessionId, toolCallId, channel = 'result', content } = {}) {
+  return artifactMeta(sessionId, toolCallId, channel, content, true);
 }
 
 export function persistToolResultArtifactSync({ sessionId, toolCallId, channel = 'result', content } = {}) {

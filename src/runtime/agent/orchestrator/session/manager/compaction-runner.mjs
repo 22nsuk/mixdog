@@ -13,7 +13,7 @@ import {
   primeContextEstimates,
   resolveCompactBufferRatio,
 } from '../context-utils.mjs';
-import { runFreshContextCompact } from '../loop/fresh-context.mjs';
+import { previewFreshContextCompaction, runFreshContextCompact } from '../loop/fresh-context.mjs';
 import { positiveInt } from '../../../../shared/numbers.mjs';
 import { traceAgentCompact, messagePrefixHash } from '../../agent-trace.mjs';
 import { uncachedInputTokensForProvider } from './usage-metrics.mjs';
@@ -29,6 +29,7 @@ import {
   resolveGaugeContextTokens,
   resolveHandoffSummaryModel,
   resolveWorkerCompactPolicy,
+  shouldCompactForRequestMedia,
 } from '../loop/compact-policy.mjs';
 import { snapshotProviderRequestTools } from '../../runtime-core/tool-catalog.mjs';
 
@@ -139,6 +140,7 @@ export async function runHandoffCompaction({
   model = null,
   config,
   messageTokensEst = null,
+  requireReduction = false,
 } = {}) {
   const messageList = Array.isArray(messages) ? messages : [];
   const transcriptTokens = Number.isFinite(Number(messageTokensEst))
@@ -160,6 +162,7 @@ export async function runHandoffCompaction({
     provider: provider || getProvider(session?.provider) || null,
     model: model || resolveHandoffSummaryModel(session) || session?.model,
     sendOpts: { session },
+    requireReduction,
   });
 }
 
@@ -327,6 +330,7 @@ async function runSessionHandoff(plan, opts) {
       model: opts.model,
       config: opts.config,
       messageTokensEst: plan.beforeMessageTokens,
+      requireReduction: plan.requireReduction,
     });
     if (Array.isArray(run.freshContextResult?.messages)) {
       run.compacted = run.freshContextResult.messages;
@@ -684,6 +688,28 @@ export async function runSessionCompaction(session, opts = {}) {
       freshContext: false,
     });
   }
+  plan.requireReduction =
+    (plan.mode === 'auto' || opts.requireReduction === true) && !shouldCompactForRequestMedia(plan.messages);
+  const skipped = () =>
+    compactionResult(plan, { changed: false, skipped: true, reason: 'no_token_reduction' }, unchangedAfter(plan), {
+      freshContext: false,
+    });
+  if (
+    plan.requireReduction &&
+    !previewFreshContextCompaction({
+      sessionRef: session,
+      messages: plan.messages,
+      compactBudgetTokens: plan.budget,
+      compactPolicy: {
+        ...plan.alignedPolicy,
+        reserveTokens: plan.reserveTokens,
+        contextWindow: positiveInt(session.contextWindow) || plan.boundary,
+      },
+      sessionId: plan.resolvedSessionId,
+      provider: opts.provider,
+    }).reducesTokens
+  )
+    return skipped();
   const compactStartedAt = Date.now();
   try {
     await opts.onStageChange?.('compacting');
@@ -695,5 +721,6 @@ export async function runSessionCompaction(session, opts = {}) {
   await new Promise((resolve) => setImmediate(resolve));
   const run = await runSessionHandoff(plan, opts);
   if (!run.compacted) return recordFailedCompaction(plan, run, compactStartedAt);
+  if (run.freshContextResult?.skipped) return skipped();
   return commitSessionCompaction(plan, run, compactStartedAt);
 }

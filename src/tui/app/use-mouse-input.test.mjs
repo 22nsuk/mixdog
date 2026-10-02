@@ -2,10 +2,10 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
-import { setTimeout as delay } from 'node:timers/promises';
 import React from 'react';
 import { Text, render } from 'ink';
 import { useMouseInput } from './use-mouse-input.mjs';
+import { waitUntil } from '../../runtime/shared/wait-until.test-support.mjs';
 
 // The button-gesture half of the SGR mouse channel, mounted through the real
 // hook: what each press / motion / release does to the selection in the
@@ -117,15 +117,16 @@ function mount(context, { promptBoxRect = null } = {}) {
   // Grid cells are 0-based; SGR col/row are 1-based.
   const emit = (button, x, y, action = 'press') =>
     inkInput.emit('mouse', { kind: 'mouse', button, action, col: x + 1, row: y + 1 });
-  const settle = () => delay(30);
-  return { control, calls, dragRef, lastClickRef, emit, settle, promptCtl };
+  // The hook subscribes in an effect after Ink's first commit.
+  const ready = () => waitUntil(() => inkInput.listenerCount('mouse') > 0, { message: 'mouse listener attached' });
+  return { control, calls, dragRef, lastClickRef, emit, ready, promptCtl };
 }
 
 const linear = (x1, y1, x2, y2) => ({ mode: 'linear', x1, y1, x2, y2 });
 
 test('press, drag and release in the transcript build a linear selection', async (context) => {
-  const { calls, dragRef, emit, settle } = mount(context);
-  await settle();
+  const { calls, dragRef, emit, ready } = mount(context);
+  await ready();
   emit(LEFT, 2, 1);
   assert.equal(dragRef.current.active, true);
   assert.equal(dragRef.current.region, 'transcript');
@@ -139,8 +140,8 @@ test('press, drag and release in the transcript build a linear selection', async
 });
 
 test('a release on the press cell clears instead of painting an empty rect', async (context) => {
-  const { calls, dragRef, emit, settle } = mount(context);
-  await settle();
+  const { calls, dragRef, emit, ready } = mount(context);
+  await ready();
   emit(LEFT, 4, 2);
   emit(LEFT, 4, 2, 'release');
   assert.deepEqual(calls.rects, [null]);
@@ -148,8 +149,8 @@ test('a release on the press cell clears instead of painting an empty rect', asy
 });
 
 test('dragging past the viewport edge snaps the point and scrolls toward the edge', async (context) => {
-  const { calls, emit, settle } = mount(context);
-  await settle();
+  const { calls, emit, ready } = mount(context);
+  await ready();
   emit(LEFT, 2, 5);
   emit(LEFT | MOTION, 7, 12);
   assert.deepEqual(calls.throttled, [linear(2, 5, 39, 9)]);
@@ -160,8 +161,8 @@ test('dragging past the viewport edge snaps the point and scrolls toward the edg
 });
 
 test('right press extends an existing char selection one-shot; ctrl+press keeps the drag armed', async (context) => {
-  const { calls, dragRef, lastClickRef, emit, settle } = mount(context);
-  await settle();
+  const { calls, dragRef, lastClickRef, emit, ready } = mount(context);
+  await ready();
   emit(LEFT, 2, 1);
   emit(LEFT | MOTION, 5, 2);
   emit(LEFT, 5, 2, 'release');
@@ -179,8 +180,8 @@ test('right press extends an existing char selection one-shot; ctrl+press keeps 
 });
 
 test('right press with nothing extendable is ignored', async (context) => {
-  const { calls, dragRef, emit, settle } = mount(context);
-  await settle();
+  const { calls, dragRef, emit, ready } = mount(context);
+  await ready();
   emit(RIGHT, 3, 3);
   emit(LEFT, 4, 2);
   emit(LEFT, 4, 2, 'release');
@@ -191,8 +192,8 @@ test('right press with nothing extendable is ignored', async (context) => {
 });
 
 test('double and triple clicks select word and line spans that later extend by span', async (context) => {
-  const { calls, dragRef, emit, settle } = mount(context);
-  await settle();
+  const { calls, dragRef, emit, ready } = mount(context);
+  await ready();
   emit(LEFT, 6, 2);
   emit(LEFT, 6, 2, 'release');
   emit(LEFT, 7, 2);
@@ -212,8 +213,8 @@ test('double and triple clicks select word and line spans that later extend by s
 });
 
 test('status-band selections anchor without scroll and extend within the band', async (context) => {
-  const { calls, dragRef, emit, settle } = mount(context);
-  await settle();
+  const { calls, dragRef, emit, ready } = mount(context);
+  await ready();
   emit(LEFT, 1, 22);
   assert.equal(dragRef.current.region, 'status');
   assert.equal(dragRef.current.anchorScroll, 0);
@@ -225,8 +226,8 @@ test('status-band selections anchor without scroll and extend within the band', 
 });
 
 test('a press outside every region clears all selections', async (context) => {
-  const { calls, dragRef, emit, settle } = mount(context);
-  await settle();
+  const { calls, dragRef, emit, ready } = mount(context);
+  await ready();
   emit(LEFT, 2, 1);
   emit(LEFT, 2, 15);
   assert.deepEqual(calls.rects, [null]);
@@ -235,10 +236,10 @@ test('a press outside every region clears all selections', async (context) => {
 });
 
 test('prompt-box presses anchor, drag, extend and multi-click through the prompt engine', async (context) => {
-  const { calls, promptCtl, emit, settle } = mount(context, {
+  const { calls, promptCtl, emit, ready } = mount(context, {
     promptBoxRect: { top: 12, left: 2, height: 3, contentWidth: 30 },
   });
-  await settle();
+  await ready();
   emit(LEFT, 5, 13);
   assert.deepEqual(calls.prompt, [['anchorAt', 103]]);
   emit(LEFT | MOTION, 8, 14);
@@ -257,8 +258,8 @@ test('prompt-box presses anchor, drag, extend and multi-click through the prompt
 });
 
 test('settleStuckDrag finalizes a drag whose release never arrived', async (context) => {
-  const { control, calls, dragRef, emit, settle } = mount(context);
-  await settle();
+  const { control, calls, dragRef, emit, ready } = mount(context);
+  await ready();
   assert.equal(control.api.settleStuckDrag(), false);
   emit(LEFT, 2, 1);
   emit(LEFT | MOTION, 6, 4);

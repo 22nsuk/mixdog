@@ -18,7 +18,7 @@ import { createHash } from 'node:crypto';
 const exec = promisify(execFile);
 
 test('elevated cleanup extracts authenticated literal native source without executing the host', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'mixdog-owned-source-'));
   try {
@@ -56,7 +56,7 @@ foreach ($bad in @(
 });
 
 test('compressed elevated transport preserves script scope and leaves room for the launch envelope', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
 }, async () => {
   const production = Buffer.from(elevatedProgramInvocation(), 'utf16le').toString('base64');
   assert.ok(production.length < 20_000);
@@ -72,7 +72,7 @@ test('compressed elevated transport preserves script scope and leaves room for t
 });
 
 test('elevated supervisor cancels only its harmless child and acknowledges its actual exit', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'mixdog-supervisor-'));
   // Exercise the production supervisor without UAC or any desktop input.

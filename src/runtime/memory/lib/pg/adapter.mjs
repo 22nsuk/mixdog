@@ -50,7 +50,7 @@ function installPoolErrorHandler(pool, label, { onConnectionLoss } = {}) {
   const logRecoveryFailure = (recoverErr) =>
     __mixdogMemoryLog(`[pg-adapter] ${label} client-error recovery failed: ${recoverErr?.message || recoverErr}\n`);
   // pg-pool deliberately removes its idle error listener while a Client is
-  // checked out. Long-running advisory-lock owners (cycle1/2) can therefore
+  // checked out. Long-running advisory-lock owners (cycle1) can therefore
   // receive a socket-end `error` between queries with no listener at all,
   // which Node treats as an uncaught exception. Give every physical Client a
   // permanent last-resort listener; pg-pool's own idle listener still owns

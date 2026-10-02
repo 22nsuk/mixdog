@@ -178,7 +178,7 @@ test('rename, delete and directory moves preserve membership across concurrent r
 });
 
 test('Windows hidden attribute changes update cached file membership', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
 }, async () => {
   await fixture(async ({ root, open }) => {
     const path = join(root, 'visible.txt');
@@ -195,7 +195,7 @@ test('Windows hidden attribute changes update cached file membership', {
 });
 
 test('Windows directory permission loss and recovery agree with uncached searches', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
 }, async () => {
   await fixture(async ({ root, open }) => {
     const dir = join(root, 'protected');

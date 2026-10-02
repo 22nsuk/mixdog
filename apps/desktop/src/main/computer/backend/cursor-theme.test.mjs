@@ -9,7 +9,7 @@ import { MIXDOG_HOST_CSHARP } from './native-source.ts';
 
 // Exercise ownership and rollback with fake handles; never change system cursors.
 test('cursor theme restores original handles, rolls back partial activation and fails closed on restoration failure', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
   timeout: 30000,
 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'mixdog-cursor-theme-'));

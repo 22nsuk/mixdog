@@ -15,7 +15,7 @@ import {
   emitCompactEvent,
   resolveHandoffSummaryModel,
 } from './loop/compact-policy.mjs';
-import { runFreshContextCompact } from './loop/fresh-context.mjs';
+import { previewFreshContextCompaction, runFreshContextCompact } from './loop/fresh-context.mjs';
 import { estimateMessagesTokensSafe } from './loop/compact-debug.mjs';
 import { messagesArrayChanged } from './loop/tool-helpers.mjs';
 import { normalizeUsage, addUsage } from './loop/usage.mjs';
@@ -72,8 +72,8 @@ function transcriptPrefixHash(messages) {
 // same event. A pending reactive-overflow retry makes THIS compact pass the
 // recovery from a provider overflow refusal, not the proactive pressure
 // trigger — the emitted events are tagged so telemetry can tell them apart.
-// An agent whose 5m message cache expired compacts before the cold send
-// whatever its size (trigger 'cache_expired').
+// Cache expiry arms a cold-send compact regardless of the threshold, but all
+// proactive triggers still need a smaller predicted transcript.
 function preSendCompactDecision(state, compactPolicy) {
   const { messages, sessionRef } = state;
   const messageTokensEst = estimateMessagesTokensSafe(messages);
@@ -84,24 +84,45 @@ function preSendCompactDecision(state, compactPolicy) {
     sessionRef,
   });
   const cacheExpired = shouldCompactForExpiredAgentCache(sessionRef, state.opts);
-  const shouldCompact =
+  const mediaPressure = shouldCompactForRequestMedia(messages);
+  const requireReduction = !reactivePending && !mediaPressure;
+  let shouldCompact =
     state.skipProactiveCompact !== true &&
     (cacheExpired ||
-      shouldCompactForRequestMedia(messages) ||
+      mediaPressure ||
       shouldCompactForSession(messageTokensEst, compactPolicy, {
         forceReactive: reactivePending,
         messages,
         sessionRef,
         pressureTokens,
       }));
+  const compactBudgetTokens = shouldCompact
+    ? compactTargetBudget({ ...compactPolicy, pressureTokens }) || compactPolicy.boundaryTokens
+    : compactPolicy.boundaryTokens;
+  if (shouldCompact && requireReduction) {
+    // Price the same Goal reminder the real pass will attach, without marking
+    // or acknowledging it on a session whose compaction may be skipped.
+    const previewSession = { ...sessionRef };
+    markPendingGoalReminder(previewSession, 'compaction');
+    const reminder = snapshotPendingGoalReminder(previewSession);
+    shouldCompact = previewFreshContextCompaction({
+      sessionRef,
+      messages,
+      compactBudgetTokens,
+      compactPolicy,
+      sessionId: state.sessionId,
+      provider: state.provider,
+      goalReminderText: reminder?.content || '',
+      activeTurn: true,
+    }).reducesTokens;
+  }
   return {
     messageTokensEst,
     pressureTokens,
     shouldCompact,
+    requireReduction,
     compactTrigger: reactivePending ? 'reactive' : cacheExpired ? 'cache_expired' : 'auto',
-    compactBudgetTokens: shouldCompact
-      ? compactTargetBudget({ ...compactPolicy, pressureTokens }) || compactPolicy.boundaryTokens
-      : compactPolicy.boundaryTokens,
+    compactBudgetTokens,
   };
 }
 
@@ -243,6 +264,7 @@ async function compactTranscript(ctx, run) {
     sendOpts: opts,
     goalReminderText: run.inlineGoalReminder?.content || '',
     activeTurn: true,
+    requireReduction: decision.requireReduction,
   });
   const freshMessages = Array.isArray(run.freshContextResult?.messages) ? run.freshContextResult.messages : null;
   if (!freshMessages) throw new Error('fresh-context compact produced no messages');
@@ -461,6 +483,10 @@ async function compactBeforeSend(ctx) {
     throwCompactFailure(ctx, run, compactErr);
   }
   await setStage(opts, 'requesting');
+  if (run.freshContextResult?.skipped) {
+    compactTelemetry(ctx, 'pre_send_check', { skipReason: 'no_token_reduction' });
+    return;
+  }
   ctx.compactChanged = messagesArrayChanged(messages, run.compacted);
   if (ctx.compactChanged) adoptCompactedTranscript(ctx, run);
   reportCompactOutcome(ctx, run);

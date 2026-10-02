@@ -34,7 +34,7 @@ test('foreground typing budgets are checked before dispatch without reducing bac
 });
 
 test('the native typing guard refuses excess text before resolving any window', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
   timeout: 10_000,
 }, async () => {
   const script = `

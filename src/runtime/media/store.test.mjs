@@ -162,7 +162,7 @@ test('media assets are organized by kind, provider, model, and local date while 
   }
 });
 
-test('a failed duration write leaves the cached index row untouched', { skip: process.platform !== 'win32' }, async () => {
+test('a failed duration write leaves the cached index row untouched', { skip: process.platform !== 'win32' && 'Windows only' }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'mixdog-media-duration-'));
   const previousDataDir = process.env.MIXDOG_DATA_DIR;
   process.env.MIXDOG_DATA_DIR = root;

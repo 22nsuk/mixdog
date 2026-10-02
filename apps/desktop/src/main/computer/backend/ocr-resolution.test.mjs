@@ -8,7 +8,7 @@ import test from 'node:test';
 import { powershellHostProgram } from './program.ts';
 
 test('Windows OCR accepts a lossless source larger than its engine limit and returns the recognized coordinate size', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'mixdog-ocr-resolution-'));
   try {

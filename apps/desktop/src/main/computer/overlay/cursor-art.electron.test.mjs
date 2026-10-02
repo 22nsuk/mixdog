@@ -10,7 +10,7 @@ import { build } from 'esbuild';
 import electron from 'electron';
 
 test('Electron renders only a click effect at the hotspot, without a second pointer or text', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
   timeout: 30000,
 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'mixdog-cursor-art-'));
@@ -35,7 +35,7 @@ test('Electron renders only a click effect at the hotspot, without a second poin
 });
 
 test('live overlay preparation, display positioning and takeover cleanup preserve the user desktop', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
   timeout: 30000,
 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'mixdog-cursor-lifecycle-'));

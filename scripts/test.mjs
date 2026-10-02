@@ -57,7 +57,9 @@ Every run ends with a "[failure-summary]" block, printed after all other
 output, naming each failed and flaky test by file and test name; every line of
 it carries that tag, so it survives line filtering.`;
 
-const ROOTS = ['.', 'src', 'scripts', 'lib', 'deploy'];
+// Not all of `benchmarks`: its job directories hold thousands of run artifacts
+// (some unreadable), so only the analysis tooling that has tests is searched.
+const ROOTS = ['.', 'src', 'scripts', 'lib', 'deploy', 'benchmarks/terminal-bench-2.1/analysis'];
 const PATTERNS = ['**/*.test.mjs', '**/*-test.mjs'];
 // The package root is searched shallowly: a recursive pattern there would pull
 // every workspace package into the invoking package's suite.

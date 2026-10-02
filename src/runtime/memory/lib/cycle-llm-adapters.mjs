@@ -30,9 +30,7 @@ export function createCycleLlmAdapters({ callAgentDispatch }) {
   // unhandled rejection that killed the memory runtime. Keep the factory
   // contract: each getter returns the (memoized) adapter function.
   const cycle1 = buildAdapter('cycle1-agent');
-  const cycle2 = buildAdapter('cycle2-agent');
   return {
     getCycle1CallLlm: () => cycle1,
-    getCycle2CallLlm: () => cycle2,
   };
 }

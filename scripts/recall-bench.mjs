@@ -2,7 +2,7 @@
 // recall-bench.mjs — case-based recall quality bench against the LIVE memory
 // DB. READ-ONLY: every case goes through handleToolCall('search_memories')
 // which only performs SELECTs (handleSearch path). No mutation actions
-// ('memory' tool / cycle1 / cycle2 / prune / purge / etc.) are ever invoked
+// ('memory' tool / cycle1 / prune / purge / etc.) are ever invoked
 // here — do not add any.
 //
 //   node scripts/recall-bench.mjs [--cases scripts/recall-bench-cases.json] [--json]

@@ -29,15 +29,13 @@ export function createMaintenanceActions({ getDb, entryStats, getCycleLastRun })
     const { dims, dimsErr } = await embeddingDims(db);
     const bootstrapComplete = await isBootstrapComplete(db);
     const lines = [
-      `entries: total=${stats.total} roots=${stats.roots} cycle1_raw=${stats.unchunked_leaves} (unchunked leaves) cycle2_pending=${stats.cycle2_pending_roots} (awaiting cycle2 review)`,
+      `entries: total=${stats.total} roots=${stats.roots} cycle1_raw=${stats.unchunked_leaves} (unchunked leaves)`,
       `status: ${stats.byStatus.map((r) => `${r.status ?? '?'}:${r.c}`).join(', ') || 'empty'}`,
       `categories: ${stats.byCategory.map((r) => `${r.category ?? 'NULL'}:${r.c}`).join(', ') || 'empty'}`,
       `core_memory: user=${stats.core_entries} embed_null=${stats.core_embed_null}`,
       `embedding_index: ready dims=${dims}${dimsErr ? ` (meta_read_error: ${dimsErr})` : ''}`,
       `bootstrap: ${bootstrapComplete ? 'complete' : 'incomplete'}`,
       `last_cycle1: ${agoText(last.cycle1)}`,
-      `last_cycle2: ${agoText(last.cycle2)}`,
-      ...(last.cycle2_last_error ? [`last_cycle2_error: ${last.cycle2_last_error}`] : []),
     ];
     return { text: lines.join('\n') };
   }

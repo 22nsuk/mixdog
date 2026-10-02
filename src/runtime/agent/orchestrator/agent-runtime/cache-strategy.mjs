@@ -48,7 +48,7 @@ import { cleanString } from '../../../shared/clean.mjs';
 import { nonNegativeInt, positiveInt } from '../../../shared/numbers.mjs';
 
 /**
- * One-shot, tool-free maintenance hidden roles (cycle1/cycle2-agent):
+ * One-shot, tool-free maintenance hidden roles (cycle1-agent):
  * a fresh stateless session is created per call, asked exactly once, and
  * closed (agent-dispatch.mjs) — the per-batch user prompt can NEVER be reused.
  * Writing a message-tail cache breakpoint on it just pays the 1.25x write
@@ -115,8 +115,7 @@ export function resolveLeadMessagesTtl(autoClear) {
  * session and closed, so their volatile per-call message tail is never read
  * back — and trace data (2026-06) shows the 1h system/tools prefix never
  * gets read back either: cycle1's prompt sits below Anthropic's minimum
- * cacheable length (0 writes), and cycle2's 1h run interval lands at/after
- * the 1h TTL expiry (writes every run, 0 reads). All layers go 'none' for
+ * cacheable length (0 writes). All layers go 'none' for
  * these roles — single-iteration calls pay the write premium with no reuse.
  */
 export function resolveCacheStrategy(agent, { autoClear } = {}) {

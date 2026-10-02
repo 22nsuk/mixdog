@@ -29,8 +29,9 @@ function createHarness(compact) {
     runtime: {
       id: session.id,
       session,
-      compact: async () => {
+      compact: async (options) => {
         compactCalls += 1;
+        assert.deepEqual(options, { requireReduction: true });
         return compact(session);
       },
       clear: async (options) => {
@@ -119,12 +120,12 @@ for (const mode of ['rules', 'summary']) {
 
 test('unchanged successful auto-clear preserves both transcripts and the exact context baseline', async () => {
   const h = createHarness(() => ({ changed: false, reason: 'nothing to compact' }));
-  assert.equal(await h.flow.autoClearBeforeSubmit(), true);
+  assert.equal(await h.flow.autoClearBeforeSubmit(), false);
   assert.equal(h.session.messages, h.messages);
   assert.equal(h.state.items[0], h.originalItem);
-  assert.equal(h.state.items.at(-1).label, 'Auto-clear complete');
+  assert.deepEqual(h.state.items, [h.originalItem]);
   assert.equal(h.clearCalls, 0);
-  assert.deepEqual(h.syncs, [{ allowEstimated: true, invalidateExact: false }]);
+  assert.deepEqual(h.syncs, []);
 });
 
 for (const mode of ['error-result', 'throw', 'no-session']) {

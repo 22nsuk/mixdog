@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { flushEmbeddingDirty } from './memory-embed.mjs';
+import { flushEmbeddingDirty, flushSearchEmbeddings } from './memory-embed.mjs';
 
 // Cancellation must survive the transaction teardown: the batch finally block
 // runs COMMIT/ROLLBACK while the abort is already in flight, and a failure
@@ -36,4 +36,51 @@ test('a cancelled flush reports the abort even when the rollback also fails', as
   );
   assert.equal(released.length, 1, 'the connection is still released exactly once');
   assert.match(String(released[0]?.message), /rollback failed/, 'the poisoned connection is released with its error');
+});
+
+test('explicit maintenance respects cancellation while awaiting another callers flush', async () => {
+  let releaseClaim;
+  let enteredClaim;
+  const claimed = new Promise((resolve) => {
+    enteredClaim = resolve;
+  });
+  const client = {
+    async query(sql) {
+      if (sql.includes('FOR UPDATE SKIP LOCKED')) {
+        enteredClaim();
+        return new Promise((resolve) => {
+          releaseClaim = () => resolve({ rows: [] });
+        });
+      }
+      return { rows: [] };
+    },
+    release() {},
+  };
+  const db = { query: async () => ({ rows: [] }), _pool: { connect: async () => client } };
+  const owner = flushEmbeddingDirty(db);
+  await claimed;
+  const controller = new AbortController();
+  const cancelled = new Error('cancelled maintenance caller');
+  const follower = assert.rejects(
+    flushSearchEmbeddings(db, { signal: controller.signal }),
+    (error) => error === cancelled
+  );
+  controller.abort(cancelled);
+  releaseClaim();
+  const [result] = await Promise.all([owner, follower]);
+  assert.equal(result.succeeded, 0);
+  assert.deepEqual(result.failed, []);
+});
+
+test('explicit maintenance refuses a successful result when an embedding batch failed', async () => {
+  const client = {
+    async query(sql) {
+      if (sql === 'BEGIN' || sql === 'ROLLBACK') return { rows: [] };
+      if (sql.includes('FOR UPDATE SKIP LOCKED')) return { rows: [{ id: '1' }] };
+      throw new Error('embedding batch unavailable');
+    },
+    release() {},
+  };
+  const db = { query: async () => ({ rows: [] }), _pool: { connect: async () => client } };
+  await assert.rejects(flushSearchEmbeddings(db), /embedding maintenance incomplete: failed=1/);
 });

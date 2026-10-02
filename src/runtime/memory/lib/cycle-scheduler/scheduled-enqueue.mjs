@@ -5,9 +5,7 @@ export function createScheduledEnqueue({
   getConfig,
   claimAndMarkScheduledCycle,
   scheduledCycle1Signature,
-  scheduledCycle2Signature,
   scheduleScheduledCycle1,
-  scheduleScheduledCycle2,
 }) {
   function periodicCycle1Config() {
     return {
@@ -38,13 +36,5 @@ export function createScheduledEnqueue({
     }
   }
 
-  async function enqueueScheduledCycle2(intervalMs) {
-    const config = getConfig()?.cycle2 || {};
-    const signature = scheduledCycle2Signature(config);
-    if (await claimScheduledSlot('cycle2', intervalMs, signature, config)) {
-      scheduleScheduledCycle2(config, signature);
-    }
-  }
-
-  return { periodicCycle1Config, enqueueScheduledCycle1, enqueueScheduledCycle2 };
+  return { periodicCycle1Config, enqueueScheduledCycle1 };
 }

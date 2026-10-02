@@ -59,7 +59,8 @@ test('office is a first-class built-in tool with stateful document actions', () 
     ...Object.values(TOOL_DEFS[0].inputSchema.properties).map((property) => property.description || ''),
   ].reduce((total, description) => total + description.length, 0);
   assert.ok(descriptionChars <= 3500, `Office schema descriptions grew to ${descriptionChars} characters`);
-  assert.ok(JSON.stringify(TOOL_DEFS[0].inputSchema).length <= 7000, 'Office input schema exceeded its size budget');
+  const size = JSON.stringify(TOOL_DEFS[0].inputSchema).length;
+  assert.ok(size <= 7000, `office input schema is ${size} chars; budget 7000 — trim the description or justify raising the budget`);
 });
 
 // Split pages and rendered images write into a folder, so a caller points

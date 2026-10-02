@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import { CRASHPAD_PIPE_ENV, watchCrashHandler } from './crash-handler-watch.ts';
 
 test('the PowerShell finder names the handler child, exits, and the in-process poll reports its exit', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
   timeout: 60_000,
 }, async () => {
   // Stand-in handler: a child of this process with the handler's switch in

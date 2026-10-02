@@ -150,11 +150,6 @@ export function createQueryMaintenanceHandlers({ getDb }) {
         await tx.query(`SELECT COUNT(*) c FROM entries WHERE is_root = 1 AND status = 'archived'`)
       ).rows[0].c;
       const unchunked_leaves = (await tx.query(`SELECT COUNT(*) c FROM entries WHERE chunk_root IS NULL`)).rows[0].c;
-      const cycle2_pending_roots = (
-        await tx.query(
-          `SELECT COUNT(*) c FROM entries WHERE is_root = 1 AND cycle2_reviewed_at IS NULL AND duplicate_of IS NULL`
-        )
-      ).rows[0].c;
       const core_entries = (await tx.query(`SELECT COUNT(*) c FROM core_entries`)).rows[0].c;
       const core_embed_null = (await tx.query(`SELECT COUNT(*) c FROM core_entries WHERE embedding IS NULL`)).rows[0].c;
       const byStatus = (await tx.query(`SELECT status, COUNT(*) c FROM entries WHERE is_root = 1 GROUP BY status`))
@@ -168,7 +163,6 @@ export function createQueryMaintenanceHandlers({ getDb }) {
         active_roots,
         archived_roots,
         unchunked_leaves,
-        cycle2_pending_roots,
         core_entries,
         core_embed_null,
         byStatus,

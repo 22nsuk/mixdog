@@ -8,7 +8,7 @@ import test from 'node:test';
 import { MIXDOG_HOST_CSHARP } from './native-source.ts';
 
 test('native window capture reads only its off-screen fixture surface and preserves foreground', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
   timeout: 40_000,
 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'mixdog-window-surface-'));

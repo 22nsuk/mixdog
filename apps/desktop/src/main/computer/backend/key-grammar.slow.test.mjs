@@ -5,7 +5,7 @@ import test from 'node:test';
 import { BLOCKED_COMPUTER_KEY_PATTERN_SOURCE } from '../input/guards.ts';
 
 test('shared dangerous key grammar has JavaScript and PowerShell regex parity', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
 }, async () => {
   const cases = [
     { keys: '^%{DELETE}', blocked: true },

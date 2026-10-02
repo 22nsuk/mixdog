@@ -8,7 +8,7 @@ import test from 'node:test';
 import { PS_INPUT } from './ps-input.ts';
 
 test('native predicate reads report empty, truncated and incomplete provider coverage', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
 }, async () => {
   // Mock provider boundaries, not desktop windows or native input.
   const script = `

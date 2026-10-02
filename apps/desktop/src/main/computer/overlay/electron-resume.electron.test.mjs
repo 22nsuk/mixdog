@@ -70,7 +70,7 @@ for (const softwareRendering of [false, true]) {
   const rendering = softwareRendering ? 'software' : 'GPU';
   test(`the sandboxed Stop control preserves native hit-testing, non-activation, preload IPC and its own face (${rendering})`, {
     timeout: 45000,
-    skip: process.platform !== 'win32',
+    skip: process.platform !== 'win32' && 'Windows only',
   }, async () => {
     const { result, clickMode } = await runFixture('electron-resume', softwareRendering);
     assert.equal(result.stopped, 4);
@@ -84,7 +84,7 @@ for (const softwareRendering of [false, true]) {
 
   test(`a frozen real renderer is retired and its replacement stays paused until its native Stop (${rendering})`, {
     timeout: 45000,
-    skip: process.platform !== 'win32',
+    skip: process.platform !== 'win32' && 'Windows only',
   }, async () => {
     const { result, clickMode } = await runFixture('electron-recovery', softwareRendering);
     assert.deepEqual(result, { retired: true, visible: true, inputBlocked: false, stopped: 1 });

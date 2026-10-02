@@ -13,18 +13,6 @@
       "stallCap": { "idleSeconds": 300 }
     },
     {
-      "agent": "cycle2-agent",
-      "slot": "cycle2",
-      "systemFile": "rules/agent/41-cycle2-agent.md",
-      "description": "Search-history duplicate and lineage reviewer invoked by memory-cycle runCycle2",
-      "invokedBy": "cycle2",
-      "maintKey": "memory",
-      "toolSchemaProfile": "none",
-      "kind": "maintenance",
-      "permission": "read",
-      "stallCap": { "idleSeconds": 300 }
-    },
-    {
       "agent": "title-agent",
       "slot": "title",
       "systemFile": "rules/agent/43-title-agent.md",

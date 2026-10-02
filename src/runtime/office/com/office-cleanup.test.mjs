@@ -86,7 +86,7 @@ test('public Office cancellation preserves the underlying error detail', async (
 });
 
 test('PowerShell cleanup closes by format, preserves shared documents, and exposes failures', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
 }, async () => {
   const path = fileURLToPath(new URL('./office-com-cleanup.ps1', import.meta.url)).replaceAll("'", "''");
   const script = `

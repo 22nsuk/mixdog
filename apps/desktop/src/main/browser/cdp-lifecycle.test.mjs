@@ -4,8 +4,8 @@ import test from 'node:test';
 import { createBrowserGuestCdp } from './cdp.ts';
 import { BrowserGuestStateStore } from './guest-state.ts';
 import { MAX_CHILD_CDP_SESSIONS } from './command.ts';
+import { waitUntil } from '../../../../../src/runtime/shared/wait-until.test-support.mjs';
 
-const tick = () => new Promise((resolve) => setImmediate(resolve));
 function fixture(send = async () => ({}), matchInterceptRule = () => undefined, pageGuardScripts = undefined) {
   const state = new BrowserGuestStateStore();
   const calls = [];
@@ -57,10 +57,12 @@ test('policy guards reach the root document and every child frame, and stay abse
   );
   await guarded.cdp.guestDebugger(guarded.guest);
   guarded.attachChild('frame-1');
-  await tick();
-  const injected = guarded.calls.filter(
-    (call) => call.method === 'Page.addScriptToEvaluateOnNewDocument' && call.params.source === '/* guard */'
-  );
+  const guardInjections = () =>
+    guarded.calls.filter(
+      (call) => call.method === 'Page.addScriptToEvaluateOnNewDocument' && call.params.source === '/* guard */'
+    );
+  await waitUntil(() => guardInjections().length >= 2, { message: 'guard injected into root and child frame' });
+  const injected = guardInjections();
   // An iframe runs its own realm: a guard only on the root leaves it open.
   assert.deepEqual(
     injected.map((call) => call.sessionId),
@@ -73,7 +75,9 @@ test('policy guards reach the root document and every child frame, and stay abse
 
   const unrestricted = fixture();
   await unrestricted.cdp.guestDebugger(unrestricted.guest);
-  await tick();
+  await waitUntil(() => unrestricted.calls.some((call) => call.method === 'Page.addScriptToEvaluateOnNewDocument'), {
+    message: 'dialog bridge installed',
+  });
   const sources = unrestricted.calls
     .filter((call) => call.method === 'Page.addScriptToEvaluateOnNewDocument')
     .map((call) => call.params.source);
@@ -137,7 +141,7 @@ test('intercept types use the Network request identity without conflating XHR or
   paused('request-1', 'XHR');
   paused('request-1', 'XHR', 'child-session');
   paused('unrecorded', 'Document');
-  await tick();
+  await waitUntil(() => types.length >= 3, { message: 'three intercept decisions' });
   assert.deepEqual(types, ['fetch', 'xhr', 'Document']);
   await f.cdp.detach(f.guest);
 });
@@ -153,8 +157,9 @@ test("a mocked body is fulfilled under the server's own status line", async () =
     responseStatusCode: 404,
     responseStatusText: 'Not Found',
   });
-  await tick();
-  const fulfilled = f.calls.find((call) => call.method === 'Fetch.fulfillRequest');
+  const fulfilled = await waitUntil(() => f.calls.find((call) => call.method === 'Fetch.fulfillRequest'), {
+    message: 'mocked body fulfilled',
+  });
   // Chromium applies whatever status the fulfilment names, so the server's has
   // to be handed back or a 404 would reach the page as a mocked 200.
   assert.equal(fulfilled.params.responseCode, 404);
@@ -204,8 +209,10 @@ test("resources the browser's own components load never surface as the page's fa
       entry: { level: 'error', text: 'Failed to load resource: net::ERR_BLOCKED_BY_CLIENT', url },
     });
   }
-  await tick();
   const diagnostics = f.state.for(f.guest);
+  await waitUntil(() => diagnostics.networkFailures.length >= 1 && diagnostics.console.recentErrors(5).length >= 1, {
+    message: 'page failure and console error recorded',
+  });
   assert.equal(diagnostics.networkFailures.length, 1);
   assert.match(diagnostics.networkFailures[0], /app\.css/);
   // The host's own request policy is the only client that blocks here, so
@@ -254,8 +261,8 @@ test('a cancelled request is recorded but never volunteered as a page failure', 
     requestId: 'broken-1',
     errorText: 'net::ERR_NAME_NOT_RESOLVED',
   });
-  await tick();
   const diagnostics = f.state.for(f.guest);
+  await waitUntil(() => diagnostics.networkFailures.length >= 1, { message: 'broken request recorded' });
   assert.deepEqual(
     diagnostics.networkFailures.map((entry) => entry.replace(/^GET /, '')),
     ['https://example.test/missing.css — net::ERR_NAME_NOT_RESOLVED']
@@ -270,7 +277,7 @@ test('detach during initialization prevents late auto-attach and permits a fresh
   const f = fixture((method) => (method === 'Page.enable' && hold ? pending.promise : Promise.resolve({})));
   const ready = f.cdp.guestDebugger(f.guest);
   const rejected = assert.rejects(ready, /detach/);
-  await tick();
+  await waitUntil(() => f.calls.some((call) => call.method === 'Page.enable'), { message: 'initialization reached Page.enable' });
   await f.cdp.detach(f.guest);
   hold = false;
   const next = f.cdp.guestDebugger(f.guest);

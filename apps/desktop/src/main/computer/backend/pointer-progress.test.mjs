@@ -12,6 +12,15 @@ import { RESPONSE_MARKER } from './program.ts';
 // handing the spawn to these tests' fakes, which never run it.
 process.env.MIXDOG_COMPUTER_BIN ||= 'mixdog-computer';
 
+/** Polls until the condition holds, failing at a deadline instead of hanging. */
+async function until(condition, what, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() > deadline) assert.fail(`timed out waiting for ${what}`);
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
+
 for (const command of [
   { action: 'sequence_step', step: { action: 'drag', window_id: 'hwnd:0x123' }, delivery: 'background' },
   { action: 'click', ref: 's1:e0', delivery: 'background' },
@@ -59,6 +68,7 @@ for (const command of [
         settled = true;
         return value;
       });
+      await until(() => request !== undefined && pool.powerShellBySession.has('a'), 'the worker request');
       const child = pool.powerShellBySession.get('a');
       assert.equal(request.pointer_feedback, true);
       const emit = (data) => child.stdout.write(`@@MIXDOG_POINTER@@${JSON.stringify(data)}\n`);
@@ -72,7 +82,7 @@ for (const command of [
       emit({ id: request.id, x: 3200, y: 1000, held: false, phase: 'scroll' });
       emit({ id: request.id, x: 3200, y: 1000, held: false, phase: 'type' });
       emit({ id: request.id, x: 0, y: 0, held: false, phase: 'unknown' });
-      await Promise.resolve();
+      await until(() => events.length >= 7, 'the pointer progress events');
       assert.equal(settled, false);
       assert.deepEqual(events, [
         ['a', 3100, 900, true, command.delivery, 'drag', 'hwnd:0x123'],
@@ -85,7 +95,11 @@ for (const command of [
       ]);
       child.stdout.write(`${RESPONSE_MARKER}${JSON.stringify({ id: request.id, ok: true, result: {} })}\n`);
       await pending;
+      // The pool's data listener runs before this one, so the late event has
+      // been handled by the time the chunk reaches here.
+      const late = new Promise((resolve) => child.stdout.once('data', resolve));
       emit({ id: request.id, x: 0, y: 0, held: true });
+      await late;
       assert.equal(events.length, 7);
     } finally {
       for (const child of children) pool.retirePowerShell(child, new Error('fixture cleanup'));

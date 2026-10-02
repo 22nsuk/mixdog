@@ -9,7 +9,7 @@ import { MIXDOG_HOST_CSHARP } from './native-source.ts';
 import { PS_RUNTIME } from './ps-runtime.ts';
 
 test('native dispatch rejects old observations, clipped cursors, and stale message error codes without desktop input', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'mixdog-native-audit-state-'));
   try {

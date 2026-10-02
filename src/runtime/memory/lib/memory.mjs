@@ -265,17 +265,13 @@ export async function ensureCurrentSchemaExtensions(db, dims, embeddingIdentity 
     );
   }
   await db.exec(`ALTER TABLE entries ADD COLUMN IF NOT EXISTS chunk_quality jsonb`);
-  // Separate maintenance progress from legacy importance/status verdicts.
-  // Existing content and classification values remain untouched.
-  await db.exec(`ALTER TABLE entries ADD COLUMN IF NOT EXISTS cycle2_reviewed_at bigint`);
+  // Existing retired review metadata is left untouched, but no longer created.
+  // Preserve the search relationships used by recall.
   await db.exec(
     `ALTER TABLE entries ADD COLUMN IF NOT EXISTS duplicate_of bigint REFERENCES entries(id) ON DELETE SET NULL`
   );
   await db.exec(
     `CREATE INDEX IF NOT EXISTS idx_entries_duplicate_of ON entries(duplicate_of) WHERE duplicate_of IS NOT NULL`
-  );
-  await db.exec(
-    `CREATE INDEX IF NOT EXISTS idx_entries_cycle2_unreviewed ON entries(ts DESC, id DESC) WHERE is_root = 1 AND cycle2_reviewed_at IS NULL`
   );
   await db.exec(`ALTER TABLE entries ADD COLUMN IF NOT EXISTS time_source text`);
   await db.exec(`ALTER TABLE entries ADD COLUMN IF NOT EXISTS concept_id bigint`);

@@ -34,7 +34,7 @@ async function isolatedProgram(script, files = {}) {
 }
 
 test('resident native program parses and its C# compiles without touching the desktop', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
 }, async () => {
   const output = await isolatedProgram(
     `
@@ -55,7 +55,7 @@ Add-Type -ReferencedAssemblies @('System.dll','System.Core.dll','System.Drawing.
 });
 
 test('MSAA roles map to the control types their oleacc constants name, and editing keys carry their character', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
 }, async () => {
   const output = await isolatedProgram(
     `
@@ -91,7 +91,7 @@ foreach ($vk in 0x08, 0x09, 0x0D, 0x1B, 0x20, 0x41, 0x25) { $keys[[string]$vk] =
 });
 
 test('native typing retains a completed preparatory click when text input is unsupported', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
 }, async () => {
   const output = await isolatedProgram(
     `
@@ -145,7 +145,7 @@ $rows | ConvertTo-Json -Compress -Depth 6
 });
 
 test('native authority and drag endpoint guards reject before any desktop effect', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
 }, async () => {
   const output = await isolatedProgram(
     `
@@ -201,7 +201,7 @@ $results | ConvertTo-Json -Compress
 });
 
 test('every background scroll route re-checks authorization against its exact target before any wheel message', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
 }, async () => {
   const output = await isolatedProgram(
     `
@@ -257,7 +257,7 @@ foreach ($request in @(
 });
 
 test('all foreground native actions keep one intervention scope even on failure, while reads do not acquire one', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
 }, async () => {
   const output = await isolatedProgram(
     `
@@ -298,7 +298,7 @@ if ([MixInputObservation]::Depth -ne 0 -or [MixInputObservation]::Starts -ne 1 -
 });
 
 test('foreground feedback reports completed theme restoration and restores on body failure', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
 }, async () => {
   const output = await isolatedProgram(
     `
@@ -382,7 +382,7 @@ if ([MixCursorThemeReservation]::Dropped -ne 0) { throw 'a consumed watchdog res
 });
 
 test('detached watchdog launcher runs with a hidden console and no desktop input', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
 }, async () => {
   const output = await isolatedProgram(
     `
@@ -405,7 +405,7 @@ if (-not [IO.File]::Exists($receipt)) { throw 'detached watchdog did not start' 
 });
 
 test('background key grammar is completely validated before any target input', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
 }, async () => {
   const output = await isolatedProgram(
     `
@@ -434,7 +434,7 @@ foreach($keys in @('a^c','a{BROKEN}','a{ENTER','a{ENTER 101}')) {
 });
 
 test('native background failures distinguish unsupported preflight from possibly partial delivery', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
 }, async () => {
   const output = await isolatedProgram(
     `
@@ -459,7 +459,7 @@ foreach($code in @('background_unsupported','background_target_hung','background
 });
 
 test('background press lifetimes release once after uncertain delivery and preserve cleanup failure', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
 }, async () => {
   const output = await isolatedProgram(
     `
@@ -509,7 +509,7 @@ public static class ReleaseFixture {
 });
 
 test('response envelopes keep pointer accounting for failed requests and clear the progress hook', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
 }, async () => {
   const output = await isolatedProgram(
     `
@@ -560,7 +560,7 @@ if ($null -ne [MixWin32]::PointerProgress) { throw 'progress hook leaked past th
 });
 
 test('background cleanup uncertainty reaches the safety guard instead of ordinary mode escalation', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
 }, async () => {
   const output = await isolatedProgram(
     `

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { isDeepStrictEqual } from 'node:util';
 import { registerAndSynchronizeRelayViews } from './remote-view-sync.ts';
 import { createRelayClientRegistry, VIEW_RESUME_TTL_MS } from './remote-relay-clients.ts';
 import { encodeRelayClientSessionState } from './remote-relay-session-state.ts';
@@ -10,11 +11,14 @@ import { createKeyedListDeltaDecoder, isNoListDelta } from '../shared/list-delta
 import { createRemoteViewBaselineCache } from '../shared/remote-view-baseline.ts';
 import { createViewResumeRequest, readViewResumeGrant, readViewResumeRequest } from '../shared/remote-view-resume.ts';
 import { markCompactPayload } from '../renderer/remote-compact-frames.ts';
+import { waitUntil } from '../../../../src/runtime/shared/wait-until.test-support.mjs';
 
 const IDS = ['lead', 'side'];
 const plain = (value) => JSON.parse(JSON.stringify(value));
-/** The state lane coalesces behind its in-flight frame; let it drain. */
-const settle = () => new Promise((resolve) => setImmediate(resolve));
+/** The state lane coalesces behind its in-flight frame; wait until the phone's
+ *  state has caught up with the host's. */
+const stateDelivered = (phone, host) =>
+  waitUntil(() => isDeepStrictEqual(plain(phone.view.state), plain(host.state)), { message: 'state lane drained' });
 
 /** The desktop side: one host, one client registry with a controllable clock. */
 function fixture() {
@@ -236,7 +240,7 @@ test('a short reconnect resumes every lane with deltas only and reconstructs the
     first.publish('lead');
     first.publishSessions();
     first.state.stateLane.publish(h.host.state);
-    await settle();
+    await stateDelivered(phone, h.host);
   }
   h.assertSynchronized(phone);
   // Every submit reached both lanes as a head patch, never the whole list.
@@ -269,7 +273,7 @@ test('a short reconnect resumes every lane with deltas only and reconstructs the
   second.publish('lead');
   second.publishSessions();
   second.state.stateLane.publish(h.host.state);
-  await settle();
+  await stateDelivered(phone, h.host);
   h.assertSynchronized(phone);
 });
 

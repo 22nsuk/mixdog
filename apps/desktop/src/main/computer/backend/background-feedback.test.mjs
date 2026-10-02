@@ -5,7 +5,7 @@ import { promisify } from 'node:util';
 import test from 'node:test';
 
 test('semantic background feedback reports target points without replaying input or exposing text', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
   timeout: 30000,
 }, async () => {
   const sourcePath = fileURLToPath(new URL('./sources/input.ps1', import.meta.url));

@@ -2,7 +2,7 @@
  * Internal hidden agents — Mixdog-managed, user-untouchable.
  *
  * Unlike public workflow agents, these hidden agents are NEVER exposed to callers of the `agent` tool. They are
- * invoked only by internal handlers (recall / search) and carry
+ * invoked only by internal handlers (memory summarization / session titles) and carry
  * their own system prompt + tool-set policy.
  *
  * Lookup order (agent-dispatch.resolveMaintenanceRoute):

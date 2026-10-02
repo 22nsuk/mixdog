@@ -1,6 +1,6 @@
 import { estimateMessagesTokens } from '../context-utils.mjs';
 import { estimateTokens } from '../token-estimate.mjs';
-import { persistToolResultArtifactSync } from '../tool-result-offload.mjs';
+import { persistToolResultArtifactSync, previewToolResultArtifact } from '../tool-result-offload.mjs';
 import {
   isActualUserInstructionMessage,
   isProtectedContextAckMessage,
@@ -139,7 +139,10 @@ function assembleTail(messages, kept, { anchor, firstKept, preserveConversation 
   return tail;
 }
 
-export function buildExecutionTail(transcript, { contextWindow, sessionId, preserveConversation = false } = {}) {
+export function buildExecutionTail(
+  transcript,
+  { contextWindow, sessionId, preserveConversation = false, preview = false } = {}
+) {
   const budget = toolHistoryBudget(contextWindow);
   const messages = withoutStaleReplay(transcript);
   const groups = executionGroups(messages);
@@ -151,7 +154,7 @@ export function buildExecutionTail(transcript, { contextWindow, sessionId, prese
   let recovery = previousRecovery;
   const ensureArchive = () => {
     if (archive) return;
-    archive = persistToolResultArtifactSync({
+    archive = (preview ? previewToolResultArtifact : persistToolResultArtifactSync)({
       sessionId,
       toolCallId: 'compact-execution',
       channel: 'compact-execution',

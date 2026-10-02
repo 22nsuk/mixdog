@@ -7,7 +7,7 @@ import test from 'node:test';
 import { MIXDOG_INPUT_TRANSPORT_CSHARP } from './native-source.ts';
 
 test('ownership survives an input worker exit and refuses an unacknowledged native prefix', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
   timeout: 30000,
 }, async () => {
   const directory = mkdtempSync(join(tmpdir(), 'mixdog-owned-input-'));

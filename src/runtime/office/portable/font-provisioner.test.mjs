@@ -29,7 +29,7 @@ test('font registration passes the name and path as data, never as script text',
   assert.equal(env.MIXDOG_FONT_NAME, PROBE_FONT.registryName);
 });
 
-test('font registration hands PowerShell the path unchanged', { skip: platform() !== 'win32' }, async () => {
+test('font registration hands PowerShell the path unchanged', { skip: platform() !== 'win32' && 'Windows only' }, async () => {
   const { command, args, env } = fontRegistrationCommand(PROBE_FONT, QUOTED_PATH);
   // The registry write is replaced by a function that reports what it received.
   const stub =

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { setImmediate } from 'node:timers/promises';
 import test from 'node:test';
+import { waitUntil } from '../runtime/shared/wait-until.test-support.mjs';
 import { createSessionService } from './session-service.mjs';
 
 function deferred() {
@@ -351,12 +352,15 @@ for (const method of ['readSession', 'subscribeSession']) {
     const reply = await service[method]({ sessionId: id }, { clientToken: 'reader' });
     assert.equal(reply.full?.busy, false);
     notify();
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    const delivered = frames.find(
-      ({ frame, subscribers }) =>
-        frame.type === 'session-state' && frame.revision === reply.revision && subscribers.includes('viewer')
+    const delivered = await waitUntil(
+      () =>
+        frames.find(
+          ({ frame, subscribers }) =>
+            frame.type === 'session-state' && frame.revision === reply.revision && subscribers.includes('viewer')
+        ),
+      { message: 'the attached view receives the revision the caller consumed' }
     );
-    assert.ok(delivered, 'the attached view receives the revision the caller consumed');
+    assert.ok(delivered);
   });
 }
 

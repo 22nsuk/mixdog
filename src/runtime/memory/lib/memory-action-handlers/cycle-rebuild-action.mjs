@@ -1,12 +1,12 @@
 /**
  * memory-action-handlers/cycle-rebuild-action.mjs — the destructive rebuild:
  * drain whatever cycle1 is still running, truncate every classification
- * column in one transaction, then re-run cycle1 and cycle2 over the reset
+ * column in one transaction, then re-run cycle1 over the reset
  * rows. The confirm phrase is the only guard the caller gets.
  */
-import { runCycle2 } from '../memory-cycle.mjs';
+import { flushSearchEmbeddings } from '../memory-cycle.mjs';
 import { getInFlightCycle1 } from '../memory-cycle1.mjs';
-import { throwIfAborted } from '../memory-cycle2-shared.mjs';
+import { throwIfAborted } from '../memory-cycle-shared.mjs';
 
 // Every root-classification column, cleared before demotion. Cleanup must run
 // BEFORE demotion: demoting normal roots (chunk_root = id) first and then
@@ -18,7 +18,7 @@ const REBUILD_RESET_ROOTS = `
         SET element = NULL, category = NULL, summary = NULL,
             status = 'pending', score = NULL, last_seen_at = NULL,
             embedding = NULL, summary_hash = NULL,
-            reviewed_at = NULL, cycle2_reviewed_at = NULL, duplicate_of = NULL,
+            reviewed_at = NULL, duplicate_of = NULL,
             error_count = 0
         WHERE is_root = 1
       `;
@@ -28,7 +28,7 @@ const REBUILD_RESET_LEAVES = `
             element = NULL, category = NULL, summary = NULL,
             score = NULL, last_seen_at = NULL,
             embedding = NULL, summary_hash = NULL,
-            reviewed_at = NULL, cycle2_reviewed_at = NULL, duplicate_of = NULL,
+            reviewed_at = NULL, duplicate_of = NULL,
             error_count = 0
         WHERE is_root = 0
       `;
@@ -52,18 +52,12 @@ async function drainCycle1(db, getSchedulerCycle1InFlight) {
   }
 }
 
-export function createRebuildAction({
-  getDb,
-  startCycle1Run,
-  finalizeCycle2Run,
-  getSchedulerCycle1InFlight,
-  withCycle2Llm,
-}) {
+export function createRebuildAction({ getDb, startCycle1Run, getSchedulerCycle1InFlight }) {
   return async function rebuild(args, config, signal) {
     const db = getDb();
     if (args.confirm !== 'REBUILD MEMORY') {
       return {
-        text: 'rebuild requires confirm: "REBUILD MEMORY" (truncates classification columns and re-runs cycles)',
+        text: 'rebuild requires confirm: "REBUILD MEMORY" (truncates classification columns and re-runs summarization)',
         isError: true,
       };
     }
@@ -84,11 +78,10 @@ export function createRebuildAction({
     // and guarantees the newly demoted rows are read.
     const r1 = await startCycle1Run(config?.cycle1 || {}, { signal });
     throwIfAborted(signal);
-    const r2 = await runCycle2(db, config?.cycle2 || {}, withCycle2Llm({ signal }));
-    await finalizeCycle2Run(r2);
+    const embeddings = await flushSearchEmbeddings(db, { signal });
+    throwIfAborted(signal);
     return {
-      text: `rebuild: cycle1 chunks=${r1.chunks} processed=${r1.processed}, cycle2 ${JSON.stringify(r2)}`,
-      isError: r2.ok === false,
+      text: `rebuild: cycle1 chunks=${r1.chunks} processed=${r1.processed}, embeddings=${embeddings.succeeded}`,
     };
   };
 }

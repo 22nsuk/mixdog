@@ -154,14 +154,12 @@ export function createManageActions({ getDb, log }) {
       await db.transaction(async (tx) => {
         // Editing either side invalidates the duplicate equivalence, not
         // the original chunks or their lineage.
-        await tx.query(`UPDATE entries SET duplicate_of = NULL, cycle2_reviewed_at = NULL WHERE duplicate_of = $1`, [
-          id,
-        ]);
+        await tx.query(`UPDATE entries SET duplicate_of = NULL WHERE duplicate_of = $1`, [id]);
         await tx.query(
           `
               UPDATE entries
               SET element = $1, summary = $2, category = $3, score = $4,
-                  last_seen_at = $5, content = $6, cycle2_reviewed_at = NULL, duplicate_of = NULL
+                  last_seen_at = $5, content = $6, duplicate_of = NULL
               WHERE id = $7
             `,
           [finalElement, finalSummary, finalCategory, score, nowMs, composedContent, id]

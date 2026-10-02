@@ -9,7 +9,7 @@ import { getDatabase, embeddingToSql } from './memory.mjs';
 import { VALID_CATEGORY } from './memory-categories.mjs';
 import { cachedEmbedTextBatch } from './memory-embed.mjs';
 import { checkedConnect } from './pg/adapter.mjs';
-import { throwIfAborted } from './memory-cycle2-shared.mjs';
+import { throwIfAborted } from './memory-cycle-shared.mjs';
 import { findCoreKeyRows } from './core-memory-uniqueness.mjs';
 
 const CORE_ELEMENT_DERIVE_LENGTH = 40;

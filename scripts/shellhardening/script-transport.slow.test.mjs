@@ -64,7 +64,7 @@ test('generic oversized PowerShell commands use a safe whole-script transport', 
 });
 
 test('Windows executes an oversized PowerShell body with non-ASCII text', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
 }, async () => {
   const command = `# ${'패딩'.repeat(9000)}\nWrite-Output '장문-전송-정상'`;
   const result = normalizeToolEnvelope(await executeBashTool({ command, timeout_ms: 10_000 }, process.cwd()));
@@ -73,7 +73,7 @@ test('Windows executes an oversized PowerShell body with non-ASCII text', {
 });
 
 test('Windows executes oversized node inline bodies through a script file', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
 }, async () => {
   const body = `const slash = "\\\\"; /*${'x'.repeat(35_000)}*/ console.log("long-inline-ok")`;
   const result = normalizeToolEnvelope(
@@ -106,7 +106,7 @@ test('PowerShell filter plan leaves pipelines nested in a group unwrapped', () =
 });
 
 test('Windows fresh pwsh spawn reports parse errors in UTF-8 and keeps exit codes', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
 }, async () => {
   const previous = process.env.MIXDOG_SHELL_WARM_STANDBY;
   process.env.MIXDOG_SHELL_WARM_STANDBY = '0';
@@ -126,7 +126,7 @@ test('Windows fresh pwsh spawn reports parse errors in UTF-8 and keeps exit code
 });
 
 test('Windows runs a grouped PowerShell pipeline as written', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
 }, async () => {
   const command = "$t = 'private int Alpha; internal void Beta('; ([regex]::Matches($t,'(\\w+)\\s*(?:\\(|;)') | % { $_.Groups[1].Value }) -join ','";
   const result = normalizeToolEnvelope(await executeBashTool({ command, timeout_ms: 10_000 }, process.cwd()));

@@ -292,7 +292,7 @@ export async function clearSessionMessages(sessionId, options = {}) {
   await saveSessionAsync(session, { expectedGeneration: session.generation });
   return session;
 }
-export async function compactSessionMessages(sessionId) {
+export async function compactSessionMessages(sessionId, options = {}) {
   const session = loadSession(sessionId);
   if (!session) return null;
   if (session.closed === true) return null;
@@ -308,8 +308,11 @@ export async function compactSessionMessages(sessionId) {
     provider: getProvider(session.provider),
     sessionId,
     signal: getSessionAbortSignal(sessionId),
+    requireReduction: options.requireReduction === true,
+    onStageChange: options.onStageChange,
   });
   if (!result) return null;
+  if (result.skipped) return result;
   const now = Date.now();
   if (!result.error) {
     session.lastInputTokens = 0;

@@ -7,7 +7,7 @@ import test from 'node:test';
 import { createAgentJobFeed } from './agent-job-feed.mjs';
 import { notificationQueueKey, resolveTuiRuntimeNotificationDelivery } from './notification-plan.mjs';
 import { parseAgentJob } from './agent-envelope.mjs';
-import { sleep } from '../../runtime/shared/sleep.mjs';
+import { waitUntil } from '../../runtime/shared/wait-until.test-support.mjs';
 import { _clearDeliveredCompletions } from '../../runtime/agent/orchestrator/session/manager/delivered-completions.mjs';
 import { renderAgentCompletionEnvelope } from '../../runtime/shared/task-notification-envelope.mjs';
 
@@ -242,7 +242,7 @@ test('an execution completion pushes one response card, enqueues the model-visib
   assert.equal(h.named('enqueue').length, 1, 'the delivered completion is not enqueued twice');
   assert.equal(again.modelVisibleDelivered, true, 'the duplicate is still acked so the runtime does not mirror it');
 
-  await sleep(40);
+  await waitUntil(() => h.sets.length > 0, { message: 'coalesced status refresh' });
   assert.deepEqual(h.sets.at(-1), { agentStatus: 'forced' }, 'a terminal status forces one coalesced refresh');
 });
 
@@ -265,7 +265,7 @@ test('a status-only completion only refreshes the agent status', async () => {
   assert.equal(h.notify(event), true);
   assert.deepEqual(h.named('pushResponse'), []);
   assert.deepEqual(h.named('enqueue'), []);
-  await sleep(40);
+  await waitUntil(() => h.sets.length > 0, { message: 'status refresh' });
   assert.deepEqual(h.sets, [{ agentStatus: 'forced' }]);
 });
 
@@ -278,7 +278,7 @@ test('image notifications resolve before enqueue and later text notifications qu
   assert.equal(h.notify(first), true);
   assert.equal(h.notify({ content: 'second' }), true);
   assert.deepEqual(h.named('enqueue'), [], 'both wait on the FIFO chain');
-  await sleep(20);
+  await waitUntil(() => h.named('enqueue').length >= 2, { message: 'image chain drained' });
   assert.deepEqual(
     h.named('enqueue').map((entry) => entry[1]),
     ['first', 'second']

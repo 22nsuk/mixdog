@@ -26,7 +26,7 @@ const cases = [
 
 for (const [index, fixture] of cases.entries()) {
   test(`Windows ACL principal selection handles ${fixture.name}`, {
-    skip: process.platform !== 'win32',
+    skip: process.platform !== 'win32' && 'Windows only',
   }, async (t) => {
     const root = await mkdtemp(join(tmpdir(), 'mixdog-acl-principal-'));
     const path = join(root, 'secret');

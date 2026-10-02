@@ -5,12 +5,20 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 
 import { createGoalRuntime } from '../runtime/agent/orchestrator/runtime-core/goal-runtime.mjs';
+import { waitUntil } from '../runtime/shared/wait-until.test-support.mjs';
 
 const HOUR_MS = 60 * 60 * 1000;
 const MINUTE_MS = 60 * 1000;
 // Delivery joins the runtime's mutation queue and writes the record, so the
-// durable warning lands a turn later than the read that crossed it.
-const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
+// durable warning lands a turn later than the read that crossed it. A warning
+// that SHOULD land is awaited with delivered(); drained() only proves that none
+// more is coming: the queue and the injected writer below are microtask-only
+// and synchronous, so one setImmediate turn runs everything already accepted.
+const delivered = (runtime, sessionId, revision) =>
+  waitUntil(() => runtime.snapshot(sessionId).warningRevision === revision, {
+    message: `warning revision ${revision}` ,
+  });
+const drained = () => new Promise((resolve) => setImmediate(resolve));
 const warningRevisions = (events) =>
   events.map((event) => Number(event?.goal?.warningRevision) || 0).filter((revision) => revision > 0);
 
@@ -38,8 +46,7 @@ test('a requested duration warns once at each threshold before the budget stop',
     // Inside the ten-minute window: one warning, carrying the live remaining
     // time the session needs to phrase its reminder.
     clock += HOUR_MS - 9 * MINUTE_MS;
-    runtime.snapshot('sess_goal_warning');
-    await settle();
+    await delivered(runtime, 'sess_goal_warning', 1);
     const tenMinute = runtime.snapshot('sess_goal_warning');
     assert.equal(tenMinute.warningRevision, 1);
     assert.equal(tenMinute.status, 'active');
@@ -47,15 +54,13 @@ test('a requested duration warns once at each threshold before the budget stop',
 
     // Crossing the five-minute threshold warns exactly once more.
     clock += 5 * MINUTE_MS;
-    runtime.snapshot('sess_goal_warning');
-    await settle();
-    assert.equal(runtime.snapshot('sess_goal_warning').warningRevision, 2);
+    await delivered(runtime, 'sess_goal_warning', 2);
 
     // Repeated reads inside the same window never re-warn.
     for (let index = 0; index < 3; index += 1) {
       clock += MINUTE_MS;
       runtime.snapshot('sess_goal_warning');
-      await settle();
+      await drained();
     }
     assert.equal(runtime.snapshot('sess_goal_warning').warningRevision, 2);
     assert.deepEqual(warningRevisions(events), [1, 2]);
@@ -63,8 +68,9 @@ test('a requested duration warns once at each threshold before the budget stop',
     // The hard stop still lands on the requested boundary.
     clock += 5 * MINUTE_MS;
     assert.equal(runtime.snapshot('sess_goal_warning').status, 'duration_reached');
-    await settle();
-    const stored = JSON.parse(readFileSync(join(dataDir, 'goals', 'sess_goal_warning.json'), 'utf8')).goal;
+    const readStored = () => JSON.parse(readFileSync(join(dataDir, 'goals', 'sess_goal_warning.json'), 'utf8')).goal;
+    await waitUntil(() => readStored().status === 'duration_reached', { message: 'hard stop persisted' });
+    const stored = readStored();
     assert.equal(stored.status, 'duration_reached');
     assert.equal(stored.warningRevision, 2);
   } finally {
@@ -85,12 +91,10 @@ test('a Goal already inside a window at resume warns once at the most urgent thr
     });
     // Four minutes left with no warning ever delivered: one reminder, not two.
     clock += HOUR_MS - 4 * MINUTE_MS;
-    runtime.snapshot('sess_goal_late');
-    await settle();
-    assert.equal(runtime.snapshot('sess_goal_late').warningRevision, 1);
+    await delivered(runtime, 'sess_goal_late', 1);
     clock += MINUTE_MS;
     runtime.snapshot('sess_goal_late');
-    await settle();
+    await drained();
     assert.equal(runtime.snapshot('sess_goal_late').warningRevision, 1);
   } finally {
     runtime.close();
@@ -110,9 +114,7 @@ for (const action of ['time', 'edit']) {
         timeLimitMs: HOUR_MS,
       });
       clock += HOUR_MS - 9 * MINUTE_MS;
-      runtime.snapshot('sess_goal_extend');
-      await settle();
-      assert.equal(runtime.snapshot('sess_goal_extend').warningRevision, 1);
+      await delivered(runtime, 'sess_goal_extend', 1);
 
       const extended = await runtime.control('sess_goal_extend', {
         action,
@@ -122,9 +124,7 @@ for (const action of ['time', 'edit']) {
       assert.equal(extended.goal.timeLimitMs, 3 * HOUR_MS);
       assert.equal(extended.goal.status, 'active');
       clock += 3 * HOUR_MS - extended.goal.timeUsedMs - 9 * MINUTE_MS;
-      runtime.snapshot('sess_goal_extend');
-      await settle();
-      assert.equal(runtime.snapshot('sess_goal_extend').warningRevision, 2);
+      await delivered(runtime, 'sess_goal_extend', 2);
     } finally {
       runtime.close();
       rmSync(dataDir, { recursive: true, force: true });
@@ -143,14 +143,13 @@ test('objective-only edits do not repeat an already delivered deadline warning',
       timeLimitMs: HOUR_MS,
     });
     clock += HOUR_MS - 9 * MINUTE_MS;
-    runtime.snapshot('sess_goal_edit');
-    await settle();
+    await delivered(runtime, 'sess_goal_edit', 1);
     await runtime.control('sess_goal_edit', {
       action: 'edit',
       objective: 'Clarify the objective',
       timeLimitMs: HOUR_MS,
     });
-    await settle();
+    await drained();
     assert.equal(runtime.snapshot('sess_goal_edit').warningRevision, 1);
   } finally {
     runtime.close();
@@ -171,7 +170,7 @@ test('a paused or completed Goal never warns about a budget it is not spending',
     clock += HOUR_MS - 9 * MINUTE_MS;
     await runtime.control('sess_goal_paused', { action: 'pause' });
     runtime.snapshot('sess_goal_paused');
-    await settle();
+    await drained();
     assert.equal(runtime.snapshot('sess_goal_paused').warningRevision, 0);
     assert.equal(runtime.snapshot('sess_goal_paused').status, 'paused');
   } finally {

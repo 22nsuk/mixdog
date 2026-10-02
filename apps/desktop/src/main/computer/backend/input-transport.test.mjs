@@ -5,7 +5,7 @@ import { MIXDOG_INPUT_TRANSPORT_CSHARP } from './native-source.ts';
 import { ABORT_CLEANUP_PROGRAM } from './program.ts';
 
 test('checked input releases only partial held input and acknowledges every cleanup failure', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
   timeout: 30000,
 }, async () => {
   const fixture =

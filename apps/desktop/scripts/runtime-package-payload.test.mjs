@@ -44,9 +44,15 @@ test('runtime payload copies published files and drops editor-only Office artifa
   );
 });
 
-test('FastDirect code staging emits an atomic runtime tree with dependency identity', async (context) => {
+test('FastDirect replaces stale runtime files and emits the new dependency identity', async (context) => {
   const { root, manifest } = await fixture(context);
   const destination = join(root, 'fast-runtime-code');
+  const retired = ['src/rules/agent/41-cycle2-agent.md', 'src/runtime/memory/lib/memory-cycle2.mjs'];
+  for (const relative of retired) {
+    const target = join(destination, 'node_modules', 'mixdog', relative);
+    await mkdir(join(target, '..'), { recursive: true });
+    await writeFile(target, 'retired runtime content');
+  }
   await prepareFastRuntimeCode({
     manifest,
     dependencyHash: 'dependencies-v1',
@@ -67,4 +73,7 @@ test('FastDirect code staging emits an atomic runtime tree with dependency ident
     await readFile(join(destination, 'node_modules', 'mixdog', 'src', 'entry.mjs'), 'utf8'),
     'export const ready = true;'
   );
+  for (const relative of retired) {
+    await assert.rejects(access(join(destination, 'node_modules', 'mixdog', relative)), { code: 'ENOENT' });
+  }
 });

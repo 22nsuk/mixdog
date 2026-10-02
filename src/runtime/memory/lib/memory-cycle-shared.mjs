@@ -1,6 +1,4 @@
-// Shared low-level helpers for the cycle2 cluster: logging, cancellation,
-// concurrency and store faults.
-// No cycle2 business logic; safe to import from any cycle2 sub-module.
+// Shared memory helpers: logging, cancellation, concurrency and store faults.
 
 import { __mixdogMemoryLog } from './memory-log.mjs';
 export { __mixdogMemoryLog };
@@ -9,8 +7,13 @@ export function throwIfAborted(signal) {
   if (signal?.aborted) throw signal.reason ?? new Error('aborted');
 }
 
-// Tiny inline semaphore — bounds cycle fan-out (cycle1 windows, cycle2 review
-// packets). One implementation so the two concurrency caps cannot drift.
+export function parseInterval(value) {
+  const match = /^(\d+(?:\.\d+)?)\s*(ms|s|m|h|d)$/.exec(String(value).trim());
+  if (!match) throw new Error(`[memory-cycle] invalid interval config: ${value}`);
+  return Number(match[1]) * { ms: 1, s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 }[match[2]];
+}
+
+// Bounds concurrent summarization windows.
 export function createSemaphore(limit) {
   const cap = Math.max(1, Number(limit) || 1);
   let active = 0;
@@ -31,12 +34,11 @@ export function createSemaphore(limit) {
   };
 }
 
-// Two error classes travel through the cycle2 apply paths and must never be
-// confused:
+// Store failures must not be confused with rejected or cancelled work:
 //   * STORE FAULT — the database itself failed the write (transaction rolled
-//     back, or its COMMIT outcome is unknown). Nothing about the verdict was
-//     wrong, and the store's state is no longer known, so the run stops.
-//   * verdict rejection — a guard refused the mutation (stale snapshot, status
+//     back, or its COMMIT outcome is unknown). The store's state is no longer
+//     known, so the run stops.
+//   * rejection — a guard refused the mutation (stale snapshot, status
 //     moved, content changed). The store is healthy;
 //     these return normally and are counted as ordinary rejections/errors.
 // Only writers raise store faults, via markStoreFault; callers branch on
@@ -49,12 +51,8 @@ export function createSemaphore(limit) {
 // reclassified because of how its text happens to read, and a store fault keeps
 // the original message verbatim so logs stay honest.
 //
-// Boundaries this signal actually crosses: none that serialize. The writer
-// (applyHistoryReview) throws and the cycle2 apply loop catches it in the
-// same process, same module registry, same
-// tick. runCycle2 converts it at its own boundary into a plain
-// { ok: false, error: <string>, storeFault: <boolean> } result, so the explicit
-// boolean — not a re-parsed Error — is what any IPC/worker hop carries onward.
+// Embedding writers use this classification to retain ambiguous commit and
+// rollback failures without disguising them as an empty successful flush.
 export const MEMORY_STORE_FAULT_CODE = 'MEMORY_STORE_FAULT';
 
 export class MemoryStoreFault extends Error {

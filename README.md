@@ -487,11 +487,16 @@ npm install
 npm run dev
 ```
 
-Desktop development uses a fresh, isolated test profile on each launch, including
-its data, daemon and tool connections. It does not copy the installed app's
-settings or sign-ins. The profile path is printed and retained in the system
-temporary directory for diagnosis. CDP uses port `9342`; if it is occupied, reuse
-the running test app or choose another port with `npm run dev -- --port 9343`.
+Desktop development runs in an isolated dev profile, including its own data,
+daemon and tool connections. It never reads or changes the installed app's
+settings, sign-ins or sessions. `npm run dev` keeps one profile
+(`%LOCALAPPDATA%\mixdog-dev\default` on Windows, `~/.mixdog-dev/default`
+elsewhere), so settings, sign-ins and sessions made in the dev app survive
+restarts; select another kept profile with `npm run dev -- --profile <name>`.
+`npm run dev:fresh` starts from an empty throwaway profile, retained in the
+system temporary directory for diagnosis. CDP uses port `9342`; if it is
+occupied, reuse the running dev app or choose another port with
+`npm run dev -- --port 9343`.
 On Windows, `npm run e2e:direct` and `npm run e2e:direct:source` also use isolated
 profiles and port `9342` (override with `-- -Port 9343`).
 

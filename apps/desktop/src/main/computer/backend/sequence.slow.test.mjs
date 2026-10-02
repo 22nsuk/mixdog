@@ -9,7 +9,7 @@ import { runComputerProbe } from '../host/fixtures/probe-runner.mjs';
 import { DEFAULT_CAPTURE_AFTER_DELAY_MS } from '../shared/common.ts';
 
 test('native step batching preserves guard order, post-input settling and failure without replay', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
   timeout: 200_000,
 }, async () => {
   const payload = await runComputerProbe(`
@@ -75,7 +75,7 @@ exit 0
 });
 
 test('resident backend phase measurements compare legacy and batched passive steps without touching input', {
-  skip: process.platform !== 'win32',
+  skip: process.platform !== 'win32' && 'Windows only',
   timeout: 120_000,
 }, async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'mixdog-sequence-timing-'));
