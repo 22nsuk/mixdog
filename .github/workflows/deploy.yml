@@ -65,6 +65,7 @@ jobs:
           test "$GITHUB_REF_NAME" = "$DEFAULT_BRANCH"
           git fetch --tags --force origin
           test "$(git rev-parse HEAD)" = "$(git rev-parse "origin/${DEFAULT_BRANCH}")"
+          npm ci --ignore-scripts --no-audit --no-fund
           node --test scripts/release-gate-test.mjs
 
       # A release ships only a commit the gate did not reject. The gate starts
