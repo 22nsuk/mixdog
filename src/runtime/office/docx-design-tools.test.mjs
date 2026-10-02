@@ -176,7 +176,11 @@ test('a document written to a brief reports unfounded figures and takes the scor
       { cwd }
     )
   );
-  assert.equal(finalized.finalized, true, JSON.stringify(finalized.reason || finalized.blockingIssues || ''));
+  assert.equal(
+    finalized.finalized,
+    true,
+    JSON.stringify({ reason: finalized.reason, blockingIssues: finalized.blockingIssues })
+  );
 });
 
 test('the review reads a stat strip label at display size and an unmarked total row', async (t) => {

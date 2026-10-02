@@ -3,7 +3,7 @@
 // full run alive and the flag errors that must stay flag errors.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
@@ -170,9 +170,11 @@ test('explicit runs keep exact paths/globs, slow/live files, heap flags and prel
   ]);
   assert.equal(result.status, 0, result.stdout + result.stderr);
   const selected = (await readFile(join(cwd, 'selected.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+  // Module URLs carry the resolved path (macOS tmpdir /var is /private/var).
+  const root = await realpath(cwd);
   assert.deepEqual(
     selected.map((url) => fileURLToPath(url)).sort(),
-    [join(cwd, 'chosen/a.slow.test.mjs'), join(cwd, 'chosen/b.live.test.mjs'), join(cwd, 'exact.test.mjs')].sort()
+    [join(root, 'chosen/a.slow.test.mjs'), join(root, 'chosen/b.live.test.mjs'), join(root, 'exact.test.mjs')].sort()
   );
 });
 
