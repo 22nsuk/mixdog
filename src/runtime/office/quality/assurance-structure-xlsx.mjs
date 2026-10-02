@@ -286,6 +286,52 @@ function reviewXlsxDrawingCover(sheet, cells, drawings, issues) {
   }
 }
 
+const isFigure = (cell) => typeof cell?.value === 'number' && cell.dataType !== 'text';
+
+// A total row reads as a total only when it is set apart from the rows it sums: its label is bold (the report recipe
+// sets the whole row bold over a rule).
+function reviewXlsxTotalRows(sheet, cells, totals, issues) {
+  for (const row of totals) {
+    const label = cells.find(
+      (cell) =>
+        cellRow(cell.ref) === row &&
+        /^(?:grand\s+total|sub\s*total|total|합계|총계|소계)/i.test(String(cell.value || '').trim())
+    );
+    if (!label || cells.some((cell) => cellRow(cell.ref) === row && cell.style?.bold === true)) continue;
+    issues.push(
+      issue(
+        'total_row_unmarked',
+        `/sheet[${sheet.name}]/cell[${label.ref}]`,
+        `The "${String(label.value).trim()}" row is set like the rows it sums; set it bold with a rule above (set_style bold, borders.top).`
+      )
+    );
+  }
+}
+
+// A column of figures stands on its right edge; a bold header over it set left (Excel's default for text) reads as
+// belonging to the column beside it — "월" over 2026-06 sat a column-width away from its dates.
+function reviewXlsxHeaderAlignment(sheet, cells, issues) {
+  const byRef = new Map(cells.map((cell) => [cell.ref, cell]));
+  for (const header of cells) {
+    if (header.style?.bold !== true || typeof header.value !== 'string' || !header.value.trim()) continue;
+    const match = /^([A-Z]+)(\d+)$/.exec(header.ref);
+    if (!match) continue;
+    const below = [1, 2].map((offset) => byRef.get(`${match[1]}${Number(match[2]) + offset}`));
+    if (!below.every(isFigure)) continue;
+    const figureAlignment = below.map((cell) => cell.style?.horizontalAlignment || 'general');
+    if (figureAlignment.some((alignment) => !['general', 'right'].includes(alignment))) continue;
+    const alignment = header.style?.horizontalAlignment || 'general';
+    if (alignment === 'right') continue;
+    issues.push(
+      issue(
+        'header_alignment_mismatch',
+        `/sheet[${sheet.name}]/cell[${header.ref}]`,
+        `Header "${header.value.trim().slice(0, 20)}" is set ${alignment === 'general' ? 'left' : alignment} over a column of figures set right; align it right (set_style horizontalAlignment:'right').`
+      )
+    );
+  }
+}
+
 export function reviewXlsxStructure(document, auditProfile = '') {
   const issues = [];
   const sheets = Array.isArray(document?.sheets) ? document.sheets : [];
@@ -295,7 +341,10 @@ export function reviewXlsxStructure(document, auditProfile = '') {
     const drawings = sheetDrawings(sheet);
     reviewXlsxHierarchy(sheet, cells, issues, document?.defaultStyle);
     reviewXlsxFormulaErrors(sheet, cells, issues);
-    reviewXlsxChartRanges(sheet, cells, xlsxTotalRows(cells), issues);
+    const totals = xlsxTotalRows(cells);
+    reviewXlsxChartRanges(sheet, cells, totals, issues);
+    reviewXlsxTotalRows(sheet, cells, totals, issues);
+    reviewXlsxHeaderAlignment(sheet, cells, issues);
     reviewXlsxPrintFit(sheet, pageSetup, issues);
     reviewXlsxPrintArea(sheet, pageSetup, drawings, issues);
     reviewXlsxDrawingOverlap(sheet, drawings, issues);

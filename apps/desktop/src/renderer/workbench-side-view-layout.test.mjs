@@ -5,6 +5,7 @@ import { createRoot } from 'react-dom/client';
 import { installTestDom } from './test-support/test-dom.mjs';
 import {
   WorkbenchSideIconBar,
+  WorkbenchSidePanel,
   discardLayoutForPaneBoundRight,
   initialActiveWorkbenchSideViews,
   moveWorkbenchSideGroup,
@@ -17,6 +18,124 @@ import {
   workbenchSidePaneDropIsNoop,
   workbenchSidePaneDropSlot,
 } from './workbench-side-view-layout.tsx';
+
+test('switching side groups preserves mounted controls, drafts and scroll positions', async (t) => {
+  const { root, document } = installTestDom(t, { rootId: 'root', expose: ['HTMLElement'] });
+  const mounts = new Map();
+  const activity = new Map();
+  function View({ id, active }) {
+    const [count, setCount] = React.useState(0);
+    React.useEffect(() => {
+      mounts.set(id, (mounts.get(id) ?? 0) + 1);
+    }, []);
+    React.useLayoutEffect(() => {
+      activity.set(id, active);
+    }, [active, id]);
+    return React.createElement(
+      'div',
+      { 'data-view': id },
+      React.createElement('input', { defaultValue: '' }),
+      React.createElement('button', { onClick: () => setCount((value) => value + 1) }, String(count))
+    );
+  }
+  const groups = [['sessions', 'projects'], ['agents']];
+  const descriptors = new Map(groups.flat().map((id) => [id, { id, label: id, icon: () => null }]));
+  const render = (activeRoot, open = true, currentGroups = groups) =>
+    root.render(
+      React.createElement(WorkbenchSidePanel, {
+        side: 'left',
+        open,
+        embedded: true,
+        groups: currentGroups,
+        activeRoot,
+        descriptors,
+        onSelect() {},
+        onMoveGroup() {},
+        onMoveView() {},
+        renderView: (id, active) => React.createElement(View, { id, active }),
+      })
+    );
+  await act(async () => render('sessions'));
+  const session = document.querySelector('[data-view="sessions"]');
+  const project = document.querySelector('[data-view="projects"]');
+  const input = session.querySelector('input');
+  input.value = 'unfinished draft';
+  session.scrollTop = 47;
+  await act(async () => session.querySelector('button').click());
+  assert.equal(session.querySelector('button').textContent, '1');
+
+  await act(async () => render('agents'));
+  const agent = document.querySelector('[data-view="agents"]');
+  assert.equal(document.querySelector('[data-view="sessions"]'), session);
+  assert.equal(document.querySelector('[data-view="projects"]'), project);
+  assert.equal(activity.get('sessions'), false);
+  assert.equal(activity.get('agents'), true);
+  assert.equal(session.closest('.workbench-side-panel-body').hidden, true);
+  assert.equal(session.closest('.workbench-side-panel-body').getAttribute('aria-hidden'), 'true');
+
+  await act(async () => render('sessions'));
+  assert.equal(document.querySelector('[data-view="sessions"]'), session);
+  assert.equal(document.querySelector('[data-view="agents"]'), agent);
+  assert.equal(session.querySelector('input'), input);
+  assert.equal(input.value, 'unfinished draft');
+  assert.equal(session.scrollTop, 47);
+  assert.equal(session.querySelector('button').textContent, '1');
+  assert.equal(session.closest('.workbench-side-panel-body').hidden, false);
+  assert.equal(activity.get('sessions'), true);
+  assert.equal(activity.get('agents'), false);
+  assert.deepEqual(Object.fromEntries(mounts), { sessions: 1, projects: 1, agents: 1 });
+  const sashes = session.closest('.workbench-side-panel-body').querySelectorAll('[role="separator"]');
+  assert.equal(sashes.length, 1);
+
+  await act(async () => render('sessions', false));
+  assert.equal(activity.get('sessions'), false);
+  assert.equal(document.querySelector('[data-view="sessions"]'), session);
+  await act(async () => render('sessions', true, [['sessions', 'projects']]));
+  assert.equal(document.querySelector('[data-view="agents"]'), null);
+  assert.equal(document.querySelector('[data-view="sessions"]'), session);
+});
+
+test('unchanged side views skip rendering while their drag handles stay current', async (t) => {
+  const { root, document, window } = installTestDom(t, { rootId: 'root' });
+  let renders = 0;
+  const View = React.memo(({ titleDragProps }) => {
+    renders++;
+    return React.createElement('span', { ...titleDragProps, 'data-drag-test': true }, 'Title');
+  });
+  const props = {
+    open: true,
+    embedded: true,
+    groups: [['sessions']],
+    activeRoot: 'sessions',
+    descriptors: new Map([['sessions', { id: 'sessions', label: 'Sessions', icon: () => null }]]),
+    onSelect() {},
+    onMoveGroup() {},
+    onMoveView() {},
+    renderView: (_id, _active, titleDragProps) => React.createElement(View, { titleDragProps }),
+  };
+  const render = (side = 'left') =>
+    act(async () => root.render(React.createElement(WorkbenchSidePanel, { ...props, side })));
+  await render();
+  const before = renders;
+  for (let index = 0; index < 5; index++) await render();
+  assert.equal(renders, before);
+  const transfers = [];
+  const drag = async () =>
+    act(async () => {
+      const event = new window.Event('dragstart', { bubbles: true });
+      Object.defineProperty(event, 'dataTransfer', {
+        value: { setData: (type, value) => transfers.push([type, value]), setDragImage() {} },
+      });
+      document.querySelector('[data-drag-test]').dispatchEvent(event);
+    });
+  await drag();
+  assert.ok(transfers.some(([type, value]) => type === 'text/plain' && value === 'sessions'));
+  await render('right');
+  assert.equal(document.querySelector('[data-drag-test]').draggable, false);
+  transfers.length = 0;
+  await drag();
+  assert.equal(transfers.length, 0, 'a pane-bound right view must not keep the old draggable closure');
+});
 
 test('a persisted layout restores its sides and re-seats newly available views', () => {
   // Exactly what the hook does on boot: read the stored JSON, then normalize

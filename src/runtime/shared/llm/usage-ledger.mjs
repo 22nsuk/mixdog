@@ -11,7 +11,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { resolvePluginData } from '../plugin-paths.mjs';
 import { usageRollupDayKey, isConversationUsageSource, num } from './usage-rollup.mjs';
 import { priceUsage } from './cost.mjs';
-import { rollupUsage } from './usage-ledger-rollup.mjs';
+import { readSessionUsage, rollupUsage } from './usage-ledger-rollup.mjs';
 import { QUOTA_SCHEMA, readQuotaHistory, readQuotaWindows, recordQuotaSamples } from './usage-ledger-quota.mjs';
 import { SHARE_ENV } from 'node:worker_threads';
 import { createWorkerRequestClient } from '../worker-requests.mjs';
@@ -67,6 +67,9 @@ const COMPACT_SCHEMA = `
     -- table made a week of real records take ~400 ms instead of ~100 ms.
     CREATE INDEX IF NOT EXISTS usage_events_time_usage ON usage_events(
         ts,route,day,session,input,output,cache_read,cache_write,cost_usd,duration_ms);
+    -- One session's lifetime totals (the /context footer) read that session's
+    -- records only instead of scanning every record ever written.
+    CREATE INDEX IF NOT EXISTS usage_events_session ON usage_events(session);
 `;
 
 // Preserve the old read surface. Only storage changes: every field, including
@@ -540,6 +543,12 @@ export class UsageLedger {
   quotaWindowsAsync(options) {
     if (this.path === ':memory:') return Promise.resolve().then(() => readQuotaWindows(this.db, options));
     return this.workerRequest('quotaWindows', { options });
+  }
+
+  /** Every request one session made under any of its ids, compactions included, read on the ledger worker. */
+  sessionUsageAsync(sessionIds) {
+    if (this.path === ':memory:') return Promise.resolve().then(() => readSessionUsage(this.db, sessionIds));
+    return this.workerRequest('sessionUsage', { sessionIds });
   }
 
   preserveLegacyDays(days) {

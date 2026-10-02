@@ -1,15 +1,11 @@
-/** The two screenshot engines behind the browser screenshot service: CDP's
- *  `Page.captureScreenshot`, and Electron's `capturePage` on the guest, which
- *  a full-page request can only use with a resized background window. */
-import type { Rectangle, WebContents } from 'electron';
-import { BrowserWindow, nativeImage } from 'electron';
+/** Viewport capture engines; full documents are assembled from painted tiles. */
+import type { WebContents } from 'electron';
+import { nativeImage } from 'electron';
 
 import type { BrowserCdpPort } from './cdp';
-import { pause } from './settle';
 import { validatedScreenshot } from './screenshot-image';
 import {
   browserScreenshotBytesFitBudget,
-  scaledScreenshotRect,
   type BrowserScreenshotOptions,
   type BrowserScreenshotRect,
 } from './screenshot-policy';
@@ -43,7 +39,7 @@ export function encodeImage(
 
 /** A failed rollback is terminal: a different capture engine cannot repair it. */
 export class BrowserScreenshotRestoreError extends AggregateError {
-  constructor(surface: 'viewport' | 'layout', failures: unknown[]) {
+  constructor(surface: 'viewport' | 'layout' | 'scroll', failures: unknown[]) {
     super(
       failures,
       `full-page screenshot ${surface} restoration failed; ` +
@@ -53,44 +49,28 @@ export class BrowserScreenshotRestoreError extends AggregateError {
   }
 }
 
-function coversRect(capture: BrowserScreenshotCapture | null, rect?: Rectangle): boolean {
-  return Boolean(capture && (!rect || (capture.width >= rect.width && capture.height >= rect.height)));
-}
-
 export async function captureViaCdp(
   cdp: BrowserCdpPort,
   slow: { timeoutMs: number },
   guest: WebContents,
   options: BrowserScreenshotOptions,
-  fullPageClip?: Rectangle,
   signal?: AbortSignal
 ): Promise<BrowserScreenshotCapture | null> {
-  const scale = fullPageClip ? guest.getZoomFactor() : 1;
-  const expectedRect = fullPageClip ? scaledScreenshotRect(fullPageClip, scale) : undefined;
   const shot = await cdp.call<{ data?: string }>(
     guest,
     'Page.captureScreenshot',
     {
       format: options.format,
       ...(options.format === 'jpeg' ? { quality: options.quality } : {}),
-      ...(fullPageClip
-        ? {
-            captureBeyondViewport: true,
-            clip: { ...fullPageClip, scale },
-          }
-        : {}),
     },
     signal,
     slow
   );
-  const capture = shot.data
-    ? validatedScreenshot(shot.data, options, (bytes) => nativeImage.createFromBuffer(bytes))
-    : null;
-  return coversRect(capture, expectedRect) ? capture : null;
+  return shot.data ? validatedScreenshot(shot.data, options, (bytes) => nativeImage.createFromBuffer(bytes)) : null;
 }
 
 /** `capturePage` bounded by a timeout and the caller's abort signal. */
-async function racedCapturePage(
+export async function captureViewportImage(
   guest: WebContents,
   timeoutMs: number,
   signal?: AbortSignal
@@ -114,51 +94,13 @@ async function racedCapturePage(
   });
 }
 
-export interface NativeCaptureTimeouts {
-  /** Ceiling for a resized full-page background capture. */
-  fullPageMs: number;
-  /** Ceiling for a plain viewport capture. */
-  viewportMs: number;
-}
-
 export async function captureViaNative(
   guest: WebContents,
   options: BrowserScreenshotOptions,
-  timeouts: NativeCaptureTimeouts,
-  fullPageClip?: Rectangle,
-  background = false,
+  timeoutMs: number,
   signal?: AbortSignal
 ): Promise<BrowserScreenshotCapture | null> {
-  if (fullPageClip && !background) return null;
-  const expectedRect = fullPageClip ? scaledScreenshotRect(fullPageClip, guest.getZoomFactor()) : undefined;
-  const owner = fullPageClip && background ? BrowserWindow.fromWebContents(guest) : null;
-  const originalSize = owner && !owner.isDestroyed() ? owner.getContentSize() : null;
-  const failures: unknown[] = [];
-  try {
-    if (owner && originalSize && expectedRect) {
-      owner.setContentSize(expectedRect.width, expectedRect.height);
-      await pause(50, signal);
-      try {
-        guest.invalidate();
-      } catch {
-        /* teardown can reject repaint */
-      }
-    }
-    signal?.throwIfAborted();
-    const image = await racedCapturePage(guest, fullPageClip ? timeouts.fullPageMs : timeouts.viewportMs, signal);
-    const capture = encodeImage(image, options);
-    return coversRect(capture, expectedRect) ? capture : null;
-  } catch (error) {
-    failures.push(error);
-    throw error;
-  } finally {
-    if (owner && originalSize && !owner.isDestroyed()) {
-      try {
-        owner.setContentSize(originalSize[0], originalSize[1]);
-      } catch (error) {
-        failures.push(error);
-        throw new BrowserScreenshotRestoreError('viewport', failures);
-      }
-    }
-  }
+  if (options.fullPage) return null;
+  signal?.throwIfAborted();
+  return encodeImage(await captureViewportImage(guest, timeoutMs, signal), options);
 }

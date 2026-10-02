@@ -41,9 +41,18 @@ function failure(error, startedAt) {
   };
 }
 
-export async function runPptxHtmlAuthoring(html, output, { target, signal = null }) {
+/** Whether the HTML is written as pages under the deck contract: one <section class="slide"> per page. */
+export function hasSlideSections(html) {
+  return /<section[^>]*class=["'][^"']*\bslide\b/i.test(String(html || ''));
+}
+
+/**
+ * @param {{ target: string, signal?: AbortSignal, prepare?: (page: object) => Promise<object> }} options
+ *   prepare: names the canvas on the loaded page (pptx-html-measure.mjs); the deck's 1920 × 1080 without it
+ */
+export async function runPptxHtmlAuthoring(html, output, { target, signal = null, prepare = null }) {
   const source = String(html || '');
-  if (!/<section[^>]*class=["'][^"']*\bslide\b/i.test(source)) {
+  if (!hasSlideSections(source)) {
     throw new Error('author html requires <section class="slide"> pages; see the pptx skill html reference.');
   }
   const startedAt = performance.now();
@@ -52,7 +61,12 @@ export async function runPptxHtmlAuthoring(html, output, { target, signal = null
   await rm(output, { force: true });
   let measure;
   try {
-    measure = await measureHtmlDeck(source, { sourcePath: artifacts.source, shotPath: artifacts.shot, signal });
+    measure = await measureHtmlDeck(source, {
+      sourcePath: artifacts.source,
+      shotPath: artifacts.shot,
+      signal,
+      prepare,
+    });
   } catch (error) {
     if (signal?.aborted) throw error;
     return failure(error, startedAt);
@@ -70,6 +84,7 @@ export async function runPptxHtmlAuthoring(html, output, { target, signal = null
     bytes: info.size,
     logs: measure.notes.map((text) => ({ level: 'warn', text })),
     kit: 'html',
+    slideCount: measure.slides.length,
     normalizedParagraphs: normalized.removed,
     htmlShots: measure.shots,
     htmlText: measure.slides.map((slide) => {

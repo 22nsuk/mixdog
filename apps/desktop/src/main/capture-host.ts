@@ -480,6 +480,12 @@ export class CaptureService implements DesktopService {
     };
   }
 
+  async readSessionFinalAnswer(): Promise<null> {
+    // Capture fixtures have no model turns; never turn their sample text
+    // into a real OS notification.
+    return null;
+  }
+
   async readCapabilities(
     requests: ReadonlyArray<DesktopCapabilityReadRequest>
   ): Promise<DesktopCapabilityReadResult[]> {

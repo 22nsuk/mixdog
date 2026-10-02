@@ -68,6 +68,19 @@ export function CodeDiff({ patch }: { patch: string }) {
   const [expanded, setExpanded] = useState(false);
   const lineCount = patch.split('\n').length;
   const files = useMemo(() => parseUnifiedDiff(patch), [patch]);
+  // Collapsing changes only the clipping wrapper. Recreating `data` here
+  // made the diff library discard and rebuild every parsed line on each
+  // toggle, even though the patch (and its copy/selection contents) was unchanged.
+  const diffViews = useMemo(
+    () =>
+      files.map((file, index) => (
+        <DiffView
+          key={index}
+          data={{ oldFile: file.oldFile, newFile: file.newFile, hunks: [file.renderPatch || file.patch] }}
+        />
+      )),
+    [files]
+  );
   const fallback = <pre className="diff-fallback">{patch}</pre>;
   return (
     <section className="code-diff">
@@ -114,9 +127,7 @@ export function CodeDiff({ patch }: { patch: string }) {
                       </div>
                     }
                   >
-                    <DiffView
-                      data={{ oldFile: file.oldFile, newFile: file.newFile, hunks: [file.renderPatch || file.patch] }}
-                    />
+                    {diffViews[index]}
                   </Suspense>
                 ) : (
                   <pre className="diff-fallback">{file.patch}</pre>

@@ -107,3 +107,104 @@ test('a valueless --import is a flag error, never an undefined spawn argument', 
   assert.match(result.stderr, /--import requires a value/);
   assert.doesNotMatch(result.stderr, /ERR_INVALID_ARG_TYPE/);
 });
+
+test('separate test batches share tools but retain their own session data', async (t) => {
+  const child = `
+    import assert from 'node:assert/strict';
+    import { appendFileSync, mkdtempSync } from 'node:fs';
+    import { tmpdir } from 'node:os';
+    import { join } from 'node:path';
+    import test from 'node:test';
+    test('private fixture', () => {
+      const data = mkdtempSync(join(tmpdir(), 'session-'));
+      const cache = process.env.MIXDOG_TEST_OOXML_CACHE_DIR;
+      assert.ok(cache);
+      appendFileSync('paths.jsonl', JSON.stringify({ data, cache }) + '\\n');
+    });
+  `;
+  const cwd = await fixture(t, { 'a.test.mjs': child, 'b.test.mjs': child });
+  const probe = `
+    const { runNodeTests } = await import(${JSON.stringify(runNodeTestsUrl)});
+    await runNodeTests(['--test'], ['a.test.mjs', 'b.test.mjs'], { argBudget: 1 });
+  `;
+  const result = runNode(cwd, ['--input-type=module', '--eval', probe]);
+  assert.equal(result.status, 0, result.stderr);
+  const rows = (await readFile(join(cwd, 'paths.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].cache, rows[1].cache);
+  assert.notEqual(rows[0].data, rows[1].data);
+  assert.notEqual(rows[0].cache, rows[0].data);
+});
+
+test('explicit runs keep exact paths/globs, slow/live files, heap flags and preloads', async (t) => {
+  const source = `
+    import assert from 'node:assert/strict';
+    import { appendFileSync } from 'node:fs';
+    import test from 'node:test';
+    test('selected case', () => {
+      assert.equal(globalThis.directPreload, true);
+      assert.ok(process.execArgv.includes('--max-old-space-size=128'));
+      assert.ok(process.env.MIXDOG_TEST_OOXML_CACHE_DIR);
+      appendFileSync('selected.jsonl', JSON.stringify(import.meta.url) + '\\n');
+    });
+    test('filtered case', () => assert.fail('name filter must be preserved'));
+  `;
+  const cwd = await fixture(t, {
+    'setup.mjs': 'globalThis.directPreload = true;',
+    'chosen/a.slow.test.mjs': source,
+    'chosen/b.live.test.mjs': source,
+    'exact.test.mjs': source,
+    'exact.test.mjs.extra.test.mjs': "throw new Error('not an exact path');",
+    'unselected.test.mjs': "throw new Error('must not discover other tests');",
+  });
+  const directPath = fileURLToPath(new URL('./test-direct.mjs', import.meta.url));
+  const result = runNode(cwd, [
+    '--max-old-space-size=128',
+    '--import',
+    './setup.mjs',
+    directPath,
+    '--test-name-pattern',
+    'selected case',
+    'chosen/*.test.mjs',
+    'exact.test.mjs',
+  ]);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const selected = (await readFile(join(cwd, 'selected.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.deepEqual(
+    selected.map((url) => fileURLToPath(url)).sort(),
+    [join(cwd, 'chosen/a.slow.test.mjs'), join(cwd, 'chosen/b.live.test.mjs'), join(cwd, 'exact.test.mjs')].sort()
+  );
+});
+
+for (const explicit of [false, true]) {
+  test(`explicit runs honor ${explicit ? 'a CLI override' : 'the shared concurrency budget'}`, async (t) => {
+    const source = `
+      import assert from 'node:assert/strict';
+      import { closeSync, openSync, unlinkSync } from 'node:fs';
+      import test from 'node:test';
+      import { setTimeout } from 'node:timers/promises';
+      test('exclusive fixture', async () => {
+        const fd = openSync('active.lock', 'wx');
+        try {
+          assert.ok(process.env.MIXDOG_TEST_OOXML_CACHE_DIR);
+          await setTimeout(100);
+        } finally { closeSync(fd); unlinkSync('active.lock'); }
+      });
+    `;
+    const cwd = await fixture(t, {
+      'a.test.mjs': source,
+      'b.test.mjs': source,
+      'budget.mjs': `process.env.MIXDOG_TEST_CONCURRENCY = '${explicit ? 4 : 1}';`,
+    });
+    const directPath = fileURLToPath(new URL('./test-direct.mjs', import.meta.url));
+    const result = runNode(cwd, [
+      '--import',
+      './budget.mjs',
+      directPath,
+      ...(explicit ? ['--test-concurrency', '1'] : []),
+      'a.test.mjs',
+      'b.test.mjs',
+    ]);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+  });
+}

@@ -12,6 +12,7 @@ import type { BrowserCommandTiming } from './timing';
 import { runBrowserLatencyScenarios } from './latency-scenarios';
 import { runBrowserActionabilityScenarios } from './actionability.integration';
 import { measureScreenshotReuse } from './screenshot-image.integration';
+import { runLiveBrowserRegressions } from './live-regressions.integration';
 import { runBrowserTaskLifecycleScenarios } from './task-lifecycle.integration';
 import { runBrowserPageReportScenarios } from './page-report.integration';
 import {
@@ -1321,7 +1322,20 @@ async function run(): Promise<void> {
       targetY: (225 * touchDragGrounding.imageHeight) / touchDragGrounding.viewportHeight,
       tab: 'beta',
     });
-    assert.match(touchDragged.text, /Touch dragged/);
+    assert.match(
+      touchDragged.text,
+      /Touch dragged/,
+      JSON.stringify({
+        response: touchDragged.text,
+        zoom: betaGuest.getZoomFactor(),
+        metrics: await betaGuest.debugger.sendCommand('Page.getLayoutMetrics'),
+        viewport: await betaGuest.executeJavaScript(`({
+        width:innerWidth,height:innerHeight,dpr:devicePixelRatio,
+        visual: {width:visualViewport.width,height:visualViewport.height,
+          scale:visualViewport.scale,x:visualViewport.offsetLeft,y:visualViewport.offsetTop}
+      })`),
+      })
+    );
     // Under device emulation the image and the page count pixels differently;
     // an element image must still be exactly that element.
     const emulatedCrop = await command({
@@ -1339,6 +1353,8 @@ async function run(): Promise<void> {
       `a 120x50 control at ${emulatedScale}x should crop to that size, got ${emulatedSize[0]}`
     );
     progress('mobile emulation and touch complete');
+    await runLiveBrowserRegressions(command, origin, contentsWithUrl, imagePixel);
+    progress('live regression scenarios complete');
 
     turnId = 32;
     await command({ action: 'performance', operation: 'start', saveTrace: true, tab: 'beta' });

@@ -128,6 +128,8 @@ function tableRecord(block, tableIndex) {
       path: `/body/tbl[${tableIndex}]/row[${rowIndex + 1}]/cell[${cellIndex + 1}]`,
       index: cellIndex + 1,
       text: blockText(cell.xml, 'w:t'),
+      // The cell's own type, as the review reads a paragraph's: a stat strip's label set at the figure's 22 pt.
+      ...statedRunFont(cell.xml),
       ...cellMarkup(cell.xml),
     })),
   }));

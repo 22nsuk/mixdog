@@ -40,6 +40,8 @@ export async function qa(session, args, cwd, { reuseRender = false } = {}) {
         format: session.format,
         pageRoles: design.pageRoles,
         smallWorksheet: session.format === 'xlsx' && isSmallWorksheetDocument(design.currentSnapshot?.document),
+        pageCount: preview.pageCount,
+        designedPages: session.authoredFrame === true,
       });
   const trust = design.currentSnapshot?.trust || session.trustReview || null;
   const { review, combinedIssuesAfter } = assembleQaReview({
@@ -92,5 +94,6 @@ export async function qa(session, args, cwd, { reuseRender = false } = {}) {
 export async function render(session, args, cwd) {
   await recalculateForReview(session, session.activeSignal || null);
   const preview = await renderOfficePreview(session, args, cwd);
-  return session.format === 'pptx' ? pptxReviewArtifacts(session, preview) : preview;
+  // A PDF of designed pages is reviewed as the deck it was measured as: receipt and contact sheet.
+  return session.format === 'pptx' || session.authoredFrame === true ? pptxReviewArtifacts(session, preview) : preview;
 }

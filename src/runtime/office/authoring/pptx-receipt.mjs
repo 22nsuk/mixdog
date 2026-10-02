@@ -8,7 +8,13 @@ import { plannedCarrierGaps } from './pptx-brief.mjs';
 import { isPictureShape, relativeLuminance } from '../design/design-discipline.mjs';
 import { rectangleGap } from '../portable/pptx-relations.mjs';
 
-const CANVAS_AREA = 960 * 540; // 13.33 × 7.5 in, in points
+// The page the shapes sit on, in points: the deck's 13.33 × 7.5 in unless the document names its slide size
+// (a PDF's designed pages are a sheet).
+const WIDE_CANVAS = Object.freeze({ width: 960, height: 540 });
+const canvasOf = (document) =>
+  Number(document?.slideWidth) > 0 && Number(document?.slideHeight) > 0
+    ? { width: Number(document.slideWidth), height: Number(document.slideHeight) }
+    : WIDE_CANVAS;
 
 function backgroundRole(slide) {
   const l = relativeLuminance(slide?.background?.color);
@@ -27,8 +33,8 @@ function saturation(hex) {
 
 // A field that owns the page: a dark or saturated surface over three fifths of the canvas is what a reader
 // sees as a beat (a cover, a section mark, a claim on a field), whatever the slide's own background says.
-function isBeatField(fill, area) {
-  if (!fill || area < CANVAS_AREA * 0.6) return false;
+function isBeatField(fill, area, canvas) {
+  if (!fill || area < canvas.width * canvas.height * 0.6) return false;
   const l = relativeLuminance(fill);
   return (l !== null && l < 0.35) || saturation(fill) > 0.35;
 }
@@ -48,8 +54,6 @@ function surfaceColor(shape) {
 // Air, quadrant air, the largest object's share, the visual footprint, text
 // left edges, fill areas, and where the title sits. Read from shape footprints
 // on a 5 pt raster; no threshold turns any of them into a verdict.
-const CANVAS_W = 960;
-const CANVAS_H = 540;
 const CELL = 5;
 
 function footprint(shape) {
@@ -72,9 +76,9 @@ function extent(shape) {
   return { left, top, width, height };
 }
 
-function raster(shapes) {
-  const cols = Math.ceil(CANVAS_W / CELL),
-    rows = Math.ceil(CANVAS_H / CELL);
+function raster(shapes, canvas) {
+  const cols = Math.ceil(canvas.width / CELL),
+    rows = Math.ceil(canvas.height / CELL);
   const cells = new Uint8Array(cols * rows);
   for (const box of shapes) {
     const x0 = Math.max(0, Math.floor(box.left / CELL)),
@@ -211,20 +215,20 @@ function noteSpec(specs, shape) {
 // in canvas units [0, 1]; offset is its ellipse-normalized distance from the canvas center with
 // a horizontal tolerance of 0.05 and a vertical one of 0.15 (a sideways drift reads first, as in
 // AeSlides' imbalance metric). Both are numbers the author weighs; a breathing slide may sit off center on purpose.
-function centroidOf(boxes) {
+function centroidOf(boxes, canvas) {
   let area = 0,
     sx = 0,
     sy = 0;
   for (const box of boxes) {
     const a = box.width * box.height;
-    if (a >= CANVAS_W * CANVAS_H * 0.9) continue;
+    if (a >= canvas.width * canvas.height * 0.9) continue;
     area += a;
     sx += a * (box.left + box.width / 2);
     sy += a * (box.top + box.height / 2);
   }
   if (!area) return null;
-  const x = sx / area / CANVAS_W,
-    y = sy / area / CANVAS_H;
+  const x = sx / area / canvas.width,
+    y = sy / area / canvas.height;
   const offset = Math.sqrt(((x - 0.5) / 0.05) ** 2 + ((y - 0.5) / 0.15) ** 2);
   return { centroid: [Number(x.toFixed(2)), Number(y.toFixed(2))], centroidOffset: Number(offset.toFixed(1)) };
 }
@@ -233,16 +237,17 @@ function centroidOf(boxes) {
 // content zone begins. Read across the deck it shows whether content slides share one body top.
 // Body fill: how much of the zone under the title (down to the lower safe margin) the content spans,
 // as a share — a dense slide whose content stops halfway reads as a hollow; a breathing slide is meant to.
-function bodyTopOf(boxes, titleBox) {
+function bodyTopOf(boxes, titleBox, canvas) {
   if (!titleBox) return { bodyTop: null, bodyFill: null };
   const titleBottom = titleBox.top + titleBox.height;
   const below = boxes.filter(
-    (box) => box !== titleBox && box.top >= titleBottom - 2 && box.width * box.height < CANVAS_W * CANVAS_H * 0.9
+    (box) =>
+      box !== titleBox && box.top >= titleBottom - 2 && box.width * box.height < canvas.width * canvas.height * 0.9
   );
   if (!below.length) return { bodyTop: null, bodyFill: null };
   const top = Math.min(...below.map((box) => box.top)),
     bottom = Math.max(...below.map((box) => box.top + box.height));
-  const zone = CANVAS_H - 0.5 * 72 - top;
+  const zone = canvas.height - 0.5 * 72 - top;
   return {
     bodyTop: Number((top / 72).toFixed(2)),
     bodyFill: zone > 0 ? Number(Math.min(1, (bottom - top) / zone).toFixed(2)) : null,
@@ -253,8 +258,8 @@ function bodyTopOf(boxes, titleBox) {
 // fieldFill is the share of each field of 6% of the canvas or more (a full-page background is not one)
 // that content actually covers, lowest first. Neither `air` nor `quadrantAir` can say this — the field's
 // own footprint fills the very quadrant it leaves empty (user: 이 사각은 밸런스가 망가진 것 같은데).
-function fieldFillOf(surfaces, grid) {
-  const canvas = CANVAS_W * CANVAS_H;
+function fieldFillOf(surfaces, grid, page) {
+  const canvas = page.width * page.height;
   return surfaces
     .filter((box) => box.width * box.height >= canvas * 0.06 && box.width * box.height < canvas * 0.9)
     .map(
@@ -275,27 +280,28 @@ function fieldFillOf(surfaces, grid) {
 
 function observe(
   shapes,
-  { textBoxes, visuals, content, blocks, surfaces = [], constructs = [], labels = [], fills, titleBox }
+  { textBoxes, visuals, content, blocks, surfaces = [], constructs = [], labels = [], fills, titleBox, page }
 ) {
   const boxes = shapes.map(footprint).filter(Boolean);
   if (!boxes.length) return null;
   const authored = shapes.filter((shape) => !isChrome(shape));
   const typeSet = [...new Set(authored.flatMap(typeSizesOf))].sort((a, b) => a - b);
   const textColors = [...new Set(authored.filter((shape) => String(shape.text || '').trim()).flatMap(textColorsOf))];
-  const all = raster(boxes);
-  const inner = raster(content); // the same canvas read from content alone: where a surface is carrying nothing
-  const centroid = centroidOf(boxes);
+  const all = raster(boxes, page);
+  const inner = raster(content, page); // the same canvas read from content alone: where a surface is carrying nothing
+  const centroid = centroidOf(boxes, page);
   // Body top and gaps read the content (text, charts, tables, pictures, contours), never a surface field or a rule.
   const { bodyTop, bodyFill } = bodyTopOf(
     content,
     titleBox
       ? content.find((box) => box.left === titleBox.left && box.top === titleBox.top && box.width === titleBox.width) ||
           titleBox
-      : null
+      : null,
+    page
   );
   const midX = Math.floor(all.cols / 2),
     midY = Math.floor(all.rows / 2);
-  const canvas = CANVAS_W * CANVAS_H;
+  const canvas = page.width * page.height;
   const fillShares = [...fills.entries()]
     .map(([color, area]) => ({ color, share: Number((area / canvas).toFixed(2)) }))
     .filter((entry) => entry.share > 0)
@@ -327,9 +333,9 @@ function observe(
       airOf(inner, 0, midY, midX, inner.rows),
       airOf(inner, midX, midY, inner.cols, inner.rows),
     ],
-    fieldFill: fieldFillOf(surfaces, inner),
+    fieldFill: fieldFillOf(surfaces, inner, page),
     largestShare: Number((Math.max(...boxes.map((box) => box.width * box.height)) / canvas).toFixed(2)),
-    visualShare: visuals.length ? Number((1 - airOf(raster(visuals))).toFixed(2)) : 0,
+    visualShare: visuals.length ? Number((1 - airOf(raster(visuals, page))).toFixed(2)) : 0,
     presence,
     textColumns: { ...leftEdges(textBoxes.filter((box) => !labels.includes(box))), labels: labels.length },
     fills: fillShares,
@@ -343,7 +349,7 @@ function observe(
   };
 }
 
-export function slideReceipt(slide) {
+export function slideReceipt(slide, page = WIDE_CANVAS) {
   const shapes = Array.isArray(slide?.shapes) ? slide.shapes : [];
   const receipt = {
     slide: Number(slide?.index) || 0,
@@ -362,10 +368,10 @@ export function slideReceipt(slide) {
     coverage: 0,
     grammar: 'text',
   };
-  const read = readShapes(shapes, receipt);
+  const read = readShapes(shapes, receipt, page);
   receipt.presets = [...read.presets];
   if (Object.keys(read.specs).length) receipt.specs = read.specs;
-  receipt.coverage = Math.min(1, Number((read.covered / CANVAS_AREA).toFixed(2)));
+  receipt.coverage = Math.min(1, Number((read.covered / (page.width * page.height)).toFixed(2)));
   receipt.grammar = pageGrammar(receipt, read);
   const observed = observe(read.seen, {
     textBoxes: read.textBoxes,
@@ -377,6 +383,7 @@ export function slideReceipt(slide) {
     labels: diagramLabels(read.textBoxes, read.constructs),
     fills: read.fills,
     titleBox: read.titleBox,
+    page,
   });
   if (observed) receipt.observe = observed;
   return receipt;
@@ -388,7 +395,7 @@ export function slideReceipt(slide) {
  * content, spacing blocks, surfaces, drawn constructs — plus the covered
  * area, the fill weights and the largest text box.
  */
-function readShapes(shapes, receipt) {
+function readShapes(shapes, receipt, page) {
   let covered = 0;
   let beatField = false;
   const presets = new Set();
@@ -481,7 +488,7 @@ function readShapes(shapes, receipt) {
       receipt.fields += 1;
       covered += area;
       if (box && fill) surfaces.push(box);
-      if (isBeatField(fill, area)) beatField = true;
+      if (isBeatField(fill, area, page)) beatField = true;
     } else if (geometry) {
       presets.add(geometry);
       covered += area;
@@ -540,7 +547,8 @@ function diagramLabels(textBoxes, constructs) {
 // The whole deck: per-slide receipts, totals, the families that never appear,
 // and the plan lines whose named carriers the snapshot cannot see.
 export function compositionReceipt(document, brief = null) {
-  const slides = (Array.isArray(document?.slides) ? document.slides : []).map(slideReceipt);
+  const page = canvasOf(document);
+  const slides = (Array.isArray(document?.slides) ? document.slides : []).map((slide) => slideReceipt(slide, page));
   const deck = {
     slides: slides.length,
     charts: 0,

@@ -139,10 +139,9 @@ export function createCommandAttempt(deps: CommandAttemptDeps) {
     const captureAttempts = captureAttemptsFromError(failure);
     const error = state.aborted && state.failureCode ? recoveryFailure(state.failureCode) : failure;
     const code = computerLogError(error);
-    // A read sends no input, so its failure leaves nothing for the user to
-    // recover: an observer replaced during a capture is not evidence that the
-    // user has the desktop, and must not latch every later command.
-    if (TAKEOVER_CODES.includes(code) && !observesOnly(command)) {
+    // Actual user input takes control even during a read. A broken or
+    // replaced read observer alone is not evidence of user intervention.
+    if (code === 'user_input_active' || (TAKEOVER_CODES.includes(code) && !observesOnly(command))) {
       deps.takeOver(code);
     }
     if (pausedForUserInput(coordinator.snapshot()) && !observesOnly(command)) {
@@ -183,7 +182,7 @@ export function createCommandAttempt(deps: CommandAttemptDeps) {
     };
     try {
       const operation = () => runAttempt(attempt);
-      const requireFreshAfterWait = pending ? false : undefined;
+      const requireFreshAfterWait = pending || observesOnly(command) ? false : undefined;
       const outcome = foreground
         ? await deps.runForegroundExclusive(sessionId, operation, {
             assertRunnable: attempt.assertRunnable,

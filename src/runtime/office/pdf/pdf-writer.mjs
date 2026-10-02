@@ -1151,7 +1151,7 @@ function drawPageFooters(document, properties, { font, margin, numbering }) {
   });
 }
 
-function applyDocumentProperties(document, properties) {
+export function applyDocumentProperties(document, properties) {
   if (properties.title != null) document.setTitle(String(properties.title));
   if (properties.author != null) document.setAuthor(String(properties.author));
   if (properties.subject != null) document.setSubject(String(properties.subject));

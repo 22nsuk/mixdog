@@ -66,6 +66,7 @@ function restoredAssistantTranscriptItems(message, nextId) {
       kind: 'turndone',
       id: nextId(),
       ...completion,
+      ...(completion.status === 'done' ? { finalAssistantId: items[0].id } : {}),
       ...(metadata.at ? { at: metadata.at } : {}),
     });
   }

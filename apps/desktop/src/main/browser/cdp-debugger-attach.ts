@@ -23,6 +23,7 @@ export interface DebuggerAttachmentHost {
 export function createGuestDebuggerAttachment(host: DebuggerAttachmentHost) {
   const { state } = host;
   const debuggerReady = new WeakMap<WebContents, Promise<Electron.Debugger>>();
+  const debuggerAttached = new WeakMap<WebContents, Promise<Electron.Debugger>>();
   const debuggerListeners = new WeakMap<WebContents, (...args: unknown[]) => void>();
   const debuggerLifetime = new WeakMap<WebContents, AbortController>();
   const detaching = new WeakSet<WebContents>();
@@ -44,6 +45,7 @@ export function createGuestDebuggerAttachment(host: DebuggerAttachmentHost) {
     if (listener) cdp.removeListener('message', listener);
     debuggerListeners.delete(guest);
     debuggerReady.delete(guest);
+    debuggerAttached.delete(guest);
     const record = state.for(guest);
     record.cdpSessions.clear();
     record.performanceTrace?.resolveComplete();
@@ -55,7 +57,8 @@ export function createGuestDebuggerAttachment(host: DebuggerAttachmentHost) {
   async function attach(
     guest: WebContents,
     lifetime: AbortController,
-    onDestroyed: () => void
+    onDestroyed: () => void,
+    attached: (debugger_: Electron.Debugger) => void
   ): Promise<Electron.Debugger> {
     await waitForInitialDocument(guest);
     lifetime.signal.throwIfAborted();
@@ -73,6 +76,9 @@ export function createGuestDebuggerAttachment(host: DebuggerAttachmentHost) {
       guest.removeListener('destroyed', onDestroyed);
       onDetached(guest, cdp, lifetime, detachedReason);
     });
+    // Answering an existing dialog must not wait for the scripts that the
+    // dialog itself has suspended. Normal commands still await full setup.
+    attached(cdp);
     await host.initializeTargetSession(guest, cdp, lifetime.signal);
     return cdp;
   }
@@ -84,7 +90,10 @@ export function createGuestDebuggerAttachment(host: DebuggerAttachmentHost) {
     ready: Promise<Electron.Debugger>,
     onDestroyed: () => void
   ): void {
-    if (debuggerReady.get(guest) === ready) debuggerReady.delete(guest);
+    if (debuggerReady.get(guest) === ready) {
+      debuggerReady.delete(guest);
+      debuggerAttached.delete(guest);
+    }
     guest.removeListener('destroyed', onDestroyed);
     if (debuggerLifetime.get(guest) !== lifetime) return;
     lifetime.abort(new Error('CDP initialization failed'));
@@ -99,18 +108,31 @@ export function createGuestDebuggerAttachment(host: DebuggerAttachmentHost) {
   }
 
   /** The attached debugger for a guest, initialised once per document. */
-  async function guestDebugger(guest: WebContents): Promise<Electron.Debugger> {
+  async function guestDebugger(guest: WebContents, answeringDialog = false): Promise<Electron.Debugger> {
     if (guest.isDestroyed() || detaching.has(guest)) throw new Error('browser page is unavailable');
     const existing = debuggerReady.get(guest);
-    if (existing) return existing;
+    if (existing) {
+      return answeringDialog && state.peek(guest)?.pendingDialog ? debuggerAttached.get(guest)! : existing;
+    }
     const lifetime = new AbortController();
     debuggerLifetime.set(guest, lifetime);
     const onDestroyed = () => lifetime.abort(new Error('browser page is unavailable'));
     guest.once('destroyed', onDestroyed);
-    const ready = attach(guest, lifetime, onDestroyed);
+    let resolveAttached!: (debugger_: Electron.Debugger) => void;
+    let rejectAttached!: (error: unknown) => void;
+    const attached = new Promise<Electron.Debugger>((resolve, reject) => {
+      resolveAttached = resolve;
+      rejectAttached = reject;
+    });
+    void attached.catch(() => undefined);
+    const ready = attach(guest, lifetime, onDestroyed, resolveAttached);
     debuggerReady.set(guest, ready);
-    ready.catch(() => abandonAttachment(guest, lifetime, ready, onDestroyed));
-    return ready;
+    debuggerAttached.set(guest, attached);
+    ready.catch((error) => {
+      rejectAttached(error);
+      abandonAttachment(guest, lifetime, ready, onDestroyed);
+    });
+    return answeringDialog && state.peek(guest)?.pendingDialog ? attached : ready;
   }
 
   /** Drop the debugger for a guest whose bridge is going away. */
@@ -119,6 +141,7 @@ export function createGuestDebuggerAttachment(host: DebuggerAttachmentHost) {
     detaching.add(guest);
     debuggerLifetime.get(guest)?.abort(new Error('CDP detaching'));
     debuggerReady.delete(guest);
+    debuggerAttached.delete(guest);
     try {
       if (guest.isDestroyed() || !guest.debugger.isAttached()) return;
       if (options.uninstallScript) {

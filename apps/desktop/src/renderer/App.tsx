@@ -15,6 +15,7 @@ import { useEditorNavigation } from './use-editor-navigation';
 import { usePaneTabClose, type ConversationHandoff } from './use-pane-tab-close';
 import { usePaneTabNavigation } from './use-pane-tab-navigation';
 import { usePushNotificationNavigation } from './use-push-notification-navigation';
+import { focusOpenNotificationSession } from './desktop-notification-navigation';
 import { useSharedIntakeBoot } from './share-target-intake';
 import { useAppPaneChrome } from './use-app-pane-chrome';
 import { useAppStartupRestore } from './use-app-startup-restore';
@@ -211,6 +212,10 @@ export function App() {
     ready: sessionCatalogReady,
     openSession: (sessionId) => {
       void openSessionRef.current(sessionId);
+    },
+    desktopReady: !paneWorkspace.restorePending,
+    focusDesktopSession: (sessionId) => {
+      focusOpenNotificationSession(paneWorkspace, sessionId);
     },
   });
   // A screenshot shared into the app from the phone's share sheet: the service

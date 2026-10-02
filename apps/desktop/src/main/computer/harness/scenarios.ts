@@ -9,6 +9,8 @@ import { createComputerUseOverlay, type ComputerUseOverlay } from '../overlay';
 import { compileNativeTextFixture } from '../backend/native-fixture';
 import { createPolling } from '../../host-harness-poll';
 import { SCENARIO_IDS, unknownScenarioIds } from './scenario-ids';
+import { isScenarioUserControl } from './scenario-user-control';
+import { computerErrorCode } from '../../../../../../src/runtime/computer-bridge/error-code.mjs';
 
 interface CommandResult {
   text: string;
@@ -278,8 +280,8 @@ async function runScenario(id: string, name: string, area: string, operation: ()
     failure = (error as Error).message || String(error);
     // The host pausing for the user is an environment fact, not a defect. Record
     // it as unmeasured so a real failure stays visible next to it.
-    const userControlled =
-      failure.includes('computer_user_control_active') || failure.includes('computer_user_intervention_pending');
+    const userControlled = isScenarioUserControl(computerErrorCode(error));
+    userInterventionSeen ||= userControlled;
     status =
       error instanceof ScenarioSkip || foregroundSkipped || userControlled || userInterventionSeen ? 'skip' : 'fail';
     metrics.false_positive = status === 'fail' && metrics.accepted_mutations > 0;
@@ -296,6 +298,9 @@ async function runScenario(id: string, name: string, area: string, operation: ()
     ...(failure ? { failure } : {}),
   });
   progress(`${id} ${status.toUpperCase()} ${name}${failure ? ` — ${failure}` : ''}`);
+  if (userInterventionSeen) {
+    throw new Error('computer_user_intervention_pending: scenario matrix stopped while the user has control');
+  }
 }
 
 function skip(message: string): never {
@@ -651,15 +656,7 @@ function recordCommandResponse(
     // A parked request answers at the bridge level, so the intervention is
     // only visible in the body. Later assertions in the same scenario are
     // measuring a desktop the user owns, not the behaviour under test.
-    // `user_input_during_capture` names the user, while an unavailable
-    // observer stays a real failure: the reason separates them.
-    if (
-      parsed.code === 'computer_user_intervention_pending' ||
-      // A capture reports this reason whenever the user touched their own
-      // mouse, but it only says foreground input is not ready. Work that
-      // never tried to send input stays measurable through it.
-      (parsed.foreground_input_reason === 'user_input_during_capture' && MUTATION_ACTIONS.has(actionName))
-    ) {
+    if (isScenarioUserControl(parsed.code)) {
       userInterventionSeen = true;
     }
     metrics.max_returned_elements = Math.max(
@@ -763,6 +760,7 @@ function createScenarioCommand(
       error?: string;
     };
     if (!payload.ok) {
+      if (isScenarioUserControl(computerErrorCode(payload.error))) userInterventionSeen = true;
       if (actionMetrics) {
         actionMetrics.failures += 1;
         actionMetrics.durations_ms.push(Math.round(performance.now() - commandStartedAt));
@@ -774,6 +772,9 @@ function createScenarioCommand(
       ...(payload.value?.image ? { image: payload.value.image } : {}),
     };
     recordCommandResponse(actionName, value, actionMetrics, Math.round(performance.now() - commandStartedAt));
+    if (userInterventionSeen && !isCleanup) {
+      throw new ScenarioSkip('user input interrupted the command; no further input is authorized');
+    }
     return value;
   };
 }
@@ -1528,15 +1529,26 @@ async function run(): Promise<void> {
         // how busy Windows was when the dialog first painted.
         const dialogLine = (text: string) =>
           text.split(/\r?\n/).find((line) => line.includes('"Mixdog Native Open Dialog"')) || '';
-        await command(
-          {
-            action: 'key',
-            window_id: parentWindowId,
-            keys: '^o',
-            delivery: 'foreground',
-            capture_delay_ms: 1_000,
-          },
-          'popup-transition'
+        const warmup = actionPayload(
+          await command(
+            {
+              action: 'key',
+              window_id: parentWindowId,
+              keys: '^o',
+              delivery: 'foreground',
+              capture_delay_ms: 1_000,
+            },
+            'popup-transition'
+          )
+        );
+        assert.equal(
+          warmup.delivery_accepted,
+          true,
+          `dialog warmup input refused: ${JSON.stringify({
+            code: warmup.code,
+            verdict: warmup.verdict,
+            input_may_have_executed: warmup.input_may_have_executed,
+          })}`
         );
         const warmupListed = await eventually(
           async () => (await command({ action: 'list_windows' }, 'popup-transition')).text,
@@ -2251,6 +2263,19 @@ async function run(): Promise<void> {
       const repeats = 10;
       const separateDurations: number[] = [];
       const sequenceDurations: number[] = [];
+      const assertContinuationReady = (response: CommandResult) => {
+        const payload = actionPayload(response);
+        assert.notEqual(payload.ok, false, JSON.stringify(payload));
+        assert.notEqual(
+          (payload.verdict as Record<string, unknown> | undefined)?.decision,
+          'escalate',
+          JSON.stringify(payload)
+        );
+        const observation = payload.capture_after as CapturePayload | undefined;
+        assert.equal(observation?.ok, true, JSON.stringify(payload));
+        assert.equal(observation?.window_id, fixtureWindowId, JSON.stringify(payload));
+        return payload;
+      };
       const reset = async () => {
         await fixture.webContents.executeJavaScript(
           `document.querySelector('#sink').value='';document.querySelector('#sink').dispatchEvent(new Event('input'))`
@@ -2272,26 +2297,30 @@ async function run(): Promise<void> {
           );
           assert.ok(capture.frame_id);
           const startedAt = performance.now();
-          await command(
-            {
-              action: 'type',
-              window_id: fixtureWindowId,
-              frame_id: capture.frame_id,
-              x: 200,
-              y: 245,
-              text: 'SEQUENCE42',
-              delivery: 'background',
-            },
-            separateSession
+          assertContinuationReady(
+            await command(
+              {
+                action: 'type',
+                window_id: fixtureWindowId,
+                frame_id: capture.frame_id,
+                x: 200,
+                y: 245,
+                text: 'SEQUENCE42',
+                delivery: 'background',
+              },
+              separateSession
+            )
           );
-          await command(
-            {
-              action: 'type',
-              window_id: fixtureWindowId,
-              text: 'TAIL',
-              delivery: 'background',
-            },
-            separateSession
+          assertContinuationReady(
+            await command(
+              {
+                action: 'type',
+                window_id: fixtureWindowId,
+                text: 'TAIL',
+                delivery: 'background',
+              },
+              separateSession
+            )
           );
           separateDurations.push(performance.now() - startedAt);
           const state = (await fixture.webContents.executeJavaScript(
@@ -2317,7 +2346,7 @@ async function run(): Promise<void> {
           );
           assert.ok(capture.frame_id);
           const startedAt = performance.now();
-          const result = actionPayload(
+          const result = assertContinuationReady(
             await command(
               {
                 action: 'sequence',

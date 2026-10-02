@@ -19,7 +19,8 @@ import type { PixelUnavailable } from '../shared/types';
 export function frameQualityIssue(
   image: NativeImage,
   expectedWidth: number,
-  expectedHeight: number
+  expectedHeight: number,
+  contentRegion?: { x: number; y: number; width: number; height: number }
 ): PixelUnavailable | undefined {
   const size = image.getSize();
   if (!size.width || !size.height || image.isEmpty()) {
@@ -42,16 +43,33 @@ export function frameQualityIssue(
   // A window's own border and rounded corners are chrome, not content, so
   // blankness is judged on the interior: a 1px frame cannot make an empty
   // capture look usable.
-  const margin = Math.min(SCREENSHOT_CHROME_MARGIN, Math.floor(Math.min(size.width, size.height) / 8));
-  const interiorWidth = Math.max(1, size.width - margin * 2);
-  const interiorHeight = Math.max(1, size.height - margin * 2);
+  const region = contentRegion ?? { x: 0, y: 0, ...size };
+  if (
+    !Object.values(region).every(Number.isSafeInteger) ||
+    region.x < 0 ||
+    region.y < 0 ||
+    region.width <= 0 ||
+    region.height <= 0 ||
+    region.x + region.width > size.width ||
+    region.y + region.height > size.height
+  ) {
+    return pixelUnavailable('coordinate_mismatch', 'window client bounds do not fit the captured surface');
+  }
+  const margin = Math.min(SCREENSHOT_CHROME_MARGIN, Math.floor(Math.min(region.width, region.height) / 8));
+  const interiorWidth = Math.max(1, region.width - margin * 2);
+  const interiorHeight = Math.max(1, region.height - margin * 2);
   const interiorPixels = interiorWidth * interiorHeight;
   const stride = Math.max(1, Math.floor(interiorPixels / SCREENSHOT_SAMPLE_LIMIT));
   let sampled = 0;
   let nearBlack = 0;
   let nearWhite = 0;
   for (let pixel = 0; pixel < interiorPixels; pixel += stride) {
-    const offset = ((margin + Math.floor(pixel / interiorWidth)) * size.width + margin + (pixel % interiorWidth)) * 4;
+    const offset =
+      ((region.y + margin + Math.floor(pixel / interiorWidth)) * size.width +
+        region.x +
+        margin +
+        (pixel % interiorWidth)) *
+      4;
     const blue = bitmap[offset] ?? 0;
     const green = bitmap[offset + 1] ?? 0;
     const red = bitmap[offset + 2] ?? 0;

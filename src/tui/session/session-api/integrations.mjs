@@ -68,6 +68,9 @@ export function createSessionIntegrationsApi(bag, { oauthFlows }) {
     getQuotaHistory: async (options = {}) => {
       return await runtime.getQuotaHistory?.(options);
     },
+    getSessionUsage: async () => {
+      return await runtime.getSessionUsage?.();
+    },
     consumeCodexRateLimitResetCredit: async (options = {}) => {
       // Desktop capability parity: without this delegation the session runtime
       // surface rejects the sidebar's reset-credit invoke as unsupported even

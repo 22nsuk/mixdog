@@ -200,6 +200,49 @@ function shortTableSplitIssues(tables, issues) {
   }
 }
 
+// A total row is a total by its label; it reads as one only when it is set apart from the rows it sums.
+export const TOTAL_LABEL = /^(?:(?:grand\s+total|sub\s*total|total)\b|(?:합계|총계|소계|계)(?:\s|$))/i;
+const FIGURE_TEXT = /^[\s+\-−₩$€¥]*[\d,.]+\s*(?:%|%p|[가-힣A-Za-z]{0,3})?\s*$/;
+const DISPLAY_SIZE = 18;
+
+// Table type that does not suit its job, read from each cell's own type: a label set at a figure's display size (a
+// stat strip given one fontSize for both rows — "평균 대기 시간 단축" at 22 pt over three lines), and a total row
+// set like the data above it.
+function tableTypeIssues(tables, issues) {
+  for (const table of tables) {
+    const rows = Array.isArray(table.rows) ? table.rows : [];
+    for (const row of rows) {
+      for (const cell of row.cells || []) {
+        const text = String(cell?.text || '').trim();
+        const size = Number(cell?.font?.size) || 0;
+        // A cell of several paragraphs (a card: its figure over its label) reports its largest type, not the label's.
+        if (size >= DISPLAY_SIZE && text.length >= 6 && !text.includes('\n') && !FIGURE_TEXT.test(text)) {
+          issues.push(
+            issue(
+              'table_label_oversized',
+              cell.path || table.path || '/body',
+              `"${text.slice(0, 24)}" is set at ${size} pt: display size is for figures. Set labels at caption size (add_table properties.rowStyles, or set_table_cell_style).`
+            )
+          );
+          break;
+        }
+      }
+    }
+    const last = rows.at(-1);
+    if (rows.length >= 3 && last && TOTAL_LABEL.test(String(last.cells?.[0]?.text || '').trim())) {
+      if (!(last.cells || []).some((cell) => cell?.font?.bold === true)) {
+        issues.push(
+          issue(
+            'total_row_unmarked',
+            last.path || table.path || '/body',
+            `The "${String(last.cells[0].text).trim()}" row is set like the rows it sums; set it apart (add_table properties.totalRow:true, or bold with a rule above).`
+          )
+        );
+      }
+    }
+  }
+}
+
 export function reviewDocxStructure(document) {
   const issues = [];
   const paragraphs = Array.isArray(document?.paragraphs) ? document.paragraphs : [];
@@ -213,5 +256,6 @@ export function reviewDocxStructure(document) {
   orphanHeadingIssues(document, paragraphs, tables, issues);
   paragraphTextIssues(content, issues);
   shortTableSplitIssues(tables, issues);
+  tableTypeIssues(tables, issues);
   return issues;
 }

@@ -34,6 +34,19 @@ export const DESKTOP_GATE_SCRIPT_BASES = [
 // scripts/), so any change under those roots is a candidate.
 export const RUNTIME_GATE_PREFIXES = ['.github/workflows/', 'native/', 'scripts/', 'src/'];
 
+// Native patch changes must be tested from the checkout, not the published binary.
+const PATCH_GATE_PREFIXES = ['native/mixdog-patch/', 'src/runtime/agent/orchestrator/tools/patch/'];
+const PATCH_GATE_FILES = [
+  '.github/workflows/release-gate.yml',
+  'src/runtime/agent/orchestrator/tools/patch.mjs',
+  'src/runtime/agent/orchestrator/tools/patch-binary-fetcher.mjs',
+  'scripts/apply-patch-edit-smoke.mjs',
+  'scripts/native-edit-wire-test.mjs',
+  'scripts/release-gate-test.mjs',
+  ...PACKAGE_MANIFESTS,
+  ...GATE_SELECTION_SOURCES,
+];
+
 // deploy.yml plan: paths whose change since the published release tag marks
 // the default lane as unverified.
 export const RELEASE_CRITICAL_PATHS = ['native', 'scripts', 'src', ...PACKAGE_MANIFESTS];
@@ -57,13 +70,21 @@ export function runtimeGateRegex() {
   ].join('|')})`;
 }
 
+export function patchGateRegex() {
+  return `^(${[
+    ...PATCH_GATE_PREFIXES.map(escapeRegex),
+    ...PATCH_GATE_FILES.map((file) => `${escapeRegex(file)}$`),
+  ].join('|')})`;
+}
+
 const mode = process.argv[2];
 if (mode) {
   if (mode === 'desktop-regex') process.stdout.write(`${desktopGateRegex()}\n`);
   else if (mode === 'runtime-regex') process.stdout.write(`${runtimeGateRegex()}\n`);
+  else if (mode === 'patch-regex') process.stdout.write(`${patchGateRegex()}\n`);
   else if (mode === 'critical-paths') process.stdout.write(`${RELEASE_CRITICAL_PATHS.join('\n')}\n`);
   else {
-    process.stderr.write(`unknown mode: ${mode} (expected desktop-regex|runtime-regex|critical-paths)\n`);
+    process.stderr.write(`unknown mode: ${mode} (expected desktop-regex|runtime-regex|patch-regex|critical-paths)\n`);
     process.exit(1);
   }
 }

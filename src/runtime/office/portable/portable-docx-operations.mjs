@@ -34,7 +34,8 @@ import {
 } from './portable-docx-xml.mjs';
 import { docxRevisionTree, flattenDocxRevisions } from './docx-revisions.mjs';
 import { settleDocxStory } from './docx-runs.mjs';
-import { patchParagraphFormat } from './docx-formatting.mjs';
+import { patchParagraphFormat, patchWordStyle } from './docx-formatting.mjs';
+import { documentStyleId } from './portable-docx-styles.mjs';
 import { anchorPhraseInParagraph, trackedParagraphReplace, trackedParagraphRewrite } from './docx-tracked-edits.mjs';
 
 // Word rebuilds a TOC field when the reader updates it; until then the cached
@@ -384,6 +385,79 @@ export async function setDocxDocumentFont(zip, op) {
   );
   zip.file('word/styles.xml', styles);
   return { op: op.op, changed: true, ...font };
+}
+
+// The fields one style takes in define_styles: its face, size, weight, ink, and its paragraph's flow.
+export const DOCX_STYLE_FIELDS = Object.freeze([
+  'name',
+  'nameEastAsia',
+  'size',
+  'bold',
+  'italic',
+  'color',
+  'alignment',
+  'spacingBefore',
+  'spacingAfter',
+  'lineSpacing',
+  'lineSpacingRule',
+  'keepWithNext',
+  'keepTogether',
+]);
+
+/** The fields of every style asked for, checked before anything is written; one message lists every fault. */
+export function docxStyleDefinitions(op) {
+  const styles = op.styles;
+  if (!styles || typeof styles !== 'object' || Array.isArray(styles) || !Object.keys(styles).length) {
+    throw new Error(
+      `define_styles needs styles: { "<style name>": { ${DOCX_STYLE_FIELDS.join(', ')} } }, e.g. { "Heading 1": { size: 15, bold: true } }`
+    );
+  }
+  const faults = [];
+  for (const [style, fields] of Object.entries(styles)) {
+    if (!fields || typeof fields !== 'object' || Array.isArray(fields)) {
+      faults.push(`${style}: needs an object of fields`);
+      continue;
+    }
+    const unknown = Object.keys(fields).filter((field) => !DOCX_STYLE_FIELDS.includes(field));
+    if (unknown.length) faults.push(`${style}: unknown fields ${unknown.join(', ')}`);
+  }
+  if (faults.length) throw new Error(`define_styles: ${faults.join('; ')}. Fields: ${DOCX_STYLE_FIELDS.join(', ')}.`);
+  return Object.entries(styles);
+}
+
+/** Word's own styles defined once — the title, headings, body, caption a report is set in — so every paragraph that
+ *  names the style takes them, and a paragraph the reader adds in Word under that style matches the rest. Set
+ *  paragraph by paragraph instead, a heading added later came out in Word's blue Calibri. */
+export async function defineDocxStyles(zip, op) {
+  const definitions = docxStyleDefinitions(op);
+  const defined = [];
+  const notFound = [];
+  for (const [requested, fields] of definitions) {
+    const resolved = await documentStyleId(zip, requested);
+    if (!resolved.found) {
+      notFound.push(requested);
+      continue;
+    }
+    const styles = await zipText(zip, 'word/styles.xml');
+    const id = resolved.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = new RegExp(`<w:style\\b(?=[^>]*\\bw:styleId="${id}")[^>]*>[\\s\\S]*?<\\/w:style>`);
+    const style = pattern.exec(styles)?.[0];
+    if (!style) {
+      notFound.push(requested);
+      continue;
+    }
+    zip.file(
+      'word/styles.xml',
+      styles.replace(style, () => patchWordStyle(style, fields))
+    );
+    defined.push(requested);
+  }
+  return {
+    op: op.op,
+    changed: defined.length > 0,
+    styles: defined,
+    ...(notFound.length ? { styleNotFound: notFound } : {}),
+  };
 }
 
 /** Page size, orientation, margins and text columns of one section, keeping what was not asked for. */

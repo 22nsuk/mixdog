@@ -99,6 +99,7 @@ export function createCommandReplies(host: CommandRepliesHost) {
     if (!payload) return null;
     return {
       text: JSON.stringify(payload),
+      ...(payload.ok === false ? { isError: true } : {}),
       ...(recaptureSucceeded && 'image' in capture && capture.image ? { image: capture.image } : {}),
     };
   }

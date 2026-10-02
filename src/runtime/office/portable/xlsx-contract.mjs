@@ -40,6 +40,74 @@ export function parseXlsxRange(reference, { maxCells = XLSX_MAX_RANGE_CELLS } = 
   return { start, end, rows, columns, cells };
 }
 
+// A structured reference (Ops[처리량 (건)], Ops[[#This Row],[월]], [@월]) names a table's column, never a cell, so a
+// fill leaves it as it is; the reference reader does not parse one, so it is held aside as a string while the rest
+// of the formula moves.
+const STRUCTURED_REFERENCE = /(?:[A-Za-z_\\\u00C0-\uFFFF][\w.\u00C0-\uFFFF]*)?\[(?:[^[\]"]|\[[^\]]*\])*\]/g;
+
+/**
+ * The formula a fill writes `rowDelta` rows and `columnDelta` columns from the cell it was written for, as Excel's
+ * fill moves it: relative references move, `$`-pinned ones stay, a sheet-qualified one moves too (=Data!B2 filled
+ * down reads =Data!B3), a table's structured reference stays.
+ * @param {(formula: string, rows: number, columns: number) => string} translate the engine's shared-formula move
+ */
+export function filledFormula(formula, rowDelta, columnDelta, translate) {
+  const text = String(formula ?? '');
+  if (!rowDelta && !columnDelta) return text;
+  const held = [];
+  // Only outside string literals: "[x]" in a label is text, not a table.
+  const masked = text
+    .split(/("(?:[^"]|"")*")/)
+    .map((segment, index) =>
+      index % 2
+        ? segment
+        : segment.replace(STRUCTURED_REFERENCE, (match) => {
+            held.push(match);
+            return `"\u0000${held.length - 1}\u0000"`;
+          })
+    )
+    .join('');
+  const moved = translate(masked.replace(/^=/, ''), rowDelta, columnDelta);
+  return `=${moved.replace(/"\u0000(\d+)\u0000"/g, (_, index) => held[Number(index)])}`;
+}
+
+/**
+ * set_formula over a range: the formula is written for the range's top-left cell and every other cell takes it as
+ * Excel's fill moves it, so a column of SUMIFS over the rows beside it is one operation, not one per row.
+ */
+export function expandFilledFormulas(operations, translate) {
+  if (!operations.some((operation) => operation?.op === 'set_formula' && operation.range !== undefined)) {
+    return operations;
+  }
+  return operations.flatMap((operation) => {
+    if (operation?.op !== 'set_formula' || operation.range === undefined) return [operation];
+    const { range, ...rest } = operation;
+    const area = parseXlsxRange(range);
+    const cells = [];
+    for (let row = 0; row < area.rows; row += 1) {
+      for (let column = 0; column < area.columns; column += 1) {
+        cells.push({
+          ...rest,
+          cell: `${columnLabelOf(area.start.column + column)}${area.start.row + row}`,
+          formula: filledFormula(operation.formula, row, column, translate),
+        });
+      }
+    }
+    return cells;
+  });
+}
+
+function columnLabelOf(number) {
+  let value = number;
+  let label = '';
+  while (value > 0) {
+    value -= 1;
+    label = String.fromCharCode(65 + (value % 26)) + label;
+    value = Math.floor(value / 26);
+  }
+  return label;
+}
+
 export function parseXlsxAutofitRange(reference) {
   const text = String(reference || '').trim();
   const columns = /^([A-Z]+):([A-Z]+)$/i.exec(text);
@@ -246,7 +314,15 @@ export function listValidationChoices(formula1) {
   return `"${text}"`;
 }
 
-export const XLSX_VALIDATION_TYPES = Object.freeze(['list', 'whole', 'decimal', 'date', 'time', 'textLength', 'custom']);
+export const XLSX_VALIDATION_TYPES = Object.freeze([
+  'list',
+  'whole',
+  'decimal',
+  'date',
+  'time',
+  'textLength',
+  'custom',
+]);
 export const XLSX_VALIDATION_OPERATORS = Object.freeze([
   'between',
   'notBetween',
@@ -262,14 +338,17 @@ export const XLSX_VALIDATION_OPERATORS = Object.freeze([
 // can interpret an unknown name as a different rule.
 export function normalizeXlsxValidation(operation) {
   if (!String(operation.formula1 ?? '').trim()) throw new Error('add_validation requires non-empty formula1');
-  const requestedType = String(operation.type ?? '').trim() || (listValidationFormula(operation.formula1) ? 'list' : 'custom');
+  const requestedType =
+    String(operation.type ?? '').trim() || (listValidationFormula(operation.formula1) ? 'list' : 'custom');
   const type = XLSX_VALIDATION_TYPES.find((value) => value.toLowerCase() === requestedType.toLowerCase());
   if (!type) throw new Error(`add_validation type must be one of ${XLSX_VALIDATION_TYPES.join(', ')}`);
   const requestedOperator = String(operation.operator ?? '').trim();
   const bounded = !['list', 'custom'].includes(type);
   const operator = requestedOperator
     ? XLSX_VALIDATION_OPERATORS.find((value) => value.toLowerCase() === requestedOperator.toLowerCase())
-    : bounded ? 'between' : '';
+    : bounded
+      ? 'between'
+      : '';
   if (requestedOperator && !operator) {
     throw new Error(`add_validation operator must be one of ${XLSX_VALIDATION_OPERATORS.join(', ')}`);
   }

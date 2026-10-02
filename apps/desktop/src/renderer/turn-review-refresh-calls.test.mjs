@@ -16,8 +16,8 @@ function mount(t, sessionId = 'sess-review-calls') {
       },
     },
   });
-  const render = (items, busy) =>
-    act(async () => root.render(React.createElement(TurnReviewBar, { items, sessionId, active: true, busy })));
+  const render = (items, busy, active = true) =>
+    act(async () => root.render(React.createElement(TurnReviewBar, { items, sessionId, active, busy })));
   const answer = (value = {}) =>
     act(async () =>
       pending.shift()({
@@ -112,6 +112,64 @@ test('an entered session with real changes shows its bar once the first read ans
   assert.ok(bar());
   assert.equal(requests.length, 2);
   await answer({ files: [{ path: 'a.txt', status: 'M', additions: 2, deletions: 0 }] });
+});
+
+test('a slow first read never releases an estimated bar before its empty authoritative answer', async (t) => {
+  const { render, answer, bar, entryPending } = mount(t, 'sess-review-entry-slow');
+  const patch = 'diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-before\n+after';
+  await render([prompt, { ...edit('slow'), uiDiff: patch }], false);
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 650)));
+  assert.equal(bar(), null, 'a slow read must not paint the transcript estimate');
+  assert.ok(entryPending(), 'the conversation, not a shorter review timer, owns the reveal deadline');
+  await answer();
+  assert.equal(bar(), null, 'the authoritative empty answer leaves the dock unchanged');
+  assert.equal(entryPending(), false);
+  await answer();
+});
+
+for (const hasChanges of [true, false]) {
+  test(`first focus retains an already displayed review until its ${hasChanges ? 'unchanged' : 'empty'} answer`, async (t) => {
+    const { render, answer, bar, entryPending, pending, requests } = mount(t, `review-first-focus-${hasChanges}`);
+    const patch = 'diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-before\n+after';
+    const items = [prompt, { ...edit('focus'), uiDiff: patch }];
+    await render(items, false, false);
+    const displayed = bar();
+    assert.ok(displayed);
+    assert.equal(requests.length, 0, 'an unfocused pane does not start background capability reads');
+    await render(items, false, true);
+    assert.equal(requests.length, 1);
+    assert.equal(bar(), displayed, 'first focus must not retract the already painted review');
+    assert.equal(entryPending(), false);
+    await render(items, false, false);
+    assert.equal(bar(), displayed, 'blurring during the read keeps the same review');
+    await answer({
+      checkpointId: 'prompt',
+      files: hasChanges ? [{ path: 'a.txt', status: 'M', additions: 1, deletions: 1 }] : [],
+    });
+    assert.equal(pending.length, 0);
+    assert.equal(bar(), hasChanges ? displayed : null, 'only an authoritative content change removes the bar');
+  });
+}
+
+test('blurring a first foreground read never reveals a temporary transcript estimate', async (t) => {
+  const { render, answer, bar, entryPending, pending } = mount(t, 'review-entry-blur');
+  const patch = 'diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-before\n+after';
+  const items = [prompt, { ...edit('blur'), uiDiff: patch }];
+  await render(items, false, true);
+  assert.equal(bar(), null);
+  assert.equal(entryPending(), true);
+  await render(items, false, false);
+  assert.equal(bar(), null, 'blur cannot turn an undecided entry into a visible estimate');
+  assert.equal(entryPending(), true);
+  await answer();
+  await answer();
+  assert.equal(pending.length, 0);
+  assert.equal(entryPending(), false);
+  assert.equal(bar(), null);
+  await render(items, false, true);
+  assert.equal(bar(), null);
+  await answer();
+  assert.equal(bar(), null);
 });
 
 test('a review tag is only sent while the review it names is still cached', async (t) => {

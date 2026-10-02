@@ -151,9 +151,15 @@ export const pointerActions = defineBrowserActions({
       throw new Error('scroll coordinate target requires snapshotId, x, and y');
     }
     if (semantic) {
-      await mutateRef(context, (await actionRef(context)) as string, (ref) =>
-        snapshots.evaluateRefScript(guest, ref, scrollWithinRefScript(dx, effectiveDy), signal, 5_000)
+      const moved = await mutateRef(
+        context,
+        (await actionRef(context)) as string,
+        (ref) =>
+          snapshots.evaluateRefScript(guest, ref, scrollWithinRefScript(dx, effectiveDy), signal, 5_000) as Promise<{
+            changed: boolean;
+          }>
       );
+      if (moved.changed) services.documents.recordScroll(guest);
       state.invalidateInteraction(guest);
       return reply.decorateRecovery(await actionSnapshot(), refRecovery);
     }
@@ -231,12 +237,14 @@ function scrollWithinRefScript(dx: number, effectiveDy: number | null): string {
       scroller = scroller.parentElement;
     }
     scroller ||= document.scrollingElement || document.documentElement;
+    const before = [scroller.scrollLeft, scroller.scrollTop];
     scroller.scrollBy({
       left: ${String(dx)},
       top: ${effectiveDy === null ? 'Math.round(scroller.clientHeight * 0.8)' : String(effectiveDy)},
       behavior: 'instant'
     });
     return {
+      changed: scroller.scrollLeft !== before[0] || scroller.scrollTop !== before[1],
       scrollLeft: Math.round(scroller.scrollLeft),
       scrollTop: Math.round(scroller.scrollTop),
     };

@@ -61,13 +61,14 @@ export function reviewPptxVisualCritique({ critique = [], pageCount = 0, require
   const bySlide = new Map();
   for (const raw of Array.isArray(critique) ? critique : []) {
     if (!plainObject(raw)) continue;
-    const slide = Number(raw.slide);
+    // A PDF of designed pages names its entries by page.
+    const slide = Number(raw.slide ?? raw.page);
     if (!Number.isInteger(slide) || slide < 1 || slide > total || bySlide.has(slide)) {
       issues.push(
         issue(
           'visual_critique_invalid_slide',
           '/',
-          `Visual critique has an invalid or duplicate slide index: ${raw.slide}`,
+          `Visual critique has an invalid or duplicate slide index: ${raw.slide ?? raw.page}`,
           'visual-critique'
         )
       );

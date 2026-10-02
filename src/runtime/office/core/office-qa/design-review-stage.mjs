@@ -4,6 +4,7 @@
 import { inferPptxSlideRoles, reviewOfficeDesign } from '../../quality/design-review.mjs';
 import { issue } from '../../quality/assurance-issue.mjs';
 import { reviewSnapshot } from '../office-actions-inspect.mjs';
+import { documentBriefIssues } from '../../quality/document-brief.mjs';
 
 function unavailableDesignReview(session, error) {
   return {
@@ -64,6 +65,14 @@ export async function reviewQaDesign(session, args) {
   } catch (error) {
     designReview = unavailableDesignReview(session, error);
   }
+  // A PDF of designed pages was read against its brief on the working deck at author time (the plan
+  // count, the facts' locators); those readings join the PDF's own review.
+  if (session.authoredFrame === true && Array.isArray(session.frameDesignIssues) && session.frameDesignIssues.length) {
+    designReview = { ...designReview, issues: [...(designReview.issues || []), ...session.frameDesignIssues] };
+  }
+  // A Word document or workbook written to a brief: its figures against the facts line, its facts against the sources.
+  const briefIssues = documentBriefIssues(session.format, currentSnapshot?.document, session.authoredBrief);
+  if (briefIssues.length) designReview = { ...designReview, issues: [...(designReview.issues || []), ...briefIssues] };
   return {
     designReview,
     currentSnapshot,

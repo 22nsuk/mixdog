@@ -9,6 +9,7 @@ import { createCaptureImageDedupStore } from './capture-image-dedup';
 import type { createOcrCapturePreferenceStore } from '../input/capability-policy';
 import type { ComputerCommand } from '../shared/types';
 import type { CaptureEngineHost } from './capture';
+import { computerErrorCode } from '../../../../../../src/runtime/computer-bridge/error-code.mjs';
 
 /** A launched window is listed before its content finishes laying out: Paint
  *  shows 89 accessible elements half a second in and 114 once settled. */
@@ -108,9 +109,9 @@ export function createCaptureAfter(
             action: 'capture',
             mode: captureMode,
             max_elements: command.capture_after_max_elements || DEFAULT_CAPTURE_MAX_ELEMENTS,
-            include_ocr: ocrPreference.includeOcr,
-            ocr_language: ocrPreference.ocrLanguage,
-            max_ocr_words: ocrPreference.maxOcrWords,
+            include_ocr: captureMode === 'ax' ? false : ocrPreference.includeOcr,
+            ocr_language: captureMode === 'ax' ? undefined : ocrPreference.ocrLanguage,
+            max_ocr_words: captureMode === 'ax' ? undefined : ocrPreference.maxOcrWords,
             image_output: command.capture_after_image_output,
             window: undefined,
             window_id: windowId,
@@ -144,6 +145,9 @@ export function createCaptureAfter(
       };
     } catch (error) {
       host.assertExecutionNotAborted();
+      // User takeover belongs to the command queue, not the ordinary
+      // observation-retry path. The input may already have been delivered.
+      if (computerErrorCode(error) === 'user_input_active') throw error;
       return { metadata: { ok: false, window_id: windowId, error: (error as Error).message || String(error) } };
     }
   };

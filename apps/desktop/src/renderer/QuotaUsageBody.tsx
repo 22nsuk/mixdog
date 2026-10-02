@@ -12,7 +12,16 @@ import { t } from './i18n';
 import { OpenSelect } from './OpenSelect';
 import { modelDisplayName, providerDisplayName, ProviderIcon } from './provider-display';
 import { QuotaTrend } from './QuotaTrend';
-import { quotaClock, quotaPace, quotaPercent, quotaSeries, quotaTone } from './quota-usage-model';
+import {
+  quotaClock,
+  quotaPace,
+  quotaPercent,
+  quotaSeries,
+  quotaTone,
+  quotaValue,
+  quotaValueBreakdown,
+  quotaValueCaution,
+} from './quota-usage-model';
 import {
   cachedQuotaAnswer,
   openingQuotaQuestion,
@@ -141,6 +150,7 @@ function QuotaMix({
 function QuotaTable({
   provider,
   totals,
+  summary,
   consumed,
   models,
   outside,
@@ -148,6 +158,7 @@ function QuotaTable({
 }: {
   provider: string;
   totals: Row;
+  summary: Row;
   /** Share of the limit used in the period, by Mixdog and from outside it. */
   consumed: number;
   models: Row[];
@@ -214,7 +225,7 @@ function QuotaTable({
                 </div>
               </td>
               <td className="stats-share-cell">{quotaPercent(consumed)}</td>
-              <RouteCells route={totals} />
+              <RouteCells route={totals} costValue={quotaValue(summary)} />
             </tr>
             {open &&
               models.map((row) => {
@@ -233,7 +244,10 @@ function QuotaTable({
               <tr className="stats-model-row">
                 <td className="stats-model-cell">{t('Outside Mixdog')}</td>
                 <td className="stats-share-cell">{quotaPercent(outside)}</td>
-                <td colSpan={7} />
+                <td colSpan={6} />
+                <td className="stats-cost-cell" title={quotaValueCaution()}>
+                  {summary.outsideCostUsd == null ? '—' : usageMoney(summary.outsideCostUsd)}
+                </td>
               </tr>
             )}
           </tbody>
@@ -311,7 +325,7 @@ function QuotaHistory({
             if (exhaustedAt) maxed = quotaClock(exhaustedAt, now);
             else if (estimated) maxed = quotaClock(forecastAt, now);
             // What the window's requests cost at list price: in all, per
-            // percent of the limit, and the whole limit at that rate.
+            // percent of the limit, and the whole limit at Mixdog's rate.
             const perPercent = row.costPerPercent == null ? null : statsNumber(row.costPerPercent);
             return (
               <tr key={key} data-active={key === anchor ? 'true' : undefined}>
@@ -326,9 +340,9 @@ function QuotaHistory({
                   {maxed}
                   {estimated && <span className="quota-history-estimate">{t('Estimated')}</span>}
                 </td>
-                <td>{usageMoney(row.costUsd)}</td>
+                <td title={`${quotaValueBreakdown(row)}\n${quotaValueCaution()}`}>{quotaValue(row)}</td>
                 <td>{perPercent === null ? '—' : usageMoney(perPercent)}</td>
-                <td>{perPercent === null ? '—' : usageMoney(perPercent * 100)}</td>
+                <td>{quotaValue(row, true)}</td>
               </tr>
             );
           })}
@@ -516,19 +530,18 @@ export function QuotaUsageBody({ api }: { api: QuotaApi }) {
   const paceDelta = pace === null ? null : used - pace;
   const runsOutAt = statsNumber(forecast.exhaustAt);
   const tone = current ? quotaTone(used, paceDelta, runsOutAt > 0) : '';
-  // What the requests behind the meter would cost at API list prices: so far,
-  // per percent of the limit, and at the full limit at that rate.
+  // A limit window: the whole limit at Mixdog's own rate, outside use excluded.
   const perPercent = summary.costPerPercent == null ? null : statsNumber(summary.costPerPercent);
   const valueCard: CardSpec = {
     label: t('Subscription list-price value'),
-    value: usageMoney(summary.costUsd),
-    note: perPercent === null ? '' : t('About {{amount}} at 100%', { amount: usageMoney(perPercent * 100) }),
-    detail: t('Subscription values use list prices. API costs may be estimates; neither is an invoice.'),
+    value: quotaValue(summary, windowView),
+    detail: `${quotaValueBreakdown(summary)}\n${quotaValueCaution()}\n${t('Subscription values use list prices. API costs may be estimates; neither is an invoice.')}`,
   };
   const perPercentCard: CardSpec = {
     label: t('Value per 1%'),
     value: perPercent === null ? '—' : usageMoney(perPercent),
-    detail: t('Model shares are estimates split by list-price value.'),
+    note: perPercent === null ? t('Not enough measured usage to estimate.') : '',
+    detail: quotaValueCaution(),
   };
   let paceNote = '';
   if (paceDelta !== null && Math.round(paceDelta) > 0) {
@@ -681,6 +694,7 @@ export function QuotaUsageBody({ api }: { api: QuotaApi }) {
           <QuotaTable
             provider={provider}
             totals={record(loaded.totals)}
+            summary={summary}
             consumed={statsNumber(summary.consumed)}
             models={models}
             outside={outside}

@@ -5,7 +5,7 @@ import { DESKTOP_CAPTURE_TIMEOUT_MS, OWNED_CAPTURE_TIMEOUT_MS, withTimeout } fro
 import type { CaptureAttempt, CaptureBackend } from '../shared/capture-attempts';
 import type { ComputerCommand } from '../shared/types';
 import { nativeWindowSurface, type NativeSurfaceHost } from './capture-native-surface';
-import { CaptureSourceError, type Surface } from './capture-source-attempt';
+import { CaptureSourceError, type Bounds, type Surface } from './capture-source-attempt';
 import { electronWindowForNativeId } from './window-handles';
 import { computerCaptureSize } from '../../../../../../src/runtime/computer-bridge/capture-size.mjs';
 
@@ -19,6 +19,7 @@ export interface CaptureSourceRequest {
   height: number;
   clientWidth: number;
   clientHeight: number;
+  client?: Bounds;
   maxWidth: number;
   preserveResolution?: boolean;
   attempts: CaptureAttempt[];
@@ -84,7 +85,10 @@ export function buildCapturePlan(host: NativeSurfaceHost, request: CaptureSource
   plan.push({ backend: 'composited', acquire: () => compositedSurface(request) });
   if (windowId)
     for (const backend of ['print_window', 'wgc'] as const) {
-      plan.push({ backend, acquire: () => nativeWindowSurface(host, command, windowId, backend, attempts) });
+      plan.push({
+        backend,
+        acquire: () => nativeWindowSurface(host, command, windowId, backend, attempts, request.client),
+      });
     }
   return plan;
 }

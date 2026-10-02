@@ -512,13 +512,30 @@ function pptxTextShapes(slide) {
     .map(numericFrame);
 }
 
-function reviewPptxTextShape(slide, shape, { width, height }, issues) {
+// The floors by how the page is read. A slide is seen whole on a screen, fitted to its height: PowerPoint's 4:3
+// (10 × 7.5 in) and wide (13.33 × 7.5 in) pages share that 7.5 in, so a point size reads the same on both, and a
+// shorter canvas (the 10 × 5.625 in 16:9) is enlarged to the same height — the floors scale with the height, never
+// the width (scaled by width, a 4:3 deck was held to 9 pt body). A PDF's designed sheet is paper in the hand: the
+// print floors, a consulting page's smallest body (9 pt) and its footnotes (7 pt).
+const SLIDE_HEIGHT_PT = 540;
+const PRINT_BODY_MIN_PT = 9;
+const PRINT_CHROME_MIN_PT = 7;
+function typeFloors(document, height) {
+  if (document?.printSheet) return { body: PRINT_BODY_MIN_PT, chrome: PRINT_CHROME_MIN_PT };
+  const scale = height > 0 ? Math.min(1, height / SLIDE_HEIGHT_PT) : 1;
+  const floor = (points) => Math.round(points * scale * 2) / 2;
+  return { body: floor(PPTX_BODY_MIN_PT), chrome: floor(PPTX_CHROME_MIN_PT) };
+}
+
+function reviewPptxTextShape(slide, shape, { width, height }, issues, floors) {
   const fontSize = Number(shape.font?.size) || 0;
   const chrome = isPptxChromeText(shape);
-  if (fontSize > 0 && fontSize < PPTX_CHROME_MIN_PT) {
-    issues.push(issue('small_font', shape.path || slide.path, `Text is smaller than ${PPTX_CHROME_MIN_PT} pt.`));
-  } else if (fontSize > 0 && fontSize < PPTX_BODY_MIN_PT && !chrome) {
-    issues.push(issue('small_font', shape.path || slide.path, `Body text is smaller than ${PPTX_BODY_MIN_PT} pt.`));
+  const chromeMin = floors.chrome;
+  const bodyMin = floors.body;
+  if (fontSize > 0 && fontSize < chromeMin) {
+    issues.push(issue('small_font', shape.path || slide.path, `Text is smaller than ${chromeMin} pt.`));
+  } else if (fontSize > 0 && fontSize < bodyMin && !chrome) {
+    issues.push(issue('small_font', shape.path || slide.path, `Body text is smaller than ${bodyMin} pt.`));
   }
   const surface = containingSurface(shape, slide.shapes || []);
   const backgroundColor = solidShapeFill(shape) ?? solidShapeFill(surface) ?? slide.background?.color;
@@ -815,6 +832,7 @@ function reviewPptxNumberSources(slide, textShapes, issues) {
 export function reviewPptxStructure(document, auditProfile = '') {
   const issues = [];
   const canvas = { width: Number(document?.slideWidth) || 0, height: Number(document?.slideHeight) || 0 };
+  const floors = typeFloors(document, canvas.height);
   // A deck read from the file carries no slots; the roles come from the same
   // induction the snapshot uses, and annotating twice changes nothing.
   if (!(document?.slides || []).some((slide) => (slide.shapes || []).some((shape) => shape.slot))) {
@@ -833,7 +851,7 @@ export function reviewPptxStructure(document, auditProfile = '') {
     reviewPptxHierarchy(slide, issues);
     reviewPptxCharts(slide, issues);
     const textShapes = pptxTextShapes(slide);
-    for (const shape of textShapes) reviewPptxTextShape(slide, shape, canvas, issues);
+    for (const shape of textShapes) reviewPptxTextShape(slide, shape, canvas, issues, floors);
     reviewPptxTextPairs(slide, textShapes, issues);
     reviewPptxEvidenceCover(slide, textShapes, issues);
     reviewPptxTextOcclusion(slide, textShapes, issues);

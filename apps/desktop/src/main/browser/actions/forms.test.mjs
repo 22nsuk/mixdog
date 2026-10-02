@@ -112,3 +112,37 @@ test('savedAccount passes cancellation through and never submits after takeover'
   context.services.credentials.fillStored = async () => assert.fail('an already-cancelled fill must not start');
   await assert.rejects(formActions.fill(context), (error) => error === reason);
 });
+
+test('partial multi-field failure reports completed inputs and a fresh observation without replay', async () => {
+  const writes = [];
+  let observed = 0;
+  const context = {
+    guest: {},
+    command: { action: 'fill', fields: ['first', 'second', 'third'].map((ref) => ({ ref, text: ref })) },
+    refRecovery: {},
+    services: {
+      state: { invalidateInteraction() {} },
+      reply: {
+        withRefRecovery: async (_guest, _recovery, ref, operation) => operation(ref),
+        snapshotResult: async (_guest, command) => {
+          observed++;
+          assert.equal(command.action, 'snapshot');
+          return { text: 'First=first; second disabled; third empty' };
+        },
+      },
+      refActions: {
+        prepareRef: async (_guest, ref) => {
+          if (ref === 'second') throw new Error('element is disabled');
+          return ref;
+        },
+        fillRef: async (_guest, ref, text) => writes.push([ref, text]),
+      },
+    },
+  };
+  await assert.rejects(
+    formActions.fill(context),
+    /field 2 of 3; 1 field\(s\) completed[\s\S]*not replayed[\s\S]*element is disabled[\s\S]*First=first/
+  );
+  assert.deepEqual(writes, [['first', 'first']]);
+  assert.equal(observed, 1);
+});

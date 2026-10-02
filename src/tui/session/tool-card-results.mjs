@@ -1,7 +1,7 @@
 /**
  * src/tui/session/tool-card-results.mjs — the tool-card result state machine
  * (patchToolCardResult + flushToolResults) for the session runtime
- * (session-local.mjs), as a dependency-injection factory.
+ * (local-session-runtime.mjs), as a dependency-injection factory.
  *
  * These handlers own the per-turn accounting that reflects tool results into
  * store items: aggregate cards, non-aggregate/legacy agent-job cards, grouped

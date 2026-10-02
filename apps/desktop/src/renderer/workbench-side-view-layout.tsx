@@ -1,4 +1,12 @@
-import { Fragment, useEffect, useRef, useState, type DragEvent as ReactDragEvent, type ReactNode } from 'react';
+import {
+  Fragment,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type DragEvent as ReactDragEvent,
+  type ReactNode,
+} from 'react';
 import type { LucideIcon } from 'lucide-react';
 import {
   DESKTOP_SIDEBAR_DEFAULT_WIDTH,
@@ -316,20 +324,23 @@ function WorkbenchSideSection({
   basis: number;
   children(active: boolean, titleDragProps: WorkbenchSideTitleDragProps): ReactNode;
 }) {
-  const titleDragProps: WorkbenchSideTitleDragProps = {
-    draggable: movable,
-    onDragStart: (event) => {
-      if (!movable) return;
-      activeWorkbenchSideDrag = { type: 'view', id };
-      event.dataTransfer.effectAllowed = 'move';
-      event.dataTransfer.setData(WORKBENCH_SIDE_VIEW_MIME, id);
-      event.dataTransfer.setData('text/plain', id);
-      event.dataTransfer.setDragImage(event.currentTarget, 0, 0);
-    },
-    onDragEnd: () => {
-      activeWorkbenchSideDrag = null;
-    },
-  };
+  const titleDragProps = useMemo<WorkbenchSideTitleDragProps>(
+    () => ({
+      draggable: movable,
+      onDragStart: (event) => {
+        if (!movable) return;
+        activeWorkbenchSideDrag = { type: 'view', id };
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData(WORKBENCH_SIDE_VIEW_MIME, id);
+        event.dataTransfer.setData('text/plain', id);
+        event.dataTransfer.setDragImage(event.currentTarget, 0, 0);
+      },
+      onDragEnd: () => {
+        activeWorkbenchSideDrag = null;
+      },
+    }),
+    [id, movable]
+  );
   return (
     <section
       className="workbench-side-section"
@@ -579,7 +590,6 @@ export function WorkbenchSidePanel({
     event.preventDefault();
   };
   if (!root || groups.length === 0) return null;
-  const sectioned = selectedGroup.length > 1;
   return (
     <aside
       className="workbench-side-panel"
@@ -652,136 +662,125 @@ export function WorkbenchSidePanel({
             />
           </header>
         )}
-        <div
-          key={root}
-          className="workbench-side-panel-body"
-          ref={panelBodyRef}
-          inert={surfacesActive ? true : undefined}
-          aria-hidden={surfacesActive ? true : undefined}
-          onDragOver={(event) => {
-            if (!movable || !carriesSideDrag(event)) return;
-            event.preventDefault();
-            event.dataTransfer.dropEffect = 'move';
-            const payload = dragPayload(event);
-            const body = panelBodyRef.current;
-            if (!payload || !body) {
-              setPaneDrop(null);
-              return;
-            }
-            const panes = Array.from(body.children).filter(
-              (child): child is HTMLElement =>
-                child instanceof HTMLElement && child.classList.contains('workbench-side-section')
-            );
-            if (panes.length !== selectedGroup.length) {
-              setPaneDrop(null);
-              return;
-            }
-            const bodyBounds = body.getBoundingClientRect();
-            const paneBounds = panes.map((pane) => pane.getBoundingClientRect());
-            const centers = paneBounds.map((bounds) => (bounds.top + bounds.bottom) / 2);
-            const slot = workbenchSidePaneDropSlot(centers, event.clientY);
-            if (workbenchSidePaneDropIsNoop(selectedGroup, payload.type, payload.id, slot)) {
-              setPaneDrop(null);
-              return;
-            }
-            const edges = [bodyBounds.top, ...centers, bodyBounds.bottom];
-            const boundaries = [
-              paneBounds[0].top,
-              ...paneBounds.slice(0, -1).map((bounds, index) => (bounds.bottom + paneBounds[index + 1].top) / 2),
-              paneBounds[paneBounds.length - 1].bottom,
-            ];
-            const top = Math.max(0, edges[slot] - bodyBounds.top);
-            const height = Math.max(1, edges[slot + 1] - edges[slot]);
-            setPaneDrop({
-              targetRoot: slot === 0 ? selectedGroup[0] : selectedGroup[slot - 1],
-              placement: slot === 0 ? 'inside-before' : 'inside-after',
-              slot,
-              top,
-              height,
-              boundary: Math.max(0, Math.min(Math.max(0, height - 2), boundaries[slot] - bodyBounds.top - top)),
-            });
-          }}
-          onDragLeave={(event) => {
-            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-              setPaneDrop(null);
-            }
-          }}
-          onDrop={(event) => {
-            if (!movable || !paneDrop) return;
-            const payload = dragPayload(event);
-            if (!payload) {
-              setPaneDrop(null);
-              return;
-            }
-            event.preventDefault();
-            if (payload.type === 'group') {
-              onMoveGroup(payload.id, side, paneDrop.targetRoot, paneDrop.placement);
-            } else {
-              onMoveView(payload.id, side, paneDrop.targetRoot, paneDrop.placement);
-            }
-            activeWorkbenchSideDrag = null;
-            setPaneDrop(null);
-          }}
-        >
-          {paneDrop && (
-            <div
-              className="workbench-side-pane-drop-overlay"
-              data-drop-slot={paneDrop.slot}
-              style={{ top: paneDrop.top, height: paneDrop.height }}
-            >
-              <span style={{ top: paneDrop.boundary }} />
-            </div>
-          )}
-          {selectedGroup.map((id, index) => {
-            const descriptor = descriptors.get(id);
-            if (!descriptor) return null;
-            return (
-              <Fragment key={id}>
-                <WorkbenchSideSection
-                  id={id}
-                  active={open}
-                  movable={movable}
-                  sectioned={sectioned}
-                  order={index * 2}
-                  basis={splitSizes[index] ?? 100 / selectedGroup.length}
-                >
-                  {(active, titleDragProps) => renderView(id, active, titleDragProps)}
-                </WorkbenchSideSection>
-                {index < selectedGroup.length - 1 && (
-                  <div
-                    className="workbench-side-sash"
-                    role="separator"
-                    aria-orientation="horizontal"
-                    aria-label={t('Resize combined views')}
-                    style={{ order: index * 2 + 1 }}
-                    onPointerDown={(event) => startSplitResize(index, event)}
-                  />
-                )}
-              </Fragment>
-            );
-          })}
-        </div>
-        {retainedGroups.map((group) => {
-          const retainedRoot = group[0];
-          const retainedSplitKey = sideSplitKey(side, group);
-          const retainedSizes = splitSizesByKey[retainedSplitKey] ?? readSideSplitSizes(retainedSplitKey, group.length);
+        {/* Selected and retained groups share one keyed tree. Separate JSX
+            branches remounted every destination on selection, discarding its
+            warmed controls, local state and scroll position. */}
+        {[selectedGroup, ...retainedGroups].map((group) => {
+          const selected = group[0] === root;
+          const groupSplitKey = sideSplitKey(side, group);
+          const sizes = selected
+            ? splitSizes
+            : (splitSizesByKey[groupSplitKey] ?? readSideSplitSizes(groupSplitKey, group.length));
           return (
-            <div key={retainedRoot} className="workbench-side-panel-body" hidden inert aria-hidden="true">
-              {group.map((id, index) =>
-                descriptors.has(id) ? (
-                  <WorkbenchSideSection
-                    key={id}
-                    id={id}
-                    active={false}
-                    movable={movable}
-                    sectioned={group.length > 1}
-                    order={index * 2}
-                    basis={retainedSizes[index] ?? 100 / group.length}
-                  >
-                    {(active, titleDragProps) => renderView(id, active, titleDragProps)}
-                  </WorkbenchSideSection>
-                ) : null
+            <div
+              key={group[0]}
+              className="workbench-side-panel-body"
+              ref={selected ? panelBodyRef : undefined}
+              hidden={!selected}
+              inert={!selected || surfacesActive ? true : undefined}
+              aria-hidden={!selected || surfacesActive ? true : undefined}
+              onDragOver={(event) => {
+                if (!selected || !movable || !carriesSideDrag(event)) return;
+                event.preventDefault();
+                event.dataTransfer.dropEffect = 'move';
+                const payload = dragPayload(event);
+                const body = panelBodyRef.current;
+                if (!payload || !body) {
+                  setPaneDrop(null);
+                  return;
+                }
+                const panes = Array.from(body.children).filter(
+                  (child): child is HTMLElement =>
+                    child instanceof HTMLElement && child.classList.contains('workbench-side-section')
+                );
+                if (panes.length !== selectedGroup.length) {
+                  setPaneDrop(null);
+                  return;
+                }
+                const bodyBounds = body.getBoundingClientRect();
+                const paneBounds = panes.map((pane) => pane.getBoundingClientRect());
+                const centers = paneBounds.map((bounds) => (bounds.top + bounds.bottom) / 2);
+                const slot = workbenchSidePaneDropSlot(centers, event.clientY);
+                if (workbenchSidePaneDropIsNoop(selectedGroup, payload.type, payload.id, slot)) {
+                  setPaneDrop(null);
+                  return;
+                }
+                const edges = [bodyBounds.top, ...centers, bodyBounds.bottom];
+                const boundaries = [
+                  paneBounds[0].top,
+                  ...paneBounds.slice(0, -1).map((bounds, index) => (bounds.bottom + paneBounds[index + 1].top) / 2),
+                  paneBounds[paneBounds.length - 1].bottom,
+                ];
+                const top = Math.max(0, edges[slot] - bodyBounds.top);
+                const height = Math.max(1, edges[slot + 1] - edges[slot]);
+                setPaneDrop({
+                  targetRoot: slot === 0 ? selectedGroup[0] : selectedGroup[slot - 1],
+                  placement: slot === 0 ? 'inside-before' : 'inside-after',
+                  slot,
+                  top,
+                  height,
+                  boundary: Math.max(0, Math.min(Math.max(0, height - 2), boundaries[slot] - bodyBounds.top - top)),
+                });
+              }}
+              onDragLeave={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                  setPaneDrop(null);
+                }
+              }}
+              onDrop={(event) => {
+                if (!selected || !movable || !paneDrop) return;
+                const payload = dragPayload(event);
+                if (!payload) {
+                  setPaneDrop(null);
+                  return;
+                }
+                event.preventDefault();
+                if (payload.type === 'group') {
+                  onMoveGroup(payload.id, side, paneDrop.targetRoot, paneDrop.placement);
+                } else {
+                  onMoveView(payload.id, side, paneDrop.targetRoot, paneDrop.placement);
+                }
+                activeWorkbenchSideDrag = null;
+                setPaneDrop(null);
+              }}
+            >
+              {selected && paneDrop && (
+                <div
+                  className="workbench-side-pane-drop-overlay"
+                  data-drop-slot={paneDrop.slot}
+                  style={{ top: paneDrop.top, height: paneDrop.height }}
+                >
+                  <span style={{ top: paneDrop.boundary }} />
+                </div>
               )}
+              {group.map((id, index) => {
+                const descriptor = descriptors.get(id);
+                if (!descriptor) return null;
+                return (
+                  <Fragment key={id}>
+                    <WorkbenchSideSection
+                      id={id}
+                      active={selected && open}
+                      movable={movable}
+                      sectioned={group.length > 1}
+                      order={index * 2}
+                      basis={sizes[index] ?? 100 / group.length}
+                    >
+                      {(active, titleDragProps) => renderView(id, active, titleDragProps)}
+                    </WorkbenchSideSection>
+                    {index < group.length - 1 && (
+                      <div
+                        className="workbench-side-sash"
+                        role="separator"
+                        aria-orientation="horizontal"
+                        aria-label={t('Resize combined views')}
+                        style={{ order: index * 2 + 1 }}
+                        onPointerDown={selected ? (event) => startSplitResize(index, event) : undefined}
+                      />
+                    )}
+                  </Fragment>
+                );
+              })}
             </div>
           );
         })}

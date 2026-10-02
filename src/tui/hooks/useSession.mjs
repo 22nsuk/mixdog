@@ -1,7 +1,7 @@
 /**
  * src/tui/hooks/useSession.mjs — subscribe React to the session store.
  *
- * The store (session-local.mjs) lives outside React and emits immutable snapshots;
+ * The store (local-session-runtime.mjs) lives outside React and emits immutable snapshots;
  * useSyncExternalStore re-renders the tree whenever a snapshot changes. This
  * keeps the agentLoop fully decoupled from React's lifecycle.
  */

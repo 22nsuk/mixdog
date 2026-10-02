@@ -136,9 +136,18 @@ export function useCommandSurfaceLifecycle({
       }
       const capabilities = LOADERS[surface];
       const results = await Promise.all(
-        capabilities.map((capability) =>
-          readSurfaceCapability(api, capabilityRequest(capability, surface === 'context' ? [{ inspect: true }] : []))
-        )
+        capabilities.map((capability) => {
+          const read = readSurfaceCapability(
+            api,
+            capabilityRequest(
+              capability,
+              surface === 'context' && capability === 'contextStatus' ? [{ inspect: true }] : []
+            )
+          );
+          // The session-spend footer is secondary: a ledger failure leaves it
+          // out instead of failing the context reading beside it.
+          return capability === 'getSessionUsage' ? read.catch((): Awaited<typeof read> => ({ value: null })) : read;
+        })
       );
       if (loadSequence.current === request) {
         const next: Record<string, unknown> = {

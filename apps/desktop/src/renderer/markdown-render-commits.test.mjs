@@ -18,6 +18,38 @@ import { markdownComponents } from './markdown-components';
 import { parseStreamingMarkdownAst } from './markdown-worker-client';
 import MarkdownAstBody from './MarkdownAstBody';
 import StreamingMarkdownBody from './StreamingMarkdownBody';
+import { TranscriptRow } from './transcript-row';
+import { preloadMarkdownBody } from './markdown-body-loader';
+
+test('preloaded history paints rich markdown without another lazy fallback', async () => {
+  const text = '## Ready history\n\nA **formatted** answer.';
+  await withDom(async ({ host, root }) => {
+    await preloadMarkdownBody();
+    await parseStreamingMarkdownAst(text);
+    let firstCommit = null;
+    await act(async () =>
+      root.render(
+        React.createElement(
+          React.Profiler,
+          {
+            id: 'history',
+            onRender: () => {
+              firstCommit ??= {
+                heading: host.querySelector('h2')?.textContent,
+                strong: host.querySelector('strong')?.textContent,
+                pending: Boolean(host.querySelector('[data-transcript-pending]')),
+              };
+            },
+          },
+          React.createElement(TranscriptRow, {
+            item: { id: 'ready-history', kind: 'assistant', text },
+          })
+        )
+      )
+    );
+    assert.deepEqual(firstCommit, { heading: 'Ready history', strong: 'formatted', pending: false });
+  });
+});
 
 async function withDom(run) {
   const { dom, restore } = installTestDom(null, { jsdom: { url: 'http://localhost/' } });

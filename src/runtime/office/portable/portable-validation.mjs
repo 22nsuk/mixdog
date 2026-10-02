@@ -621,7 +621,7 @@ async function sheetAuditIssues(zip) {
 }
 
 /** What the slides measure: fit, contrast, tracking, spacing, balance, structure, charts. */
-async function presentationMetricIssues(zip) {
+async function presentationMetricIssues(zip, options = {}) {
   const issues = [];
   const inspected = await inspectPptxTextBoxes(zip);
   for (const fit of reviewTextBoxFit(inspected.boxes, {
@@ -654,7 +654,10 @@ async function presentationMetricIssues(zip) {
   // neighbours share, a margin breach, a collision. A defect is cheapest to
   // answer in the turn that wrote it, not one call later. Contrast stays with
   // the metrics pass above, which measures it against the resolved surface.
-  for (const finding of reviewOfficeStructure({ format: 'pptx', document: await snapshotPptx(zip) })) {
+  // A PDF's designed sheets (printSheet) are held to the print type floors, not a screen's.
+  const document = await snapshotPptx(zip);
+  if (options.printSheet) document.printSheet = true;
+  for (const finding of reviewOfficeStructure({ format: 'pptx', document })) {
     if (finding.code === 'low_contrast') continue;
     issues.push(finding);
   }
@@ -1060,7 +1063,7 @@ export async function issuesPortableOoxml(path, format, options = {}) {
   issues.push(...(await placeholderIssues(zip, format)));
   issues.push(...(await imagePlacementIssues(zip, format)));
   if (format === 'xlsx') issues.push(...(await sheetAuditIssues(zip)));
-  if (format === 'pptx') issues.push(...(await presentationMetricIssues(zip)));
+  if (format === 'pptx') issues.push(...(await presentationMetricIssues(zip, options)));
   issues.push(...packageProvenanceIssues(validation));
   if (format === 'docx') issues.push(...(await documentContentIssues(zip, validation)));
   else if (format === 'xlsx') issues.push(...(await workbookContentIssues(zip, options)));

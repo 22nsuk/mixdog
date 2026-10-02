@@ -118,7 +118,7 @@ function TokenMix({ totals, loading }: { totals: Row; loading: boolean }) {
   );
 }
 
-export function RouteCells({ route }: { route: Row }) {
+export function RouteCells({ route, costValue }: { route: Row; costValue?: string }) {
   const incomplete = statsNumber(route.unmeasuredTurns) > 0;
   return (
     <>
@@ -131,7 +131,7 @@ export function RouteCells({ route }: { route: Row }) {
       <td className="stats-optional">{statsPercent(route.cacheHitRate)}</td>
       <td className="stats-total-cell">{statsTokens(route.tokens, incomplete)}</td>
       <td className="stats-cost-cell" title={unpricedTurns(route) > 0 ? t('Partial cost') : undefined}>
-        {statsMoney(route)}
+        {costValue ?? statsMoney(route)}
       </td>
     </>
   );

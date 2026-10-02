@@ -10,10 +10,9 @@ import { curveMonotoneX, line as pathLine } from 'd3-shape';
 import { useId, type CSSProperties } from 'react';
 import { t, uiFormatLocale } from './i18n';
 import { modelDisplayName } from './provider-display';
-import { quotaClock, quotaPercent } from './quota-usage-model';
+import { quotaClock, quotaPercent, quotaValue, quotaValueBreakdown, quotaValueCaution } from './quota-usage-model';
 import { record, rows } from './record-utils';
 import { TrendDetailCard, useTrendDetail } from './trend-detail';
-import { usageMoney } from './usage-format';
 import { statsNumber, statsTokens, trendPeriodLabel, type Row } from './usage-stats-model';
 
 const WIDTH = 1000;
@@ -533,7 +532,7 @@ export function QuotaTrend({
                 </div>
                 <div>
                   <dt>{t('Subscription list-price value')}</dt>
-                  <dd>{usageMoney(active.costUsd)}</dd>
+                  <dd title={`${quotaValueBreakdown(active)}\n${quotaValueCaution()}`}>{quotaValue(active)}</dd>
                 </div>
               </dl>
               {(slotModels.length > 0 || slotOutside > 0) && (

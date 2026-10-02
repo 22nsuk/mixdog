@@ -95,6 +95,9 @@ for (let repeat = 1; repeat <= repeatCount; repeat += 1) {
       `--output=${shardOutput}`,
       `--only=${shard.only}`,
       `--timeout-ms=${shard.timeoutMs}`,
+      // Collect ordinary failures across repeats; the aggregate below owns
+      // the failing exit status. A user stop still aborts the child runner.
+      '--allow-failures',
       ...(skipForeground ? ['--skip-foreground'] : []),
     ]);
   }

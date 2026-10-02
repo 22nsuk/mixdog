@@ -1,10 +1,12 @@
-import { lazy, Suspense, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import type { TranscriptItem } from './desktop-types';
 import { SessionGoalHost } from './session-goal-submission';
 
 // The review bar only paints for a file-touching turn, so its diff analysis
 // stays out of the first-screen bundle.
-const TurnReviewBar = lazy(() => import('./TurnReview').then((module) => ({ default: module.TurnReviewBar })));
+type TurnReviewModule = typeof import('./TurnReview');
+let loadedReviewModule: TurnReviewModule | null = null;
+let reviewModulePromise: Promise<TurnReviewModule> | null = null;
 
 /**
  * The chrome stacked ABOVE the prompt input: Goal capsule, runtime progress,
@@ -48,6 +50,27 @@ export function ComposerDock({
   onOpenFile?: (project: string, rel: string) => void;
   children: ReactNode;
 }) {
+  const [reviewModule, setReviewModule] = useState(() => loadedReviewModule);
+  const [moduleFailure, setModuleFailure] = useState<{ error: unknown } | null>(null);
+  useEffect(() => {
+    if (reviewModule) return undefined;
+    let active = true;
+    reviewModulePromise ??= import('./TurnReview').then((module) => (loadedReviewModule = module));
+    void reviewModulePromise.then(
+      (module) => {
+        if (active) setReviewModule(module);
+      },
+      (error: unknown) => {
+        if (active) setModuleFailure({ error });
+      }
+    );
+    return () => {
+      active = false;
+    };
+  }, [reviewModule]);
+  if (moduleFailure) throw moduleFailure.error;
+  const TurnReviewBar = reviewModule?.TurnReviewBar;
+
   return (
     <div className="composer-region">
       <SessionGoalHost placement="composer" submissionId={goalSubmissionId}>
@@ -60,7 +83,10 @@ export function ComposerDock({
           It is not a timeline row: as scroll content it read as a detached
           card floating over the composer. */}
       <div className="turn-review-slot">
-        <Suspense fallback={<span hidden data-entry-pending />}>
+        {/* Keep the entry gate until the module and its authoritative read
+            are ready, but do not let Suspense's reveal throttle hold an
+            already loaded review slot (and the entire transcript) for 300ms. */}
+        {TurnReviewBar ? (
           <TurnReviewBar
             items={reviewItems}
             active={reviewActive}
@@ -69,7 +95,9 @@ export function ComposerDock({
             cwd={reviewCwd}
             onOpenFile={onOpenFile}
           />
-        </Suspense>
+        ) : (
+          <span hidden data-entry-pending />
+        )}
       </div>
       {children}
     </div>

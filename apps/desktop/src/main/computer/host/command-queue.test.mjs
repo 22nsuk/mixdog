@@ -7,6 +7,7 @@ import { buildRecaptureRequiredPayload } from '../observation/recapture.ts';
 import { executeComputerSequenceSteps } from '../input/sequence.ts';
 import { createComputerUserWait } from '../session/user-wait.ts';
 import { computerUseOverlayPresentation, computerUseCursorPresentations } from '../overlay/model.ts';
+import { createCaptureAfter } from '../observation/capture-after.ts';
 
 const turn = () => new Promise((resolve) => setImmediate(resolve));
 function fixture(t, overrides = {}) {
@@ -50,6 +51,37 @@ function fixture(t, overrides = {}) {
   });
   return { coordinator, execution, host, calls };
 }
+
+test('concurrent clipboard reads retain serialization without requiring a window recapture', {
+  timeout: 3000,
+}, async (t) => {
+  const dispatched = [];
+  let release;
+  const firstRead = new Promise((resolve) => {
+    release = resolve;
+  });
+  const f = fixture(t, {
+    runCommand: async (command) => {
+      dispatched.push(command.session_id);
+      if (command.session_id === 'first') await firstRead;
+      return { text: `clipboard-${command.session_id}` };
+    },
+  });
+  t.after(() => release());
+  const first = f.host.executeSerialized({ action: 'clipboard_read', session_id: 'first' });
+  await turn();
+  const second = f.host.executeSerialized({ action: 'clipboard_read', session_id: 'second' });
+  await turn();
+  assert.deepEqual(dispatched, ['first']);
+  release();
+  const results = await Promise.all([first, second]);
+  assert.deepEqual(
+    results.map((result) => result.text),
+    ['clipboard-first', 'clipboard-second']
+  );
+  assert.deepEqual(dispatched, ['first', 'second']);
+  assert.deepEqual(f.calls, [], 'a global read never invents a target window to recapture');
+});
 
 test('a dispatched menu timeout survives worker cancellation without replay or recovery capture', async (t) => {
   let f;
@@ -439,6 +471,49 @@ test('recovery failure survives worker cancellation and remains blocked rather t
   assert.deepEqual(f.calls, []);
 });
 
+test('user input detected by a capture shows waiting controls and keeps user wait pending until resume', {
+  timeout: 3000,
+}, async (t) => {
+  let captures = 0;
+  const f = fixture(t, {
+    runCommand: async () => {
+      captures++;
+      throw new Error('user_input_active: user input changed during capture');
+    },
+  });
+  await assert.rejects(
+    f.host.executeSerialized({ action: 'capture', session_id: 'a', window_id: 'hwnd:0x1' }),
+    /user_input_active/
+  );
+  await f.host.waitForCleanup();
+  const snapshot = f.coordinator.snapshot();
+  assert.equal(snapshot.userControlActive, true);
+  assert.equal(snapshot.takeoverReason, 'user_input_active');
+  const presentation = computerUseOverlayPresentation(snapshot, 'ko');
+  assert.equal(presentation.visible, true);
+  assert.equal(presentation.title, '대기 중');
+  assert.equal(presentation.resumable, true);
+  assert.deepEqual(presentation.sessionIds, ['a']);
+  const wait = createComputerUserWait({
+    coordinator: f.coordinator,
+    enabled: () => false,
+    observe: async () => assert.fail('manual resume does not poll input'),
+    resume: (...args) => f.host.resumeAfterTakeover(...args),
+  });
+  t.after(() => wait.dispose());
+  let finished = false;
+  const pending = wait.wait('a', 1000).then((status) => {
+    finished = true;
+    return status;
+  });
+  await turn();
+  assert.equal(finished, false);
+  await f.host.resumeAfterTakeover(snapshot.takeoverGeneration);
+  assert.equal(await pending, 'resumed');
+  assert.equal(captures, 1, 'the interrupted capture is not replayed');
+  assert.deepEqual(f.calls, [], 'no recovery capture is attempted during user control');
+});
+
 test('a read whose observer changed fails alone; only input takes the desktop back', {
   timeout: 3000,
 }, async (t) => {
@@ -503,4 +578,40 @@ test('native interruption inside a sequence reaches the pending queue instead of
     ['succeeded', 'uncertain', 'pending']
   );
   assert.deepEqual(dispatched, [0, 1]);
+});
+
+test('post-input capture takeover pauses, then recaptures without replaying uncertain input', {
+  timeout: 3000,
+}, async (t) => {
+  let deliveries = 0;
+  let captures = 0;
+  const captureAfter = createCaptureAfter(
+    { sessionIdFor: () => 'a', assertExecutionNotAborted() {} },
+    { resolve: () => ({ includeOcr: false }) },
+    async () => {
+      captures++;
+      throw new Error('user_input_active: user input changed during capture');
+    }
+  );
+  const f = fixture(t, {
+    runCommand: async (command) => {
+      deliveries++;
+      await captureAfter(command, command.window_id, 0);
+      assert.fail('interrupted observation must not return a normal input reply');
+    },
+  });
+  const request = f.host.executeSerialized({ action: 'type', session_id: 'a', window_id: 'hwnd:0x1', text: 'once' });
+  await turn();
+  await f.host.waitForCleanup();
+  assert.equal(f.coordinator.snapshot().takeoverReason, 'user_input_active');
+  assert.deepEqual(f.calls, [], 'there is no recapture while the user has control');
+  await f.host.resumeAfterTakeover(f.coordinator.snapshot().takeoverGeneration);
+  const result = JSON.parse((await request).text);
+  assert.equal(result.status, 'resumed');
+  assert.equal(result.input_replayed, false);
+  assert.equal(result.steps[0].status, 'uncertain');
+  assert.equal(result.observation.frame_id, 'fresh');
+  assert.deepEqual(f.calls, ['recapture']);
+  assert.equal(deliveries, 1);
+  assert.equal(captures, 1);
 });

@@ -2,7 +2,7 @@
 // recalculate → review → hold checks → save → validate → close (see
 // office-finalize/*.mjs for each stage).
 import { recalculateForReview } from './office-recalculation.mjs';
-import { reviewForFinalize } from './office-finalize/review-stage.mjs';
+import { briefedDocument, reviewForFinalize } from './office-finalize/review-stage.mjs';
 import { finalizeHold, reviewHold } from './office-finalize/holds.mjs';
 import { closeForFinalize, saveForFinalize, validateForFinalize } from './office-finalize/commit-stage.mjs';
 
@@ -29,7 +29,11 @@ export async function finalize(session, args, cwd, signal) {
     session,
     failOn,
     stepMetrics,
-    requiresVisualReview: session.format === 'pptx' && session.designState?.requiresVisualReview === true,
+    // A PDF of designed pages is the author's deck on paper and owes the deck's critique.
+    requiresVisualReview:
+      session.authoredFrame === true ||
+      briefedDocument(session) ||
+      (session.format === 'pptx' && session.designState?.requiresVisualReview === true),
     recalculation: await timedStep('recalculation', () => recalculateForReview(session, signal)),
   };
   const { recalculation } = context;

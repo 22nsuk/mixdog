@@ -1,7 +1,5 @@
 import assert from 'node:assert/strict';
-import { appendFileSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
-import { rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { app, BrowserWindow, screen } from 'electron';
@@ -38,7 +36,9 @@ function progress(message: string): void {
   if (progressPath) appendFileSync(progressPath, `${message}\n`);
 }
 
-const profile = mkdtempSync(join(tmpdir(), 'mixdog-computer-host-profile-'));
+// The launcher owns this workspace and removes it only after Chromium exits.
+const profile = process.env.MIXDOG_COMPUTER_INTEGRATION_PROFILE!;
+let closingFixtures = false;
 const dataDirectory = join(profile, 'data');
 mkdirSync(dataDirectory, { recursive: true });
 process.env.MIXDOG_DATA_DIR = dataDirectory;
@@ -650,6 +650,7 @@ async function run(): Promise<void> {
     );
   } finally {
     await host?.dispose();
+    closingFixtures = true;
     if (blankFixture && !blankFixture.isDestroyed()) blankFixture.destroy();
     if (fixture && !fixture.isDestroyed()) fixture.destroy();
   }
@@ -659,23 +660,16 @@ async function run(): Promise<void> {
 // mid-run failure behind nothing but a missing success marker. run() owns the
 // exit code, so this only says why the windows are gone and never quits.
 app.on('window-all-closed', () => {
-  console.error('computer host integration lost every window before its success marker');
+  if (!closingFixtures) console.error('computer host integration lost every window before its success marker');
 });
 void app
   .whenReady()
   .then(async () => {
     await run();
-    // Retry: a worker may hold a file for a moment after the host is disposed.
-    await rm(profile, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }).catch(() => {
-      /* still held; the temp profile is disposable */
-    });
     app.exit(0);
   })
   .catch(async (error) => {
     console.error(error);
-    await rm(profile, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }).catch(() => {
-      /* still held; the temp profile is disposable */
-    });
     process.exitCode = 1;
     app.exit(1);
   });

@@ -93,7 +93,6 @@ test('a session holding the user window keeps the controls on screen between com
     pausedSessionIds: [],
     activities: [],
     cursors: [],
-    keystrokes: [],
     targetLeases: [{ sessionId: 'holder', windowId: 'hwnd:0x1', expiresAt: null }],
   };
   // A command runs for a fraction of a second; the user reaches for Stop
@@ -116,13 +115,13 @@ test('a pause offers Resume while its task lives, and nothing stays once the wor
     pausedSessionIds: ['a'],
     activities: [{ sessionId: 'a', action: 'click', target: '', mode: 'background', phase: 'paused_user_takeover' }],
     cursors: [],
-    keystrokes: [],
     targetLeases: [],
   };
   const live = computerUseOverlayPresentation(paused, 'ko');
   assert.equal(live.visible, true);
   assert.equal(live.resumable, true);
-  assert.equal(live.title, '일시정지');
+  assert.equal(live.title, '대기 중');
+  assert.equal(computerUseOverlayPresentation(paused, 'en').title, 'Waiting');
   // The turn ended but input is still blocked: the pill stays with Resume and
   // Stop, and Stop with no sessions still runs the recovery.
   const ended = computerUseOverlayPresentation({ ...paused, activities: [], pausedSessionIds: [] }, 'ko');

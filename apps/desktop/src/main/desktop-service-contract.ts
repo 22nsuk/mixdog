@@ -18,6 +18,7 @@ import type {
   SessionSnapshot,
   ToolApprovalDecision,
 } from '../shared/contract';
+import type { SessionFinalAnswer } from './session-final-answer';
 
 export interface DesktopService {
   subscribe(listener: (snapshot: SessionSnapshot) => void): () => void;
@@ -49,6 +50,7 @@ export interface DesktopService {
   projectEntryPath(projectPath: string, relPath: string): Promise<string>;
   codeGraphQuery(projectPath: string, mode: 'find_symbol' | 'references' | 'symbols', query: string): unknown;
   listSessions(): Promise<DesktopSessionSummary[]>;
+  readSessionFinalAnswer(sessionId: string, startedAt: number): Promise<SessionFinalAnswer | null>;
   markSessionRead(sessionId: string, messageCount: number, consumedUnread?: boolean): Promise<boolean>;
   listAgentPool(): Promise<DesktopAgentPoolRow[]>;
   renameSession(sessionId: string, title: string): unknown;
@@ -130,6 +132,7 @@ export const DESKTOP_SERVICE_METHODS = [
   'projectEntryPath',
   'codeGraphQuery',
   'listSessions',
+  'readSessionFinalAnswer',
   'markSessionRead',
   'listAgentPool',
   'renameSession',

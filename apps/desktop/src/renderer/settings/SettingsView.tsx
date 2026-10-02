@@ -16,7 +16,7 @@ import {
   Wrench,
   X,
 } from 'lucide-react';
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import type { DesktopApi } from '../../shared/contract';
@@ -71,7 +71,7 @@ const CATEGORY_ICONS = {
   about: Heart,
 } satisfies Record<SettingsCategory, typeof Settings>;
 
-export function SettingsView({
+export const SettingsView = memo(function SettingsView({
   api = (window as unknown as { mixdogDesktop: DesktopApi }).mixdogDesktop,
   open = true,
   initialSection = null,
@@ -84,6 +84,10 @@ export function SettingsView({
     settingsCategoryForSurface(next, remoteSettings);
   const [category, setCategory] = useState<SettingsCategory>(
     resolveCategory(initialSection ? categoryForSettingsItem(initialSection) : 'general')
+  );
+  const openCategory = useCallback(
+    (next: SettingsCategory) => setCategory(settingsCategoryForSurface(next, remoteSettings)),
+    [remoteSettings]
   );
   const dialogRef = useRef<HTMLElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -275,7 +279,7 @@ export function SettingsView({
                 category={category}
                 active={open}
                 onCompose={onCompose}
-                onOpenCategory={(next) => setCategory(resolveCategory(next))}
+                onOpenCategory={openCategory}
               />
             </div>
           </div>
@@ -284,4 +288,4 @@ export function SettingsView({
     </div>,
     document.body
   );
-}
+});

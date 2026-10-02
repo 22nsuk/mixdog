@@ -411,7 +411,7 @@ function computerToolResult(value, args) {
   }
   return {
     content,
-    ...(canonicalComputerResultIsError(text, args) ? { isError: true } : {}),
+    ...(value.isError === true || canonicalComputerResultIsError(text, args) ? { isError: true } : {}),
   };
 }
 

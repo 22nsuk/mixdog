@@ -20,6 +20,11 @@ const AUTHORED_ADVISORY_SOURCES = new Set([
 // with its chart laid over the figures it was drawn from.
 const VISIBLE_DEFECT_CODES = new Set(['drawing_covers_cells', 'drawing_overlap']);
 
+/** A Word document or workbook written to a brief (design.brief): reviewed with the deck's scored critique. */
+export function briefedDocument(session) {
+  return ['docx', 'xlsx'].includes(session?.format) && session?.authoredBrief?.present === true;
+}
+
 export function blocksFinalize(issue, { failOn, authored }) {
   if (
     VISIBLE_DEFECT_CODES.has(String(issue?.code || '')) &&
@@ -79,11 +84,19 @@ export async function reviewForFinalize(session, args, cwd, { timedStep, failOn,
   // only pixels this call produced are new evidence worth sending again.
   const reviewImages = reviewed?.preview?.reused !== true && Array.isArray(reviewed?._images) ? reviewed._images : [];
   const review = reviewed ? { ...reviewed } : null;
-  const pptx = session.format === 'pptx' ? applyPptxAcceptance(session, args, review) : null;
-  const documentVisualReview = applyDocumentAcceptance(session, args, review);
+  // A PDF of designed pages (authoring/pdf-author-action.mjs) is reviewed as the deck it was measured as, and so is a
+  // Word document or workbook written to a brief: five scores, a note, and checks from the brief per page.
+  const scored = session.authoredFrame === true || briefedDocument(session);
+  const deck = session.format === 'pptx' || scored;
+  const pptx = deck ? applyPptxAcceptance(session, args, review) : null;
+  const documentVisualReview = scored ? null : applyDocumentAcceptance(session, args, review);
   if (review) delete review._images;
   const issuesAfter = review?.issuesAfter || [];
   const blockingIssues = issuesAfter.filter((issue) => blocksFinalize(issue, { failOn, authored }));
+  // Its measured audit ran on the deck at author time; an error it found holds the file as it would the deck.
+  if (session.authoredFrame === true) {
+    blockingIssues.push(...(session.frameAudit?.top || []).filter((issue) => issue.severity === 'error'));
+  }
   if (review && authored) {
     review.advisoryIssues = issuesAfter.filter(
       (issue) => !blockingIssues.includes(issue) && ['error', 'warning'].includes(String(issue?.severity || ''))

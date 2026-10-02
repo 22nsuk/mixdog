@@ -1,8 +1,73 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import sharp from 'sharp';
 import { buildRequestBody } from './openai-responses-payload.mjs';
 import { _computeDelta, _sansInput, _stableStringify } from './openai-ws-delta.mjs';
 import { _withCodexWsClientMetadata } from './openai-codex-metadata.mjs';
+
+test('new computer observations preserve historical image bytes, request prefix and cache identity', async () => {
+  const data = (
+    await sharp({
+      create: { width: 8, height: 8, channels: 3, background: { r: 40, g: 80, b: 120 } },
+    })
+      .png()
+      .toBuffer()
+  ).toString('base64');
+  const call = (id) => ({
+    role: 'assistant',
+    content: '',
+    toolCalls: [{ id, name: 'computer', arguments: { action: 'capture' } }],
+  });
+  const screenshot = { type: 'image', source: { type: 'base64', media_type: 'image/png', data } };
+  for (const provider of ['openai', 'openai-oauth']) {
+    const options = { promptCacheProvider: provider, sessionId: 'computer-prefix', effort: 'medium' };
+    const history = [
+      { role: 'system', content: 'Stable computer-use rules' },
+      { role: 'user', content: 'Inspect the test window' },
+      call('first'),
+      {
+        role: 'tool',
+        toolCallId: 'first',
+        content: { content: [{ type: 'text', text: 'Fresh window observation' }, screenshot] },
+      },
+    ];
+    const original = JSON.stringify(history);
+    const first = buildRequestBody(history, 'gpt-5.6-sol', [], options);
+    const prefix = JSON.stringify(first.input);
+    for (const duplicate of [true, false]) {
+      const nextHistory = JSON.parse(original);
+      nextHistory.push(call('next'), {
+        role: 'tool',
+        toolCallId: 'next',
+        content: {
+          content: [
+            { type: 'text', text: duplicate ? 'image_unchanged: true; fresh element refs' : 'Fresh image' },
+            ...(duplicate ? [] : [screenshot]),
+          ],
+        },
+      });
+      const next = buildRequestBody(nextHistory, 'gpt-5.6-sol', [], options);
+      assert.equal(JSON.stringify(history), original);
+      assert.equal(JSON.stringify(first.input), prefix);
+      assert.equal(JSON.stringify(next.input.slice(0, first.input.length)), prefix);
+      assert.equal(next.prompt_cache_key, first.prompt_cache_key);
+      assert.deepEqual(_sansInput(next), _sansInput(first));
+      const delta = _computeDelta({
+        entry: {
+          lastRequestSansInput: _stableStringify(_sansInput(first)),
+          lastRequestInput: first.input,
+          lastResponseId: 'response-with-image',
+          lastResponseItems: [],
+        },
+        body: next,
+        traceProvider: provider,
+      });
+      assert.equal(delta.mode, 'delta');
+      assert.deepEqual(delta.frame.input, next.input.slice(first.input.length));
+      assert.ok(prefix.includes(data), 'the original screenshot stays in the cached prefix');
+    }
+  }
+});
 
 test('a new Codex turn keeps its history delta-safe without freezing request identity', (t) => {
   const previousTransport = process.env.MIXDOG_OAI_TRANSPORT;

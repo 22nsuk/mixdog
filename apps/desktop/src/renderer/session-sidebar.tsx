@@ -117,6 +117,12 @@ export const SessionSidebar = React.memo(function SessionSidebar({
   onArchiveSession,
   onDeleteSession,
 }: SessionSidebarProps) {
+  // Each rail destination owns its own sidebar shell. Auxiliary destinations
+  // must not build duplicate session lists; once a shell has actually shown
+  // Sessions, however, retain that list through panel switches and collapse.
+  const sessionsMounted = useRef(!panelActive);
+  if (!panelActive) sessionsMounted.current = true;
+  const hasSessionSurface = sessionsMounted.current;
   const [editingSessionId, setEditingSessionId] = useState('');
   const [sessionTitleDraft, setSessionTitleDraft] = useState('');
   const [sessionTitleInvalid, setSessionTitleInvalid] = useState(false);
@@ -150,14 +156,16 @@ export const SessionSidebar = React.memo(function SessionSidebar({
   useEffect(() => () => document.body.classList.remove('session-sidebar-resizing'), []);
   const allRows = useMemo(
     () =>
-      sessions
-        .filter((session) => session.classification === 'task' || session.classification === 'project')
-        .sort((left, right) => {
-          const leftActivityAt = Number(left.activityAt) || left.updatedAt;
-          const rightActivityAt = Number(right.activityAt) || right.updatedAt;
-          return rightActivityAt - leftActivityAt || left.id.localeCompare(right.id);
-        }),
-    [sessions]
+      !hasSessionSurface
+        ? []
+        : sessions
+            .filter((session) => session.classification === 'task' || session.classification === 'project')
+            .sort((left, right) => {
+              const leftActivityAt = Number(left.activityAt) || left.updatedAt;
+              const rightActivityAt = Number(right.activityAt) || right.updatedAt;
+              return rightActivityAt - leftActivityAt || left.id.localeCompare(right.id);
+            }),
+    [hasSessionSurface, sessions]
   );
   const rows = useMemo(
     () => allRows.filter((session) => session.archived !== true && !isAutomationRow(session)),
@@ -513,77 +521,79 @@ export const SessionSidebar = React.memo(function SessionSidebar({
           12px top inset showed scrolled rows through (user: 고정이냐? 뭔가
           이상한데). The surface flags (active/inert/hidden) move up to this
           wrapper so both parts hide together while a rail panel is shown. */}
-      <div
-        className="session-sidebar-surface session-sidebar-sessions"
-        data-surface-active={panelActive ? 'false' : 'true'}
-        inert={panelActive ? true : undefined}
-        aria-hidden={panelActive ? true : undefined}
-      >
-        {/* Fixed creation rows share the category type tier with leading
+      {hasSessionSurface && (
+        <div
+          className="session-sidebar-surface session-sidebar-sessions"
+          data-surface-active={panelActive ? 'false' : 'true'}
+          inert={panelActive ? true : undefined}
+          aria-hidden={panelActive ? true : undefined}
+        >
+          {/* Fixed creation rows share the category type tier with leading
             icons. Both open tabs and stay outside the scrolling lists. */}
-        <nav className="session-sidebar-launchers" aria-label={t('New')}>
-          <button type="button" className="task-link session-launcher-row" onClick={onNewTask}>
-            <SquarePen className="session-launcher-icon" size={16} aria-hidden="true" />
-            <span className="session-launcher-label">{t('New task')}</span>
-          </button>
-          <button type="button" className="task-link session-launcher-row" onClick={onNewStudio}>
-            <Sparkles className="session-launcher-icon" size={16} aria-hidden="true" />
-            <span className="session-launcher-label">{t('New Studio')}</span>
-          </button>
-        </nav>
-        <div className="session-sidebar-scroll" ref={recentScrollerRef} onScroll={handleRecentScroll}>
-          {automationGroups.length > 0 &&
-            automationsSection({
-              groups: automationGroups,
-              open: automationsOpen,
-              onToggleOpen: () => setAutomationsOpen((open) => !open),
-              hasHeadingDot: automationsHaveHeadingDot,
-              archiveAllDisabled: Boolean(bulkAction) || automationRows.length === 0,
+          <nav className="session-sidebar-launchers" aria-label={t('New')}>
+            <button type="button" className="task-link session-launcher-row" onClick={onNewTask}>
+              <SquarePen className="session-launcher-icon" size={16} aria-hidden="true" />
+              <span className="session-launcher-label">{t('New task')}</span>
+            </button>
+            <button type="button" className="task-link session-launcher-row" onClick={onNewStudio}>
+              <Sparkles className="session-launcher-icon" size={16} aria-hidden="true" />
+              <span className="session-launcher-label">{t('New Studio')}</span>
+            </button>
+          </nav>
+          <div className="session-sidebar-scroll" ref={recentScrollerRef} onScroll={handleRecentScroll}>
+            {automationGroups.length > 0 &&
+              automationsSection({
+                groups: automationGroups,
+                open: automationsOpen,
+                onToggleOpen: () => setAutomationsOpen((open) => !open),
+                hasHeadingDot: automationsHaveHeadingDot,
+                archiveAllDisabled: Boolean(bulkAction) || automationRows.length === 0,
+                onArchiveAll: () => {
+                  void updateSessionArchives('archive-automations', automationRows, true);
+                },
+                collapsedGroups: collapsedAutomations,
+                onToggleGroup: toggleAutomationGroup,
+                workingSessionIds,
+                unreadSessionIds,
+                renderSessionRow,
+              })}
+            {recentSection({
+              sessionsReady,
+              rowCount: rows.length,
+              visibleRows: visibleRecentRows,
+              hasMoreRows: hasMoreRecentRows,
+              sentinelRef: recentSentinelRef,
+              open: recentOpen,
+              onToggleOpen: () => setRecentOpen((open) => !open),
+              hasHeadingDot: recentHasHeadingDot,
+              archiveAllDisabled: Boolean(bulkAction) || rows.length === 0,
               onArchiveAll: () => {
-                void updateSessionArchives('archive-automations', automationRows, true);
-              },
-              collapsedGroups: collapsedAutomations,
-              onToggleGroup: toggleAutomationGroup,
-              workingSessionIds,
-              unreadSessionIds,
-              renderSessionRow,
-            })}
-          {recentSection({
-            sessionsReady,
-            rowCount: rows.length,
-            visibleRows: visibleRecentRows,
-            hasMoreRows: hasMoreRecentRows,
-            sentinelRef: recentSentinelRef,
-            open: recentOpen,
-            onToggleOpen: () => setRecentOpen((open) => !open),
-            hasHeadingDot: recentHasHeadingDot,
-            archiveAllDisabled: Boolean(bulkAction) || rows.length === 0,
-            onArchiveAll: () => {
-              void updateSessionArchives('archive-recent', rows, true);
-            },
-            renderSessionRow,
-          })}
-          {archivedRows.length > 0 &&
-            archivedSection({
-              visibleRows: visibleArchivedRows,
-              hasMoreRows: hasMoreArchivedRows,
-              sentinelRef: archivedSentinelRef,
-              open: archivedOpen,
-              onToggleOpen: () => {
-                setArchivedRowLimit(RECENT_SESSION_INITIAL_ROWS);
-                setArchivedOpen((open) => !open);
-              },
-              actionsDisabled: Boolean(bulkAction) || deletableArchivedRows.length === 0,
-              onRestoreAll: () => {
-                void updateSessionArchives('restore', deletableArchivedRows, false);
-              },
-              onDeleteAll: () => {
-                void deleteAllArchived();
+                void updateSessionArchives('archive-recent', rows, true);
               },
               renderSessionRow,
             })}
+            {archivedRows.length > 0 &&
+              archivedSection({
+                visibleRows: visibleArchivedRows,
+                hasMoreRows: hasMoreArchivedRows,
+                sentinelRef: archivedSentinelRef,
+                open: archivedOpen,
+                onToggleOpen: () => {
+                  setArchivedRowLimit(RECENT_SESSION_INITIAL_ROWS);
+                  setArchivedOpen((open) => !open);
+                },
+                actionsDisabled: Boolean(bulkAction) || deletableArchivedRows.length === 0,
+                onRestoreAll: () => {
+                  void updateSessionArchives('restore', deletableArchivedRows, false);
+                },
+                onDeleteAll: () => {
+                  void deleteAllArchived();
+                },
+                renderSessionRow,
+              })}
+          </div>
         </div>
-      </div>
+      )}
       {/* Rail destinations render here as compact visible lists; their
           editors open as popup dialogs portaled above the workspace. */}
       <div

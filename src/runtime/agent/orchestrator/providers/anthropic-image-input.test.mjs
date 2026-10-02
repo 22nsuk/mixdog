@@ -216,6 +216,60 @@ test('crossing 20 images preserves earlier renditions, signatures, cache markers
   assert.equal(await prepareAnthropicImages(first), first, 'preparation is idempotent');
 });
 
+test('a duplicate-free computer reply appends without rewriting cached screenshot blocks', async () => {
+  const original = await png(2400, 1200);
+  const marker = { type: 'ephemeral', ttl: '1h' };
+  const history = freeze([
+    {
+      role: 'assistant',
+      content: [
+        { type: 'thinking', thinking: 'inspect the window', signature: 'provider-signature' },
+        { type: 'tool_use', id: 'capture-one', name: 'computer', input: { action: 'capture' } },
+      ],
+    },
+    {
+      role: 'user',
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id: 'capture-one',
+          content: [{ type: 'text', text: 'Fresh observation' }, image(original, { cache_control: marker })],
+        },
+      ],
+    },
+  ]);
+  const stored = JSON.stringify(history);
+  const first = await prepareAnthropicImages(history);
+  const prefix = JSON.stringify(first);
+  for (const duplicate of [true, false]) {
+    const next = await prepareAnthropicImages([
+      ...history,
+      {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'capture-two', name: 'computer', input: { action: 'capture' } }],
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'capture-two',
+            content: [
+              { type: 'text', text: duplicate ? 'image_unchanged: true; fresh element refs' : 'Fresh image' },
+              ...(duplicate ? [] : [image(original)]),
+            ],
+          },
+        ],
+      },
+    ]);
+    assert.equal(JSON.stringify(next.slice(0, first.length)), prefix);
+    assert.equal(JSON.stringify(first), prefix);
+    assert.equal(JSON.stringify(history), stored);
+    assert.deepEqual(imagesIn(next)[0].cache_control, marker);
+    assert.equal(imagesIn(next).length, duplicate ? 1 : 2);
+  }
+});
+
 test('valid boundary pixels, remote references, PDF bytes and opaque tool input are not rewritten', async () => {
   // Exactly on the edge ceiling, and its 56x1 patches stay inside the budget:
   // a boundary image must pass through untouched. The short edge sits below the

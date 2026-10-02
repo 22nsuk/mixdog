@@ -8,7 +8,8 @@
 .command-surface[data-surface="usage"] {
   width: min(880px, calc(100vw - 32px));
   height: auto;
-  max-height: 100%;
+  /* Content-sized up to the same 760 stop as Settings (user: 팝업들 최대길이). */
+  max-height: min(760px, 100%);
   grid-template-rows: minmax(0, 1fr);
 }
 .command-surface[data-surface="usage"] .mixdog-settings__panel {
@@ -1016,6 +1017,12 @@
   line-height: var(--mx-line-meta);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.quota-surface .stats-card em {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
 }
 /* A pace worth noticing tints the line that says so, never the figure: a
    subscription used hard on purpose is not an alarm (user: 사용량이랑 그래프

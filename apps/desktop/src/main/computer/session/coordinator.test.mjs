@@ -172,7 +172,7 @@ test('overlay model distinguishes user control and confirmation while listing ev
     coordinator.pauseForUser('emergency_shortcut');
     const paused = computerUseOverlayPresentation(coordinator.snapshot(), 'ko-KR');
     assert.equal(paused.visible, true);
-    assert.equal(paused.title, '일시정지');
+    assert.equal(paused.title, '대기 중');
     assert.equal(paused.paused, true);
   } finally {
     coordinator.reset();
@@ -193,7 +193,7 @@ test('between commands the controls stay only while the session holds its window
       mode: 'background',
     });
     coordinator.finishCommand('session-lifecycle');
-    assert.equal(coordinator.snapshot().cursors.length, 1, 'the pointer stays where the session last acted');
+    assert.equal(coordinator.snapshot().cursors.length, 0, 'completed commands leave only a short visual tail');
     const thinking = coordinator.snapshot();
     assert.equal(thinking.activities[0]?.phase, 'thinking');
     // Thinking alone is not using the computer; the grace hold on the window is.
@@ -212,6 +212,41 @@ test('between commands the controls stay only while the session holds its window
     assert.equal(computerUseOverlayPresentation(ended, 'ko-KR').visible, false);
   } finally {
     coordinator.reset();
+  }
+});
+
+test('only the last overlapping command releases its pointer, without clearing another session', () => {
+  for (const mode of ['background', 'foreground']) {
+    const coordinator = new ComputerUseCoordinator();
+    try {
+      begin(coordinator, 'shared', mode);
+      begin(coordinator, 'shared', mode);
+      begin(coordinator, 'other', mode);
+      for (const sessionId of ['shared', 'other']) {
+        coordinator.showCursor({
+          sessionId,
+          x: 10,
+          y: 20,
+          action: 'click',
+          effect: 'click',
+          mode,
+        });
+      }
+      coordinator.finishCommand('shared');
+      assert.equal(
+        coordinator.snapshot().cursors.some((cursor) => cursor.sessionId === 'shared'),
+        true
+      );
+      coordinator.finishCommand('shared');
+      const finished = coordinator.snapshot();
+      assert.deepEqual(
+        finished.cursors.map((cursor) => cursor.sessionId),
+        ['other']
+      );
+      assert.equal(finished.activities.find((activity) => activity.sessionId === 'shared')?.phase, 'thinking');
+    } finally {
+      coordinator.reset();
+    }
   }
 });
 
@@ -363,7 +398,7 @@ for (const reason of ['user_pause', 'desktop_unavailable', 'display_changed']) {
       begin(coordinator, 'ended-while-paused');
       coordinator.finishCommand('ended-while-paused');
       coordinator.pauseForUser(reason);
-      assert.equal(computerUseOverlayPresentation(coordinator.snapshot(), 'ko').title, '일시정지');
+      assert.equal(computerUseOverlayPresentation(coordinator.snapshot(), 'ko').title, '대기 중');
       coordinator.endExecution('ended-while-paused');
       const ended = coordinator.snapshot();
       assert.equal(ended.userControlActive, false);

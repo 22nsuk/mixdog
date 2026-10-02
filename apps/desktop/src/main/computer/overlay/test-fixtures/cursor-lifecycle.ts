@@ -28,6 +28,33 @@ void app
     };
     try {
       for (const mode of ['background', 'foreground'] as const) {
+        const sessionId = `completed-${mode}`;
+        coordinator.beginCommand({ sessionId, action: 'click', mode });
+        assert.equal(await prepareCursorFeedback(sessionId, 2000), 'ready');
+        const window = effectWindows()[0];
+        coordinator.showCursor({
+          sessionId,
+          windowId,
+          action: 'move',
+          mode,
+          effect: 'move',
+          tracking: true,
+          x: 100,
+          y: 100,
+        });
+        await rendered(window);
+        coordinator.finishCommand(sessionId);
+        assert.equal(window.isVisible(), true, 'a completed short action retains its visual tail');
+        const deadline = Date.now() + 2000;
+        while (window.isVisible() && Date.now() < deadline) {
+          await sleep(10);
+        }
+        assert.equal(window.isVisible(), false, 'completed commands hide feedback while the session thinks');
+        assert.equal(coordinator.snapshot().activities[0]?.phase, 'thinking');
+        coordinator.endExecution(sessionId);
+        assert.equal(window.isDestroyed(), true);
+      }
+      for (const mode of ['background', 'foreground'] as const) {
         coordinator.beginCommand({ sessionId: 'fixture', action: 'click', mode });
         assert.equal(await prepareCursorFeedback('fixture', 2000), 'ready');
         const window = effectWindows()[0];

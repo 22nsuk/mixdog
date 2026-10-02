@@ -19,7 +19,7 @@ export interface BrowserCdpCallOptions {
 export interface CdpCallsHost {
   state: BrowserGuestStateStore;
   sendCdp: BrowserCdpSend;
-  guestDebugger(guest: WebContents): Promise<Electron.Debugger>;
+  guestDebugger(guest: WebContents, answeringDialog?: boolean): Promise<Electron.Debugger>;
 }
 
 export function createBrowserCdpCalls(host: CdpCallsHost) {
@@ -48,9 +48,15 @@ export function createBrowserCdpCalls(host: CdpCallsHost) {
     options: BrowserCdpCallOptions = {}
   ): Promise<T> {
     try {
+      const pending = state.peek(guest)?.pendingDialog;
+      const answeringDialog = Boolean(
+        pending &&
+          ((method === 'Page.handleJavaScriptDialog' && !pending.bridgeRequestId) ||
+            (method === 'Fetch.fulfillRequest' && pending.bridgeRequestId === params.requestId))
+      );
       return await sendCdp<T>(
         guest,
-        await guestDebugger(guest),
+        await guestDebugger(guest, answeringDialog),
         method,
         params,
         options.timeoutMs ?? CDP_REQUEST_TIMEOUT_MS,

@@ -14,6 +14,7 @@
  */
 import { normalizeUsageMeasurement } from './usage-measurement.mjs';
 import { usageRollupDayKey } from './usage-rollup.mjs';
+import { estimateOutsideQuota, estimateQuotaValue, outsideSpans } from './quota-value-estimate.mjs';
 
 export const QUOTA_SCHEMA = `
     CREATE TABLE IF NOT EXISTS quota_samples (
@@ -38,9 +39,13 @@ const SLOT_SIZES = [30, 60, 120, 180, 360, 720, 1440, 2880, 10080, 20160, 43200]
 const MAX_SLOTS = 48;
 const MAX_POINTS = 4000;
 // The window history is read a page at a time, and a page reads only the
-// records of its own windows.
+// records of its own windows and of the earlier windows their values continue.
 const HISTORY_PAGE_SIZE = 10;
 const SERIES_LIMIT = 6;
+// Each window's value continues from the windows just before it, back until
+// they hold this many quota points (at most this many windows).
+const PRIOR_POINTS = 100;
+const PRIOR_WINDOWS = 24;
 // The by-model chart's series key for usage from outside Mixdog. Every
 // recorded model has a name, so the empty key cannot collide.
 const OUTSIDE_KEY = '';
@@ -361,9 +366,19 @@ function legacyAccountOwner(db, provider) {
  * account belong to the legacy owner only, or to every account while no
  * record names one.
  */
-function readQuotaEvents(db, { provider, account, fromMs, toMs }) {
+function readQuotaEvents(db, { provider, account, label = '', fromMs, toMs }) {
   const owner = legacyAccountOwner(db, provider);
   const unlabeled = owner === null || owner === account ? '' : account;
+  // Anthropic's scoped weekly labels are model-family limits, not the whole
+  // subscription. An unrecognized scope must never borrow every model's cost.
+  const scope =
+    provider === 'anthropic-oauth' && label.startsWith('7D ')
+      ? `claude-${label
+          .slice(3)
+          .trim()
+          .toLowerCase()
+          .replace(/[\s_]+/g, '-')}`
+      : '';
   const rows = db
     .prepare(`
       WITH routes AS (
@@ -371,13 +386,13 @@ function readQuotaEvents(db, { provider, account, fromMs, toMs }) {
           FROM usage_routes
           WHERE json_extract(signature,'$[0]')=? AND COALESCE(json_extract(signature,'$[8]'),'') IN (?,?)
       )
-      SELECT (e.ts/60000)*60000 AS minute,e.day,r.model,r.rank,COUNT(*) AS turns,
+      SELECT e.ts,e.day,r.model,r.rank,COUNT(*) AS turns,
           SUM(e.input) AS input,SUM(e.output) AS output,SUM(e.cache_read) AS cacheRead,
           SUM(e.cache_write) AS cacheWrite,SUM(e.cost_usd) AS costUsd,COUNT(e.cost_usd) AS priced
       FROM usage_events e JOIN routes r ON r.id=e.route
       WHERE e.ts>=? AND e.ts<=?
-      GROUP BY minute,e.day,r.model,r.rank
-      ORDER BY minute`)
+      GROUP BY e.ts,e.day,r.model,r.rank
+      ORDER BY e.ts`)
     .all(provider, account, unlabeled, fromMs, toMs);
   const best = new Map();
   const ranks = db.prepare(`SELECT day,model,MIN(rank) AS rank FROM daily
@@ -386,6 +401,8 @@ function readQuotaEvents(db, { provider, account, fromMs, toMs }) {
     best.set(`${row.day}\u0000${row.model}`, row.rank);
   }
   return rows.flatMap((row) => {
+    const model = String(row.model).toLowerCase();
+    if (scope && model !== scope && !model.startsWith(`${scope}-`)) return [];
     const day = String(row.day);
     if (best.get(`${day.slice(0, 4)}-${day.slice(4, 6)}-${day.slice(6)}\u0000${row.model}`) !== row.rank) return [];
     const usage = normalizeUsageMeasurement(provider, {
@@ -398,7 +415,7 @@ function readQuotaEvents(db, { provider, account, fromMs, toMs }) {
       costKnownTurns: row.priced,
     });
     const event = {
-      ts: row.minute,
+      ts: row.ts,
       model: row.model,
       turns: row.turns,
       input: usage.input || 0,
@@ -414,56 +431,209 @@ function readQuotaEvents(db, { provider, account, fromMs, toMs }) {
   });
 }
 
+/** quota_samples stores readings rounded to two decimal places. Respect the
+ *  precision actually present: an integer-only series supplies whole-percent
+ *  readings, not invented tenths. Preserve finer reported readings when present. */
+function quotaReadingResolution(rows) {
+  const cents = rows.map((row) => Math.round(row.usedPct * 100));
+  if (cents.some((value) => value % 10 !== 0)) return 0.01;
+  return cents.some((value) => value % 100 !== 0) ? 0.1 : 1;
+}
+
+/** The windows just before `instance`, oldest first: the calibration its
+ *  value continues from. Defined per window, so every view of one window
+ *  computes the same value. `listed` is every non-idle window, oldest first. */
+function earlierWindows(listed, instance) {
+  const earlier = [];
+  let points = 0;
+  for (let index = listed.length - 1; index >= 0; index -= 1) {
+    if (points >= PRIOR_POINTS || earlier.length >= PRIOR_WINDOWS) break;
+    const candidate = listed[index];
+    if (candidate.startMs >= instance.startMs) continue;
+    earlier.unshift(candidate);
+    points += candidate.peak;
+  }
+  return earlier;
+}
+
+/** Every window `shown` reads records for: itself and its calibration. */
+function calibratedWindows(listed, shown) {
+  return [...new Set([...shown.flatMap((instance) => earlierWindows(listed, instance)), ...shown])];
+}
+
+/** One window's meter rises, each with the records behind it. */
+function windowIntervals(instance, events, mixed) {
+  const resolution = quotaReadingResolution(instance.rows);
+  const intervals = [];
+  let fromMs = instance.startMs;
+  let fromPct = 0;
+  for (const [rowIndex, row] of instance.rows.entries()) {
+    const delta = row.usedPct - fromPct;
+    if (delta > 0) {
+      const start = firstAfter(events, fromMs);
+      const end = firstAfter(events, row.ts);
+      let cost = 0;
+      let tokens = 0;
+      let turns = 0;
+      let priced = 0;
+      for (let index = start; index < end; index += 1) {
+        cost += events[index].costUsd;
+        tokens += events[index].tokens;
+        turns += events[index].turns;
+        priced += events[index].costKnownTurns;
+      }
+      let weight = 'turns';
+      let total = turns;
+      if (cost > 0) {
+        weight = 'costUsd';
+        total = cost;
+      } else if (tokens > 0) {
+        weight = 'tokens';
+        total = tokens;
+      }
+      intervals.push({
+        fromMs,
+        toMs: row.ts,
+        points: delta,
+        costUsd: cost,
+        start,
+        end,
+        weight,
+        total,
+        resolution,
+        // Long reading gaps still carry cost and quota evidence. Only an
+        // inferred opening, a saturated meter, or the first rise from zero
+        // lowers its measurement quality: the first request of a window can
+        // show a whole step of a rounded-up meter, so that rise only bounds
+        // its use within one step.
+        measured: rowIndex > 0 && fromPct > 0 && row.usedPct < 100,
+        priced: turns > 0 && priced === turns,
+        mixed: mixed.some((span) => span.fromMs < row.ts && span.toMs > fromMs),
+      });
+    }
+    fromMs = row.ts;
+    fromPct = row.usedPct;
+  }
+  return intervals;
+}
+
 /**
- * Split every rise of the meter over the records made since the reading
- * before it: by list-price value, else by tokens, else by count. A rise with
- * no record behind it is kept as outside usage over its interval.
+ * Keep observed quota and recorded dollars intact. Continuously estimate
+ * probable outside use from priced history before allocating the remainder
+ * over Mixdog's requests; recent observations outweigh older ones. Each
+ * window continues from its earlier windows in `listed` (every non-idle
+ * window, oldest first), whose records `events` must cover. Intervals
+ * overlapping `mixed` spans never calibrate the rate: their outside share is
+ * the rise that Mixdog's own dollars at that rate do not cover.
  */
-function allocateQuota(instances, events) {
+function allocateQuota(instances, events, mixed = [], listed = []) {
   const shares = new Float64Array(events.length);
   const outside = [];
+  const calibration = new Map();
+  const calibrationOf = (instance) => {
+    if (!calibration.has(instance)) {
+      calibration.set(
+        instance,
+        windowIntervals(instance, events, mixed).filter((interval) => !interval.mixed)
+      );
+    }
+    return calibration.get(instance);
+  };
   for (const instance of instances) {
-    instance.attributed = 0;
-    instance.attributedCost = 0;
     instance.outside = 0;
-    let fromMs = instance.startMs;
-    let fromPct = 0;
-    for (const row of instance.rows) {
-      const delta = row.usedPct - fromPct;
-      if (delta > 0) {
-        const start = firstAfter(events, fromMs);
-        const end = firstAfter(events, row.ts);
-        let cost = 0;
-        let tokens = 0;
-        let turns = 0;
-        for (let index = start; index < end; index += 1) {
-          cost += events[index].costUsd;
-          tokens += events[index].tokens;
-          turns += events[index].turns;
-        }
-        let weight = 'turns';
-        let total = turns;
-        if (cost > 0) {
-          weight = 'costUsd';
-          total = cost;
-        } else if (tokens > 0) {
-          weight = 'tokens';
-          total = tokens;
-        }
-        if (total > 0) {
-          for (let index = start; index < end; index += 1) shares[index] += (delta * events[index][weight]) / total;
-          instance.attributed += delta;
-          instance.attributedCost += cost;
-        } else {
-          outside.push({ fromMs, toMs: row.ts, points: delta });
-          instance.outside += delta;
+    instance.outsideCostUsd = 0;
+    instance.outsideUnpriced = 0;
+    instance.intervals = windowIntervals(instance, events, mixed);
+    instance.estimate = estimateQuotaValue(
+      instance.intervals.filter((interval) => !interval.mixed),
+      earlierWindows(listed, instance).flatMap(calibrationOf)
+    );
+    for (const interval of instance.intervals) {
+      const { start, end, total, weight, points } = interval;
+      let external = points;
+      if (total > 0) {
+        external = 0;
+        if (interval.measured && interval.priced) {
+          external =
+            interval.mixed && instance.estimate
+              ? Math.min(points, Math.max(0, points - interval.costUsd / instance.estimate.costPerPercent))
+              : estimateOutsideQuota(interval, instance.estimate);
         }
       }
-      fromMs = row.ts;
-      fromPct = row.usedPct;
+      if (total > 0) {
+        for (let index = start; index < end; index += 1) {
+          shares[index] += ((points - external) * events[index][weight]) / total;
+        }
+      }
+      if (external > 0) {
+        const costUsd = instance.estimate ? external * instance.estimate.costPerPercent : null;
+        outside.push({ fromMs: interval.fromMs, toMs: interval.toMs, points: external, costUsd });
+        instance.outside += external;
+        if (costUsd === null) instance.outsideUnpriced += external;
+        else instance.outsideCostUsd += costUsd;
+      }
     }
   }
   return { shares, outside };
+}
+
+/**
+ * The weekly all-model limit's five-hour companion restarts from zero every
+ * few hours and moves in quarter-size steps, so it exposes outside use that a
+ * whole-percent weekly reading hides. Each week is judged by its own
+ * five-hour windows, so a plan change between weeks cannot make every later
+ * five-hour window look mixed. Scoped weekly limits share no five-hour meter.
+ */
+function finerOutsideSpans(db, selection, events, weeks, now) {
+  if (selection.label !== '7D' || !events.length || !weeks.length) return [];
+  const prefix = [0];
+  for (const event of events) prefix.push(prefix.at(-1) + event.costUsd);
+  const costBetween = (from, to) => prefix[firstAfter(events, to)] - prefix[firstAfter(events, from)];
+  const fives = quotaInstances(readQuotaRows(db, { ...selection, label: '5H' }), '5H', now).filter(
+    (instance) => !instance.idle
+  );
+  return weeks.flatMap((week) =>
+    outsideSpans(
+      fives
+        .filter((five) => five.startMs >= week.startMs && five.startMs < week.endMs)
+        .map((five) => ({ startMs: five.startMs, readings: five.rows })),
+      costBetween
+    )
+  );
+}
+
+function intervalShare(interval, fromMs, toMs) {
+  if (interval.toMs <= interval.fromMs) return interval.toMs >= fromMs && interval.toMs <= toMs ? 1 : 0;
+  return (
+    Math.max(0, Math.min(interval.toMs, toMs) - Math.max(interval.fromMs, fromMs)) / (interval.toMs - interval.fromMs)
+  );
+}
+
+/** A period spanning different capacities averages by observed quota, not
+ *  dollars. A missing calibration must not silently stand in as zero. */
+function periodQuotaRate(instances, fromMs, toMs) {
+  let value = 0;
+  let points = 0;
+  for (const instance of instances) {
+    for (const interval of instance.intervals) {
+      const part = interval.points * intervalShare(interval, fromMs, toMs);
+      if (!(part > 0)) continue;
+      if (!instance.estimate) return null;
+      value += part * instance.estimate.costPerPercent;
+      points += part;
+    }
+  }
+  return points > 0 ? round(value / points, 6) : null;
+}
+
+function quotaCostFields(costUsd, outsideCostUsd, unpriced = false) {
+  const extra = outsideCostUsd === null ? null : round(outsideCostUsd, 6);
+  const recorded = round(costUsd, 6);
+  return {
+    costUsd: recorded,
+    outsideCostUsd: extra,
+    estimatedTotalCostUsd: extra === null || unpriced ? null : round(recorded + extra, 6),
+  };
 }
 
 const USAGE_FIELDS = [
@@ -575,22 +745,26 @@ function modelSeries(slots, instances, keys, now) {
 /** Outside usage is spread over the time its interval covers; returns its total within the domain. */
 function spreadOutsideUsage(outside, slots, slotAt, domainFrom, domainTo) {
   let total = 0;
+  const add = (slot, interval, share) => {
+    const part = interval.points * share;
+    slot.outside += part;
+    if (interval.costUsd === null) slot.outsideUnpriced += part;
+    else slot.outsideCostUsd += interval.costUsd * share;
+    total += part;
+  };
   for (const interval of outside) {
     const from = Math.max(interval.fromMs, domainFrom);
     const to = Math.min(interval.toMs, domainTo);
     if (interval.toMs <= interval.fromMs) {
       if (interval.toMs < domainFrom || interval.toMs > domainTo) continue;
-      slots[slotAt(interval.toMs)].outside += interval.points;
-      total += interval.points;
+      add(slots[slotAt(interval.toMs)], interval, 1);
       continue;
     }
     for (let index = slotAt(from); index < slots.length && slots[index].fromMs < to; index += 1) {
       const slot = slots[index];
       const overlap = Math.min(to, slot.toMs) - Math.max(from, slot.fromMs);
       if (overlap <= 0) continue;
-      const part = (interval.points * overlap) / (interval.toMs - interval.fromMs);
-      slot.outside += part;
-      total += part;
+      add(slot, interval, overlap / (interval.toMs - interval.fromMs));
     }
   }
   return total;
@@ -602,10 +776,12 @@ function historyRow(instance, events) {
   let tokens = 0;
   let turns = 0;
   let costUsd = 0;
+  let unpriced = 0;
   for (let index = start; index < end; index += 1) {
     tokens += events[index].tokens;
     turns += events[index].turns;
     costUsd += events[index].costUsd;
+    unpriced += events[index].turns - events[index].costKnownTurns;
   }
   return {
     key: instance.key,
@@ -618,8 +794,13 @@ function historyRow(instance, events) {
     current: instance.current,
     tokens,
     turns,
-    costUsd: round(costUsd, 6),
-    costPerPercent: instance.attributed > 0.05 ? round(instance.attributedCost / instance.attributed, 6) : null,
+    ...quotaCostFields(
+      costUsd,
+      instance.estimate && !instance.outsideUnpriced ? instance.outsideCostUsd : null,
+      unpriced > 0
+    ),
+    costPerPercent: instance.estimate ? round(instance.estimate.costPerPercent, 6) : null,
+    estimateSamples: instance.estimate?.samples ?? 0,
     outside: round(instance.outside),
   };
 }
@@ -667,13 +848,20 @@ export function readQuotaHistory(
   const domainTo = Math.max(period.toMs, domainFrom + MINUTE);
   const overlapping = (instance) => instance.endMs > domainFrom && instance.startMs < domainTo;
   const shown = instances.filter(overlapping);
+  const calibrated = calibratedWindows(listed, shown);
   const events = readQuotaEvents(db, {
     provider: selection.provider,
     account: selection.account,
-    fromMs: Math.min(domainFrom, ...shown.map((instance) => instance.startMs)),
+    label: selection.label,
+    fromMs: Math.min(domainFrom, ...calibrated.map((instance) => instance.startMs)),
     toMs: Math.max(domainTo, ...shown.map((instance) => instance.endMs)),
   });
-  const { shares, outside } = allocateQuota(shown, events);
+  const { shares, outside } = allocateQuota(
+    shown,
+    events,
+    finerOutsideSpans(db, selection, events, calibrated, now),
+    listed
+  );
   const points = quotaPoints(shown);
 
   const slotMs =
@@ -688,17 +876,17 @@ export function readQuotaHistory(
       usage: emptyUsage(),
       models: new Map(),
       outside: 0,
+      outsideCostUsd: 0,
+      outsideUnpriced: 0,
     });
   }
   const slotAt = (time) => Math.min(slots.length - 1, Math.max(0, Math.floor((time - domainFrom) / slotMs)));
   const totals = emptyUsage();
   const models = new Map();
-  let attributedCost = 0;
   events.forEach((event, index) => {
     if (event.ts < domainFrom || event.ts > domainTo) return;
     const share = shares[index];
     addUsage(totals, event, share);
-    if (share > 0) attributedCost += event.costUsd;
     const model = models.get(event.model) || emptyUsage();
     models.set(event.model, model);
     addUsage(model, event, share);
@@ -709,6 +897,11 @@ export function readQuotaHistory(
     addUsage(slotModel, event, share);
   });
   const outsideTotal = spreadOutsideUsage(outside, slots, slotAt, domainFrom, domainTo);
+  const costPerPercent = periodQuotaRate(shown, domainFrom, domainTo);
+  const outsideCostUsd =
+    costPerPercent === null || slots.some((slot) => slot.outsideUnpriced > 0)
+      ? null
+      : slots.reduce((sum, slot) => sum + slot.outsideCostUsd, 0);
 
   const exportedModels = [...models].map(([model, usage]) => ({ model, ...exportUsage(usage) })).sort(byConsumption);
   const seriesKeys = exportedModels
@@ -743,8 +936,9 @@ export function readQuotaHistory(
     summary: {
       consumed: round(totals.consumed + outsideTotal),
       outside: round(outsideTotal),
-      costUsd: round(totals.costUsd, 6),
-      costPerPercent: totals.consumed > 0.05 ? round(attributedCost / totals.consumed, 6) : null,
+      ...quotaCostFields(totals.costUsd, outsideCostUsd, totals.costKnownTurns < totals.turns),
+      costPerPercent,
+      estimateSamples: shown.reduce((sum, instance) => sum + (instance.estimate?.samples ?? 0), 0),
       maxedOut: peaks.filter(
         (instance) =>
           instance.exhaustedAt !== null && instance.exhaustedAt >= domainFrom && instance.exhaustedAt <= domainTo
@@ -764,7 +958,13 @@ export function readQuotaHistory(
       outside: round(slot.outside),
       tokens: tokensOf(slot.usage),
       turns: slot.usage.turns,
-      costUsd: round(slot.usage.costUsd, 6),
+      ...quotaCostFields(
+        slot.usage.costUsd,
+        periodQuotaRate(shown, slot.fromMs, slot.toMs) === null || slot.outsideUnpriced > 0
+          ? null
+          : slot.outsideCostUsd,
+        slot.usage.costKnownTurns < slot.usage.turns
+      ),
       models: [...slot.models]
         .map(([model, usage]) => ({
           model,
@@ -795,20 +995,23 @@ export function readQuotaWindows(
   const selection = pickSelection(listQuotaSeries(db), { provider, account, label, inUse });
   const base = { generatedAt: now, selection, page: 0, pageCount: 0, total: 0, windows: [] };
   if (!selection) return base;
-  const listed = quotaInstances(readQuotaRows(db, selection), selection.label, now)
-    .filter((instance) => !instance.idle)
-    .reverse();
+  const chronological = quotaInstances(readQuotaRows(db, selection), selection.label, now).filter(
+    (instance) => !instance.idle
+  );
+  const listed = chronological.toReversed();
   const pageCount = Math.ceil(listed.length / HISTORY_PAGE_SIZE);
   if (!pageCount) return base;
   const index = Math.min(Math.max(0, Math.floor(page) || 0), pageCount - 1);
   const shown = listed.slice(index * HISTORY_PAGE_SIZE, (index + 1) * HISTORY_PAGE_SIZE);
+  const calibrated = calibratedWindows(chronological, shown);
   const events = readQuotaEvents(db, {
     provider: selection.provider,
     account: selection.account,
-    fromMs: Math.min(...shown.map((instance) => instance.startMs)),
+    label: selection.label,
+    fromMs: Math.min(...calibrated.map((instance) => instance.startMs)),
     toMs: Math.max(...shown.map((instance) => instance.endMs)),
   });
-  allocateQuota(shown, events);
+  allocateQuota(shown, events, finerOutsideSpans(db, selection, events, calibrated, now), chronological);
   return {
     ...base,
     page: index,

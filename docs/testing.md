@@ -23,6 +23,19 @@ slow default lane always names its cause; a file over ~10s belongs in the
 slow lane (rename it). The desktop package passes its `--import` loaders
 through the same entry.
 
+`npm run gate:local` runs the desktop build/e2e leg separately, then shares
+one test-worker budget across the four test lanes. The interactive default
+is up to six workers in total; `MIXDOG_TEST_CONCURRENCY` sets the total
+budget, or the shell's existing concurrency share is used. All lanes still
+run, including when another lane fails.
+
+The runner supplies a temporary `MIXDOG_TEST_OOXML_CACHE_DIR` for the pinned
+Office schema validator. Downloads are lazy and serialized across processes,
+so document tests reuse the executable without sharing their documents or
+session data. A local gate shares this cache across lanes; ordinary runs
+remove their cache with their scratch directory. Explicit validator paths,
+disabled validation and download opt-outs keep their existing behavior.
+
 Successful test names are omitted from the console summary; failures, warnings,
 skip/todo reasons, totals and slow-file timings remain. `Full test log:` points
 to an unfiltered report in a unique temporary directory.
@@ -45,8 +58,12 @@ node scripts/test-direct.mjs --test-name-pattern=parsing src/example.test.mjs
 ```
 
 This entry uses the same summary and full-log reporting, forwards Node options
-unchanged, and does not add force-exit or module-mock flags. Direct `node --test`,
-Cargo and arbitrary shell commands remain unfiltered.
+unchanged (including parent heap limits and preloads), and does not add force-exit
+or module-mock flags. The named npm suites use this entry to share concurrency
+limits and the temporary validator cache without changing their exact file/glob
+selection, including slow/live files. An explicit `--test-concurrency` still wins
+over the environment budget. Direct `node --test`, Cargo and arbitrary shell
+commands remain unfiltered.
 
 The 2026-09 sweep found 201 of 401 test files registered nowhere: hand-kept
 path lists in `package.json` had drifted for weeks, and two of the unlisted

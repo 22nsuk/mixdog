@@ -16,9 +16,7 @@ export function persistentDevProfileDir(name = 'default', parent = process.env) 
   if (!PROFILE_NAME.test(name)) {
     throw new Error('Profile name must use letters, digits and hyphens (at most 64).');
   }
-  const root = parent.LOCALAPPDATA
-    ? join(parent.LOCALAPPDATA, 'mixdog-dev')
-    : join(homedir(), '.mixdog-dev');
+  const root = parent.LOCALAPPDATA ? join(parent.LOCALAPPDATA, 'mixdog-dev') : join(homedir(), '.mixdog-dev');
   return join(root, name);
 }
 
@@ -29,15 +27,17 @@ export async function assertDebugPortAvailable(port) {
   const server = createServer();
   await new Promise((resolve, reject) => {
     server.once('error', (error) => {
-      reject(new Error(
-        `Cannot use test debug port ${port}: ${error.code}. ` +
-        'Use the existing test app, or choose another port (--port for dev, -Port for E2E).',
-        { cause: error },
-      ));
+      reject(
+        new Error(
+          `Cannot use test debug port ${port}: ${error.code}. ` +
+            'Use the existing test app, or choose another port (--port for dev, -Port for E2E).',
+          { cause: error }
+        )
+      );
     });
     server.listen({ host: '127.0.0.1', port, exclusive: true }, resolve);
   });
-  await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
 }
 
 export async function createIsolatedDevEnv(parent = process.env, profileParent = tmpdir()) {
@@ -46,7 +46,7 @@ export async function createIsolatedDevEnv(parent = process.env, profileParent =
 
 export async function createPersistentDevEnv(
   parent = process.env,
-  profile = persistentDevProfileDir('default', parent),
+  profile = persistentDevProfileDir('default', parent)
 ) {
   return isolatedEnvFor(profile, parent);
 }
@@ -67,9 +67,9 @@ async function isolatedEnvFor(profile, parent) {
     MIXDOG_PROJECTS_FILE: join(profile, 'projects.json'),
     MIXDOG_DISABLE_PROJECT_MARKERS: '1',
   });
-  await Promise.all(['home', 'data', 'runtime', 'bridges'].map(
-    (directory) => mkdir(join(profile, directory), { recursive: true }),
-  ));
+  await Promise.all(
+    ['home', 'data', 'runtime', 'bridges'].map((directory) => mkdir(join(profile, directory), { recursive: true }))
+  );
   return env;
 }
 
@@ -78,6 +78,7 @@ async function main() {
     options: {
       'env-json': { type: 'boolean', default: false },
       fresh: { type: 'boolean', default: false },
+      preview: { type: 'boolean', default: false },
       profile: { type: 'string' },
       port: { type: 'string', default: String(DEV_DEBUG_PORT) },
     },
@@ -89,6 +90,11 @@ async function main() {
   const port = Number(values.port);
   await assertDebugPortAvailable(port);
   const env = profile ? await createPersistentDevEnv(process.env, profile) : await createIsolatedDevEnv();
+  // electron-vite's preview CLI has no --remoteDebuggingPort option. Supply
+  // only our own Electron args after stripping any inherited app overrides.
+  if (values.preview) {
+    env.ELECTRON_CLI_ARGS = JSON.stringify([`--remote-debugging-port=${port}`]);
+  }
   if (values['env-json']) {
     console.log(JSON.stringify(env));
     return;
@@ -98,10 +104,14 @@ async function main() {
   // Never remove a profile here: a kept profile is the user's dev workspace,
   // and a fresh one is retained for diagnosis while Electron or an isolated
   // daemon may still be shutting down.
-  const child = spawn(process.execPath, [
-    join(desktopDir, 'node_modules', 'electron-vite', 'bin', 'electron-vite.js'),
-    'dev', '--remoteDebuggingPort', String(port),
-  ], { cwd: desktopDir, env, stdio: 'inherit' });
+  const child = spawn(
+    process.execPath,
+    [
+      join(desktopDir, 'node_modules', 'electron-vite', 'bin', 'electron-vite.js'),
+      ...(values.preview ? ['preview', '--skipBuild'] : ['dev', '--remoteDebuggingPort', String(port)]),
+    ],
+    { cwd: desktopDir, env, stdio: 'inherit' }
+  );
   process.exitCode = await new Promise((resolve, reject) => {
     child.once('error', reject);
     child.once('exit', (code) => resolve(code ?? 1));

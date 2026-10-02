@@ -96,6 +96,7 @@ export function createPixelCapture(host: PixelCaptureHost) {
         height: target.geometry.height,
         clientWidth: target.client.width,
         clientHeight: target.client.height,
+        client: target.client,
         maxWidth,
         preserveResolution: preserveOcrPixels,
         attempts: captureAttempts,

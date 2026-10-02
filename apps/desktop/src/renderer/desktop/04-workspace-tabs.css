@@ -270,6 +270,9 @@
    plates separate the cells, replacing the old short dividers that stepped
    aside next to the selection and left a two-tab strip with no seam at all. */
 .workspace-tab {
+  --workspace-tab-plate-top: 5px;
+  --workspace-tab-plate-left: 2px;
+  --workspace-tab-plate-right: 2px;
   isolation: isolate;
 }
 .workspace-tab::before {
@@ -278,10 +281,10 @@
   pointer-events: none;
 }
 .workspace-tab:not(.drop-target-right)::before {
-  top: 5px;
-  right: 4px;
+  top: var(--workspace-tab-plate-top);
+  right: var(--workspace-tab-plate-right);
   bottom: 5px;
-  left: 4px;
+  left: var(--workspace-tab-plate-left);
   z-index: -1;
   border-radius: var(--mx-radius-md);
   background: color-mix(in srgb, var(--mx-text) 3%, transparent);
@@ -307,8 +310,8 @@
   background: var(--mx-plate-hover);
 }
 /* The leading plate steps off the sidebar edge instead of grazing it. */
-.workspace-tab:first-child:not(.drop-target-right)::before {
-  left: 6px;
+.workspace-tab:first-child {
+  --workspace-tab-plate-left: 6px;
 }
 /* The selection: a quiet fill edged by a 1px ring, no drop shadow — a
    lifted card with a shadow read as a button floating on the sheet. */
@@ -358,10 +361,11 @@
   pointer-events: none;
 }
 .pane-split .workspace-tabs-shell[data-focused="true"] .workspace-tab.active::after {
-  /* Rides the card's top edge, inset past its rounded corners. */
-  top: 4px;
-  left: 8px;
-  right: 8px;
+  /* Share the plate's origin, including the leading tab's extra inset.
+     Both ends clear its rounded corners by the same distance. */
+  top: var(--workspace-tab-plate-top);
+  left: calc(var(--workspace-tab-plate-left) + var(--mx-radius-md));
+  right: calc(var(--workspace-tab-plate-right) + var(--mx-radius-md));
   border-radius: 0 0 var(--mx-radius-hair) var(--mx-radius-hair);
   background: var(--mx-accent);
 }

@@ -191,12 +191,27 @@
    navigate on the left; the right pane always shows the outcome of the last
    choice, so a click has one obvious destination. Both panes scroll on their
    own inside the dialog's fixed frame. */
+/* No rule above the panes: the bar's own band separates them (user: 위쪽
+   테두리 이상해). Between the panes runs one hairline that stops 24px short
+   of both ends and fades out there (user: 가운데 테두리 위아래로 너무 김). It
+   is a grid item over the nav's right edge, so its length follows the pane
+   height as the dialog grows, and it never scrolls with the nav's rows. */
 .context-inspector {
   flex: 1 1 auto;
   min-height: 0;
   display: grid;
   grid-template-columns: minmax(300px, 5fr) minmax(0, 7fr);
-  border-top: 0.5px solid var(--mx-border-muted);
+}
+.context-inspector::after {
+  content: "";
+  grid-column: 1;
+  grid-row: 1;
+  justify-self: end;
+  align-self: center;
+  width: 0.5px;
+  height: calc(100% - 48px);
+  background: linear-gradient(transparent, var(--mx-border-muted) 12%, var(--mx-border-muted) 88%, transparent);
+  pointer-events: none;
 }
 .context-inspector-nav,
 .context-inspector-detail {
@@ -210,11 +225,12 @@
    pane's bottom edge instead of stopping short and leaving an unframed band
    under the rows (user: 아이템 프레임 아래 여백). Rows stay anchored at the top. */
 .context-inspector-nav {
+  grid-column: 1;
+  grid-row: 1;
   display: flex;
   flex-direction: column;
   gap: 12px;
   padding: 16px 16px 16px 22px;
-  border-right: 0.5px solid var(--mx-border-muted);
 }
 .context-inspector-nav > .context-mix-list {
   flex: 1 0 auto;
@@ -223,9 +239,37 @@
 /* The detail pane is a column whose LAST child (list or preview) takes the
    remaining height and scrolls; the bar above it stays put. */
 .context-inspector-detail {
+  grid-column: 2;
+  grid-row: 1;
   display: flex;
   flex-direction: column;
   padding: 0 22px 16px 16px;
+}
+/* The session's spend under both panes: label faint, figure bright, spacing
+   alone between figures; turns and compactions sit at the far end. */
+.context-session-usage {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 22px;
+  row-gap: 4px;
+  padding: 10px 22px 16px;
+  color: var(--mx-text-faint);
+  font-size: var(--mx-font-meta);
+  font-variant-numeric: tabular-nums;
+}
+.context-session-usage span {
+  white-space: nowrap;
+}
+.context-session-usage strong {
+  color: var(--mx-text);
+  font-weight: var(--mx-weight-semibold);
+}
+.context-session-usage-end {
+  display: inline-flex;
+  gap: 16px;
+  margin-left: auto;
 }
 .context-inspector .context-block-map {
   grid-template-columns: repeat(16, minmax(0, 1fr));
@@ -610,14 +654,21 @@
   .context-inspector {
     grid-template-columns: 1fr;
   }
+  .context-inspector::after {
+    display: none;
+  }
   .context-inspector-nav {
     padding: 14px 16px;
-    border-right: 0;
     border-bottom: 0.5px solid var(--mx-border-muted);
   }
   .context-inspector-detail {
+    grid-column: 1;
+    grid-row: 2;
     padding: 0 16px 14px;
     min-height: 240px;
+  }
+  .context-session-usage {
+    padding: 10px 16px 14px;
   }
 }
 

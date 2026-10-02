@@ -48,6 +48,7 @@ jobs:
       desktop: ${{ steps.paths.outputs.desktop }}
       desktop_css_only: ${{ steps.paths.outputs.desktop_css_only }}
       graph: ${{ steps.paths.outputs.graph }}
+      patch: ${{ steps.paths.outputs.patch }}
       relay: ${{ steps.paths.outputs.relay }}
       runtime: ${{ steps.paths.outputs.runtime }}
     steps:
@@ -72,6 +73,7 @@ jobs:
             echo "desktop=false" >> "$GITHUB_OUTPUT"
             echo "desktop_css_only=false" >> "$GITHUB_OUTPUT"
             echo "graph=false" >> "$GITHUB_OUTPUT"
+            echo "patch=false" >> "$GITHUB_OUTPUT"
             echo "relay=false" >> "$GITHUB_OUTPUT"
             echo "runtime=false" >> "$GITHUB_OUTPUT"
             exit 0
@@ -87,6 +89,7 @@ jobs:
           # single source shared with deploy.yml's criticalChanged list.
           DESKTOP_RE=$(node scripts/release-paths.mjs desktop-regex)
           RUNTIME_RE=$(node scripts/release-paths.mjs runtime-regex)
+          PATCH_RE=$(node scripts/release-paths.mjs patch-regex)
           if grep -Eq "$DESKTOP_RE" /tmp/changed; then
             echo "desktop=true" >> "$GITHUB_OUTPUT"
           else
@@ -101,6 +104,11 @@ jobs:
             echo "graph=true" >> "$GITHUB_OUTPUT"
           else
             echo "graph=false" >> "$GITHUB_OUTPUT"
+          fi
+          if grep -Eq "$PATCH_RE" /tmp/changed; then
+            echo "patch=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "patch=false" >> "$GITHUB_OUTPUT"
           fi
           if grep -Eq '^native/mixdog-computer/|^scripts/computer-backend-smoke\.mjs$|^src/runtime/computer-bridge/actions\.mjs$' /tmp/changed; then
             echo "computer=true" >> "$GITHUB_OUTPUT"
@@ -505,6 +513,43 @@ jobs:
       - name: Run the relay test lane
         run: npm test --prefix apps/relay
 
+  patch:
+    needs: changes
+    if: needs.changes.outputs.patch == 'true'
+    timeout-minutes: 15
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: "1.95.0"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/mixdog-patch/target
+          key: patch-test-cargo-1.95.0-${{ hashFiles('native/mixdog-patch/Cargo.lock', 'native/mixdog-patch/src/**') }}
+          restore-keys: patch-test-cargo-1.95.0-
+      - name: Install root dependencies
+        run: npm ci --prefer-offline --no-audit --no-fund
+      - name: Test and build the checked-out patch engine
+        run: |
+          cargo test --locked --manifest-path native/mixdog-patch/Cargo.toml
+          cargo build --locked --manifest-path native/mixdog-patch/Cargo.toml
+      - name: Verify the checked-out patch protocol and edits
+        env:
+          MIXDOG_PATCH_NATIVE_BIN: ${{ github.workspace }}/native/mixdog-patch/target/debug/mixdog-patch
+        run: |
+          npm test -- src/runtime/agent/orchestrator/tools/patch/
+          npm run test:native-edit-wire
+          npm run smoke:patch
+
   graph:
     needs: changes
     if: needs.changes.outputs.graph == 'true'
@@ -530,7 +575,7 @@ jobs:
 
   complete:
     if: always()
-    needs: [runtime, runtime-slow, runtime-macos, computer-backend, desktop, desktop-tests, relay, graph]
+    needs: [runtime, runtime-slow, runtime-macos, computer-backend, desktop, desktop-tests, relay, patch, graph]
     timeout-minutes: 5
     runs-on: ubuntu-22.04
     steps:
@@ -543,6 +588,7 @@ jobs:
           DESKTOP: ${{ needs.desktop.result }}
           DESKTOP_TESTS: ${{ needs.desktop-tests.result }}
           RELAY: ${{ needs.relay.result }}
+          PATCH: ${{ needs.patch.result }}
           GRAPH: ${{ needs.graph.result }}
         run: |
           [[ "$RUNTIME" == success || "$RUNTIME" == skipped ]]
@@ -552,4 +598,5 @@ jobs:
           [[ "$DESKTOP" == success || "$DESKTOP" == skipped ]]
           [[ "$DESKTOP_TESTS" == success || "$DESKTOP_TESTS" == skipped ]]
           [[ "$RELAY" == success || "$RELAY" == skipped ]]
+          [[ "$PATCH" == success || "$PATCH" == skipped ]]
           [[ "$GRAPH" == success || "$GRAPH" == skipped ]]

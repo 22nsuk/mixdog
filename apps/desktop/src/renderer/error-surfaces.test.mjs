@@ -170,6 +170,87 @@ test('opening toast details does not dismiss the error and recovered bridge clea
     assert.match(document.body.textContent, /×2/);
   }));
 
+async function withToastClock(t, run) {
+  return withDom(async ({ dom, render }) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    dom.window.setTimeout = (...args) => globalThis.setTimeout(...args);
+    dom.window.clearTimeout = (...args) => globalThis.clearTimeout(...args);
+    const tick = async (ms) => act(async () => t.mock.timers.tick(ms));
+    await run({ render, tick });
+  });
+}
+
+test('error popups expire after 10 seconds while ordinary popups keep their 5-second lifetime', async (t) =>
+  withToastClock(t, async ({ render, tick }) => {
+    const props = {
+      toasts: [
+        { id: 'failure', text: 'save failed', tone: 'error' },
+        { id: 'info', text: 'Settings saved', tone: 'info' },
+      ],
+      bridgeError: '',
+      onDismissBridgeError: () => {},
+    };
+    await render(React.createElement(DesktopToastRegion, props));
+    await act(async () => showDesktopToast('Renderer operation failed', 'error'));
+    await tick(4999);
+    assert.equal(document.querySelectorAll('.mx-toast').length, 3);
+    await tick(1);
+    assert.equal(document.querySelectorAll('.mx-toast').length, 2);
+    assert.equal(document.querySelectorAll('.mx-toast[data-tone="error"]').length, 2);
+    await tick(4999);
+    assert.equal(document.querySelectorAll('.mx-toast').length, 2);
+    await tick(1);
+    assert.equal(document.querySelectorAll('.mx-toast').length, 0);
+    await render(
+      React.createElement(DesktopToastRegion, {
+        ...props,
+        toasts: [...props.toasts, { id: 'new-info', text: 'New notice', tone: 'info' }],
+      })
+    );
+    assert.equal(document.querySelectorAll('.mx-toast[data-tone="error"]').length, 0);
+    assert.equal(document.querySelectorAll('.mx-toast').length, 1);
+  }));
+
+test('later grouped errors do not postpone the first error expiry or expire early themselves', async (t) =>
+  withToastClock(t, async ({ render, tick }) => {
+    await render(
+      React.createElement(DesktopToastRegion, {
+        toasts: [],
+        bridgeError: '',
+        onDismissBridgeError: () => {},
+      })
+    );
+    await act(async () => showDesktopToast(failure(54), 'error', { scope: 'job' }));
+    await tick(4000);
+    await act(async () => showDesktopToast(failure(62), 'error', { scope: 'job' }));
+    assert.equal(document.querySelector('.error-notice').dataset.count, '2');
+    await tick(5999);
+    assert.equal(document.querySelector('.error-notice').dataset.count, '2');
+    await tick(1);
+    assert.equal(document.querySelector('.error-notice').dataset.count, '1');
+    await tick(3999);
+    assert.equal(document.querySelectorAll('.mx-toast').length, 1);
+    await tick(1);
+    assert.equal(document.querySelectorAll('.mx-toast').length, 0);
+  }));
+
+test('state errors expire too and X still dismisses errors immediately', async (t) =>
+  withToastClock(t, async ({ render, tick }) => {
+    let dismissed = 0;
+    const props = { toasts: [], bridgeError: 'Bridge connection failed', onDismissBridgeError: () => dismissed++ };
+    await render(React.createElement(DesktopToastRegion, props));
+    await tick(10000);
+    assert.equal(document.querySelectorAll('.mx-toast').length, 0);
+    await render(React.createElement(DesktopToastRegion, { ...props, bridgeError: '' }));
+    await render(React.createElement(DesktopToastRegion, props));
+    assert.equal(document.querySelectorAll('.mx-toast').length, 1);
+    await act(async () => document.querySelector('.error-notice-dismiss').click());
+    assert.equal(dismissed, 1);
+    assert.equal(document.querySelectorAll('.mx-toast').length, 0);
+    await tick(10000);
+    assert.equal(document.querySelectorAll('.mx-toast').length, 0);
+  }));
+
 test('a failed remote approval stays actionable and explains the failure', async () =>
   withDom(async ({ render }) => {
     let listener;

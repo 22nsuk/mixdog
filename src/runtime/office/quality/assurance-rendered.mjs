@@ -70,6 +70,8 @@ async function renderedPageMetric(image) {
   const leftMargin = maxX >= minX ? minX / canvas.width : 1;
   const rightMargin = maxX >= minX ? Math.max(0, canvas.width - maxX - step) / canvas.width : 1;
   const bodyVerticalSpan = bodyMaxY >= bodyMinY ? (bodyMaxY - bodyMinY + step) / (bodyBottom - bodyTop) : 0;
+  // Where the body's ink stops, as a share of the body region (the running header and footer sit outside it).
+  const bodyEnd = bodyMaxY >= bodyMinY ? Math.min(1, (bodyMaxY + step - bodyTop) / (bodyBottom - bodyTop)) : 0;
   return {
     page: pageNumbers[0],
     width: canvas.width,
@@ -78,6 +80,7 @@ async function renderedPageMetric(image) {
     horizontalSpan: Number(horizontalSpan.toFixed(4)),
     verticalSpan: Number(verticalSpan.toFixed(4)),
     bodyVerticalSpan: Number(bodyVerticalSpan.toFixed(4)),
+    bodyEnd: Number(bodyEnd.toFixed(4)),
     lowerBodyInkRatio: bodyInk ? Number((lowerBodyInk / bodyInk).toFixed(4)) : 0,
     leftMargin: Number(leftMargin.toFixed(4)),
     rightMargin: Number(rightMargin.toFixed(4)),
@@ -99,12 +102,20 @@ export function isSmallWorksheetDocument(document) {
   );
 }
 
+// A flowing page that is not the last one ends its body early when the flow pushed a block it may not split (a
+// table kept whole, a figure kept with its caption, a heading kept with the next block) onto the next page: the
+// foot stands empty and the reader turns the page mid-thought. A Word sample whose first page ended above its
+// exhibit passed every check. Measured from the rendered ink, so it holds for Word and PDF alike; designed pages
+// (a PDF of section.slide sheets) are composed, not flowed, and are left to the deck's own review.
+const PAGE_BODY_END_MIN = 0.7;
+
 export async function reviewRenderedOfficePages(
   images = [],
-  { format = '', pageRoles = {}, smallWorksheet = false } = {}
+  { format = '', pageRoles = {}, smallWorksheet = false, pageCount = 0, designedPages = false } = {}
 ) {
   const normalized = String(format || '').toLowerCase();
   const pageImages = renderedPageImages(images);
+  const lastPage = Number(pageCount) || Math.max(0, ...pageImages.flatMap((image) => imagePages(image)));
   const pages = [];
   const issues = [];
   for (const image of pageImages) {
@@ -125,6 +136,21 @@ export async function reviewRenderedOfficePages(
           'render-review'
         )
       );
+    }
+    const flowing = ['docx', 'pdf'].includes(normalized) && !designedPages;
+    if (flowing && metric.page < lastPage && metric.bodyEnd < PAGE_BODY_END_MIN) {
+      const empty = Math.round((1 - metric.bodyEnd) * 100);
+      issues.push(
+        issue(
+          'page_bottom_empty',
+          `/page[${metric.page}]`,
+          `The body stops ${Math.round(metric.bodyEnd * 100)}% of the way down page ${metric.page} and the next page goes on: ${empty}% of its body region stands empty. A block kept whole (a table, a figure with its caption, a heading kept with the next block) usually moved on; let a long table break across the page, move a shorter block up, or tighten what comes before.${metric.page === 1 ? ' A deliberate title page is answered in the critique.' : ''}`,
+          'render-review',
+          // A first page may be a title page by design; any later one is a break the reader did not need.
+          metric.page === 1 ? 'info' : 'warning'
+        )
+      );
+      continue;
     }
     if (
       ['docx', 'pdf'].includes(normalized) &&

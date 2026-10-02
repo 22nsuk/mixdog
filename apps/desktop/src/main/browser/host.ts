@@ -98,6 +98,7 @@ import { createBrowserRefPoints } from './ref-points';
 import { createBrowserRemoteControl } from './remote-control';
 import { createBrowserReply } from './reply';
 import { createBrowserScreenshotService } from './screenshot';
+import { createBrowserVisualPrivacy } from './visual-privacy';
 import { BrowserSessionRegistry, DEFAULT_BROWSER_SESSION_ID, browserSessionId } from './session-registry';
 import { createBrowserSettle, pause } from './settle';
 import { createBrowserSessionStore } from './browser-session-store';
@@ -396,6 +397,12 @@ export function createBrowserHost(
     },
   });
   const screenshots = createBrowserScreenshotService(cdp, SCREENSHOT_TIMEOUT_MS, SCREENSHOT_FALLBACK_TIMEOUT_MS);
+  const agentScreenshots = createBrowserScreenshotService(
+    cdp,
+    SCREENSHOT_TIMEOUT_MS,
+    SCREENSHOT_FALLBACK_TIMEOUT_MS,
+    createBrowserVisualPrivacy({ state, documents })
+  );
   const snapshots = createBrowserSnapshotCapture({
     evaluate: cdp.evaluate,
     cdp,
@@ -426,7 +433,7 @@ export function createBrowserHost(
     settleAfterAction: settle.settleAfterAction,
     postconditionMatchesGuest: settle.postconditionMatchesGuest,
     captureSnapshotPayload: snapshots.captureSnapshotPayload,
-    captureScreenshot: screenshots.capture,
+    captureScreenshot: agentScreenshots.capture,
     bindVisualGrounding: refPoints.bindVisualGrounding,
     downloadsForGuest: (guest) =>
       downloadLedger.downloadsForSession(browserSessions.sessionIdForGuest(guest) ?? DEFAULT_BROWSER_SESSION_ID),
@@ -601,7 +608,7 @@ export function createBrowserHost(
     refActions,
     refPoints,
     snapshots,
-    screenshots,
+    screenshots: agentScreenshots,
     emulation,
     pageState,
     performance,

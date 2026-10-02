@@ -35,6 +35,11 @@ export interface BrowserEmulationHost {
 
 export function createBrowserEmulation(host: BrowserEmulationHost) {
   const { cdp, invalidateInteractionState, snapshotResult, onViewportChanged } = host;
+  const overrideGroups = [
+    ['userAgent', 'locale'],
+    ['colorScheme', 'reducedMotion'],
+  ] as const;
+  const retainedOverrides = new WeakMap<WebContents, Partial<BrowserCommand>>();
 
   async function configureEmulation(
     guest: WebContents,
@@ -42,11 +47,24 @@ export function createBrowserEmulation(host: BrowserEmulationHost) {
     signal?: AbortSignal
   ): Promise<string[]> {
     const validated = validateEmulationCommand(command);
+    const previous = command.reset ? {} : retainedOverrides.get(guest) || {};
+    const effective = { ...command };
+    // CDP replaces these groups as a whole, while the public command changes
+    // only the supplied switches. Preserve their previously applied siblings.
+    for (const group of overrideGroups) {
+      if (!group.some((key) => command[key] !== undefined)) continue;
+      for (const key of group) {
+        if (effective[key] === undefined && previous[key] !== undefined) {
+          Object.assign(effective, { [key]: previous[key] });
+        }
+      }
+    }
     const finishViewportChange = command.reset || validated.hasViewport ? host.beginViewportChange?.(guest) : undefined;
     try {
       const applied: string[] = [];
       if (command.reset) {
         await resetEmulation(cdp, guest, signal);
+        retainedOverrides.delete(guest);
         applied.push('reset');
       }
       if (validated.hasViewport) {
@@ -56,14 +74,19 @@ export function createBrowserEmulation(host: BrowserEmulationHost) {
       } else if (command.reset) {
         onViewportChanged?.(guest, null);
       }
-      applied.push(...(await applyIdentityOverrides(cdp, guest, command, signal)));
-      applied.push(...(await applyPreferenceOverrides(cdp, guest, command, validated.networkProfile, signal)));
+      applied.push(...(await applyIdentityOverrides(cdp, guest, effective, signal)));
+      applied.push(...(await applyPreferenceOverrides(cdp, guest, effective, validated.networkProfile, signal)));
       applied.push(...(await applyContextOverrides(cdp, guest, command, signal)));
       if (!applied.length) {
         throw new Error(
           'emulate requires reset and/or a viewport, touch, userAgent, locale, timezone, media, CPU, network, geolocation, or headers setting'
         );
       }
+      const retained = { ...previous };
+      for (const key of overrideGroups.flat()) {
+        if (effective[key] !== undefined) Object.assign(retained, { [key]: effective[key] });
+      }
+      retainedOverrides.set(guest, retained);
       invalidateInteractionState(guest);
       return applied;
     } finally {

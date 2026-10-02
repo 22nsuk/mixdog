@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "node scripts/dev-profile.mjs",
     "dev:fresh": "node scripts/dev-profile.mjs --fresh",
-    "start": "npm run build && electron-vite preview --skipBuild",
+    "start": "npm run build && node scripts/dev-profile.mjs --preview",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
@@ -28,7 +28,7 @@
     "test:computer-host:scenarios": "node scripts/run-computer-host-scenarios.mjs",
     "test:computer-host:repeats": "node scripts/run-computer-host-scenario-repeats.mjs",
     "merge:computer-host:scenarios": "node scripts/merge-computer-host-scenarios.mjs",
-    "test:spec-advisory": "node --max-old-space-size=1024 --import ./scripts/test-env.mjs --import tsx --test src/renderer/product-spec.test.mjs src/renderer/agent-activity.test.mjs src/renderer/queue-actions.test.mjs src/renderer/turn-review.test.mjs",
+    "test:spec-advisory": "node --max-old-space-size=1024 --import ./scripts/test-env.mjs --import tsx ../../scripts/test-direct.mjs src/renderer/product-spec.test.mjs src/renderer/agent-activity.test.mjs src/renderer/queue-actions.test.mjs src/renderer/turn-review.test.mjs",
     "verify:packaged-runtime": "node scripts/verify-packaged-runtime.mjs",
     "verify:update-metadata": "node scripts/verify-update-metadata.mjs",
     "e2e:direct": "powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts/direct-e2e-windows.ps1",

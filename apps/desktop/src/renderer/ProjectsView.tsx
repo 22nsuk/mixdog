@@ -1,8 +1,9 @@
+import { memo } from 'react';
 import { ProjectListSection, type ProjectListSectionProps } from './ProjectListSection';
 
 // Projects and Workflow are independent rail destinations. Retaining this
 // panel across navigation preserves the warmed project memory catalog.
-export function ProjectsPane({ active = true, ...list }: ProjectListSectionProps) {
+export const ProjectsPane = memo(function ProjectsPane({ active = true, ...list }: ProjectListSectionProps) {
   return (
     <div
       className="schedules-pane projects-pane stable-surface-preserved stable-takeover-surface"
@@ -15,4 +16,4 @@ export function ProjectsPane({ active = true, ...list }: ProjectListSectionProps
       </div>
     </div>
   );
-}
+});

@@ -134,7 +134,12 @@ export function recordInlineAuditRound(session, audit) {
 
 // A mutation that landed is never failed by its audit: an inspection error is
 // reported as unavailable so the author falls back to qa.
-export async function inlineOfficeAudit(session, { operations = [] } = {}) {
+/**
+ * @param {{ operations?: object[], exclude?: string[] }} options
+ *   exclude: finding codes that do not apply to what the reader receives (a PDF the browser printed is not
+ *   held to PowerPoint's text metrics)
+ */
+export async function inlineOfficeAudit(session, { operations = [], exclude = [] } = {}) {
   if (!session || !OOXML_FORMATS.has(session.format)) return null;
   let measured;
   try {
@@ -151,7 +156,7 @@ export async function inlineOfficeAudit(session, { operations = [] } = {}) {
   // failed its first audit with nothing the author could change. qa and issues still report it as found.
   const pending = (issue) => (issue?.code === 'formula_cache_missing' ? { ...issue, severity: 'info' } : issue);
   const touched = touchedLocations(session.format, operations);
-  let list = (measured.issues || []).map(pending);
+  let list = (measured.issues || []).map(pending).filter((issue) => !exclude.includes(issue?.code));
   // A deck opened for editing — a template, a colleague's deck — is judged on the slides this batch edited: its
   // other pages are kept as they are, and a defect they already carried is not this edit's to fix. A structural
   // change renumbers the pages, so it reads the whole deck; so does an authored deck, every page of which is the

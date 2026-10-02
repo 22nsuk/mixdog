@@ -645,7 +645,6 @@ export function SchedulesPane({
                   key={name}
                   className="schedules-row utilities-row sidebar-resource-row"
                   data-enabled={enabled ? 'true' : 'false'}
-                  data-tooltip={enabled ? undefined : t('Disabled')}
                   disabled={busy}
                   onClick={() => {
                     setError('');
@@ -653,6 +652,13 @@ export function SchedulesPane({
                   }}
                   {...scheduleOrder.getReorderProps(name)}
                 >
+                  <span className="sidebar-resource-icon" aria-hidden="true">
+                    {running ? (
+                      <ProgressSpinner size={12} className="schedules-row-spinner" />
+                    ) : (
+                      <AlarmClock size={16} />
+                    )}
+                  </span>
                   <span className="schedules-row-copy utilities-row-copy">
                     <SidebarResourceTitle
                       label={name}
@@ -660,15 +666,6 @@ export function SchedulesPane({
                     />
                     <small>{scheduleMeta(schedule)}</small>
                   </span>
-                  {running && (
-                    <span
-                      className="sidebar-resource-running"
-                      role="status"
-                      aria-label={t('{{name}} is running', { name })}
-                    >
-                      <ProgressSpinner size={12} className="schedules-row-spinner" aria-hidden="true" />
-                    </span>
-                  )}
                   <ChevronRight className="utilities-row-chevron" size={16} aria-hidden="true" />
                 </button>
               );

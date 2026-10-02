@@ -370,11 +370,23 @@ function Snapshot-Word($doc, $payload) {
                 # The cell's accepted view and its struck-through words, as for a
                 # paragraph, so a redline in a table reads the same way.
                 try {
-                    $accepted = Word-AcceptedText $doc $table.Cell($r, $c).Range $context
+                    $cellRange = $table.Cell($r, $c).Range
+                    $accepted = Word-AcceptedText $doc $cellRange $context
+                    # The cell's type, as the portable reader states it: a stat strip's label set at the figure's size.
+                    $fontSize = 0
+                    $fontBold = $false
+                    try {
+                        $measured = [double]$cellRange.Font.Size
+                        if ($measured -gt 0 -and $measured -lt 1000) { $fontSize = $measured }
+                        $fontBold = [int]$cellRange.Font.Bold -eq -1
+                    }
+                    catch {}
                     $cells += [ordered]@{
                         text        = ([string]$accepted.text).TrimEnd("`r", "`a")
                         deletedText = ([string]$accepted.deleted).TrimEnd("`r", "`a")
                         tracked     = [bool]$accepted.tracked
+                        size        = $fontSize
+                        bold        = $fontBold
                     }
                 }
                 catch { $cells += $null }
@@ -387,6 +399,9 @@ function Snapshot-Word($doc, $payload) {
             for ($c = 1; $c -le @($rows[$r - 1]).Count; $c++) {
                 $record = @($rows[$r - 1])[$c - 1]
                 $cell = [ordered]@{ path = "/body/tbl[$i]/row[$r]/cell[$c]"; index = $c; text = $(if ($null -eq $record) { $null } else { $record.text }) }
+                if ($null -ne $record -and ($record.size -gt 0 -or $record.bold)) {
+                    $cell.font = [ordered]@{ size = $record.size; bold = [bool]$record.bold }
+                }
                 if ($null -ne $record -and $record.tracked) { $cell.tracked = $true }
                 if ($null -ne $record -and $record.deletedText.Length -gt 0) { $cell.deletedText = $record.deletedText }
                 $cells += $cell
@@ -673,10 +688,25 @@ function Excel-FormulaPrecedents([string]$formula, [string]$currentSheet) {
     return $output
 }
 
+# A cell's own horizontal alignment in the portable reader's words; $null for Excel's General (the cell states none),
+# which the portable reader leaves out too.
+function Excel-HorizontalAlignmentName($value) {
+    switch ([int]$value) {
+        -4131 { return 'left' }
+        -4108 { return 'center' }
+        -4152 { return 'right' }
+        -4130 { return 'justify' }
+        7 { return 'centerContinuous' }
+        -4117 { return 'distributed' }
+        5 { return 'fill' }
+        default { return $null }
+    }
+}
+
 # One cell's style as the snapshot reports it.
 function Excel-CellStyle($cell) {
     $font = $cell.Font
-    return [ordered]@{
+    $style = [ordered]@{
         fontName     = [string]$font.Name
         fontSize     = [double]$font.Size
         bold         = [bool]$font.Bold
@@ -685,6 +715,9 @@ function Excel-CellStyle($cell) {
         fillColor    = [double]$cell.Interior.Color
         numberFormat = Excel-EnglishNumberFormat $cell
     }
+    $alignment = $(try { Excel-HorizontalAlignmentName $cell.HorizontalAlignment } catch { $null })
+    if ($alignment) { $style.horizontalAlignment = $alignment }
+    return $style
 }
 
 # The style every cell of a block shares, or $null when they differ: Excel answers a mixed range's property with
@@ -706,7 +739,9 @@ function Excel-SharedCellStyle($range) {
     if ($null -eq $color -or $color -is [System.DBNull]) { return $null }
     $italic = $font.Italic
     if ($null -eq $italic -or $italic -is [System.DBNull]) { return $null }
-    return [ordered]@{
+    $horizontal = $range.HorizontalAlignment
+    if ($null -eq $horizontal -or $horizontal -is [System.DBNull]) { return $null }
+    $style = [ordered]@{
         fontName     = [string]$name
         fontSize     = [double]$size
         bold         = [bool]$bold
@@ -715,6 +750,9 @@ function Excel-SharedCellStyle($range) {
         fillColor    = [double]$fill
         numberFormat = Excel-EnglishNumberFormat $range ([string]$format)
     }
+    $alignment = Excel-HorizontalAlignmentName $horizontal
+    if ($alignment) { $style.horizontalAlignment = $alignment }
+    return $style
 }
 
 # The styles of one column's populated cells ($rows: their sheet rows, ascending) into $styles by address. Asking
@@ -1289,16 +1327,7 @@ function Snapshot-ExcelPage($book, $payload) {
                     }
                 }
                 if ($detailed -and $payload.includeStyles) {
-                    $cell = $range.Cells.Item($r, $c)
-                    $entry.style = [ordered]@{
-                        fontName     = [string]$cell.Font.Name
-                        fontSize     = [double]$cell.Font.Size
-                        bold         = [bool]$cell.Font.Bold
-                        italic       = [bool]$cell.Font.Italic
-                        color        = [double]$cell.Font.Color
-                        fillColor    = [double]$cell.Interior.Color
-                        numberFormat = Excel-EnglishNumberFormat $cell
-                    }
+                    $entry.style = Excel-CellStyle $range.Cells.Item($r, $c)
                 }
                 if ($detailed) { $cells.Add($entry) }
             }
@@ -2986,6 +3015,32 @@ function Invoke-WordOperation($doc, $op) {
             if ($rows -gt 1 -and $props.repeatHeader -ne $false) {
                 for ($row = 1; $row -le $headerRows; $row++) { try { $table.Rows.Item($row).HeadingFormat = $true } catch {} }
             }
+            # The last row is the total when totalRow is set: bold over a rule, as the portable writer draws it.
+            if ($props.totalRow -eq $true -and $rows -gt 1) {
+                $total = $table.Rows.Item($rows)
+                $total.Range.Font.Bold = -1
+                $rule = $total.Borders.Item(-1)   # wdBorderTop
+                $rule.LineStyle = 1
+                $rule.LineWidth = 8               # wdLineWidth100pt, the portable writer's w:sz 8
+                $rule.Color = Color-Value '374151'
+            }
+            # One row's own type (rowStyles[row]: fontSize, color, bold) over the table's, with the row's exact line
+            # pitch following its size: a stat strip's 22 pt figures over its 9 pt labels in one table.
+            if ($props.rowStyles) {
+                $rowStyles = @($props.rowStyles)
+                for ($row = 1; $row -le [Math]::Min($rows, $rowStyles.Count); $row++) {
+                    $style = $rowStyles[$row - 1]
+                    if ($null -eq $style) { continue }
+                    $rowRange = $table.Rows.Item($row).Range
+                    if ($style.fontSize) {
+                        $rowRange.Font.Size = [single]$style.fontSize
+                        $rowRange.ParagraphFormat.LineSpacingRule = 4
+                        $rowRange.ParagraphFormat.LineSpacing = [single]$style.fontSize * 1.3
+                    }
+                    if ($style.color) { $rowRange.Font.Color = Color-Value ([string]$style.color) }
+                    if ($null -ne $style.bold) { $rowRange.Font.Bold = $(if ($style.bold) { -1 } else { 0 }) }
+                }
+            }
             $added = [ordered]@{ op = 'add_table'; changed = $true; table = [int]$table.Index; rows = $rows; columns = $columns }
             if ($styleNotFound.Count) { $added.styleNotFound = $styleNotFound -join ', ' }
             return $added
@@ -3217,6 +3272,27 @@ function Invoke-WordOperation($doc, $op) {
             if ($props.size) { $normal.Font.Size = [single]$props.size }
             if ($props.color) { $normal.Font.Color = Color-Value ([string]$props.color) }
             return [ordered]@{ op = 'set_document_font'; changed = $true; name = [string]$normal.Font.Name; nameEastAsia = [string]$normal.Font.NameFarEast; size = [double]$normal.Font.Size }
+        }
+        'define_styles' {
+            # Word's own styles defined once, as the portable writer patches styles.xml: built-in styles by their id
+            # (Word-StyleValue), so a Korean Word's "제목 1" is reached as "Heading 1".
+            if (-not $op.styles) { throw 'define_styles needs styles: { "<style name>": { fields } }' }
+            $defined = @()
+            $notFound = @()
+            foreach ($entry in $op.styles.PSObject.Properties) {
+                $style = $null
+                try { $style = $doc.Styles.Item((Word-StyleValue ([string]$entry.Name))) } catch { $style = $null }
+                if ($null -eq $style) { $notFound += [string]$entry.Name; continue }
+                $fields = $entry.Value
+                Set-WordRunFormat $style $fields
+                $format = $style.ParagraphFormat
+                if ($fields.alignment) { $format.Alignment = Word-ParagraphAlignment $fields.alignment }
+                Set-WordParagraphFlow $format $fields
+                $defined += [string]$entry.Name
+            }
+            $result = [ordered]@{ op = 'define_styles'; changed = $defined.Count -gt 0; styles = $defined }
+            if ($notFound.Count) { $result.styleNotFound = $notFound }
+            return $result
         }
         'set_font' {
             $range = $doc.Content.Duplicate
@@ -3455,16 +3531,18 @@ function Invoke-WordOperation($doc, $op) {
                 if ($said) { $footer.Range.InsertParagraphAfter() }
                 $range = $footer.Range.Paragraphs.Last.Range
                 if ($said) { $null = $range.MoveEnd(1, -1) } else { $range = $footer.Range }
-                # The same treatment as the portable writer: the number alone, a prefix
-                # only when asked for, the total only with includeTotal:true.
+                # The same treatment as the portable writer: the number alone, a prefix only when asked for, and the
+                # total with includeTotal:true or a separator ("3 / 12"; includeTotal:false keeps the number alone).
                 $range.Text = $(if ($op.prefix) { ([string]$op.prefix) + ' ' } else { '' })
                 $range = $footer.Range
                 $range.Collapse(0)
                 $null = $footer.Range.Fields.Add($range, -1, 'PAGE', $true)
-                if ([bool]$op.includeTotal) {
+                $separatorText = ([string]$op.separator).Trim()
+                $includeTotal = ([bool]$op.includeTotal) -or ($op.includeTotal -ne $false -and $separatorText)
+                if ($includeTotal) {
                     $range = $footer.Range
                     $range.Collapse(0)
-                    $range.InsertAfter(' ' + $(if ($null -ne $op.separator) { [string]$op.separator } else { '/' }) + ' ')
+                    $range.InsertAfter(' ' + $(if ($separatorText) { $separatorText } else { '/' }) + ' ')
                     $range = $footer.Range
                     $range.Collapse(0)
                     $null = $footer.Range.Fields.Add($range, -1, 'NUMPAGES', $true)
@@ -4384,6 +4462,16 @@ function Apply-ExcelOperation($book, $op) {
                     } 'Excel chart series by rows'
                 }
             }
+            # Every text in the chart in the sheet's face, where Excel otherwise sets the workbook default. Set before the
+            # title's face: the chart area's font, set after it, put the title back in Excel's regular grey.
+            if ($op.fontName) {
+                try {
+                    $font = $chart.ChartArea.Format.TextFrame2.TextRange.Font
+                    $font.Name = [string]$op.fontName
+                    $font.NameFarEast = [string]$op.fontName
+                }
+                catch {}
+            }
             if ($op.title) {
                 $null = Invoke-ExcelComRetry {
                     $chart.HasTitle = $true
@@ -4495,6 +4583,34 @@ function Apply-ExcelOperation($book, $op) {
             }
             else {
                 0
+            }
+            # The quiet plot and the one lit bar, as the portable writer draws them: gridlines:false, valueAxis:false,
+            # highlight (a 0-based index or a category's text) in the series colour with the rest in mutedColor.
+            if ($op.gridlines -eq $false) { try { $chart.Axes(2, 1).HasMajorGridlines = $false } catch {} }
+            if ($op.valueAxis -eq $false) { try { $chart.Axes(2, 1).Delete() } catch {} }
+            if ($null -ne $op.highlight -and [string]$op.highlight -ne '' -and $seriesCount -eq 1 -and -not $slices) {
+                $series = $chart.SeriesCollection().Item(1)
+                $lit = -1
+                if ($op.highlight -is [ValueType]) { $lit = [int]$op.highlight }
+                else {
+                    $names = @(@($series.XValues) | ForEach-Object { [string]$_ })
+                    $lit = [Array]::IndexOf($names, [string]$op.highlight)
+                }
+                if ($lit -ge 0 -and $lit -lt $pointCount) {
+                    $accent = Color-Value $(if ($palette.Count) { [string]$palette[0] } else { '2F6DB5' })
+                    $muted = Color-Value $(if ($op.mutedColor) { [string]$op.mutedColor } else { 'C9CED6' })
+                    for ($pointIndex = 1; $pointIndex -le $pointCount; $pointIndex++) {
+                        try {
+                            $point = $series.Points($pointIndex)
+                            $pointColor = $(if ($pointIndex -eq $lit + 1) { $accent } else { $muted })
+                            $point.Format.Fill.Solid()
+                            $point.Format.Fill.ForeColor.RGB = $pointColor
+                            # The series' outline was set in the accent; a receded bar keeps no accent edge.
+                            $point.Format.Line.ForeColor.RGB = $pointColor
+                        }
+                        catch {}
+                    }
+                }
             }
             $chartResultValue = [ordered]@{ op = 'add_chart'; changed = $true; name = [string]$shape.Name; series = $seriesCount; categories = $pointCount }
             if ($pageFit) { $chartResultValue.pageFit = $pageFit }

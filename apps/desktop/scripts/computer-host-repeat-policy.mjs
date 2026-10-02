@@ -1,5 +1,6 @@
 export function repeatRequiresPass(argv = process.argv, env = process.env) {
   return (
+    !argv.includes('--allow-failures') ||
     argv.some((value) => value === '--require-pass' || value === '--require-pass=true') ||
     String(env.npm_config_require_pass || '').toLowerCase() === 'true'
   );

@@ -4,10 +4,14 @@ import { getUsageLedger } from '../runtime/shared/llm/usage-ledger.mjs';
 import { importUsageHistory } from '../runtime/shared/llm/usage-ledger-import.mjs';
 import { refreshUnpricedUsageAsync } from '../runtime/shared/llm/usage-pricing-refresh.mjs';
 import { resolvePluginData } from '../runtime/shared/plugin-paths.mjs';
-import { usageStatsSnapshot } from './services/usage-stats-model.mjs';
+import { sessionUsageSnapshot, usageStatsSnapshot } from './services/usage-stats-model.mjs';
 import { resolveUsageStatsPeriod } from './services/usage-stats-period.mjs';
 import { usageRollupDayKey } from '../runtime/shared/llm/usage-rollup.mjs';
-import { ACCOUNT_PROVIDERS, readProviderAccountPool } from '../runtime/shared/provider-accounts.mjs';
+import {
+  ACCOUNT_PROVIDERS,
+  accountScopedSessionId,
+  readProviderAccountPool,
+} from '../runtime/shared/provider-accounts.mjs';
 
 const MAX_MODEL_LIMIT = 50;
 
@@ -51,6 +55,22 @@ function accountsInUse(accountPool) {
     }
   }
   return inUse;
+}
+
+// Every id a session's spend was recorded under: its own, and the per-account
+// provider session each subscription account sent it under before account
+// sends recorded the visible session.
+function sessionUsageIds(sessionId, accountPool) {
+  const ids = [sessionId];
+  for (const provider of ACCOUNT_PROVIDERS) {
+    try {
+      for (const account of accountPool(provider).accounts)
+        ids.push(accountScopedSessionId(provider, account.id, sessionId));
+    } catch {
+      /* an unreadable pool leaves that provider's older records out */
+    }
+  }
+  return ids;
 }
 
 /** `null` = all time. `0` = today. Anything else is a trailing day count. */
@@ -102,6 +122,7 @@ export function createUsageStatsApi({
   ledger = getUsageLedger,
   importHistory = importUsageHistory,
   accountPool = readProviderAccountPool,
+  getSessionId = () => null,
 } = {}) {
   let importing = null;
   let imported = false;
@@ -150,6 +171,17 @@ export function createUsageStatsApi({
       snapshot.coverage.ledger = true;
       snapshot.coverage.liveSince = liveSince || null;
       return snapshot;
+    },
+
+    /** This runtime's session from its first request, compactions included; null before it has one. */
+    async getSessionUsage() {
+      const sessionId = getSessionId();
+      if (!sessionId) return null;
+      const store = ledger();
+      if (!store) throw new Error('Usage ledger is unavailable');
+      await store.settleWrites();
+      const usage = await store.sessionUsageAsync(sessionUsageIds(sessionId, accountPool));
+      return { sessionId, ...sessionUsageSnapshot(usage) };
     },
 
     /**

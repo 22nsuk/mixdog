@@ -45,6 +45,34 @@ ${body}
   return JSON.parse(stdout.trim());
 }
 
+test('UIA ownership stops at the nearest native top-level window, not its owner', windows, async () => {
+  const result = await nativeFixture(`
+Add-Type @'
+using System;
+public sealed class Node {
+  public Node Parent;
+  public Node Current { get { return this; } }
+  public int NativeWindowHandle;
+}
+public sealed class Walker { public Node GetParent(Node node) { return node.Parent; } }
+public static class MixWin32 {
+  public static IntPtr TopLevelWindow(IntPtr handle) {
+    return handle == new IntPtr(70) ? new IntPtr(2) : handle;
+  }
+}
+'@
+. (Import-InputFunction 'Get-TopWindow')
+$Walker = New-Object Walker
+$owner = New-Object Node; $owner.NativeWindowHandle = 1
+$dialog = New-Object Node; $dialog.NativeWindowHandle = 2; $dialog.Parent = $owner
+$document = New-Object Node; $document.Parent = $dialog
+$field = New-Object Node; $field.NativeWindowHandle = 70; $field.Parent = $document
+@{field=(Get-TopWindow $field).Current.NativeWindowHandle;owner=(Get-TopWindow $owner).Current.NativeWindowHandle} |
+  ConvertTo-Json -Compress
+`);
+  assert.deepEqual(result, { field: 2, owner: 1 });
+});
+
 test('terminating a process needs repeated intent and spares a window that still answers', windows, async () => {
   const result = await nativeFixture(`
 Add-Type -TypeDefinition @'
@@ -360,6 +388,7 @@ public sealed class MenuProperties {
   public string Name;
   public bool IsEnabled = true, IsOffscreen;
   public int NativeWindowHandle;
+  public ControlType ControlType = ControlType.MenuItem;
 }
 public sealed class MenuPattern {
   public MenuPattern Current { get { return this; } }
@@ -376,7 +405,13 @@ public sealed class MenuElement {
   public MenuElement[] FindAll(TreeScope scope, Condition condition) {
     var result = new List<MenuElement>();
     foreach (var child in Children) {
-      result.Add(child); result.AddRange(child.FindAll(scope, condition));
+      var conditions = condition is OrCondition ? ((OrCondition)condition).GetConditions() : new[] {condition};
+      foreach (PropertyCondition item in conditions) {
+        if (Equals(item.Value, child.Current.ControlType) || Equals(item.Value, child.Current.ControlType.Id)) {
+          result.Add(child); break;
+        }
+      }
+      result.AddRange(child.FindAll(scope, condition));
     }
     return result.ToArray();
   }
@@ -410,6 +445,11 @@ public static class MenuAutomation {
       file.Children.Add(save);
       if (mode == "ambiguous") file.Children.Add(new MenuElement("Save", 1));
     }
+    if (mode == "body-twin") {
+      var button = new MenuElement("Save", 1);
+      button.Current.ControlType = ControlType.Button;
+      root.Children.Add(button);
+    }
   }
 }
 public static class MixWin32 {
@@ -430,12 +470,21 @@ foreach ($name in @('Normalize-MenuLabel','Get-MenuCandidates','Expand-MenuEleme
 function Resolve-WindowInfo($window,$id) { return @{Handle=[IntPtr]1; Id='hwnd:0x1'} }
 function Find-Window($window,$id) { return [MenuAutomation]::FromHandle([IntPtr]1) }
 function Get-TopWindow($element) { return $element }
-function Get-MsaaMenuCandidates($info,$name) { return @() }
+function Get-MsaaMenuCandidates($info,$name) {
+  if ($script:menuMode -eq 'msaa-no-action') { return @([pscustomobject]@{DefaultAction=''}) }
+  if ($script:menuMode -eq 'body-twin' -and $name -eq 'File') {
+    $node = [pscustomobject]@{DefaultAction='Expand'}
+    $node | Add-Member ScriptMethod DoDefaultAction {}
+    return @($node)
+  }
+  return @()
+}
 function Invoke-Win32MenuPath($req,$info,$path) { return $null }
 function Assert-ExecutionAuthorization($request,$handle) {}
 function Invoke-BackgroundWindow($target,$operation) { & $operation }
 $rows = @()
-foreach ($mode in @('missing','valid','owned','ambiguous','disabled','localized')) {
+foreach ($mode in @('missing','valid','owned','ambiguous','disabled','localized','body-twin','msaa-no-action')) {
+  $script:menuMode = $mode
   [MenuAutomation]::Configure($mode)
   $script:CurrentRequest = @{action='invoke_menu';window_id='hwnd:0x1';path=@('File','Save')}
   $errorText = ''
@@ -455,6 +504,10 @@ $rows | ConvertTo-Json -Compress -Depth 5
   // tab; the plain names still reach it.
   assert.equal(byMode.localized.error, '');
   assert.deepEqual(byMode.localized.invoked, [1]);
+  for (const mode of ['body-twin', 'msaa-no-action']) {
+    assert.equal(byMode[mode].error, '');
+    assert.deepEqual(byMode[mode].invoked, [1]);
+  }
   assert.deepEqual(byMode.owned.invoked, [3]);
   assert.deepEqual(byMode.owned.keys, []);
   for (const [mode, error] of [
@@ -625,6 +678,7 @@ Add-Type @'
 using System.Collections.Generic;
 public sealed class MsaaMenuFixture {
   public static List<string> Invoked = new List<string>();
+  public string DefaultAction = "Invoke";
   readonly string name;
   public MsaaMenuFixture(string value) { name = value; }
   public void DoDefaultAction() { Invoked.Add(name); }

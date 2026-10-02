@@ -44,9 +44,10 @@ export function useUsageRailPin(
 ) {
   const [usagePinned, setUsagePinned] = useState(() => {
     try {
-      return window.localStorage.getItem(USAGE_RAIL_PIN_KEY) === '1';
+      // Pinned unless the user explicitly unpinned (fresh installs start pinned).
+      return window.localStorage.getItem(USAGE_RAIL_PIN_KEY) !== '0';
     } catch {
-      return false;
+      return true;
     }
   });
   const [settingsReady, setSettingsReady] = useState(false);

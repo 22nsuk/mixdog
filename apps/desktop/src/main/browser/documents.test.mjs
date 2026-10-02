@@ -51,3 +51,30 @@ test('read filters lines by OR keywords or a regular expression with two lines o
   assert.equal(filterBrowserReadLines(text, 'nothing here'), '');
   assert.equal(filterBrowserReadLines(text, '   '), text);
 });
+
+test('nested and shadow-root scrolling changes the scroll revision without claiming a DOM edit', () => {
+  const dom = new JSDOM('<div id="list"></div><div id="host"></div>', { runScripts: 'outside-only' });
+  try {
+    const { window } = dom;
+    const shadow = window.document.querySelector('#host').attachShadow({ mode: 'open' });
+    shadow.innerHTML = '<div id="inner"></div>';
+    const revision = () => window.eval(BROWSER_OBSERVATION_REVISION);
+    for (const target of [window.document.querySelector('#list'), shadow.querySelector('#inner')]) {
+      const before = revision();
+      target.dispatchEvent(new window.Event('scroll'));
+      const after = revision();
+      assert.equal(browserDocumentChanged(before, after), false);
+      assert.equal(browserDocumentChanged(before, after, { includeScroll: true }), true);
+      assert.equal(before.split(':')[5], after.split(':')[5], 'the outer document did not scroll');
+      const state = window.__mixdogObservationRevision;
+      target.scrollTop = 100;
+      state.recordScroll(target);
+      const moved = revision();
+      assert.equal(browserDocumentChanged(after, moved, { includeScroll: true }), true);
+      target.dispatchEvent(new window.Event('scroll'));
+      assert.equal(revision(), moved, 'a deferred event must not count the same movement again');
+    }
+  } finally {
+    dom.window.close();
+  }
+});

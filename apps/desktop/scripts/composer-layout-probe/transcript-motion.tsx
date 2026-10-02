@@ -23,6 +23,12 @@ function geometry() {
     top: viewport.scrollTop,
     gap: viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop,
     height: box.height,
+    goalVisible: Boolean(document.querySelector('.session-goal-island')),
+    reviewVisible: Boolean(document.querySelector('.turn-review-bar')),
+    statuses: [...viewport.querySelectorAll<HTMLElement>('.turn-status, .compaction-divider')].map((status) => ({
+      text: status.textContent,
+      animations: status.getAnimations({ subtree: true }).length,
+    })),
     rows: [...viewport.querySelectorAll<HTMLElement>('.transcript-virtual-row')].map((row) => {
       const rect = row.getBoundingClientRect();
       return {
@@ -64,6 +70,9 @@ function inspect(name: string, frames: Sample[], session: string, tail = true) {
   if (maxDrift > 1) failures.push(`visible rows move after first paint (${maxDrift.toFixed(1)}px)`);
   const maxGap = Math.max(0, ...visible.map((value) => Math.abs(value!.gap)));
   if (tail && maxGap > 1) failures.push(`visible tail is not pinned (${maxGap.toFixed(1)}px)`);
+  if (frames.some((value) => value?.statuses.some((status) => status.animations > 0))) {
+    failures.push('completed status animated instead of painting its final state');
+  }
   let previous = '';
   return {
     name,
@@ -147,6 +156,7 @@ export async function runTranscriptMotionProbe(root: Root) {
   const cases: ReturnType<typeof inspect>[] = [];
   let width = 620;
   let session = '';
+  let focused = true;
   // Only the composer-dock scenario lets the review bar ask its worker.
   let reviewActive = false;
   let acknowledge: ((value: boolean) => void) | undefined;
@@ -167,7 +177,7 @@ export async function runTranscriptMotionProbe(root: Root) {
     root.render(
       <div style={{ height: 620, width, margin: 30, display: 'flex', position: 'relative' }}>
         <PaneConversation
-          focused
+          focused={focused}
           sessionId={session}
           hidden={false}
           reconcileOnMount={false}
@@ -189,7 +199,7 @@ export async function runTranscriptMotionProbe(root: Root) {
           onSelectProject={noop}
           onOpenCommandSurface={noop}
           onOpenSettings={noop}
-          reviewActive={reviewActive}
+          reviewActive={reviewActive && focused}
         />
       </div>
     );
@@ -210,6 +220,17 @@ export async function runTranscriptMotionProbe(root: Root) {
     cases.push(inspect(name, frames, session));
   };
   try {
+    const coldGoal = history('motion-cold-goal', true);
+    (coldGoal as any).goal = {
+      id: 'cold-goal',
+      status: 'paused',
+      title: 'Restored Goal',
+      tasks: [],
+    };
+    await enter('cold-goal-entry', coldGoal);
+    if (!document.querySelector('.session-goal-island')) {
+      cases.at(-1)!.failures.push('restored Goal missing on first entry');
+    }
     const plain = history('motion-plain');
     const mixed = history('motion-mixed', true);
     await enter('cold-mount', plain);
@@ -286,11 +307,66 @@ export async function runTranscriptMotionProbe(root: Root) {
     cases.push(result);
 
     // Chrome above the composer (Goal capsule + turn-review bar) commits its
-    // geometry ONCE per real change. The bar's authoritative worker read lands
-    // AFTER the transcript is shown and takes space only then; Goal
+    // geometry ONCE per real change. A slow entry read must land BEFORE the
+    // transcript is shown, even beyond the old 500ms/1s deadlines; Goal
     // republications that carry a new object or only clock fields must not
     // move a row; clearing the Goal moves the rows exactly once.
     const patch = 'diff --git a/demo.txt b/demo.txt\n--- a/demo.txt\n+++ b/demo.txt\n@@ -1 +1 @@\n-before\n+after';
+    // The first focus of a background pane must not retract its already
+    // painted review while the first authoritative read is still in flight.
+    // This used to move the SAME final tool row down 40px and then up 40px.
+    const firstFocus = history('motion-first-focus-review');
+    firstFocus.items = [
+      ...(firstFocus.items ?? []),
+      { id: 'first-focus-prompt', kind: 'user', text: 'Change demo.txt' },
+      {
+        id: 'first-focus-tool',
+        kind: 'tool',
+        name: 'apply_patch',
+        args: {},
+        result: 'Updated demo.txt',
+        uiDiff: patch,
+      },
+      { id: 'first-focus-done', kind: 'turndone', status: 'complete' },
+    ] as TranscriptItem[];
+    const focusReads: ((value: { value: unknown }) => void)[] = [];
+    capability = () => new Promise((resolve) => focusReads.push(resolve));
+    reviewActive = true;
+    focused = false;
+    await enter('unfocused-review-entry', firstFocus);
+    const initialReview = document.querySelector('.turn-review-bar');
+    const initialTool = document.querySelector('.tool-activity');
+    const focusFrames = [geometry()];
+    for (const active of [true, false, true]) {
+      focused = active;
+      flushSync(render);
+      focusFrames.push(...(await samples(6)));
+    }
+    while (focusReads.length > 0) {
+      focusReads.shift()!({
+        value: {
+          authoritative: true,
+          checkpointId: 'first-focus-prompt',
+          snapshotKind: 'worktree',
+          files: [{ path: 'demo.txt', status: 'M', additions: 1, deletions: 1 }],
+          patch,
+          agents: [],
+        },
+      });
+      focusFrames.push(...(await samples(6)));
+    }
+    const firstFocusResult = inspectDock('first-focus-review-retained', focusFrames, session, 1);
+    if (!initialReview || initialReview !== document.querySelector('.turn-review-bar')) {
+      firstFocusResult.failures.push('first focus replaced the already displayed review bar');
+    }
+    if (!initialTool || initialTool !== document.querySelector('.tool-activity')) {
+      firstFocusResult.failures.push('first focus replaced the final tool row');
+    }
+    if (focusFrames.some((value) => !value?.reviewVisible)) {
+      firstFocusResult.failures.push('review disappeared during the first focus round trip');
+    }
+    cases.push(firstFocusResult);
+
     const chrome = history('motion-chrome', true);
     chrome.items = [
       ...(chrome.items ?? []),
@@ -327,20 +403,26 @@ export async function runTranscriptMotionProbe(root: Root) {
               agents: [],
             },
           });
-        }, 60);
+        }, 1_200);
       });
     session = String(chrome.sessionId);
     reviewActive = true;
     publish(chrome);
     flushSync(render);
-    const chromeFrames = await samples(3);
-    await waitFor(() => resolved && Boolean(geometry()?.shown), 'delayed review entry');
+    const chromeFrames: Sample[] = [];
+    await waitFor(() => {
+      chromeFrames.push(geometry());
+      return resolved && Boolean(geometry()?.shown);
+    }, 'delayed review entry');
     chromeFrames.push(...(await samples(12)));
     const chromeEntry = inspectDock('async-chrome-entry', chromeFrames, session, 1);
     if (!resolved) chromeEntry.failures.push(`review worker never resolved (requests=${requests})`);
     if (!document.querySelector('.turn-review-bar'))
       chromeEntry.failures.push('review bar missing after worker resolution');
     if (!document.querySelector('.session-goal-island')) chromeEntry.failures.push('goal capsule missing on entry');
+    if (chromeFrames.some((value) => value?.shown && (!value.reviewVisible || !value.goalVisible))) {
+      chromeEntry.failures.push('conversation revealed before its diff and Goal were ready');
+    }
     cases.push(chromeEntry);
     const republish = async (name: string, next: Snapshot, expectedHeights: number, capsule: boolean) => {
       const before = geometry();
@@ -353,6 +435,16 @@ export async function runTranscriptMotionProbe(root: Root) {
       cases.push(result);
     };
     await republish('goal-republished-new-object', { ...chrome, goal: { ...goal } } as Snapshot, 1, true);
+    for (const busy of [true, false]) {
+      const frames = [geometry()];
+      flushSync(() => publish({ ...chrome, busy, goal: { ...goal, status: busy ? 'active' : 'paused' } } as Snapshot));
+      frames.push(...(await samples()));
+      const interrupted = inspectDock(busy ? 'goal-running-height' : 'goal-interrupted-height', frames, session, 1);
+      // The running transcript band legitimately appears/disappears; the
+      // composer dock and viewport must not change height with its state.
+      interrupted.failures = interrupted.failures.filter((failure) => !failure.startsWith('visible rows move'));
+      cases.push(interrupted);
+    }
     await republish(
       'goal-clock-only',
       { ...chrome, goal: { ...goal, timeUsedMs: 5_000, snapshotAt: Date.now() } } as Snapshot,
@@ -393,6 +485,133 @@ export async function runTranscriptMotionProbe(root: Root) {
       completion.failures.push('settlement replaced the already-rendered Markdown body');
     }
     cases.push(completion);
+
+    // Real CSS animation state, not just data attributes: late history and
+    // focus must never replay a completed row's slide or icon pop. Include an
+    // ID-less completion whose old index-based animation key changed on prepend.
+    for (const item of [
+      { kind: 'turndone', status: 'complete', elapsedMs: 12_000 },
+      { kind: 'turndone', status: 'failed', label: 'Failed', elapsedMs: 12_000 },
+      { kind: 'turndone', status: 'cancelled', elapsedMs: 12_000 },
+      { kind: 'statusdone', status: 'compacted', label: 'Compact complete' },
+      { kind: 'statusdone', status: 'inherited' },
+    ] as TranscriptItem[]) {
+      const name = `static-completion-${item.status}`;
+      const snapshot = history(`motion-${name}`);
+      snapshot.items = [
+        ...(snapshot.items ?? []),
+        { id: `${name}-prompt`, kind: 'user', text: 'Already completed work.' },
+      ];
+      await enter(`${name}-entry`, snapshot);
+      const completed = { ...snapshot, items: [...snapshot.items, item] };
+      flushSync(() => publish(completed));
+      const arrived = await samples(8);
+      const arrivedResult = inspect(`${name}-arrival`, arrived, session);
+      if (!arrived.at(-1)?.statuses.some((status) => status.text)) {
+        arrivedResult.failures.push('completion status never rendered');
+      }
+      cases.push(arrivedResult);
+      const focusFrames = [geometry()];
+      for (const active of [false, true, false, true]) {
+        focused = active;
+        flushSync(render);
+        focusFrames.push(...(await samples(4)));
+      }
+      cases.push(inspect(`${name}-focus-round-trip`, focusFrames, session));
+      flushSync(() =>
+        publish({
+          ...completed,
+          items: [
+            { id: `${name}-older-prompt`, kind: 'user', text: 'Older completed work.' },
+            { ...item, id: `${name}-older-done` },
+            ...completed.items,
+          ],
+        })
+      );
+      cases.push(inspect(`${name}-history-prepend`, await samples(8), session));
+    }
+
+    // No cached AST: exercise the actual empty-marker → heading → list/code/table
+    // commits. Empty h1–h6 margins used to move existing text down by 4px when
+    // another "#" arrived, then back up when the title gained visible text.
+    for (const short of [false, true]) {
+      const name = `growing-markdown-${short ? 'short' : 'tail'}`;
+      const growing = history(`motion-${name}`, true);
+      if (short) growing.items = [];
+      growing.busy = true;
+      growing.items = [...(growing.items ?? []), { id: 'growing-prompt', kind: 'user', text: 'Continue writing.' }];
+      await enter(`${name}-ready`, growing);
+      const growthFrames: Sample[] = [];
+      const growthFailures: string[] = [];
+      let text = `${name}: `;
+      let previousHeight = 0;
+      let previousAnchor = geometry()!.rows.find((row) => row.key.endsWith(':growing-prompt'))!.top;
+      const deltas = [
+        '새 요소를 생성합니다.',
+        '\n\n#',
+        '#',
+        '#',
+        '#',
+        '#',
+        '#',
+        ' 제목',
+        '\n\n-',
+        ' ',
+        '**첫 항목**',
+        '\n- 두 번째 항목',
+        '\n\n```',
+        'typescript\n',
+        'const value = ',
+        '1;\n',
+        '```',
+        '\n\n| 이름 | 값 |',
+        '\n| --- | --- |',
+        '\n| 결과 | 확인 |',
+      ];
+      for (const delta of deltas) {
+        text += delta;
+        flushSync(() =>
+          publish({
+            ...growing,
+            streamingTail: { id: 'growing-answer', kind: 'assistant', text, streaming: true },
+          })
+        );
+        const frames = await samples(8);
+        for (const value of frames) {
+          const anchor = value?.rows.find((row) => row.key.endsWith(':growing-prompt'));
+          if (anchor) {
+            if (anchor.top > previousAnchor + 0.25) {
+              growthFailures.push(`append-only prompt moved down ${anchor.top - previousAnchor}px`);
+            }
+            previousAnchor = anchor.top;
+          }
+          const row = value?.rows.find((row) => row.key.endsWith(':growing-answer'));
+          if (row) {
+            if (row.height < previousHeight - 0.25) {
+              growthFailures.push(`append-only answer shrank from ${previousHeight}px to ${row.height}px`);
+            }
+            previousHeight = row.height;
+          }
+        }
+        for (const heading of document.querySelectorAll<HTMLElement>(
+          '.markdown.streaming :is(h1,h2,h3,h4,h5,h6):empty'
+        )) {
+          if (heading.getBoundingClientRect().height > 0) growthFailures.push('empty heading occupies a line');
+        }
+        if (delta === ' 제목') {
+          const heading = document.querySelector<HTMLElement>('.markdown.streaming h6');
+          if (heading?.textContent !== '제목' || heading.getBoundingClientRect().height <= 0) {
+            growthFailures.push('completed heading text is not visible');
+          }
+        }
+        growthFrames.push(...frames);
+      }
+      const growthResult = inspect(name, growthFrames, session, !short);
+      // New content legitimately moves older rows upward; only reversal fails.
+      growthResult.failures = growthResult.failures.filter((failure) => !failure.startsWith('visible rows move'));
+      growthResult.failures.push(...growthFailures);
+      cases.push(growthResult);
+    }
 
     reviewActive = true;
     const finalReview = history('motion-final-review');

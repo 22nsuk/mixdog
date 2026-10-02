@@ -209,7 +209,9 @@ html[data-window-material="mica"] .session-sidebar {
   padding-block: 6px;
 }
 .session-sidebar-panels .workflows-pane .schedules-row.workflows-agent-summary-row,
-.session-sidebar-panels .schedules-pane:not(.workflows-pane, .projects-pane, .extensions-pane) .schedules-row.sidebar-resource-row {
+.session-sidebar-panels
+  .schedules-pane:not(.workflows-pane, .projects-pane, .extensions-pane)
+  .schedules-row.sidebar-resource-row {
   padding-block: 8px;
 }
 .session-sidebar-panels .schedules-pane .utilities-row-copy {
@@ -227,7 +229,11 @@ html[data-window-material="mica"] .session-sidebar {
 .session-sidebar-panels .projects-pane .schedules-row.utilities-row.projects-row {
   min-height: 32px;
 }
-.session-sidebar-panels .workflows-pane .schedules-row.utilities-row:not(.workflows-agent-summary-row) .utilities-row-copy > small,
+.session-sidebar-panels
+  .workflows-pane
+  .schedules-row.utilities-row:not(.workflows-agent-summary-row)
+  .utilities-row-copy
+  > small,
 .session-sidebar-panels .projects-pane .schedules-row.utilities-row.projects-row .utilities-row-copy > small {
   display: none;
 }
@@ -240,7 +246,11 @@ html[data-window-material="mica"] .session-sidebar {
   color: var(--mx-text-faint);
   font-size: var(--mx-font-supporting);
 }
-.session-sidebar-panels .schedules-pane .utilities-row-copy > small :is(.model-route-label-model, .model-route-label-effort),
+.session-sidebar-panels
+  .schedules-pane
+  .utilities-row-copy
+  > small
+  :is(.model-route-label-model, .model-route-label-effort),
 .utility-dock .agent-activity-page .schedules-row-copy small :is(.model-route-label-model, .model-route-label-effort) {
   color: inherit;
 }
@@ -420,14 +430,6 @@ html[data-window-material="mica"] .session-sidebar {
 }
 .session-sidebar-panels .utilities-row:is(:hover, :focus-visible, :focus-within) .utilities-row-chevron {
   opacity: 1;
-}
-.session-sidebar-panels .sidebar-resource-running {
-  width: 16px;
-  height: 16px;
-  flex: 0 0 16px;
-  align-self: center;
-  display: grid;
-  place-items: center;
 }
 .session-sidebar-panels .agent-route-summary {
   max-width: 100%;

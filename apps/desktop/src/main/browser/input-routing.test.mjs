@@ -8,7 +8,7 @@ function fixture() {
   const frames = new Map([['session', { frameId: 'child' }]]);
   const sent = [];
   let lookups = 0;
-  const guest = { isOffscreen: () => true };
+  const guest = { isOffscreen: () => true, getZoomFactor: () => 1 };
   const dispatch = createBrowserInputDispatch({
     documentId: () => documentId,
     frames: () => frames,

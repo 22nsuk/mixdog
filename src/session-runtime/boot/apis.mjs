@@ -66,7 +66,7 @@ export function wireApis(boot) {
     // though the boot-time autostart window has already passed.
     ensureAutomationRuntime: () => boot.scheduleChannelStart(0),
   });
-  boot.usageStatsApi = createUsageStatsApi();
+  boot.usageStatsApi = createUsageStatsApi({ getSessionId: () => boot.rt.session?.id || null });
   boot.providerAuthApi = providerAuthApiFor(boot);
   boot.mediaApi = createMediaApi();
   boot.sessionTitles = createSessionTitleController({

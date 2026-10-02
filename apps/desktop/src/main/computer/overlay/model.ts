@@ -94,11 +94,9 @@ export function computerUseOverlayPresentation(
   const waiting = paused && (snapshot.pausedSessionIds ?? []).length > 0;
   let title = ko ? '컴퓨터 사용 중' : 'Computer in use';
   if (attention) title = ko ? '확인 필요' : 'Check';
-  else if (paused) title = ko ? '일시정지' : 'Paused';
+  else if (paused) title = ko ? '대기 중' : 'Waiting';
   return {
-    visible:
-      !stopInFlight &&
-      (working || holding || waiting || Boolean(snapshot.attentionRequired) || inputBlocked),
+    visible: !stopInFlight && (working || holding || waiting || Boolean(snapshot.attentionRequired) || inputBlocked),
     sessionIds,
     title,
     // Per-session colours only carry meaning while several agents work at once;

@@ -36,6 +36,9 @@ export interface RelayClientState {
   stateLane: ReturnType<typeof createRemoteStateLane> | null;
   pendingFrames: number;
   pendingBytes: number;
+  /** The phone reported its app hidden while this socket still lives (the
+   *  background grace before it suspends). Push notifications reach it then. */
+  background: boolean;
   visibleSessionIds: Set<string>;
   /** Transcript delta baselines are receiver-specific. A shared encoder
    *  advances even for clients filtered out of a session, so their first
@@ -234,6 +237,7 @@ export function createRelayClientRegistry(deps: RelayClientRegistryDeps): RelayC
         stateLane: null,
         pendingFrames: 0,
         pendingBytes: 0,
+        background: false,
         visibleSessionIds: new Set(),
         sessionStateEncoders: new Map(),
         binaryFrames: false,

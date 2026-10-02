@@ -51,8 +51,12 @@
 .sidebar-usage-heading.session-panel-header::after {
   display: none;
 }
+/* Same pin as the rail More menu: muted when off, plain text when pinned. */
+.sidebar-usage-heading .sidebar-usage-pin {
+  color: var(--mx-text-muted);
+}
 .sidebar-usage-heading .sidebar-usage-pin.is-active {
-  color: var(--mx-text-accent);
+  color: var(--mx-text);
 }
 /* The roster is ONE grid: label | track | percentage | reset. Every provider
    row and quota line subgrids these columns, so the label column is exactly

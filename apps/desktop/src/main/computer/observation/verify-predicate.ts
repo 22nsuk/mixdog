@@ -25,7 +25,7 @@ export function verifyUnknownReason(observation: {
   return observation.observedElements > 0
     ? {
         reason: 'element_text_incomplete',
-        hint: 'the window published more text than one read returns; narrow the target with window_id, or verify title_contains/window_exists instead',
+        hint: 'the provider did not complete its element-text read; capture the window for visible evidence, or verify title_contains/window_exists instead',
       }
     : {
         reason: 'element_text_empty',

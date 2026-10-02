@@ -8,14 +8,16 @@ import { writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 
-import { buildPuppeteerLaunchArgs, resolveBrowserLaunchOptions } from '../../shared/browser-launch.mjs';
-import { startChildGuardian } from '../../shared/child-guardian.mjs';
+import { launchHtmlBrowser, runInBrowser } from './html-browser.mjs';
 import { iconGlobal } from './pptx-icons.mjs';
 import { GEOMETRY_TOLERANCE_PX, NEAR_MISS_PX, readGeometry } from './pptx-html-geometry.mjs';
 
 const require = createRequire(import.meta.url);
 
-export const HTML_CANVAS = { width: 1920, height: 1080 };
+/** The deck canvas in CSS px and the page it lands on in inches; a PDF's designed pages pass their sheet instead. */
+export const HTML_CANVAS = { width: 1920, height: 1080, inchWidth: 13.333, inchHeight: 7.5 };
+
+const viewport = (canvas, deviceScaleFactor) => ({ width: canvas.width, height: canvas.height, deviceScaleFactor });
 
 // Runs inside the page: everything it needs is defined here. Returns one
 // slide's items in paint order (a parent's box before its children).
@@ -464,7 +466,7 @@ function showSlide(index) {
 
 // <i data-icon="name" data-sw="1.75"> becomes the offline Lucide SVG, sized by the <i>'s CSS box
 // and stroked in its CSS color.
-function injectIcons(table, viewBox) {
+export function injectIcons(table, viewBox) {
   const missing = [];
   for (const i of document.querySelectorAll('i[data-icon]')) {
     const markup = table[String(i.dataset.icon || '').toLowerCase()];
@@ -488,18 +490,18 @@ const CAPTURE_SCALE = 2;
 
 // Each marked element photographed alone at twice the canvas density on a transparent page, trimmed to
 // what it painted (shadows, pseudo-elements and turned corners included): id → { png, box } in CSS px.
-async function captureRichPaint(page, slideBox, ids) {
+async function captureRichPaint(page, slideBox, ids, canvas) {
   const out = new Map();
   if (!ids.length) return out;
   const sharp = require('sharp');
-  await page.setViewport({ ...HTML_CANVAS, deviceScaleFactor: CAPTURE_SCALE });
+  await page.setViewport(viewport(canvas, CAPTURE_SCALE));
   try {
     for (const id of ids) {
       await page.evaluate(isolateCapture, id);
       // Runtimes with Uint8Array.fromBase64 get a plain Uint8Array back, whose toString is not base64.
       const shot = Buffer.from(
         await page.screenshot({
-          clip: { x: slideBox.x, y: slideBox.y, width: HTML_CANVAS.width, height: HTML_CANVAS.height },
+          clip: { x: slideBox.x, y: slideBox.y, width: canvas.width, height: canvas.height },
           omitBackground: true,
           type: 'png',
         })
@@ -511,7 +513,7 @@ async function captureRichPaint(page, slideBox, ids) {
       if (!alpha || alpha.min === 255) {
         out.set(id, {
           png: shot.toString('base64'),
-          draw: { x: 0, y: 0, w: HTML_CANVAS.width, h: HTML_CANVAS.height },
+          draw: { x: 0, y: 0, w: canvas.width, h: canvas.height },
         });
         continue;
       }
@@ -530,39 +532,40 @@ async function captureRichPaint(page, slideBox, ids) {
     }
   } finally {
     await page.evaluate(isolateCapture, null);
-    await page.setViewport({ ...HTML_CANVAS, deviceScaleFactor: 1 });
+    await page.setViewport(viewport(canvas, 1));
   }
   return out;
+}
+
+/** The offline Lucide table `injectIcons` takes, keyed by icon name. */
+export function iconTable() {
+  const icons = iconGlobal();
+  return { icons, table: Object.fromEntries(icons.names.map((name) => [name, icons(name)])) };
 }
 
 /**
  * Lays out an HTML deck in a local browser and measures it.
  * @param {string} html the deck
- * @param {{ sourcePath: string, shotPath: (page: number) => string, timeoutMs?: number, signal?: AbortSignal }} options
+ * @param {{ sourcePath: string, shotPath: (page: number) => string, timeoutMs?: number, signal?: AbortSignal,
+ *   prepare?: (page: object) => Promise<object> }} options
  *   sourcePath: where the HTML is written before loading (beside the deck, so relative <img> paths resolve)
- * @returns {Promise<{ width: number, height: number, slides: object[], shots: string[], notes: string[], geometry: object[] }>}
+ *   prepare: run on the loaded page; returns the canvas (`HTML_CANVAS` shape) the slides are measured on
+ * @returns {Promise<{ width: number, height: number, inchWidth: number, inchHeight: number, slides: object[], shots: string[], notes: string[], geometry: object[] }>}
  *   geometry: per slide with findings, `{ slide, findings }` from pptx-html-geometry.mjs
  */
-export async function measureHtmlDeck(html, { sourcePath, shotPath, timeoutMs = 90_000, signal = null }) {
+export async function measureHtmlDeck(
+  html,
+  { sourcePath, shotPath, timeoutMs = 90_000, signal = null, prepare = null }
+) {
   await writeFile(sourcePath, html, 'utf8');
-  const puppeteer = (await import('puppeteer-core')).default;
-  const browser = await puppeteer.launch({
-    headless: true,
-    ...resolveBrowserLaunchOptions(),
-    args: buildPuppeteerLaunchArgs(['--font-render-hinting=none']),
-  });
-  try {
-    startChildGuardian({ childPid: browser.process?.()?.pid, label: 'pptx-html-browser' });
-  } catch {}
-  const abort = () => browser.close().catch(() => {});
-  signal?.addEventListener('abort', abort, { once: true });
-  let timer = null;
-  const work = (async () => {
+  const browser = await launchHtmlBrowser('pptx-html-browser');
+  const work = async () => {
     const page = await browser.newPage();
-    await page.setViewport({ ...HTML_CANVAS, deviceScaleFactor: 1 });
+    await page.setViewport(viewport(HTML_CANVAS, 1));
     await page.goto(pathToFileURL(sourcePath).href, { waitUntil: 'load' });
-    const icons = iconGlobal();
-    const table = Object.fromEntries(icons.names.map((name) => [name, icons(name)]));
+    const canvas = prepare ? await prepare(page) : HTML_CANVAS;
+    if (canvas !== HTML_CANVAS) await page.setViewport(viewport(canvas, 1));
+    const { icons, table } = iconTable();
     const missing = await page.evaluate(injectIcons, table, '0 0 24 24');
     if (missing.length) {
       const hint = missing.map((name) => {
@@ -578,7 +581,7 @@ export async function measureHtmlDeck(html, { sourcePath, shotPath, timeoutMs = 
     const count = await page.$$eval('section.slide', (sections) => sections.length);
     if (!count)
       throw new Error(
-        'The HTML holds no <section class="slide">; every page is one section.slide on a 1920×1080 canvas.'
+        `The HTML holds no <section class="slide">; every page is one section.slide on a ${canvas.width}×${canvas.height} canvas.`
       );
     const slides = [];
     const shots = [];
@@ -589,9 +592,9 @@ export async function measureHtmlDeck(html, { sourcePath, shotPath, timeoutMs = 
       await page.evaluate(() => document.fonts.ready);
       const element = (await page.$$('section.slide'))[index];
       const box = await element.boundingBox();
-      if (Math.round(box.width) !== HTML_CANVAS.width || Math.round(box.height) !== HTML_CANVAS.height) {
+      if (Math.round(box.width) !== canvas.width || Math.round(box.height) !== canvas.height) {
         throw new Error(
-          `slide ${index + 1} measures ${Math.round(box.width)}×${Math.round(box.height)} px; every section.slide is exactly 1920×1080.`
+          `slide ${index + 1} measures ${Math.round(box.width)}×${Math.round(box.height)} px; every section.slide is exactly ${canvas.width}×${canvas.height}.`
         );
       }
       const shot = shotPath(index + 1);
@@ -601,7 +604,7 @@ export async function measureHtmlDeck(html, { sourcePath, shotPath, timeoutMs = 
       for (const note of measured.notes) notes.push(`slide ${index + 1}: ${note}`);
       const findings = await page.evaluate(readGeometry, index, GEOMETRY_TOLERANCE_PX, NEAR_MISS_PX);
       if (findings.length) geometry.push({ slide: index + 1, findings });
-      const drawn = await captureRichPaint(page, box, measured.captures);
+      const drawn = await captureRichPaint(page, box, measured.captures, canvas);
       const items = measured.items
         .map((item) => {
           if (item.kind !== 'capture') return item;
@@ -611,16 +614,7 @@ export async function measureHtmlDeck(html, { sourcePath, shotPath, timeoutMs = 
         .filter(Boolean);
       slides.push({ bg: measured.bg, items, notes: measured.speakerNotes });
     }
-    return { ...HTML_CANVAS, slides, shots, notes, geometry };
-  })();
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`HTML layout exceeded ${timeoutMs} ms`)), timeoutMs);
-  });
-  try {
-    return await Promise.race([work, timeout]);
-  } finally {
-    clearTimeout(timer);
-    signal?.removeEventListener('abort', abort);
-    await browser.close().catch(() => {});
-  }
+    return { ...canvas, slides, shots, notes, geometry };
+  };
+  return runInBrowser(browser, { signal, timeoutMs }, work);
 }

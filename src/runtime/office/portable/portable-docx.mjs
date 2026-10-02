@@ -28,6 +28,7 @@ import {
 } from './portable-docx-edits.mjs';
 import {
   addDocxNote,
+  defineDocxStyles,
   editDocxParagraph,
   fillDocxContentControl,
   fitDocxTable,
@@ -60,6 +61,7 @@ const DOCUMENT_EDITS = {
   add_image: addDocxImage,
   set_page: setDocxPage,
   set_document_font: setDocxDocumentFont,
+  define_styles: defineDocxStyles,
   insert_table_row: editDocxTableRowsOrColumns,
   delete_table_row: editDocxTableRowsOrColumns,
   insert_table_column: editDocxTableRowsOrColumns,

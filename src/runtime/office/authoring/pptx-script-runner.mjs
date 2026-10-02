@@ -98,7 +98,11 @@ async function pathExists(path) {
   }
 }
 
-export async function runPptxAuthoringScript(script, output, { timeoutMs = PPTX_SCRIPT_CONTRACT.timeoutMs } = {}) {
+export async function runPptxAuthoringScript(
+  script,
+  output,
+  { timeoutMs = PPTX_SCRIPT_CONTRACT.timeoutMs, cwd = dirname(output) } = {}
+) {
   const source = String(script || '');
   if (!source.trim()) throw new Error('author requires a non-empty pptxgenjs script');
   await mkdir(dirname(output), { recursive: true });
@@ -126,7 +130,7 @@ export async function runPptxAuthoringScript(script, output, { timeoutMs = PPTX_
   } catch (error) {
     return { ok: false, error: scriptError(error, source, preludeLines), logs, elapsedMs: 0 };
   }
-  const scopedProcess = { env: { ...process.env }, cwd: () => dirname(output), platform: process.platform };
+  const scopedProcess = { env: { ...process.env }, cwd: () => cwd, platform: process.platform };
   let timer = null;
   const timeout = new Promise((_, reject) => {
     timer = setTimeout(() => reject(new Error(`Authoring script exceeded ${timeoutMs} ms`)), timeoutMs);

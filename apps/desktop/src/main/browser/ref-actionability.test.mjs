@@ -80,10 +80,7 @@ for (const blocker of ['disabled', 'covered', 'moving', 'not-visible', 'not-acti
           return { handled: true, value };
         },
         cdp: {
-          call: async (_guest, method) => {
-            assert.equal(method, 'DOM.getBoxModel');
-            return { model: { content: [10, 10, 90, 10, 90, 30, 10, 30] } };
-          },
+          call: async () => assert.fail('input must use the viewport point that passed hit testing'),
         },
         frameOffsetForSession: async () => ({ x: 0, y: 0 }),
         captureSnapshotPayload: async () => {
@@ -91,7 +88,7 @@ for (const blocker of ['disabled', 'covered', 'moving', 'not-visible', 'not-acti
           assert.fail('a temporary blocker must not retire the ref');
         },
       });
-      assert.deepEqual(await points.resolveRefPoint(guest, 'ref'), { x: 50, y: 20 });
+      assert.deepEqual(await points.resolveRefPoint(guest, 'ref'), { x: blocker === 'moving' ? 70 : 50, y: 20 });
       assert.equal(probes, 2);
       assert.equal(captures, 0);
       assert.equal(clicks, 0, 'only the caller may dispatch input after preflight');
@@ -143,6 +140,38 @@ test('a disabled form field becomes editable before fill dispatches exactly once
     assert.equal(input.value, 'ready');
     assert.equal(writes, 1);
     assert.equal(result.text, 'filled');
+  } finally {
+    dom.window.close();
+  }
+});
+
+test('a scrolled mobile target keeps its hit-tested viewport point and frame offset', async () => {
+  const dom = new JSDOM('<button>Mobile target</button>', {
+    runScripts: 'outside-only',
+    pretendToBeVisual: true,
+  });
+  try {
+    const button = dom.window.document.querySelector('button');
+    button.scrollIntoView = () => {};
+    button.getBoundingClientRect = () => ({ left: 10, top: 200, width: 80, height: 20 });
+    Object.defineProperty(dom.window, 'scrollY', { value: 900 });
+    dom.window.document.elementFromPoint = (x, y) => (x === 50 && y === 210 ? button : null);
+    const guest = {};
+    const points = createBrowserRefPoints({
+      accessibilityRefs: new Map([[guest, { refs: new Map([['mobile', { backendNodeId: 1 }]]) }]]),
+      visualGrounding: new Map(),
+      diagnostics: () => ({ pendingDialog: null }),
+      callAccessibilityRef: async (_guest, _ref, source, args) => ({
+        handled: true,
+        value: await dom.window.eval(`(${source})`).apply(button, args),
+      }),
+      cdp: { call: async () => assert.fail('document-space quads must not replace viewport coordinates') },
+      frameOffsetForSession: async (_guest, _session, _signal, point) => {
+        assert.deepEqual({ ...point }, { x: 50, y: 210 });
+        return { x: 100, y: 40 };
+      },
+    });
+    assert.deepEqual(await points.resolveRefPoint(guest, 'mobile'), { x: 150, y: 250 });
   } finally {
     dom.window.close();
   }

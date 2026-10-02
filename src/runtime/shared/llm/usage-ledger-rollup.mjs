@@ -252,6 +252,41 @@ function mergeLegacyDays(db, { days, hourly, hourlyDay, fromDay, toDay }) {
   }
 }
 
+/**
+ * One session's lifetime totals over every id its spend was recorded under.
+ * Compaction requests run under their own provider session id but are
+ * recorded under the source session, so this is the whole conversation
+ * across compactions. The same route choice as a rollup applies: a gateway
+ * summary never doubles a detail record.
+ */
+export function readSessionUsage(db, sessionIds) {
+  const total = empty();
+  const rows = db
+    .prepare(`
+            WITH mine AS (
+                SELECT day,route,COUNT(*) AS turns,SUM(input) AS input,SUM(output) AS output,
+                    SUM(cache_read) AS cache_read,SUM(cache_write) AS cache_write,
+                    SUM(cost_usd) AS cost_usd,SUM(duration_ms) AS duration_ms
+                FROM usage_events WHERE session IN (
+                    SELECT id FROM usage_sessions WHERE value IN (SELECT value FROM json_each(?)))
+                GROUP BY day,route
+            ), attributed AS (
+                SELECT printf('%04d-%02d-%02d',m.day/10000,(m.day/100)%100,m.day%100) AS day,
+                    json_extract(r.signature,'$[0]') AS provider,
+                    json_extract(r.signature,'$[1]') AS model,
+                    json_extract(r.signature,'$[4]') AS cost_source,
+                    json_extract(r.signature,'$[7]') AS rank,
+                    m.turns,m.input,m.output,m.cache_read,m.cache_write,m.cost_usd,m.duration_ms
+                FROM mine m JOIN usage_routes r ON r.id=m.route
+            )
+            SELECT a.* FROM attributed a JOIN (${best}) b USING(day,provider,model,rank)
+        `)
+    .all(JSON.stringify(sessionIds), '0000-01-01', '9999-12-31');
+  for (const row of rows) add(total, row);
+  const { sessions, sessionsComplete, ...usage } = total;
+  return usage;
+}
+
 /** Read cached amounts; group retained attribution separately for distinct sessions. */
 export function rollupUsage(
   db,

@@ -115,7 +115,9 @@ function corpus() {
     samples.push(Array.from({ length: random() % 160 }, () => pick(ATOMS)).join(''));
   }
   // Very large strings: prose, Korean, base64, JSONL, and a mixed blob.
-  const base64 = Buffer.from(Array.from({ length: 1_500_000 }, () => random() & 0xff)).toString('base64');
+  const bytes = Buffer.alloc(1_500_000);
+  for (let index = 0; index < bytes.length; index += 1) bytes[index] = random() & 0xff;
+  const base64 = bytes.toString('base64');
   samples.push(
     'The estimator only prices the delta appended since the provider usage baseline. '.repeat(20_000),
     '재영님, 토큰 추정기는 서버 usage 기준선 위에서 델타만 계산합니다. '.repeat(20_000),

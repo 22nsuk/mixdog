@@ -983,6 +983,9 @@ public class MixWin32
         if (!IsWindowHandle(candidate) || !IsWindowHandle(topLevel)) return false;
         return candidate == topLevel || GetAncestor(candidate, 2) == topLevel;
     }
+    // GA_ROOT follows the parent chain, not the owner chain. An owned modal
+    // window is a distinct input surface even when UIA nests it under its owner.
+    public static IntPtr TopLevelWindow(IntPtr handle) { return GetAncestor(handle, 2); }
     public static bool IsContainedSameProcess(IntPtr candidate, IntPtr expectedSurface)
     {
         if (!SharesProcess(candidate, expectedSurface)) return false;
@@ -1105,7 +1108,19 @@ public class MixWin32
     public static bool CloseWindow(IntPtr h)
     {
         if (!IsWindowHandle(h)) return false;
-        SendMessageChecked(h, 0x0010, UIntPtr.Zero, IntPtr.Zero);
+        // Closing can run save dialogs and lengthy shutdown work. Queue the
+        // request; the caller observes closure separately instead of treating
+        // a slow WM_CLOSE handler as failed input.
+        ClearMessageError(0);
+        if (!PostMessageWithError(h, 0x0010, IntPtr.Zero, IntPtr.Zero))
+        {
+            int error = Marshal.GetLastWin32Error();
+            if (error == 5)
+            {
+                throw new BackgroundMessageException("background_blocked_uipi|Windows integrity isolation blocked the close request", true);
+            }
+            throw new InvalidOperationException("background_message_rejected|close request failed with Win32 error " + error);
+        }
         return true;
     }
     [DllImport("user32.dll")] static extern bool IsHungAppWindow(IntPtr hwnd);

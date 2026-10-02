@@ -35,7 +35,7 @@ test('a local iframe lookup cannot send input after navigation, tab switch, dial
       },
     });
     const work = dispatch(
-      { isOffscreen: () => true },
+      { isOffscreen: () => true, getZoomFactor: () => 1 },
       'Input.dispatchMouseEvent',
       { type: 'mousePressed', x: 30.5, y: 40.5 },
       controller.signal,

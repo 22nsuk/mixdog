@@ -15,6 +15,7 @@ const {
   chooseProviderAccount,
   providerAccountPath,
   removeProviderAccount,
+  accountScopedSessionId,
 } = await import('../../../shared/provider-accounts.mjs');
 const { withProviderAccount, boundProviderAuthPath, currentProviderAccountId, replaceProviderAuthBindings } =
   await import('../../../shared/provider-auth-binding.mjs');
@@ -46,9 +47,13 @@ test('persisted order controls quota failover and preserves selection across rel
   const calls = [];
   const accountChanges = [];
   const gateway = createAccountPoolProvider(provider, () => ({
-    async send(messages, model, _tools, _opts) {
+    async send(messages, model, _tools, opts) {
       const id = currentProviderAccountId(provider);
       calls.push(id);
+      // Each account keeps its own provider session; the spend stays the
+      // visible session's.
+      assert.equal(opts.sessionId, accountScopedSessionId(provider, id, 'visible-session'));
+      assert.equal(opts.usageSessionId, 'visible-session');
       assert.equal(readProviderAccountPool(provider).selectedId, ids[0]);
       if (id === ids[0]) throw quotaError();
       assert.equal(model, 'same-model');

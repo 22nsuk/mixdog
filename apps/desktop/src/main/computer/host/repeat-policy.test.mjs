@@ -7,7 +7,9 @@ test('Computer Use repeat require-pass policy fails closed on scenario failures'
   assert.equal(repeatRequiresPass(['node', 'runner', '--require-pass'], {}), true);
   assert.equal(repeatRequiresPass(['node', 'runner', '--require-pass=true'], {}), true);
   assert.equal(repeatRequiresPass(['node', 'runner'], { npm_config_require_pass: 'true' }), true);
-  assert.equal(repeatRequiresPass(['node', 'runner'], {}), false);
+  assert.equal(repeatRequiresPass(['node', 'runner'], {}), true);
+  assert.equal(repeatRequiresPass(['node', 'runner', '--allow-failures'], {}), false);
+  assert.equal(repeatRequiresPass(['node', 'runner', '--allow-failures', '--require-pass'], {}), true);
   assert.throws(() => assertRepeatedScenariosPassed({ failed: 2 }, true), /2 repeated Computer Use scenarios failed/);
   assert.doesNotThrow(() => assertRepeatedScenariosPassed({ failed: 2 }, false));
   assert.doesNotThrow(() => assertRepeatedScenariosPassed({ failed: 0 }, true));

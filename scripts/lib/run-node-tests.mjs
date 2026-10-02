@@ -129,7 +129,8 @@ export async function runNodeTests(
   // every fixture directory a test forgets to delete goes with it instead of
   // piling up in the system temp directory.
   const scratchDir = await mkdtemp(join(tmpdir(), 'mixdog-test-scratch-'));
-  const concurrencyArg = testConcurrencyArg(nodeArgs);
+  // The explicit entry also accepts Node options alongside its file paths.
+  const concurrencyArg = testConcurrencyArg([...nodeArgs, ...fileArgs]);
   const runArgs = [
     ...nodeArgs,
     ...(concurrencyArg ? [concurrencyArg] : []),
@@ -151,6 +152,9 @@ export async function runNodeTests(
     TEMP: scratchDir,
     TMP: scratchDir,
     TMPDIR: scratchDir,
+    // Only the immutable validator binary is shared; fixture data stays private.
+    // A gate supplies one directory across lanes; a standalone run owns its own.
+    MIXDOG_TEST_OOXML_CACHE_DIR: process.env.MIXDOG_TEST_OOXML_CACHE_DIR || join(scratchDir, 'ooxml-cache'),
     [FAILURE_RECORDS_ENV]: recordsPath,
     ...(coverageDir ? { NODE_V8_COVERAGE: coverageDir } : {}),
   });

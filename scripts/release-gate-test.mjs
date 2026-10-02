@@ -6,6 +6,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
+import { parse as parseYaml } from 'yaml';
 import {
   GRAPH_PLATFORMS,
   PATCH_PLATFORMS,
@@ -20,7 +21,7 @@ import {
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { buildReleaseTimingReport } from './release-timing-report.mjs';
-import { desktopGateRegex, runtimeGateRegex, RELEASE_CRITICAL_PATHS } from './release-paths.mjs';
+import { desktopGateRegex, patchGateRegex, runtimeGateRegex, RELEASE_CRITICAL_PATHS } from './release-paths.mjs';
 
 // Product/workflow shape is intentionally non-blocking. Opt in from the
 // advisory runner when reviewing a deliberate specification change.
@@ -441,6 +442,48 @@ test('release path selection classifies desktop, runtime, and critical paths', (
   for (const path of ['src', 'scripts', 'native', 'package-lock.json']) {
     assert.ok(RELEASE_CRITICAL_PATHS.includes(path), `critical paths must cover ${path}`);
   }
+  const patch = new RegExp(patchGateRegex());
+  for (const path of [
+    'native/mixdog-patch/src/fs_atomic.rs',
+    'native/mixdog-patch/Cargo.lock',
+    'src/runtime/agent/orchestrator/tools/patch/native-server.mjs',
+    'scripts/native-edit-wire-test.mjs',
+    'scripts/release-paths.mjs',
+    '.github/workflows/release-gate.yml',
+    'package-lock.json',
+  ])
+    assert.match(path, patch);
+  for (const path of ['docs/testing.md', 'native/mixdog-graph/src/main.rs', 'apps/desktop/src/renderer/App.tsx']) {
+    assert.doesNotMatch(path, patch);
+  }
+});
+
+// Workflow YAML has no local executable surface; validate the job's source-binary
+// selection and dependency gate rather than a downloaded release's behavior.
+test('the PR patch gate builds source before testing it and participates in the final verdict', async () => {
+  const { jobs } = parseYaml(await workflow('release-gate.yml'));
+  const patch = jobs.patch;
+  assert.equal(patch.needs, 'changes');
+  assert.equal(patch.if, "needs.changes.outputs.patch == 'true'");
+  assert.equal(jobs.changes.outputs.patch, '${{ steps.paths.outputs.patch }}');
+  const selection = jobs.changes.steps.find((step) => step.id === 'paths').run;
+  assert.match(selection, /PATCH_RE=\$\(node scripts\/release-paths\.mjs patch-regex\)/);
+  assert.match(selection, /grep -Eq "\$PATCH_RE" \/tmp\/changed/);
+  const build = patch.steps.findIndex((step) =>
+    step.run?.includes('cargo test --locked --manifest-path native/mixdog-patch/Cargo.toml')
+  );
+  const verify = patch.steps.findIndex((step) => step.run?.includes('npm run test:native-edit-wire'));
+  assert.ok(build >= 0 && verify > build);
+  assert.match(patch.steps[build].run, /cargo build --locked --manifest-path native\/mixdog-patch\/Cargo.toml/);
+  assert.equal(
+    patch.steps[verify].env.MIXDOG_PATCH_NATIVE_BIN,
+    '${{ github.workspace }}/native/mixdog-patch/target/debug/mixdog-patch'
+  );
+  assert.match(patch.steps[verify].run, /npm test -- src\/runtime\/agent\/orchestrator\/tools\/patch\//);
+  assert.match(patch.steps[verify].run, /npm run smoke:patch/);
+  assert.ok(jobs.complete.needs.includes('patch'));
+  assert.equal(jobs.complete.steps[0].env.PATCH, '${{ needs.patch.result }}');
+  assert.match(jobs.complete.steps[0].run, /\[\[ "\$PATCH" == success \|\| "\$PATCH" == skipped \]\]/);
 });
 
 test('the weekly suite-health sweep runs the opt-out catalog and reports failures', async () => {

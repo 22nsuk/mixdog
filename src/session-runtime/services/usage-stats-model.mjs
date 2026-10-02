@@ -425,6 +425,28 @@ function tokensOf(bucket) {
   return bucket.input + bucket.output + bucket.cacheRead + bucket.cacheWrite;
 }
 
+/** One session's lifetime totals (the /context footer), in a statistics route's terms. */
+export function sessionUsageSnapshot(bucket) {
+  return {
+    turns: bucket.turns,
+    input: bucket.input,
+    output: bucket.output,
+    cacheRead: bucket.cacheRead,
+    cacheWrite: bucket.cacheWrite,
+    tokens: tokensOf(bucket),
+    unmeasuredTurns: bucket.unmeasuredTurns,
+    costUsd: round(bucket.costUsd, 6),
+    costKnownTurns: bucket.costKnownTurns,
+    costUnpricedTurns: Math.max(0, bucket.turns - bucket.costKnownTurns),
+    cacheHitRate: measuredRatio(
+      bucket.unmeasuredTurns,
+      bucket.cacheRead,
+      bucket.input + bucket.cacheRead + bucket.cacheWrite,
+      4
+    ),
+  };
+}
+
 function exportRoute(bucket, totalTokens) {
   const tokens = tokensOf(bucket);
   const fresh = bucket.input + bucket.output;

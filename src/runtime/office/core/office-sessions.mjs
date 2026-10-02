@@ -145,7 +145,7 @@ function portableCreateDesignState() {
 // old file is closed first, never left registered beside the new one (PDF) or
 // handed back in place of the document the caller asked to write. A session on
 // a document the user has open is theirs, so the overwrite is refused instead.
-async function releaseOverwrittenSession(target, overwrite) {
+export async function releaseOverwrittenSession(target, overwrite) {
   if (overwrite !== true) return;
   const existing = officeSessionForDocument(target);
   if (!existing) return;
@@ -452,6 +452,22 @@ async function createPdfSession(creation, args, cwd) {
   });
 }
 
+// A PDF the author action printed from HTML (authoring/pdf-author-action.mjs)
+// is already on disk; its session is registered as a created PDF's is, so it
+// goes through the same render, review, and finalize.
+export async function registerHtmlPdfSession(args, dataDir, target, { targetExisted, receipt }) {
+  const designContext = await resolveOfficeDesignContext({ args, dataDir, target, format: 'pdf', created: true });
+  return registerCreatedSession(
+    { target, fileKind: documentFileKind(target), format: 'pdf', dataDir, targetExisted, designContext },
+    {
+      mode: 'portable',
+      backend: 'mixdog-pdf',
+      designState: portableCreateDesignState(),
+      extra: { createReceipt: receipt, ownership: 'owned', visible: false },
+    }
+  );
+}
+
 async function createTabularSession(creation) {
   await mkdir(dirname(creation.target), { recursive: true });
   await createTabular(creation.target);
@@ -571,7 +587,8 @@ function authoredDesignContext(resolved) {
 export async function createAuthoredSession(args, _cwd, dataDir, target) {
   const fileKind = documentFileKind(target);
   const format = documentFormat(target);
-  if (format !== 'pptx') throw new Error('author currently supports PowerPoint targets only');
+  if (!['pptx', 'docx', 'xlsx'].includes(format))
+    throw new Error('author writes PowerPoint, Word, Excel, and PDF targets only');
   const requestedMode = validatePptxAuthorMode(args.mode);
   const selected = await selectMode(requestedMode, format, target);
   const designContext = authoredDesignContext(

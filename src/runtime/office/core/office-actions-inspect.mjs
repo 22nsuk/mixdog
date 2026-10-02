@@ -55,7 +55,8 @@ async function structureIssues(session, args) {
     if (!read?.document) return [];
     return reviewOfficeStructure({
       format: session.format,
-      document: read.document,
+      // A PDF's designed sheets are held to the print type floors (assurance-structure-pptx typeFloors).
+      document: session.printSheet ? { ...read.document, printSheet: true } : read.document,
       auditProfile: args.auditProfile,
     });
   } catch {
@@ -292,7 +293,7 @@ async function microsoftOfficeIssues(session, args) {
 function portableIssues(session, args) {
   if (session.format === 'pdf') return issuesPdf(session.target, args);
   if (TABULAR_FORMATS.has(session.format)) return issuesTabular(session.target, session.format, args);
-  return issuesPortableOoxml(session.target, session.format, args);
+  return issuesPortableOoxml(session.target, session.format, session.printSheet ? { ...args, printSheet: true } : args);
 }
 
 export async function issues(session, args = {}) {

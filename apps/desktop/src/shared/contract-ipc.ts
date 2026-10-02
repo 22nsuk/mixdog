@@ -79,6 +79,7 @@ export const DESKTOP_IPC = {
   getZoomFactor: 'mixdog:get-zoom-factor',
   setZoomFactor: 'mixdog:set-zoom-factor',
   zoomFactorChanged: 'mixdog:zoom-factor-changed',
+  notificationOpenSession: 'mixdog:notification-open-session',
   browserOpenRequested: 'mixdog:browser-open-requested',
   browserSessionReleased: 'mixdog:browser-session-released',
   browserSetActiveGuest: 'mixdog:browser-set-active-guest',

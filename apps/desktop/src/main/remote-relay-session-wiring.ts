@@ -72,7 +72,13 @@ export function createRelaySessionWiring(deps: RelaySessionWiringDeps): RelaySes
       const pushNotifier = createPushNotifier({
         store: deps.pushStore,
         isEnabled: () => !deps.closed(),
-        isClientConnected: (clientId) => deps.clients.get(clientId) !== undefined,
+        readFinalAnswer: (sessionId, startedAt) => deps.host.readSessionFinalAnswer(sessionId, startedAt),
+        // Connected is not enough: a phone that just left the app keeps its
+        // socket through a background grace and reports itself hidden.
+        isClientForeground: (clientId) => {
+          const client = deps.clients.get(clientId);
+          return client !== undefined && !client.background;
+        },
         onError: (detail) => console.error(`[mixdog-remote-push] ${detail}`),
       });
       const unsubscribeState = deps.host.subscribe((snapshot) => broadcastState(snapshot));
@@ -80,7 +86,10 @@ export function createRelaySessionWiring(deps: RelaySessionWiringDeps): RelaySes
         deps.catalogs.publishSessions(sessions);
         pushNotifier.onSessions(sessions);
       });
-      const unsubscribeAgentPool = deps.host.subscribeAgentPool((agents) => deps.catalogs.publishAgentPool(agents));
+      const unsubscribeAgentPool = deps.host.subscribeAgentPool((agents) => {
+        deps.catalogs.publishAgentPool(agents);
+        pushNotifier.onAgentPool(agents);
+      });
       const unsubscribeSessionStates = deps.host.subscribeSessionStates((update) => {
         if (deps.clients.size === 0) return;
         deps.sessionStates.publish(update);

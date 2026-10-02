@@ -112,6 +112,46 @@ const show = (sessionId, windowId = 'hwnd:0xABC', mode = 'background') =>
     y: 100,
   });
 
+test('completed commands hide feedback at 1500ms and only a new event brings it back', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  fault = '';
+  const start = windows.length;
+  const overlay = createComputerUseCursorOverlay();
+  try {
+    for (const mode of ['background', 'foreground']) {
+      const sessionId = `completed-${mode}`;
+      begin(sessionId, mode);
+      assert.equal(await prepareCursorFeedback(sessionId), 'ready');
+      show(sessionId, 'hwnd:0xABC', mode);
+      await settle();
+      const window = windows.at(-1);
+      assert.equal(window.isVisible(), true);
+      coordinator.finishCommand(sessionId);
+      assert.equal(window.isVisible(), true, 'a short action still has visible feedback');
+      t.mock.timers.tick(1499);
+      assert.equal(window.isVisible(), true);
+      t.mock.timers.tick(1);
+      assert.equal(window.isVisible(), false, 'thinking must not keep the pointer for 20 seconds');
+      assert.equal(window.isDestroyed(), false, 'the session may reuse its hidden surface');
+      begin(sessionId, mode);
+      await settle();
+      assert.equal(window.isVisible(), false, 'starting another command cannot replay the old event');
+      show(sessionId, 'hwnd:0xABC', mode);
+      await settle();
+      assert.equal(window.isVisible(), true, 'new pointer input still produces feedback');
+      coordinator.finishCommand(sessionId);
+      t.mock.timers.tick(1500);
+      assert.equal(window.isVisible(), false);
+      coordinator.endExecution(sessionId);
+      assert.equal(window.isDestroyed(), true);
+    }
+  } finally {
+    overlay.dispose();
+    coordinator.reset();
+    for (const window of windows.slice(start)) window.destroy();
+  }
+});
+
 for (const stage of ['load', 'script']) {
   for (const exit of ['end', 'pause', 'dispose']) {
     test(`${exit} releases a cursor window while ${stage} initialization is hung`, async () => {

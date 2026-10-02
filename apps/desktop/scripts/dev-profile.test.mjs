@@ -21,9 +21,12 @@ const helper = fileURLToPath(new URL('./dev-profile.mjs', import.meta.url));
 async function occupiedPort(t) {
   const server = createServer();
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve, reject) => {
-    server.close((error) => error ? reject(error) : resolve());
-  }));
+  t.after(
+    () =>
+      new Promise((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      })
+  );
   return server.address().port;
 }
 
@@ -55,23 +58,36 @@ test('dev environment isolates every store and connection from the installed par
   assert.equal((await stat(profile)).isDirectory(), true);
   assert.deepEqual((await readdir(profile)).sort(), ['bridges', 'data', 'home', 'runtime']);
   for (const key of [
-    'MIXDOG_HOME', 'MIXDOG_DATA_DIR', 'MIXDOG_RUNTIME_ROOT',
-    'MIXDOG_BRIDGE_DISCOVERY_DIR', 'MIXDOG_PROJECTS_FILE',
+    'MIXDOG_HOME',
+    'MIXDOG_DATA_DIR',
+    'MIXDOG_RUNTIME_ROOT',
+    'MIXDOG_BRIDGE_DISCOVERY_DIR',
+    'MIXDOG_PROJECTS_FILE',
   ]) {
     const childPath = relative(profile, env[key]);
     assert.ok(childPath && !childPath.startsWith('..') && !isAbsolute(childPath), key);
     assert.notEqual(env[key], parent[key]);
   }
   for (const key of [
-    'MIXDOG_RELAY_URL', 'MIXDOG_SUPERVISOR_PID', 'MIXDOG_DAEMON_HOST',
-    'ELECTRON_RUN_AS_NODE', 'ELECTRON_RENDERER_URL', 'mixdog_unknown_override',
-  ]) assert.equal(env[key], undefined, key);
+    'MIXDOG_RELAY_URL',
+    'MIXDOG_SUPERVISOR_PID',
+    'MIXDOG_DAEMON_HOST',
+    'ELECTRON_RUN_AS_NODE',
+    'ELECTRON_RENDERER_URL',
+    'mixdog_unknown_override',
+  ])
+    assert.equal(env[key], undefined, key);
 
   const second = await createIsolatedDevEnv(parent, root);
   for (const key of [
-    'MIXDOG_DESKTOP_USER_DATA', 'MIXDOG_HOME', 'MIXDOG_DATA_DIR',
-    'MIXDOG_RUNTIME_ROOT', 'MIXDOG_BRIDGE_DISCOVERY_DIR', 'MIXDOG_PROJECTS_FILE',
-  ]) assert.notEqual(env[key], second[key], key);
+    'MIXDOG_DESKTOP_USER_DATA',
+    'MIXDOG_HOME',
+    'MIXDOG_DATA_DIR',
+    'MIXDOG_RUNTIME_ROOT',
+    'MIXDOG_BRIDGE_DISCOVERY_DIR',
+    'MIXDOG_PROJECTS_FILE',
+  ])
+    assert.notEqual(env[key], second[key], key);
 });
 
 test('kept dev profile is reused across launches and keeps its data', async (t) => {
@@ -97,7 +113,7 @@ test('occupied debug port fails immediately rather than attaching to another app
   await assert.rejects(assertDebugPortAvailable(port), /EADDRINUSE/);
   await assert.rejects(
     exec(process.execPath, [helper, '--env-json', '--port', String(port)]),
-    (error) => error.code === 1 && error.stdout === '' && /EADDRINUSE/.test(error.stderr),
+    (error) => error.code === 1 && error.stdout === '' && /EADDRINUSE/.test(error.stderr)
   );
 });
 
@@ -112,33 +128,47 @@ test('debug port validation rejects invalid ports and permits a released port', 
   await assertDebugPortAvailable(port);
 });
 
-test('profile CLI emits isolated child environment from a different working directory', async (t) => {
-  const root = await mkdtemp(join(tmpdir(), 'mixdog profile cli '));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const server = createServer();
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const port = server.address().port;
-  await new Promise((resolve) => server.close(resolve));
-  const { stdout, stderr } = await exec(process.execPath, [
-    helper, '--env-json', '--fresh', '--port', String(port),
-  ], {
-    cwd: root,
-    env: {
-      ...process.env,
-      MIXDOG_HOME: 'live-home',
-      MIXDOG_DATA_DIR: 'live-data',
-      MIXDOG_RUNTIME_ROOT: 'live-runtime',
-      ELECTRON_RUN_AS_NODE: '1',
-    },
+for (const preview of [false, true]) {
+  test(`profile CLI isolates ${preview ? 'preview' : 'development'} from a different working directory`, async (t) => {
+    const root = await mkdtemp(join(tmpdir(), 'mixdog profile cli '));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const server = createServer();
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = server.address().port;
+    await new Promise((resolve) => server.close(resolve));
+    const { stdout, stderr } = await exec(
+      process.execPath,
+      [helper, '--env-json', '--fresh', '--port', String(port), ...(preview ? ['--preview'] : [])],
+      {
+        cwd: root,
+        env: {
+          ...process.env,
+          MIXDOG_HOME: 'live-home',
+          MIXDOG_DATA_DIR: 'live-data',
+          MIXDOG_RUNTIME_ROOT: 'live-runtime',
+          ELECTRON_RUN_AS_NODE: '1',
+          ELECTRON_CLI_ARGS: '["--user-data-dir=live-profile"]',
+        },
+      }
+    );
+    assert.equal(stderr, '');
+    const env = JSON.parse(stdout);
+    t.after(() => rm(env.MIXDOG_DESKTOP_USER_DATA, { recursive: true, force: true }));
+    assert.equal(env.ELECTRON_RUN_AS_NODE, undefined);
+    if (preview) {
+      assert.deepEqual(JSON.parse(env.ELECTRON_CLI_ARGS), [`--remote-debugging-port=${port}`]);
+    } else {
+      assert.equal(env.ELECTRON_CLI_ARGS, undefined);
+    }
+    assert.equal(env.MIXDOG_DISABLE_PROJECT_MARKERS, '1');
+    for (const directory of [
+      env.MIXDOG_HOME,
+      env.MIXDOG_DATA_DIR,
+      env.MIXDOG_RUNTIME_ROOT,
+      env.MIXDOG_BRIDGE_DISCOVERY_DIR,
+      env.MIXDOG_DESKTOP_USER_DATA,
+    ])
+      assert.equal((await stat(directory)).isDirectory(), true);
+    assert.notEqual(env.MIXDOG_DATA_DIR, 'live-data');
   });
-  assert.equal(stderr, '');
-  const env = JSON.parse(stdout);
-  t.after(() => rm(env.MIXDOG_DESKTOP_USER_DATA, { recursive: true, force: true }));
-  assert.equal(env.ELECTRON_RUN_AS_NODE, undefined);
-  assert.equal(env.MIXDOG_DISABLE_PROJECT_MARKERS, '1');
-  for (const directory of [
-    env.MIXDOG_HOME, env.MIXDOG_DATA_DIR, env.MIXDOG_RUNTIME_ROOT,
-    env.MIXDOG_BRIDGE_DISCOVERY_DIR, env.MIXDOG_DESKTOP_USER_DATA,
-  ]) assert.equal((await stat(directory)).isDirectory(), true);
-  assert.notEqual(env.MIXDOG_DATA_DIR, 'live-data');
-});
+}

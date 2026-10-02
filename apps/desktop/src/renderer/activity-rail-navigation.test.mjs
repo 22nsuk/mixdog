@@ -14,15 +14,22 @@ test('More opens destinations, pins append above it, and unpinning never changes
   let root = createRoot(document.getElementById('root'));
   const selections = [];
   const Icon = () => React.createElement('span');
-  const entries = ['sessions', 'agents', 'schedules', 'projects', 'workflows', 'source-control', 'search'].map((id) => ({
-    id, label: id, icon: Icon,
-  }));
+  const entries = ['sessions', 'agents', 'schedules', 'projects', 'workflows', 'source-control', 'search'].map(
+    (id) => ({
+      id,
+      label: id,
+      icon: Icon,
+    })
+  );
   function App() {
     const [activeId, setActiveId] = useState('agents');
     return React.createElement(ActivityRailNavigation, {
       entries,
       activeId,
-      onSelect: (id) => { selections.push(id); setActiveId(id); },
+      onSelect: (id) => {
+        selections.push(id);
+        setActiveId(id);
+      },
     });
   }
   const click = async (element) => {
@@ -33,10 +40,11 @@ test('More opens destinations, pins append above it, and unpinning never changes
   const action = (id) => document.querySelector(`[data-action-id="${id}"]`);
   const pin = (id) => document.querySelector(`[data-pin-id="${id}"]`);
   const pinned = () => [...document.querySelectorAll('[data-side-view]')].map((button) => button.dataset.sideView);
-  const open = () => act(async () => {
-    more().focus();
-    more().click();
-  });
+  const open = () =>
+    act(async () => {
+      more().focus();
+      more().click();
+    });
   try {
     window.localStorage.setItem('mixdog.desktop.activity-rail-pins.v1', '{broken');
     await act(async () => root.render(React.createElement(App)));
@@ -92,7 +100,9 @@ test('More opens destinations, pins append above it, and unpinning never changes
     // selector results by role instead of returning document order.
     await act(async () => pin('sessions').focus());
     assert.equal(document.activeElement, pin('sessions'));
-    await act(async () => document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    await act(async () =>
+      document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    );
     assert.equal(document.querySelector('[role="menu"]'), null);
     assert.equal(document.activeElement, more());
     await open();
@@ -100,9 +110,13 @@ test('More opens destinations, pins append above it, and unpinning never changes
     assert.equal(document.querySelector('[role="menu"]'), null);
 
     window.localStorage.setItem('mixdog.desktop.activity-rail-pins.v1', '[]');
-    await act(async () => window.dispatchEvent(new window.StorageEvent('storage', {
-      key: 'mixdog.desktop.activity-rail-pins.v1',
-    })));
+    await act(async () =>
+      window.dispatchEvent(
+        new window.StorageEvent('storage', {
+          key: 'mixdog.desktop.activity-rail-pins.v1',
+        })
+      )
+    );
     assert.deepEqual(pinned(), []);
     await open();
     await click(pin('projects'));
@@ -114,21 +128,23 @@ test('More opens destinations, pins append above it, and unpinning never changes
   }
 });
 
-test('first launch pins the five default destinations without replacing a saved arrangement', async () => {
+test('first launch pins the six default destinations without replacing a saved arrangement', async () => {
   const { restore } = installTestDom(null, {
     html: '<!doctype html><div id="root"></div>',
     jsdom: { url: 'http://localhost/' },
     expose: ['navigator', 'Element', 'HTMLElement', 'Node'],
   });
   let root = createRoot(document.getElementById('root'));
-  const entries = ['sessions', 'agents', 'schedules', 'workflows', 'projects'].map((id) => ({
-    id, label: id, icon: () => React.createElement('span'),
+  const entries = ['sessions', 'agents', 'schedules', 'workflows', 'projects', 'extensions'].map((id) => ({
+    id,
+    label: id,
+    icon: () => React.createElement('span'),
   }));
   const view = () => React.createElement(ActivityRailNavigation, { entries, activeId: 'sessions', onSelect() {} });
   const order = () => [...document.querySelectorAll('#root [data-side-view]')].map((button) => button.dataset.sideView);
   try {
     await act(async () => root.render(view()));
-    assert.deepEqual(order(), ['sessions', 'agents', 'schedules', 'workflows', 'projects']);
+    assert.deepEqual(order(), ['sessions', 'agents', 'schedules', 'workflows', 'projects', 'extensions']);
     await act(async () => root.unmount());
     window.localStorage.setItem('mixdog.desktop.activity-rail-pins.v1', '["projects","sessions"]');
     root = createRoot(document.getElementById('root'));
@@ -151,18 +167,28 @@ test('pinned icons drag before and after one another, keep More last, and restor
   let root = createRoot(document.getElementById('root'));
   const selections = [];
   const entries = ['sessions', 'agents', 'schedules', 'projects', 'workflows'].map((id) => ({
-    id, label: id, icon: () => React.createElement('span'),
+    id,
+    label: id,
+    icon: () => React.createElement('span'),
   }));
-  const view = () => React.createElement(ActivityRailNavigation, {
-    entries, activeId: 'agents', onSelect: (id) => selections.push(id),
-  });
+  const view = () =>
+    React.createElement(ActivityRailNavigation, {
+      entries,
+      activeId: 'agents',
+      onSelect: (id) => selections.push(id),
+    });
   const bar = () => document.querySelector('#root .activity-rail-navigation');
   const button = (id) => bar().querySelector(`[data-side-view="${id}"]`);
   const order = () => [...bar().querySelectorAll('[data-side-view]')].map((element) => element.dataset.sideView);
   const measure = () => {
     [...bar().querySelectorAll('button')].forEach((element, index) => {
       element.getBoundingClientRect = () => ({
-        top: index * 44, bottom: (index + 1) * 44, left: 0, right: 48, width: 48, height: 44,
+        top: index * 44,
+        bottom: (index + 1) * 44,
+        left: 0,
+        right: 48,
+        width: 48,
+        height: 44,
       });
     });
   };
@@ -170,9 +196,15 @@ test('pinned icons drag before and after one another, keep More last, and restor
   const dataTransfer = {
     effectAllowed: 'none',
     dropEffect: 'none',
-    get types() { return [...transferData.keys()]; },
-    setData(type, value) { transferData.set(type, value); },
-    getData(type) { return transferData.get(type) ?? ''; },
+    get types() {
+      return [...transferData.keys()];
+    },
+    setData(type, value) {
+      transferData.set(type, value);
+    },
+    getData(type) {
+      return transferData.get(type) ?? '';
+    },
     setDragImage() {},
   };
   const dragEvent = (type, clientY) => {
@@ -195,7 +227,13 @@ test('pinned icons drag before and after one another, keep More last, and restor
     await act(async () => root.render(view()));
     await drag('workflows', 46);
     assert.deepEqual(order(), ['sessions', 'workflows', 'agents', 'schedules', 'projects']);
-    assert.deepEqual(JSON.parse(window.localStorage.getItem(storageKey)), ['sessions', 'workflows', 'agents', 'schedules', 'projects']);
+    assert.deepEqual(JSON.parse(window.localStorage.getItem(storageKey)), [
+      'sessions',
+      'workflows',
+      'agents',
+      'schedules',
+      'projects',
+    ]);
     await drag('workflows', 240);
     const expected = ['sessions', 'agents', 'schedules', 'projects', 'workflows'];
     assert.deepEqual(order(), expected);

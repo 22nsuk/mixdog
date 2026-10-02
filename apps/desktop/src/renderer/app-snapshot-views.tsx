@@ -44,6 +44,7 @@ import {
   conversationMarkdownPending,
 } from './first-submit-stability';
 import { readTranscriptVirtualSnapshot } from './transcript-virtual-cache';
+import { ENTRY_REVEAL_MAX_MS } from './use-transcript-reveal';
 import { ContextUsageIndicator } from './transcript-status';
 import { TranscriptAssistantRow, type TranscriptAssistantRowProps } from './TranscriptAssistantRow';
 
@@ -153,9 +154,6 @@ export const DraftConversation = memo(function DraftConversation({
     />
   );
 });
-
-/** Upper bound on a loaded session's entry cover (rows + review decision). */
-const ENTRY_REVEAL_MAX_MS = 2_000;
 
 // Every split-pane chat keeps ONE Conversation instance mounted for its whole
 // lifetime. Focus changes input routing only; every established session reads
@@ -461,7 +459,7 @@ export function PaneGoalIsland({ sessionId, hidden }: { sessionId: string; hidde
   if (!goalPresent && !moduleLoaded) return null;
   if (goalPresent) beginBootSurface('goal-island', sessionId);
   return (
-    <React.Suspense fallback={null}>
+    <React.Suspense fallback={goalPresent ? <span hidden data-entry-pending /> : null}>
       <SessionGoalIsland snapshot={snapshot} />
       {goalPresent ? <GoalIslandBootReady bootKey={sessionId} /> : null}
     </React.Suspense>

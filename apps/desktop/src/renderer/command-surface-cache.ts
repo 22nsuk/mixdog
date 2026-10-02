@@ -7,7 +7,8 @@ export type SurfaceApi = Pick<DesktopApi, 'invokeCapability'> &
   Partial<Pick<DesktopApi, 'getSnapshot' | 'subscribeState' | 'subscribeSessionState' | 'readCapabilities'>>;
 
 export const LOADERS: Record<CommandSurfaceName, DesktopCapability[]> = {
-  context: ['contextStatus'],
+  // The footer's session spend reads the usage ledger beside the gauge.
+  context: ['contextStatus', 'getSessionUsage'],
   usage: ['getUsageDashboard'],
   // What was SPENT, next to /usage's what is LEFT.
   stats: ['getUsageStats'],

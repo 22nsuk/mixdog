@@ -2,7 +2,7 @@
  * TUI session facade.
  *
  * Product clients receive only a daemon-owned session projection. The large
- * in-process store is isolated in session-local.mjs and is not exposed
+ * in-process store lives in src/standalone/local-session-runtime.mjs and is not exposed
  * from this client facade.
  */
 export {

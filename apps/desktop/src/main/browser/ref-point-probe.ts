@@ -9,13 +9,13 @@ import type { WebContents } from 'electron';
 
 import { BrowserActionabilityError } from './actionability';
 import type { BrowserRefPointHost } from './ref-points';
-import type { AccessibilityRef } from './snapshot-capture';
 import { browserRefPointExpression } from './snapshot-scripts';
 import { BROWSER_STABLE_RECT } from './stable-rect';
+import { BROWSER_FRAME_HAS_TRANSFORM } from './frame-transform';
 
 export type RefPointProbeHost = Pick<
   BrowserRefPointHost,
-  'callAccessibilityRef' | 'evaluate' | 'cdp' | 'frameOffsetForSession' | 'accessibilityRefs'
+  'callAccessibilityRef' | 'evaluate' | 'frameOffsetForSession' | 'accessibilityRefs'
 >;
 
 interface Point {
@@ -23,13 +23,10 @@ interface Point {
   y: number;
 }
 
-/** What the page reports for a ref: a landing point in its own realm, a
- *  relative point inside the element's box, or why it cannot be hit. */
+/** The hit-tested viewport point in the ref's realm, or why it cannot be hit. */
 interface RefPointReport {
   error?: string;
   covering?: string;
-  rx?: number;
-  ry?: number;
   x?: number;
   y?: number;
   via?: string;
@@ -105,6 +102,7 @@ const REF_POINT_PROBE = `async function() {
             let frame;
             try { frame = frameView.frameElement; } catch { break; }
             if (!frame) break;
+            if ((${BROWSER_FRAME_HAS_TRANSFORM})(frame)) return { error: 'transformed-frame' };
             const parent = frame.ownerDocument;
             const frameRect = frame.getBoundingClientRect();
             px += frameRect.left + frame.clientLeft;
@@ -112,7 +110,9 @@ const REF_POINT_PROBE = `async function() {
             if (parent.elementFromPoint(px, py) !== frame) return { error: 'covered', covering: 'parent frame overlay' };
             frameView = parent.defaultView;
           }
-          return candidate === target ? { rx, ry } : { x: px, y: py, via: 'label' };
+          // Use the point that was actually hit-tested in the visual viewport.
+          // CDP box-model quads use a different origin after mobile scrolling.
+          return { x: px, y: py, via: candidate === target ? 'control' : 'label' };
         }
       }
       if (!visible) return { error: 'not-visible' };
@@ -130,30 +130,6 @@ const REF_POINT_PROBE = `async function() {
       return { error: 'covered', covering: label, coveringSelector: selector };
     }`;
 
-/** The point at (rx, ry) inside the node's box, in top-document coordinates
- *  once the cross-origin frame offset is added. */
-async function pointInBoxModel(
-  host: RefPointProbeHost,
-  guest: WebContents,
-  target: AccessibilityRef,
-  rx: number,
-  ry: number,
-  signal?: AbortSignal
-): Promise<RefPointReport> {
-  const box = await host.cdp.call<{
-    model?: { content?: number[]; border?: number[] };
-  }>(guest, 'DOM.getBoxModel', { backendNodeId: target.backendNodeId }, signal, { sessionId: target.sessionId });
-  const quad = box.model?.content || box.model?.border || [];
-  if (quad.length < 8) return { error: 'not-visible' };
-  const topX = quad[0] + (quad[2] - quad[0]) * rx;
-  const topY = quad[1] + (quad[3] - quad[1]) * rx;
-  const bottomX = quad[6] + (quad[4] - quad[6]) * rx;
-  const bottomY = quad[7] + (quad[5] - quad[7]) * rx;
-  const local = { x: topX + (bottomX - topX) * ry, y: topY + (bottomY - topY) * ry };
-  const frameOffset = await host.frameOffsetForSession(guest, target.sessionId, signal, local);
-  return { x: frameOffset.x + local.x, y: frameOffset.y + local.y };
-}
-
 async function pointFromAccessibility(
   host: RefPointProbeHost,
   guest: WebContents,
@@ -165,16 +141,20 @@ async function pointFromAccessibility(
   if (!target) throw new Error(`ref ${ref} is stale or unknown; take a fresh snapshot first`);
   if (report?.error) return report;
   if (typeof report?.x === 'number' && typeof report?.y === 'number') {
-    // The landing spot is the control's label, so the page already
-    // measured it; only the cross-origin frame offset is left to add.
+    // The page measured and hit-tested this point; only its frame offset remains.
     const local = { x: report.x, y: report.y };
     const frameOffset = await host.frameOffsetForSession(guest, target.sessionId, signal, local);
     return { x: frameOffset.x + local.x, y: frameOffset.y + local.y };
   }
-  return pointInBoxModel(host, guest, target, report?.rx ?? 0.5, report?.ry ?? 0.5, signal);
+  return { error: 'not-visible' };
 }
 
 function refPointFailure(ref: string, point: RefPointReport | undefined): Error {
+  if (point?.error === 'transformed-frame') {
+    return new Error(
+      `ref ${ref} is inside a transformed parent frame; ref input is unsupported and was not dispatched`
+    );
+  }
   if (point?.error === 'covered') {
     return new BrowserActionabilityError(
       `ref ${ref} is covered by ${point.covering || 'another element'}; input was not dispatched.`,

@@ -43,6 +43,222 @@ const request = (ts, model, extra = {}) =>
   });
 const byModel = (history) => Object.fromEntries(history.models.map((row) => [row.model, row.consumed]));
 
+test('model-scoped Claude quota never includes another family or a different account', async (t) => {
+  const ledger = store(t);
+  const priced = (ts, model, costUsd, account = 'default') => ({
+    ...request(ts, model, { account }),
+    costUsd,
+    costSource: 'subscription',
+  });
+  ledger.record([
+    priced(at(0, 10), 'claude-opus-5-5', 100),
+    priced(at(0, 20), 'claude-fable-5-1', 1),
+    priced(at(0, 40), 'claude-fable-5-1', 1),
+    priced(at(0, 45), 'claude-sonnet-5-5', 200),
+    priced(at(0, 50), 'claude-fable-5-1', 999, 'other'),
+  ]);
+  for (const label of ['7D', '7D Fable', '7D Opus', '7D Unknown']) {
+    const extra = { label, resetAt: opened + 7 * 24 * HOUR };
+    ledger.recordQuota([reading(opened, 0, extra), reading(at(0, 30), 1, extra), reading(at(1), 2, extra)]);
+  }
+  const fable = await ledger.quotaHistoryAsync({ account: 'default', label: '7D Fable', now: at(2) });
+  assert.equal(fable.summary.costUsd, 2);
+  assert.deepEqual(
+    fable.models.map((row) => row.model),
+    ['claude-fable-5-1']
+  );
+  const whole = await ledger.quotaHistoryAsync({ account: 'default', label: '7D', now: at(2) });
+  assert.equal(whole.summary.costUsd, 302);
+  const opus = await ledger.quotaHistoryAsync({ account: 'default', label: '7D Opus', now: at(2) });
+  assert.equal(opus.summary.costUsd, 100);
+  const unknown = await ledger.quotaHistoryAsync({ account: 'default', label: '7D Unknown', now: at(2) });
+  assert.equal(unknown.summary.costUsd, 0);
+  assert.equal(unknown.summary.costPerPercent, null);
+  const listed = await ledger.quotaWindowsAsync({ account: 'default', label: '7D Fable', now: at(2) });
+  assert.equal(listed.windows[0].costUsd, 2);
+});
+
+test('exact request timestamps stay on their own side of a quota reading', async (t) => {
+  const ledger = store(t);
+  ledger.record([
+    { ...request(opened + 30_000, 'model-priced'), costUsd: 1, costSource: 'subscription' },
+    { ...request(opened + 70_000, 'model-priced'), costUsd: 100, costSource: 'subscription' },
+  ]);
+  ledger.recordQuota([reading(opened, 0), reading(opened + MINUTE, 1)]);
+  const history = await ledger.quotaHistoryAsync({ now: at(0, 2) });
+  assert.equal(history.summary.costUsd, 101);
+  assert.equal(history.summary.costPerPercent, 1, 'the $100 request after the reading cannot price the earlier rise');
+  assert.equal(history.outside, 0, 'the request thirty seconds after the baseline is not lost to minute rounding');
+});
+
+function calibratedWindow(ledger, { account = 'default', costUsd = 0.5, reset = resetAt, start = opened } = {}) {
+  ledger.recordQuota([reading(start, 0, { account, resetAt: reset })]);
+  let used = 0;
+  for (let index = 0; index < 60; index += 1) {
+    const ts = start + (index * 2 + 1) * MINUTE;
+    ledger.record([{ ...request(ts, 'model-priced', { account }), costUsd, costSource: 'subscription' }]);
+    used += index % 4 === 0 ? 2.5 : 0.5;
+    ledger.recordQuota([reading(ts + MINUTE, used, { account, resetAt: reset })]);
+  }
+  ledger.recordQuota([reading(start + 122 * MINUTE, used + 4, { account, resetAt: reset })]);
+}
+
+test('mixed and outside-only value is separate from recorded money across cards, slots and history', async (t) => {
+  const ledger = store(t);
+  calibratedWindow(ledger);
+  const history = await ledger.quotaHistoryAsync({ now: at(2, 3) });
+  assert.equal(history.summary.costUsd, 30);
+  assert.equal(history.totals.costUsd, 30, 'the usage ledger is never inflated with inferred money');
+  assert.equal(history.summary.consumed, 64);
+  assert.ok(Math.abs(history.summary.costPerPercent - 1) < 0.05);
+  assert.ok(Math.abs(history.summary.outsideCostUsd - 34) < 2);
+  assert.equal(history.summary.estimatedTotalCostUsd, Math.round((30 + history.summary.outsideCostUsd) * 1e6) / 1e6);
+  assert.ok(Math.abs(history.totals.consumed + history.outside - 64) < 0.02);
+  assert.ok(
+    Math.abs(history.slots.reduce((sum, row) => sum + (row.outsideCostUsd ?? 0), 0) - history.summary.outsideCostUsd) <
+      0.00001
+  );
+  const listed = await ledger.quotaWindowsAsync({ now: at(2, 3) });
+  assert.equal(listed.windows[0].outsideCostUsd, history.summary.outsideCostUsd);
+  assert.equal(listed.windows[0].estimatedTotalCostUsd, history.summary.estimatedTotalCostUsd);
+  const partial = await ledger.quotaHistoryAsync({
+    now: at(2, 3),
+    view: 'hour',
+    fromMs: at(2),
+    toMs: at(2, 1),
+  });
+  assert.ok(Math.abs(partial.summary.outside - 2) < 0.01);
+  assert.ok(
+    Math.abs(partial.summary.outsideCostUsd - 2) < 0.15,
+    'only the overlapping half of an outside interval is valued'
+  );
+});
+
+test('the five-hour meter keeps outside use out of the weekly calibration', async (t) => {
+  const weekly = { label: '7D', resetAt: opened + 7 * 24 * HOUR };
+  // Three five-hour windows at $10 per weekly point (four five-hour points).
+  // In the last, a $2 request shares a one-point weekly rise with outside use.
+  const build = (withFiveHour) => {
+    const ledger = store(t);
+    ledger.recordQuota([reading(opened, 0, weekly)]);
+    let week = 0;
+    for (const [index, spends] of [
+      [0, [10, 10, 10, 10]],
+      [1, [10, 10, 10, 10]],
+      [2, [10, 10, 2]],
+    ]) {
+      const start = opened + index * 5 * HOUR;
+      let five = 0;
+      spends.forEach((costUsd, step) => {
+        const ts = start + (step * 10 + 5) * MINUTE;
+        ledger.record([{ ...request(ts, 'model-priced'), costUsd, costSource: 'subscription' }]);
+        five += costUsd === 2 ? 6 : 4;
+        week += 1;
+        ledger.recordQuota([
+          reading(ts + 5 * MINUTE, week, weekly),
+          ...(withFiveHour ? [reading(ts + 5 * MINUTE, five, { resetAt: start + 5 * HOUR })] : []),
+        ]);
+      });
+    }
+    return ledger;
+  };
+  const now = opened + 15 * HOUR;
+  const filtered = await build(true).quotaHistoryAsync({ label: '7D', now });
+  const weeklyOnly = await build(false).quotaHistoryAsync({ label: '7D', now });
+  assert.equal(filtered.summary.costPerPercent, 10);
+  assert.ok(weeklyOnly.summary.costPerPercent < 9.9, 'the weekly meter alone treats the rise as rounding');
+  assert.ok(Math.abs(filtered.outside - 0.8) < 0.01, 'the $2 request explains 0.2 of the mixed point');
+  const listed = await build(true).quotaWindowsAsync({ label: '7D', now });
+  assert.equal(listed.windows[0].costPerPercent, 10);
+});
+
+test('calibration never leaks between accounts, and a changed allowance replaces the earlier window', async (t) => {
+  const ledger = store(t);
+  calibratedWindow(ledger);
+  calibratedWindow(ledger, { account: 'work', costUsd: 1 });
+  calibratedWindow(ledger, { costUsd: 0.25, start: resetAt, reset: resetAt + 5 * HOUR });
+  const current = await ledger.quotaHistoryAsync({ now: at(7, 3), account: 'default' });
+  const other = await ledger.quotaHistoryAsync({ now: at(7, 3), account: 'work' });
+  assert.ok(Math.abs(current.summary.costPerPercent - 0.5) < 0.025);
+  assert.ok(Math.abs(other.summary.costPerPercent - 2) < 0.1);
+});
+
+test('a new window continues the earlier window from its first reading, identically in every view', async (t) => {
+  const ledger = store(t);
+  calibratedWindow(ledger);
+  // The next window has only its first rise from zero: one request showing a
+  // whole rounded-up step, which bounds its use but does not measure it.
+  const next = resetAt + 5 * HOUR;
+  ledger.record([{ ...request(resetAt + 5 * MINUTE, 'model-priced'), costUsd: 0.1, costSource: 'subscription' }]);
+  ledger.recordQuota([reading(resetAt, 0, { resetAt: next }), reading(resetAt + 10 * MINUTE, 1, { resetAt: next })]);
+  const now = resetAt + 11 * MINUTE;
+  const history = await ledger.quotaHistoryAsync({ now });
+  assert.ok(Math.abs(history.summary.costPerPercent - 1) < 0.05, 'the earlier window supplies the value');
+  assert.equal(history.outside, 0, 'the first rise from zero is not outside use');
+  const listed = await ledger.quotaWindowsAsync({ now });
+  assert.equal(listed.windows[0].costPerPercent, history.summary.costPerPercent);
+  const range = await ledger.quotaHistoryAsync({ now, view: 'hour', fromMs: opened, toMs: now });
+  assert.equal(range.summary.costPerPercent > 0.95, true);
+});
+
+test('each week judges outside use by its own five-hour windows, so a new plan is not outside use', async (t) => {
+  const ledger = store(t);
+  const week = 7 * 24 * HOUR;
+  // The same $10 requests move the meters twice as far in the second week.
+  for (const [index, dollarsPerPoint] of [
+    [0, 10],
+    [1, 5],
+  ]) {
+    const opensAt = opened + index * week;
+    const weekly = { label: '7D', resetAt: opensAt + week };
+    ledger.recordQuota([reading(opensAt, 0, weekly)]);
+    let used = 0;
+    for (let five = 0; five < 3; five += 1) {
+      const start = opensAt + five * 5 * HOUR;
+      let fiveUsed = 0;
+      for (let step = 0; step < 4; step += 1) {
+        const ts = start + (step * 10 + 5) * MINUTE;
+        ledger.record([{ ...request(ts, 'model-priced'), costUsd: 10, costSource: 'subscription' }]);
+        used += 10 / dollarsPerPoint;
+        fiveUsed += 40 / dollarsPerPoint;
+        ledger.recordQuota([
+          reading(ts + 5 * MINUTE, used, weekly),
+          reading(ts + 5 * MINUTE, fiveUsed, { resetAt: start + 5 * HOUR }),
+        ]);
+      }
+    }
+  }
+  const history = await ledger.quotaHistoryAsync({ label: '7D', now: opened + week + 15 * HOUR });
+  assert.ok(Math.abs(history.summary.costPerPercent - 5) < 0.25);
+  assert.equal(history.outside, 0);
+});
+
+test('sparse weekly history keeps the existing full-limit projection and values known outside usage', async (t) => {
+  const ledger = store(t);
+  ledger.record([
+    { ...request(at(0, 10), 'model-priced'), costUsd: 20, costSource: 'subscription' },
+    { ...request(at(1, 10), 'model-priced'), costUsd: 30, costSource: 'subscription' },
+  ]);
+  ledger.recordQuota([reading(at(0, 30), 2), reading(at(1, 30), 5), reading(at(2, 30), 6)]);
+  const history = await ledger.quotaHistoryAsync({ now: at(3) });
+  assert.equal(history.summary.costPerPercent, 10, 'large reading gaps do not erase historical value');
+  assert.equal(history.summary.costUsd, 50);
+  assert.equal(history.summary.outsideCostUsd, 10);
+  assert.equal(history.summary.estimatedTotalCostUsd, 60);
+  const listed = await ledger.quotaWindowsAsync({ now: at(3) });
+  assert.equal(listed.windows[0].costPerPercent, 10);
+});
+
+test('sparse, unpriced, saturated and unobserved intervals do not invent a conversion rate', async (t) => {
+  const ledger = store(t);
+  ledger.record([request(at(0, 10), 'model-unpriced')]);
+  ledger.recordQuota([reading(at(0, 30), 10), reading(at(3), 100)]);
+  const history = await ledger.quotaHistoryAsync({ now: at(3) });
+  assert.equal(history.summary.costPerPercent, null);
+  assert.equal(history.summary.outsideCostUsd, null);
+  assert.equal(history.summary.estimatedTotalCostUsd, null);
+});
+
 test('a repeated reading extends its row and a drifting reset stays one window', (t) => {
   const ledger = store(t);
   ledger.recordQuota([reading(at(0, 30), 10), reading(at(0, 35), 10)]);
@@ -168,7 +384,7 @@ test('windows reset, page and add up over a period', async (t) => {
   );
 });
 
-test('the window history pages newest first, each page reading its own windows', async (t) => {
+test('the window history pages newest first, each page reading its windows and their calibration', async (t) => {
   const ledger = store(t);
   // Twelve five-hour windows back to back, the n-th read once at n %.
   for (let index = 0; index < 12; index += 1) {

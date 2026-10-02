@@ -16,7 +16,7 @@ import { ErrorNotice } from './ErrorNotice';
 import type { CommandSurface as CommandSurfaceName, SettingsSection } from './slash-commands';
 import type { Snapshot, TranscriptItem } from './desktop-types';
 import { TranscriptAssistantRow, type TranscriptAssistantRowProps } from './TranscriptAssistantRow';
-import { isCompletionTranscriptItem, turnPromptText, type TranscriptRowModel } from './transcript-rows';
+import { turnPromptText, type TranscriptRowModel } from './transcript-rows';
 import { TranscriptRow } from './transcript-row';
 import { LiveActivity } from './transcript-status';
 import { ToolActivityGroup } from './transcript-tool-ui';
@@ -251,9 +251,7 @@ export function conversationKeyDownCapture(
 export function transcriptRowNode(
   row: TranscriptRowModel,
   {
-    completionAnimationKeyByItem,
     disclosureScope,
-    freshCompletionAnimationKeys,
     optimisticActivityStartedAt,
     readOnly,
     renderAssistantRow,
@@ -263,9 +261,7 @@ export function transcriptRowNode(
     snapshot,
     onRetryTurn,
   }: {
-    completionAnimationKeyByItem: ReadonlyMap<TranscriptItem, string>;
     disclosureScope: string;
-    freshCompletionAnimationKeys: ReadonlySet<string>;
     optimisticActivityStartedAt: number;
     readOnly: boolean;
     renderAssistantRow?: (props: TranscriptAssistantRowProps) => ReactNode;
@@ -308,14 +304,10 @@ export function transcriptRowNode(
   if (row._tag === 'ToolActivity') {
     return <ToolActivityGroup items={row.items} disclosureScope={disclosureScope} />;
   }
-  const animated = isCompletionTranscriptItem(row.item) ? row.item : row.completion;
   const assistantProps: TranscriptAssistantRowProps = {
     item: row.item,
     live: Boolean(row.live),
     completion: row.completion,
-    completionAnimate: animated
-      ? freshCompletionAnimationKeys.has(completionAnimationKeyByItem.get(animated) || '')
-      : false,
     disclosureScope,
   };
   return renderAssistantRow ? renderAssistantRow(assistantProps) : <TranscriptAssistantRow {...assistantProps} />;

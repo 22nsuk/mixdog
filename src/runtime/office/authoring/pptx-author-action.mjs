@@ -1,4 +1,5 @@
-import { rm } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import { render } from '../core/office-actions.mjs';
 import { documentFormat, officeSessionForDocument } from '../core/office-core.mjs';
 import { createAuthoredSession, fullPath, validatePptxAuthorMode } from '../core/office-sessions.mjs';
@@ -7,14 +8,22 @@ import {
   exists,
   landStagedDeck,
   releaseExistingSession,
+  releaseStagingTarget,
   reusableAuthoredSession,
   stagingTarget,
   swapAuthoredDocument,
   throwIfAuthoringCancelled,
 } from './pptx-author-session.mjs';
 import { runPptxAuthoringScript } from './pptx-script-runner.mjs';
-import { htmlBriefScript, measureHtmlDrift, runPptxHtmlAuthoring, writeHtmlComparisons } from './pptx-html-runner.mjs';
+import {
+  htmlArtifacts,
+  htmlBriefScript,
+  measureHtmlDrift,
+  runPptxHtmlAuthoring,
+  writeHtmlComparisons,
+} from './pptx-html-runner.mjs';
 import { factsGate, parseAuthoringBrief, planGate } from './pptx-brief.mjs';
+import { editsReplacedByAuthor, markAuthoredFromHtml } from './html-source-drift.mjs';
 import { readCompositionReceipt } from './pptx-review-artifacts.mjs';
 import { receiptForDelivery } from './pptx-receipt.mjs';
 import { snapshotPortableOoxml } from '../portable/portable-ooxml.mjs';
@@ -22,10 +31,10 @@ import { snapshotPortableOoxml } from '../portable/portable-ooxml.mjs';
 /** The design guide lives in the built-in `pptx` skill; the tool never
  *  serves it so one copy stays authoritative and user-overridable. */
 const PPTX_AUTHOR_NEEDS_SOURCE =
-  'author requires script: HTML slides or a pptxgenjs script. Load the `pptx` Skill first (Skill name:"pptx"): it carries the authoring workflow, the HTML contract, the composition grammar, and the device kit, then call author again with path and script.';
+  'author requires script: HTML slides or a pptxgenjs script (without one it re-authors from <deck>.pptx.mixdog-source.html, and none is there). Load the `pptx` Skill first (Skill name:"pptx"): it carries the authoring workflow, the HTML contract, the composition grammar, and the device kit, then call author again with path and script.';
 
 // HTML opens with markup (a doctype, a comment, an element); a pptxgenjs script never does.
-function isHtmlSource(source) {
+export function isHtmlSource(source) {
   return /^\s*</.test(String(source || ''));
 }
 
@@ -33,7 +42,7 @@ function isHtmlSource(source) {
 // will hold it; a package the reader cannot open is left to qa, never turned
 // into a refusal. One snapshot answers both: the figures against the fact
 // sheet, then the pages against the plan that was written before them.
-async function gateStagedDeck(path, brief) {
+export async function gateStagedDeck(path, brief) {
   if (!brief.present) return { blocked: false };
   let document;
   try {
@@ -44,7 +53,8 @@ async function gateStagedDeck(path, brief) {
   const facts = factsGate(document, brief);
   if (facts.blocked) return { ...facts, gate: 'facts' };
   const plan = planGate(document, brief);
-  return plan.blocked ? { ...plan, gate: 'plan' } : { blocked: false };
+  // The snapshot rides on a pass so a caller can read the same deck further (a PDF's design read).
+  return plan.blocked ? { ...plan, gate: 'plan' } : { blocked: false, document };
 }
 
 function describePlanSlide(entry) {
@@ -53,7 +63,7 @@ function describePlanSlide(entry) {
   return `slide ${entry.slide}`;
 }
 
-function planGateResult(target, gate, run) {
+export function planGateResult(target, gate, run) {
   const listed = gate.slides.map(describePlanSlide).join('; ');
   const nextAction = {
     plan_missing:
@@ -73,7 +83,7 @@ function planGateResult(target, gate, run) {
   };
 }
 
-function factsGateResult(target, brief, gate, run) {
+export function factsGateResult(target, brief, gate, run) {
   const listed = gate.slides.map((entry) => `slide ${entry.slide}: ${entry.figures.join(', ')}`).join('; ');
   return {
     ok: false,
@@ -91,7 +101,7 @@ function factsGateResult(target, brief, gate, run) {
 
 // The HTML's own geometry, read in the browser before anything lands: a declared relation that does not
 // hold, or a near miss no declaration covers (pptx-html-geometry.mjs).
-function geometryGateResult(target, run) {
+export function geometryGateResult(target, run) {
   const listed = run.geometry
     .map((page) => `slide ${page.slide}: ${page.findings.map((finding) => finding.message).join('; ')}`)
     .join(' | ');
@@ -107,11 +117,12 @@ function geometryGateResult(target, run) {
 }
 
 function resolveAuthorTarget(args, cwd) {
-  if (!String(args.script || '').trim()) throw new Error(PPTX_AUTHOR_NEEDS_SOURCE);
   const requestedPath = String(args.path || args.output || '').trim();
-  if (!requestedPath) throw new Error('author requires path');
+  // A bare author (no path, no script) is a call made before reading the skill: it is pointed there.
+  if (!requestedPath)
+    throw new Error(String(args.script || '').trim() ? 'author requires path' : PPTX_AUTHOR_NEEDS_SOURCE);
   const target = fullPath(requestedPath, cwd);
-  if (documentFormat(target) !== 'pptx') throw new Error('author writes .pptx targets only');
+  if (documentFormat(target) !== 'pptx') throw new Error('author writes .pptx and .pdf targets only');
   return { target, mode: validatePptxAuthorMode(args.mode) };
 }
 
@@ -182,10 +193,10 @@ async function finishAuthoredDeck(session, { args, cwd, target, run, signal, rep
 // swaps its deck; an existing session hands its audit rounds on. A re-author
 // replaces the session, but the audit fix rounds belong to the deck: the loop
 // keeps counting across passes on the same path.
-async function authoringSessionState(target, mode, args) {
+async function authoringSessionState(target, mode, args, fromSource) {
   const reusable = reusableAuthoredSession(target, mode);
   const existing = officeSessionForDocument(target);
-  if (!reusable && !existing && (await exists(target)) && args.overwrite !== true) {
+  if (!reusable && !existing && !fromSource && (await exists(target)) && args.overwrite !== true) {
     throw new Error(`author target already exists: ${target}; pass overwrite:true to replace it`);
   }
   return { reusable, priorAudit: reusable ? null : existing?.inlineAudit || null };
@@ -193,14 +204,21 @@ async function authoringSessionState(target, mode, args) {
 
 export async function authorPptx(args, { cwd, dataDir, signal = null }) {
   const { target, mode } = resolveAuthorTarget(args, cwd);
+  // Without a script the deck is authored again from the HTML kept beside it, as a PDF or Word document is: a fix
+  // is an edit to that file, not the whole deck sent again.
+  const sourcePath = htmlArtifacts(target).source;
+  const fromSource = !String(args.script || '').trim();
+  if (fromSource && !(await exists(sourcePath))) throw new Error(PPTX_AUTHOR_NEEDS_SOURCE);
+  const script = fromSource ? await readFile(sourcePath, 'utf8') : String(args.script);
   throwIfAuthoringCancelled(signal);
-  const { reusable, priorAudit } = await authoringSessionState(target, mode, args);
+  const replacedEdits = editsReplacedByAuthor(officeSessionForDocument(target));
+  const { reusable, priorAudit } = await authoringSessionState(target, mode, args, fromSource);
   // The script always writes beside the target: a failed script or a refused
   // deck leaves the file on disk and the session holding the previous deck
   // untouched.
-  const staging = stagingTarget(target);
-  const html = isHtmlSource(args.script);
-  const brief = parseAuthoringBrief(html ? htmlBriefScript(args.script) : args.script);
+  const staging = await stagingTarget(target);
+  const html = isHtmlSource(script);
+  const brief = parseAuthoringBrief(html ? htmlBriefScript(script) : script);
   let run;
   let session = null;
   let reusedSession = false;
@@ -209,8 +227,8 @@ export async function authorPptx(args, { cwd, dataDir, signal = null }) {
   try {
     throwIfAuthoringCancelled(signal);
     run = html
-      ? await runPptxHtmlAuthoring(args.script, staging, { target, signal })
-      : await runPptxAuthoringScript(args.script, staging);
+      ? await runPptxHtmlAuthoring(script, staging, { target, signal })
+      : await runPptxAuthoringScript(script, staging, { cwd: dirname(target) });
     throwIfAuthoringCancelled(signal);
     if (!run.ok) return scriptFailedResult(target, run, html);
     if (run.geometry?.length) return geometryGateResult(target, run);
@@ -236,11 +254,15 @@ export async function authorPptx(args, { cwd, dataDir, signal = null }) {
     if (signal?.aborted || error?.name === 'AbortError') discardStaging = true;
     throw error;
   } finally {
-    if (discardStaging) await rm(staging, { force: true }).catch(() => {});
+    if (discardStaging) await releaseStagingTarget(staging).catch(() => {});
   }
   session.authoredBrief = brief;
+  // A deck from HTML counts the batch edits that land past its kept source; a pptxgenjs deck keeps no source.
+  markAuthoredFromHtml(session, run.htmlSource || null);
   if (priorAudit && !session.inlineAudit) session.inlineAudit = { ...priorAudit };
-  return finishAuthoredDeck(session, { args, cwd, target, run, signal, replacedSession, reusedSession });
+  const result = await finishAuthoredDeck(session, { args, cwd, target, run, signal, replacedSession, reusedSession });
+  if (replacedEdits) result.replacedEdits = replacedEdits;
+  return result;
 }
 
 const UNRENDERED_NEXT_ACTION =

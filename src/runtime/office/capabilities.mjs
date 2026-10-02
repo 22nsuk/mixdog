@@ -4,6 +4,7 @@ import { FIELD_ALIASES, OPERATION_ALIASES, PROPERTY_ALIASES } from './capabiliti
 import { BACKENDS, CATALOG, COMMON, VIRTUAL_OPERATIONS } from './capabilities-catalog.mjs';
 import { COMMON_SIGNATURES, FORMAT_SIGNATURES, signature } from './capabilities-signatures.mjs';
 import { normalizeXlsxValidation } from './portable/xlsx-contract.mjs';
+import { docxStyleDefinitions } from './portable/portable-docx-operations.mjs';
 
 export { OFFICE_ACTIONS } from './capabilities-catalog.mjs';
 
@@ -149,7 +150,10 @@ function operationProperties(catalog, signatureValue, backend) {
       .map((name) => [
         name,
         catalog.properties[name].filter(
-          (field) => !backend || !signatureValue.propertyBackends[field] || signatureValue.propertyBackends[field].includes(backend)
+          (field) =>
+            !backend ||
+            !signatureValue.propertyBackends[field] ||
+            signatureValue.propertyBackends[field].includes(backend)
         ),
       ])
   );
@@ -271,6 +275,14 @@ function applyFieldAliases(format, name, operation) {
 // handed to a single-cell operation is one, and says which operation writes it.
 function singleCellRangeFault(batch, name, operation, index, allowed) {
   const { format, backend } = batch;
+  // set_formula takes a range to fill; one cell named that way is still the cell it is.
+  if (format === 'xlsx' && name === 'set_formula' && operation.cell === undefined) {
+    if (SINGLE_CELL_REFERENCE.test(String(operation.range ?? '').trim())) {
+      operation.cell = operation.range;
+      delete operation.range;
+    }
+    return null;
+  }
   if (format !== 'xlsx' || !allowed.has('cell') || allowed.has('range')) return null;
   if (operation.range === undefined || operation.cell !== undefined) return null;
   if (SINGLE_CELL_REFERENCE.test(String(operation.range).trim())) {
@@ -404,6 +416,18 @@ function unknownPropertiesFault(batch, name, operation, index, allowedProperties
   return `${format.toUpperCase()} operation "${name}" at operation ${index + 1} has unknown properties: ${unknownProperties.join(', ')}.${didYouMean(corrections)} ${name} properties: ${[...allowedProperties].join(', ')}. ${describeHint(format, backend, name)}`;
 }
 
+// define_styles carries its fields one level down, per style; both backends read them only after this check, so a
+// misspelt field is refused here on either backend instead of being dropped by one of them.
+function docxStyleDefinitionFault(format, name, operation, index) {
+  if (format !== 'docx' || name !== 'define_styles' || operation.styles === undefined) return null;
+  try {
+    docxStyleDefinitions(operation);
+    return null;
+  } catch (error) {
+    return `DOCX operation "define_styles" at operation ${index + 1}: ${error.message}`;
+  }
+}
+
 // A Word table has two alignments that read alike: `alignment` places the
 // table on the page and `columnAlignments` sets the text of each column.
 // A list written into the first used to be serialized verbatim into the
@@ -490,6 +514,7 @@ function operationContractFaults(batch, operation, index) {
     unknownFieldsFault(batch, name, operation, index, { allowed, propertyKeys, missing }),
     unknownPropertiesFault(batch, name, operation, index, propertyKeys),
     ...docxTableAlignmentFaults(format, name, operation, index),
+    docxStyleDefinitionFault(format, name, operation, index),
     requiredInputFault(batch, name, operation, index, signatureValue, stableTargets),
   ].filter(Boolean);
   if (!faults.length && format === 'xlsx' && name === 'add_validation') {

@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { access, chmod, mkdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { gunzipSync } from 'node:zlib';
 import { join } from 'node:path';
+import { withFileLock } from '../../shared/file-lock.mjs';
 
 const VERSION = '0.3.0';
 const MAX_ARCHIVE_BYTES = 160 * 1024 * 1024;
@@ -167,7 +168,10 @@ export async function ensureOoxmlValidator({ dataDir, download = true, signal = 
       reason: `OOXML schema validation is unavailable on ${process.platform}-${process.arch}.`,
     };
   }
-  const paths = cachePaths(dataDir, entry);
+  // Test runners share immutable tools, never session files or user data.
+  // Normal app calls retain their existing data-directory cache.
+  const sharedCache = process.env.MIXDOG_TEST_OOXML_CACHE_DIR;
+  const paths = cachePaths(sharedCache || dataDir, entry);
   if (await usableBinary(paths.binary)) {
     return { available: true, cached: true, downloaded: false, path: paths.binary, version: VERSION };
   }
@@ -181,6 +185,23 @@ export async function ensureOoxmlValidator({ dataDir, download = true, signal = 
     };
   }
   await mkdir(paths.root, { recursive: true });
+  if (sharedCache) {
+    return withFileLock(
+      join(paths.root, '.install.lock'),
+      async () => {
+        signal?.throwIfAborted();
+        if (await usableBinary(paths.binary)) {
+          return { available: true, cached: true, downloaded: false, path: paths.binary, version: VERSION };
+        }
+        return installValidator(paths, entry, signal);
+      },
+      { timeoutMs: 120_000 }
+    );
+  }
+  return installValidator(paths, entry, signal);
+}
+
+async function installValidator(paths, entry, signal) {
   const temporary = join(paths.root, `.${entry.binary}.${randomUUID()}.tmp`);
   try {
     const archive = await fetchArchive(packageUrl(entry.name), { signal });

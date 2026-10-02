@@ -9,13 +9,17 @@ import { createModelRouteApi } from '../model-route-api.mjs';
 import { createWorkflowAgentsApi } from '../workflow-agents-api.mjs';
 import { createWorkflowRouteHelpers } from '../../runtime/agent/orchestrator/runtime-core/workflow.mjs';
 import { createSettingsApi } from '../settings-api.mjs';
-import { normalizeAutoClearConfig, normalizeCompactionConfig } from '../../runtime/agent/orchestrator/runtime-core/config-helpers.mjs';
+import {
+  normalizeAutoClearConfig,
+  normalizeCompactionConfig,
+} from '../../runtime/agent/orchestrator/runtime-core/config-helpers.mjs';
 import { createMcpGlue } from '../mcp-glue.mjs';
 import { createResourceApi } from '../resource-api.mjs';
 import { isAgentDisabled } from '../../runtime/shared/agent-route-config.mjs';
 import { ORCHESTRATION_MODES } from '../../runtime/shared/orchestration.mjs';
 import { setBuiltinFirstUseApprovalInConfig } from '../../runtime/agent/orchestrator/runtime-core/builtin-features.mjs';
 import { schemaValueError } from '../../runtime/shared/schema-value-error.mjs';
+import { saveSchedule } from '../services/channel-admin.mjs';
 
 const run = async (api, args, options = {}) =>
   JSON.parse(await createSetupToolExecutor({ getApi: () => api, ...options }).execute(args));
@@ -269,11 +273,65 @@ test('definition partial edits preserve names and bodies not requested for chang
   );
 });
 
-test('automation partial edits preserve one-shot timing and attachments; signing secrets never reach receipts', async () => {
+test('schedule creation rejects missing or blank models for every delivery mode', async () => {
+  for (const delivery of ['app', 'channel', 'both']) {
+    for (const modelFields of [{}, { model: '' }, { model: ' \t ' }]) {
+      await assert.rejects(
+        run(
+          { saveSchedule },
+          {
+            action: 'save_automation',
+            automationKind: 'schedule',
+            entry: {
+              name: 'missing-model',
+              instructions: 'Test schedule',
+              at: '2035-01-01T09:00:00.000Z',
+              delivery,
+              ...modelFields,
+            },
+          }
+        ),
+        /schedule model is required/
+      );
+    }
+  }
+});
+
+test('schedule edits reject a missing saved model or explicitly clearing a saved model', async () => {
+  for (const savedModel of [undefined, 'openai/audit-model']) {
+    for (const modelFields of [{}, { model: '' }, { model: ' \t ' }]) {
+      if (savedModel && !Object.hasOwn(modelFields, 'model')) continue;
+      const api = {
+        saveSchedule,
+        getChannelSetup: async () => ({
+          schedules: [
+            {
+              name: 'fixture',
+              instructions: 'Keep prompt',
+              whenAt: '2035-01-01T09:00:00.000Z',
+              model: savedModel,
+            },
+          ],
+        }),
+      };
+      await assert.rejects(
+        run(api, {
+          action: 'save_automation',
+          automationKind: 'schedule',
+          entry: { name: 'fixture', overwrite: true, description: 'New', ...modelFields },
+        }),
+        /schedule model is required/
+      );
+    }
+  }
+});
+
+test('automation partial edits preserve model, one-shot timing and attachments; signing secrets never reach receipts', async () => {
   const attachment = { kind: 'text', name: 'keep.txt', data: 'attachment-canary' };
   const entry = {
     name: 'fixture',
     instructions: 'Keep prompt',
+    model: 'openai/audit-model',
     whenAt: '2035-01-01T09:00:00.000Z',
     time: 'at 2035-01-01T09:00:00.000Z',
     attachments: [attachment],
@@ -302,6 +360,7 @@ test('automation partial edits preserve one-shot timing and attachments; signing
   assert.deepEqual(received.attachments, [attachment]);
   assert.equal(received.enabled, false);
   assert.equal(received.instructions, entry.instructions);
+  assert.equal(received.model, entry.model);
   assert.doesNotMatch(JSON.stringify(result), /attachment-canary/);
   const hook = await run(api, {
     action: 'save_automation',

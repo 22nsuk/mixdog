@@ -1,9 +1,16 @@
 export const ACTIVITY_RAIL_PINS_EVENT = 'activity-rail-pins-changed';
 export const ACTIVITY_RAIL_PIN_IDS = [
-  'sessions', 'agents', 'schedules', 'workflows', 'projects',
-  'extensions', 'source-control', 'search', 'webhooks',
+  'sessions',
+  'agents',
+  'schedules',
+  'workflows',
+  'projects',
+  'extensions',
+  'source-control',
+  'search',
+  'webhooks',
 ] as const;
-export const DEFAULT_ACTIVITY_RAIL_PINS = ['sessions', 'agents', 'schedules', 'workflows', 'projects'];
+export const DEFAULT_ACTIVITY_RAIL_PINS = ['sessions', 'agents', 'schedules', 'workflows', 'projects', 'extensions'];
 
 export interface ActivityRailPinsState {
   pins: string[];
@@ -12,9 +19,11 @@ export interface ActivityRailPinsState {
 }
 
 export function normalizeActivityRailPins(value: unknown): string[] | null {
-  if (!Array.isArray(value) || !value.every((id) =>
-    typeof id === 'string' && (ACTIVITY_RAIL_PIN_IDS as readonly string[]).includes(id)
-  )) return null;
+  if (
+    !Array.isArray(value) ||
+    !value.every((id) => typeof id === 'string' && (ACTIVITY_RAIL_PIN_IDS as readonly string[]).includes(id))
+  )
+    return null;
   return [...new Set(value)];
 }
 

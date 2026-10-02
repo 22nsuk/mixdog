@@ -3,7 +3,7 @@ import { transcriptScrollPosition } from './use-transcript-follow';
 
 // A streaming session or an unavailable font must not leave the conversation
 // hidden indefinitely. This is only an entry gate, never a live-update gate.
-const MAX_REVEAL_WAIT_MS = 1000;
+export const ENTRY_REVEAL_MAX_MS = 2_000;
 
 /**
  * Data readiness is not layout readiness: a virtual range can still contain
@@ -72,7 +72,7 @@ export function useTranscriptReveal({
       const atEnd = position.maxScrollTop - top <= 1;
       const readerOwnsPosition = hasScrollGesture();
       const settled = visible > 0 && !pending && (atEnd || readerOwnsPosition) && current === previous;
-      if (settled || readerOwnsPosition || performance.now() - started >= MAX_REVEAL_WAIT_MS) {
+      if (settled || readerOwnsPosition || performance.now() - started >= ENTRY_REVEAL_MAX_MS) {
         setRevealedIdentity(identity);
         return;
       }

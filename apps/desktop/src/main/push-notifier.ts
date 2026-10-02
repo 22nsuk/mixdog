@@ -2,13 +2,17 @@
 // happened, the store says who wants to hear it, and web-push.ts does the
 // sending. Everything here is best-effort — a phone that cannot be reached
 // never affects the session that triggered it.
-import { createTurnCompletionTracker, type TurnCompletion } from './push-turn-events';
+import { createFinalAnswerWatcher } from './final-answer-watcher';
+import { shouldShowTurnNotification, type TurnCompletion } from './push-turn-events';
 import type { PushSubscriptionStore } from './push-subscription-store';
 import { sendWebPush } from './web-push';
-import type { DesktopSessionSummary } from '../shared/contract';
+import type { DesktopAgentPoolRow, DesktopSessionSummary } from '../shared/contract';
+import type { SessionFinalAnswer } from './session-final-answer';
 
 interface PushNotifier {
   onSessions(sessions: readonly DesktopSessionSummary[]): void;
+  /** Child agents and shell jobs: a Lead waiting on them has not answered yet. */
+  onAgentPool(agents: readonly DesktopAgentPoolRow[]): void;
   /** A browser lost its access: drop its endpoint with the credential. */
   forgetClient(clientId: string): void;
   dispose(): void;
@@ -18,25 +22,18 @@ interface PushNotifierOptions {
   store: PushSubscriptionStore;
   /** Off by default; the user opts in per browser from Settings. */
   isEnabled(): boolean;
-  /** A browser holding the app open is already showing the result. */
-  isClientConnected(clientId: string): boolean;
+  readFinalAnswer(sessionId: string, startedAt: number): Promise<SessionFinalAnswer | null>;
+  /** Foreground browsers suppress ordinary replies, but not scheduled ones. */
+  isClientForeground(clientId: string): boolean;
   fetchImpl?: typeof fetch;
   onError?(detail: string): void;
 }
 
-/** A turn frequently reports done a moment before the next tool call restarts
- *  it. Waiting this long and re-checking keeps a working agent quiet, at the
- *  cost of a notification arriving a beat later than the desktop's own flash. */
-const STABILIZE_MS = 2_500;
 /** RFC 8292 wants a contactable sender. A mailto the push service can reach
  *  is the convention; it identifies the software, not the user. */
 const VAPID_SUBJECT = 'mailto:push@mixdog.app';
 
 export function createPushNotifier(options: PushNotifierOptions): PushNotifier {
-  const tracker = createTurnCompletionTracker();
-  const pending = new Set<NodeJS.Timeout>();
-  let disposed = false;
-
   const deliver = async (completion: TurnCompletion): Promise<void> => {
     const [keys, subscriptions] = await Promise.all([options.store.keys(), options.store.list()]);
     if (subscriptions.length === 0) return;
@@ -51,7 +48,8 @@ export function createPushNotifier(options: PushNotifierOptions): PushNotifier {
     });
     await Promise.allSettled(
       subscriptions.map(async (subscription) => {
-        if (subscription.clientId && options.isClientConnected(subscription.clientId)) return;
+        const foreground = Boolean(subscription.clientId && options.isClientForeground(subscription.clientId));
+        if (!shouldShowTurnNotification(completion, foreground)) return;
         const result = await sendWebPush({
           subscription,
           payload,
@@ -70,38 +68,23 @@ export function createPushNotifier(options: PushNotifierOptions): PushNotifier {
     );
   };
 
-  const schedule = (completion: TurnCompletion): void => {
-    const timer = setTimeout(() => {
-      pending.delete(timer);
-      if (disposed || !options.isEnabled()) return;
-      // Re-asked after the quiet period: the same turn may have resumed, and
-      // the desktop would otherwise announce a session that is still running.
-      if (!tracker.isIdle(completion.sessionId)) return;
+  const watcher = createFinalAnswerWatcher({
+    isEnabled: options.isEnabled,
+    readFinalAnswer: options.readFinalAnswer,
+    onError: options.onError,
+    onFinalAnswer: (completion) => {
       void deliver(completion).catch((error: unknown) => {
         options.onError?.(error instanceof Error ? error.message : String(error));
       });
-    }, STABILIZE_MS);
-    timer.unref?.();
-    pending.add(timer);
-  };
+    },
+  });
 
   return {
-    onSessions(sessions) {
-      if (disposed) return;
-      // The roster is observed even while notifications are off, so enabling
-      // them mid-session starts from a correct baseline instead of firing on
-      // the first turn that merely LOOKS finished.
-      const completions = tracker.observe(sessions, Date.now());
-      if (!options.isEnabled()) return;
-      for (const completion of completions) schedule(completion);
-    },
+    onSessions: watcher.onSessions,
+    onAgentPool: watcher.onAgentPool,
     forgetClient(clientId) {
       void options.store.removeByClient(clientId).catch(() => false);
     },
-    dispose() {
-      disposed = true;
-      for (const timer of pending) clearTimeout(timer);
-      pending.clear();
-    },
+    dispose: watcher.dispose,
   };
 }

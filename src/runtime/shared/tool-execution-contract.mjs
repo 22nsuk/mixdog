@@ -252,7 +252,7 @@ export function isTranscriptCancelledStatusText(text) {
 // The flexible Result separator covers legacy rows and command bodies whose
 // embedded newlines lost their quote prefix during persistence.
 // `lenientWrapper: false` drops the shape-only wrapper guess, matching the TUI
-// rule in session-local.mjs: a directly typed or pasted prompt that merely
+// rule in local-session-runtime.mjs: a directly typed or pasted prompt that merely
 // LOOKS like "instruction + Result: + quoted body" is real chat and must stay
 // visible. Only runtime-injected rows may be hidden on the loose shape.
 export function isInternalTranscriptDisplayText(text, { lenientWrapper = true } = {}) {

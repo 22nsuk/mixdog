@@ -413,12 +413,14 @@ function translateStatusDetail(detail: unknown): string {
   return t(text) || text;
 }
 
-export function CompletionStatus({ item, animate = false }: { item: TranscriptItem; animate?: boolean }) {
+// A completion is durable history, not an entrance event. Focus, history
+// hydration and virtual-row remounts must paint it in its final state.
+export function CompletionStatus({ item }: { item: TranscriptItem }) {
   const tone = completionTone(item);
   const label = String(item.label || item.status || '');
   if (item.kind === 'statusdone' && item.status === 'inherited') {
     return (
-      <div className="compaction-divider" role="status" data-animate={animate ? 'true' : undefined}>
+      <div className="compaction-divider" role="status">
         <GitFork className="compaction-icon" size={16} aria-hidden="true" />
         <span>{t('Session inherited')}</span>
         <small>{t('Continuing with the previous context.')}</small>
@@ -434,7 +436,7 @@ export function CompletionStatus({ item, animate = false }: { item: TranscriptIt
     const visible =
       tone === 'failed' && !/^(done|complete|completed)$/i.test(label) ? translated || label || fallback : fallback;
     return (
-      <div className={`turn-status ${tone}`} role="status" data-animate={animate ? 'true' : undefined}>
+      <div className={`turn-status ${tone}`} role="status">
         <X className="turn-status-icon" size={16} aria-hidden="true" />
         <span>{visible}</span>
       </div>
@@ -444,7 +446,7 @@ export function CompletionStatus({ item, animate = false }: { item: TranscriptIt
     const displayLabel = translateStatusLabel(label) || label || t('Conversation compacted');
     const displayDetail = translateStatusDetail(item.detail);
     return (
-      <div className="compaction-divider" role="status" data-animate={animate ? 'true' : undefined}>
+      <div className="compaction-divider" role="status">
         <FoldVertical className="compaction-icon" size={16} aria-hidden="true" />
         <span>{displayLabel}</span>
         {displayDetail && <small>{displayDetail}</small>}
@@ -469,7 +471,7 @@ export function CompletionStatus({ item, animate = false }: { item: TranscriptIt
   }
   const displayDetail = translateStatusDetail(item.detail);
   return (
-    <div className="turn-status complete" role="status" data-animate={animate ? 'true' : undefined}>
+    <div className="turn-status complete" role="status">
       <MxIcon name="check" className="turn-status-icon" size={16} />
       <span>{completionLabel}</span>
       {item.kind === 'statusdone' && displayDetail && <small>· {displayDetail}</small>}

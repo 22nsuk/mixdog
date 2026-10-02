@@ -11,6 +11,7 @@ import {
   crashReporter,
   dialog,
   ipcMain,
+  Notification,
   powerMonitor,
   powerSaveBlocker,
   screen,
@@ -29,6 +30,10 @@ import { createBackgroundWindow } from './background-window';
 import { createDesktopTray, type DesktopTray } from './desktop-tray';
 import { loginShellOverrides, readLoginShellEnvironment } from './login-shell-environment';
 import { createTurnAttention, type TurnAttention } from './turn-attention';
+import { createDesktopTurnNotifier } from './desktop-turn-notifier';
+import { desktopIdentity } from './desktop-identity';
+import { notificationSoundPath, playWindowsNotificationSound } from './notification-sound';
+import { activateDesktopWindow, openDesktopNotificationSession } from './notification-window';
 import { createIdleReclaim, purgeRendererMemory, type IdleReclaim } from './idle-reclaim';
 import { watchCrashHandler } from './crash-handler-watch';
 import { createDesktopDiagnostics, type DesktopDiagnostics } from './desktop-diagnostics';
@@ -123,9 +128,15 @@ if (process.env.MIXDOG_DESKTOP_USER_DATA) {
     process.env.MIXDOG_BRIDGE_DISCOVERY_DIR = join(app.getPath('userData'), 'bridges');
   }
 } else if (!app.isPackaged) {
-  app.setName(PACKAGED_USER_DATA_DIRECTORY);
   app.setPath('userData', join(app.getPath('appData'), PACKAGED_USER_DATA_DIRECTORY));
 }
+
+// Branding must not relocate an existing profile. Development and notification
+// probes must never register electron.exe under the installed sender identity.
+const desktopBrand = desktopIdentity(app.isPackaged ? 'installed' : 'development');
+const desktopUserData = app.getPath('userData');
+app.setName(desktopBrand.name);
+app.setPath('userData', desktopUserData);
 
 let crashReporterStatus = process.platform === 'win32' ? 'start-failed' : 'not-required';
 let crashReporterErrorName = '';
@@ -326,7 +337,7 @@ if (process.env.MIXDOG_DESKTOP_PERF === '1') {
 function desktopServiceModuleUrl(): string {
   const modulePath = app.isPackaged
     ? join(process.resourcesPath, 'app.asar.unpacked', 'out', 'main', 'daemon.cjs')
-    : join(__dirname, 'daemon.cjs');
+    : join(import.meta.dirname, 'daemon.cjs');
   const moduleUrl = pathToFileURL(modulePath);
   let artifact = app.getVersion();
   try {
@@ -364,8 +375,7 @@ function adoptLoginShellEnvironment(): Promise<void> {
   });
 }
 const serviceClient = new DesktopServiceClient({
-  connect: () =>
-    new SessionTransport(desktopServiceModuleUrl(), process.cwd(), null, loginShellEnvironmentReady),
+  connect: () => new SessionTransport(desktopServiceModuleUrl(), process.cwd(), null, loginShellEnvironmentReady),
   sessionOptions: () => ({
     userDataPath: app.getPath('userData'),
     packaged: app.isPackaged,
@@ -373,7 +383,7 @@ const serviceClient = new DesktopServiceClient({
     appPath: app.getAppPath(),
     rendererDir: app.isPackaged
       ? join(process.resourcesPath, 'app.asar.unpacked', 'out', 'renderer')
-      : join(__dirname, '../renderer'),
+      : join(import.meta.dirname, '../renderer'),
   }),
   initialSnapshot: readDesktopModelBootstrapSnapshot(),
   onDiagnostic: (event, data) => {
@@ -458,15 +468,7 @@ let computerObserveOnly = false;
 let removeIpc: (() => void) | null = null;
 let pendingPrimaryActivation = false;
 function activatePrimaryWindow(): void {
-  const window = mainWindow;
-  if (!window || window.isDestroyed()) {
-    pendingPrimaryActivation = true;
-    return;
-  }
-  pendingPrimaryActivation = false;
-  if (window.isMinimized()) window.restore();
-  if (!window.isVisible()) window.show();
-  window.focus();
+  pendingPrimaryActivation = !activateDesktopWindow(mainWindow);
 }
 // PTYs are daemon-owned; Electron forwards control and receives output events.
 const serviceTerminalManager = {
@@ -513,8 +515,50 @@ const awakeService = new AgentAwakeService(powerSaveBlocker);
 let turnAttention: TurnAttention | null = null;
 let unsubscribeAwake: (() => void) | null = null;
 let unsubscribeServiceSettings: (() => void) | null = null;
+// OS notification on final answers: schedules notify even in the foreground,
+// ordinary conversations only while unfocused. Both respect the setting.
+// App-lifetime like keep-awake: a window hidden to the tray still wants it.
+let turnNotificationsEnabled = true;
+const turnNotifier = createDesktopTurnNotifier({
+  isEnabled: () => turnNotificationsEnabled,
+  isSupported: () => Notification.isSupported(),
+  isForeground: () =>
+    Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() && mainWindow.isFocused()),
+  createNotification: (content) =>
+    new Notification({
+      ...content,
+      // Windows already brands the header through the registered shortcut.
+      // An explicit icon adds a second, large image beside the body.
+      ...(process.platform === 'win32' ? {} : { icon: trayIconPath() ?? undefined }),
+      silent: process.platform === 'win32',
+    }),
+  ...(process.platform === 'win32'
+    ? {
+        playSound: () =>
+          playWindowsNotificationSound(
+            notificationSoundPath({
+              packaged: app.isPackaged,
+              resourcesPath: process.resourcesPath,
+              appPath: app.getAppPath(),
+            }),
+            false,
+            desktopBrand.appId
+          ),
+      }
+    : {}),
+  readFinalAnswer: (sessionId, startedAt) => serviceClient.readSessionFinalAnswer(sessionId, startedAt),
+  diagnostic: (event, details) => {
+    diagnostics?.write(`turn-notification-${event}`, details);
+    if (event === 'failed' || event === 'read-failed') console.error(`[mixdog-turn-notification] ${event}`, details);
+  },
+  openSession: (sessionId) => {
+    pendingPrimaryActivation = !openDesktopNotificationSession(mainWindow, sessionId);
+  },
+});
+let unsubscribeTurnNotifier: (() => void) | null = null;
 const applyDesktopSettings = (settings: DesktopSettings): void => {
   awakeService.setEnabled(settings.keepAwake !== false);
+  turnNotificationsEnabled = settings.turnNotifications !== false;
   runInBackground = settings.runInBackground !== false;
   syncDesktopTray();
   applyComputerControlSetting(settings.computerControl === true);
@@ -810,6 +854,9 @@ function disposeDesktopResources(): Promise<void> {
   idleReclaim = null;
   unsubscribeAwake?.();
   unsubscribeAwake = null;
+  unsubscribeTurnNotifier?.();
+  unsubscribeTurnNotifier = null;
+  turnNotifier.dispose();
   unsubscribeServiceSettings?.();
   unsubscribeServiceSettings = null;
   awakeService.dispose();
@@ -949,7 +996,7 @@ function resolveRendererTarget(): {
   isAllowedNavigation: (candidate: string) => boolean;
 } {
   const developmentUrl = process.env.ELECTRON_RENDERER_URL;
-  const packagedRendererPath = join(__dirname, '../renderer/index.html');
+  const packagedRendererPath = join(import.meta.dirname, '../renderer/index.html');
   // Use an explicit runtime icon even in packaged builds. Relying only on the
   // executable's embedded resource leaves the live taskbar button at the mercy
   // of Explorer's stale icon cache after an in-place installer upgrade.
@@ -991,7 +1038,7 @@ function createMainBrowserWindow(
     ...(brandIconPath ? { icon: brandIconPath } : {}),
     webPreferences: {
       ...DESKTOP_WINDOW_OPTIONS.webPreferences,
-      preload: join(__dirname, '../preload/index.js'),
+      preload: join(import.meta.dirname, '../preload/index.js'),
       additionalArguments: [
         `--mixdog-boot-id=${desktopBootId}`,
         `--mixdog-process-started-at=${desktopProcessStartedAt}`,
@@ -1471,14 +1518,10 @@ if (!app.requestSingleInstanceLock()) {
     .whenReady()
     .then(async () => {
       const appReadyAt = Date.now();
-      // Windows toast/taskbar identity. Packaged installs get a shortcut whose
-      // AppUserModelID matches, so the taskbar resolves the branded icon. In the
-      // dev/preview shell no such shortcut exists and an explicit AUMID makes
-      // Explorer fall back to electron.exe's stock icon for the taskbar button
-      // (user-reported missing Mixdog icon), so leave the default identity there
-      // and let the BrowserWindow icon brand the button instead.
-      if (process.platform === 'win32' && app.isPackaged) {
-        app.setAppUserModelId('io.mixdog.desktop');
+      // Separate shell registrations keep dev/test Electron shortcuts from
+      // replacing the installed Mixdog name and icon.
+      if (process.platform === 'win32') {
+        app.setAppUserModelId(desktopBrand.appId);
       }
       diagnostics = createDesktopDiagnostics(join(app.getPath('userData'), 'logs', 'desktop-diagnostics.jsonl'), {
         appVersion: app.getVersion(),
@@ -1521,6 +1564,14 @@ if (!app.requestSingleInstanceLock()) {
         turnAttention?.onSnapshot(snapshot);
         idleReclaim?.onSnapshot(snapshot);
       });
+      // Every session's roster and the agent pool, not just the active pane:
+      // the final-answer rule needs background work as well as turn state.
+      const unsubscribeTurnSessions = host.subscribeSessions(turnNotifier.onSessions);
+      const unsubscribeTurnAgents = host.subscribeAgentPool(turnNotifier.onAgentPool);
+      unsubscribeTurnNotifier = () => {
+        unsubscribeTurnSessions();
+        unsubscribeTurnAgents();
+      };
       void settingsStore
         .read()
         .then(applyDesktopSettings)
@@ -1561,7 +1612,7 @@ if (!app.requestSingleInstanceLock()) {
       });
       const bootScriptHash = process.env.ELECTRON_RENDERER_URL
         ? null
-        : inlineBootScriptHash(join(__dirname, '../renderer'));
+        : inlineBootScriptHash(join(import.meta.dirname, '../renderer'));
       session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
         // The policy governs the app's own documents: the built renderer
         // (file:) or the dev server. Other responses keep their headers —

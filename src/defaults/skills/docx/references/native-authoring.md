@@ -100,7 +100,13 @@ for an existing paragraph). Use a carrier when the content has that job, never a
   own type and refuses the paragraph's field names); an essay takes a serif pairing
   (Cambria + 바탕/Noto Serif KR), a brief sets both faces in the Korean sans (`name` and `nameEastAsia` both
   Malgun Gothic, or both Noto Sans KR): beside Calibri figures the Hangul prints larger and heavier, and
-  "184,200건" reads as two sizes.
+  "184,200건" reads as two sizes. The ladder is written once, as the document's styles, before the first
+  paragraph: `{ op:'define_styles', styles:{ Title:{ name, nameEastAsia, size:24, bold:true, color:'111827',
+  alignment:'left', lineSpacing:30, lineSpacingRule:'exact', spacingAfter:8 }, 'Heading 1':{ …, size:15, bold:true,
+  spacingBefore:18, spacingAfter:6, keepWithNext:true }, 'Heading 2':{ … }, Normal:{ name, nameEastAsia, size:10.5,
+  lineSpacing:18, spacingAfter:8, alignment:'left' }, Caption:{ size:9, color:'6B7280', spacingBefore:4,
+  spacingAfter:14 } } }`; then `append_text style:'Heading 1' text:'2. 근거'` carries nothing else, and a
+  caption is `style:'Caption'`.
 - **Cover group**: eyebrow (`size:9.5, bold:true, color:<accent>, spacingAfter:4`) → `Title` with
   `alignment:'left'` (Word's own Title style centers it and the portable file does not; say which) and
   `lineSpacing:<1.25 × its size>, lineSpacingRule:'exact'` (30 for 24 pt) — a minimum can only widen a line, and on
@@ -130,8 +136,10 @@ for an existing paragraph). Use a carrier when the content has that job, never a
   close to the last item as the items to each other and read as one more of them.
 - **Stat strip** (two to four figures with one cause): `add_table` with one row of values and one row of labels,
   `properties:{ borders:{ top:{ enabled:false }, left:{ enabled:false }, right:{ enabled:false }, insideV:{ enabled:false },
-  insideH:{ enabled:false }, bottom:{ style:'single', size:4, color:'C9CED6' } }, fontSize:22, color:<accent>,
-  columnAlignments:['left', …] }` and `set_table_cell_style` on the label row (`fontSize:9, color:'6B7280'`).
+  insideH:{ enabled:false }, bottom:{ style:'single', size:4, color:'C9CED6' } }, repeatHeader:false,
+  columnAlignments:['left', …], rowStyles:[{ fontSize:22, color:<accent>, bold:true }, { fontSize:9, color:'6B7280' }] }`
+  — one table, the figures at display size over their labels at caption size. A single `fontSize` sets the labels at
+  22 pt too ("평균 대기 시간 단축" over three lines). → runtime `table_label_oversized`
 - **Chart**: `add_chart categories:[…] values:[…] chartType:'bar'|'column' unit highlight forecast accent` — one series
   drawn as a picture in the document's accent (`accent:'1F5E4B'`, the hex the document's headings and callouts use;
   without it the writer's teal), every bar carrying its value and no grid; `bar` for a ranking (names on the
@@ -141,10 +149,16 @@ for an existing paragraph). Use a carrier when the content has that job, never a
   edited in Word — a chart the reader will edit belongs in a workbook.
 - **Caption**: the paragraph under a table or picture, `size:9, color:'6B7280', spacingBefore:4,
   spacingAfter:14`: what it shows and its source. The table above it takes `properties.keepWithNext:true`
-  so the caption never starts the next page alone; a picture (`add_image`) keeps with its caption on its own,
+  so the caption never starts the next page alone, and the paragraph that introduces a table or chart takes
+  `keepWithNext:true` too — without it a heading and its lead-in closed one page and the table opened the next; a picture (`add_image`) keeps with its caption on its own,
   and `properties:{ alignment:'center' }` centres it.
 - **Running header**: `set_header_footer kind:'header'` with `properties:{ name, nameEastAsia, size:8.5,
   color:'6B7280' }` — without them the line prints in the document default, louder than the eyebrow under it.
+  The cover page carries neither: after the default header and the page numbers (`add_page_numbers separator:' / '`
+  prints "1 / 3"), `set_header_footer kind:'header' variant:'first' text:''` and the same for the footer give the
+  first page empty ones.
+- **Total row**: `add_table properties.totalRow:true` sets the last row bold over a rule; a total set like the rows
+  it sums reads as one more of them. → runtime `total_row_unmarked`
 - **Two columns**: not a paragraph property; long prose that wants two columns is a section of its own
   with `set_page properties:{ columns:2 }` (Control map), opened by `insert_break kind:'section_continuous'` under
   the masthead or picture and closed by another one (then `columns:1`) so the two columns balance on the page — use a table with two borderless cells only for a

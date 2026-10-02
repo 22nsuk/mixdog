@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,29 +10,38 @@ import { build } from 'esbuild';
 import electron from 'electron';
 import { computerSourceEsbuildPlugin } from '../../../../scripts/computer-source-assets.mjs';
 
+// Reuse immutable bundles across rendering modes, not Electron profiles or processes.
+const bundles = new Map();
+function bundledSource(relativePath, plugins = []) {
+  if (!bundles.has(relativePath)) {
+    bundles.set(
+      relativePath,
+      build({
+        entryPoints: [fileURLToPath(new URL(relativePath, import.meta.url))],
+        bundle: true,
+        platform: 'node',
+        format: 'cjs',
+        external: ['electron'],
+        plugins,
+        write: false,
+      }).then(({ outputFiles }) => outputFiles[0].contents)
+    );
+  }
+  return bundles.get(relativePath);
+}
+
 async function runFixture(name, softwareRendering) {
   const directory = await mkdtemp(join(tmpdir(), 'mixdog-overlay-ipc-'));
   try {
+    const [main, preload] = await Promise.all([
+      // The installed app's pill face must still travel inside the bundle.
+      bundledSource(`./test-fixtures/${name}.ts`, [computerSourceEsbuildPlugin()]),
+      bundledSource('../../../preload/computer-overlay.ts'),
+    ]);
+    await Promise.all([mkdir(join(directory, 'main')), mkdir(join(directory, 'preload'))]);
     await Promise.all([
-      build({
-        entryPoints: [fileURLToPath(new URL(`./test-fixtures/${name}.ts`, import.meta.url))],
-        bundle: true,
-        platform: 'node',
-        format: 'cjs',
-        external: ['electron'],
-        // The fixture runs from a temporary directory, like the installed app,
-        // so the pill face must travel inside the bundle.
-        plugins: [computerSourceEsbuildPlugin()],
-        outfile: join(directory, 'main/index.cjs'),
-      }),
-      build({
-        entryPoints: [fileURLToPath(new URL('../../../preload/computer-overlay.ts', import.meta.url))],
-        bundle: true,
-        platform: 'node',
-        format: 'cjs',
-        external: ['electron'],
-        outfile: join(directory, 'preload/computer-overlay.js'),
-      }),
+      writeFile(join(directory, 'main/index.cjs'), main),
+      writeFile(join(directory, 'preload/computer-overlay.js'), preload),
     ]);
     const env = {
       ...process.env,

@@ -45,6 +45,8 @@ test('failed desktop initialization closes its daemon attachment and preserves t
     }),
   }));
   let exit = null;
+  const errors = [];
+  transport.on('error', (type, detail) => errors.push({ type, detail }));
   transport.on('exit', (code, cause) => {
     exit = { code, cause };
   });
@@ -53,8 +55,42 @@ test('failed desktop initialization closes its daemon attachment and preserves t
   await waitFor(() => exit);
   assert.equal(exit.code, 1);
   assert.equal(exit.cause, failure);
+  assert.deepEqual(errors, [{ type: 'daemon', detail: failure.message }]);
   assert.equal(closeCalls, 1);
   assert.deepEqual(calls, ['desktop.init', 'desktop.unsubscribe']);
+});
+
+test('daemon startup messages remain diagnostic records, not transport errors', async () => {
+  const detail = '[daemon] ready port=1 health=ok';
+  const transport = new SessionTransport('file:///C:/tmp/daemon.cjs', process.cwd(), async () => ({
+    ensureDaemon: async ({ log }) => {
+      log(detail);
+      return { pid: process.pid, port: 1, token: 'test' };
+    },
+    attachSession: async () => ({
+      async call(name) {
+        return name === 'desktop.init' ? { desktopId: 'desktop_logging' } : { ok: true };
+      },
+      async close() {},
+    }),
+  }));
+  const diagnostics = [];
+  const errors = [];
+  const messages = [];
+  transport.on('diagnostic', (event, details) => diagnostics.push({ event, details }));
+  transport.on('error', (...args) => errors.push(args));
+  transport.on('message', (message) => messages.push(message));
+  try {
+    transport.postMessage({ kind: 'init', options });
+    await waitFor(() => messages.some((message) => message.kind === 'ready'));
+    assert.deepEqual(errors, []);
+    assert.deepEqual(
+      diagnostics.filter(({ event }) => event === 'session-daemon-log'),
+      [{ event: 'session-daemon-log', details: { detail, attempt: 1 } }]
+    );
+  } finally {
+    await transport.close();
+  }
 });
 
 test('a mismatched session contract tells desktop users how to recover', async () => {

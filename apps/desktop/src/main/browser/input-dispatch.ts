@@ -79,6 +79,23 @@ export function createBrowserInputDispatch(host: InputDispatchHost) {
       sessionId = route.sessionId;
       input = { ...params, x: Number(params.x) - route.offset.x, y: Number(params.y) - route.offset.y };
     }
+    const touchPoints =
+      method === 'Input.dispatchTouchEvent' ? (params.touchPoints as Array<Record<string, number>>) : undefined;
+    if ((mouse || method === 'Input.dispatchDragEvent' || touchPoints?.length) && guest.getZoomFactor() !== 1) {
+      // Device emulation can use a different layout zoom than Electron's host
+      // zoom. CDP applies the host zoom to input; compensate only that mismatch.
+      const metrics = await host.cdp.call<{ cssVisualViewport: { zoom: number } }>(
+        guest,
+        'Page.getLayoutMetrics',
+        {},
+        signal
+      );
+      const scale = metrics.cssVisualViewport.zoom / guest.getZoomFactor();
+      if (!Number.isFinite(scale) || scale <= 0) throw new Error('Browser input has no valid viewport scale');
+      input = touchPoints
+        ? { ...input, touchPoints: touchPoints.map((point) => ({ ...point, x: point.x * scale, y: point.y * scale })) }
+        : { ...input, x: Number(input.x) * scale, y: Number(input.y) * scale };
+    }
     const guard = () => {
       signal?.throwIfAborted();
       if (

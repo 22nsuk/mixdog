@@ -67,6 +67,7 @@ export type DesktopSettingKey =
   | 'autoCompact'
   | 'keepAwake'
   | 'runInBackground'
+  | 'turnNotifications'
   | 'usagePinned'
   | 'computerControl'
   | 'computerObserveOnly'
@@ -82,6 +83,9 @@ export interface DesktopSettings {
   /** Desktop-only: closing the window hides it (tray on Windows/Linux, Dock
    *  on macOS) instead of quitting, so the in-app hosts keep serving. */
   runInBackground: boolean;
+  /** Desktop-only: an OS notification when a session gives its final answer
+   *  while the window is not focused. Default on. */
+  turnNotifications: boolean;
   /** Activity-rail usage pin mode, shared by desktop and remote surfaces. */
   usagePinned: boolean;
   /** Opt-in: expose the agent `computer` tool that controls the local desktop

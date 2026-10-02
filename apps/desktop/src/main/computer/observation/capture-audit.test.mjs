@@ -349,6 +349,50 @@ test('unusable PrintWindow pixels fall through to WGC and zoom retains that exac
   );
 });
 
+test('a rendered title bar cannot make a blank native client surface usable', async () => {
+  const f = fixture({
+    native: (request) =>
+      request.action === 'window_capture'
+        ? {
+            ok: true,
+            result: {
+              window_id: 'hwnd:0x1',
+              capture_source: 'window_surface',
+              x: -8,
+              y: -31,
+              width: 816,
+              height: 631,
+              image_base64: Buffer.from(request.capture_backend).toString('base64'),
+            },
+          }
+        : undefined,
+  });
+  globalThis.captureFixture.sources = async () => [];
+  globalThis.captureFixture.decode = (buffer) => {
+    const pixels = image(816, 631);
+    if (buffer.toString() === 'print_window') {
+      pixels.toBitmap = () => {
+        const bitmap = Buffer.alloc(816 * 631 * 4, 128);
+        for (let y = 31; y < 631; y++) bitmap.fill(255, (y * 816 + 8) * 4, (y * 816 + 808) * 4);
+        return bitmap;
+      };
+    }
+    return pixels;
+  };
+  const shot = await f.run(() =>
+    f.capture.captureScreenshot({ action: 'screenshot', window_id: 'hwnd:0x1', session_id: 'a' })
+  );
+  assert.equal(shot.frame.nativeBackend, 'wgc');
+  assert.deepEqual(
+    shot.captureAttempts.map(({ backend, status, code }) => [backend, status, code]),
+    [
+      ['composited', 'failed', 'capture_source_unavailable'],
+      ['print_window', 'unavailable', 'blank_white_frame'],
+      ['wgc', 'captured', undefined],
+    ]
+  );
+});
+
 test('native capture denial, geometry changes and minimized targets do not switch backend or owner', async () => {
   for (const code of ['capture_denied', 'capture_geometry_changed', 'capture_minimized', 'capture_cloaked']) {
     const f = fixture({
@@ -565,7 +609,7 @@ test('another session invalidates stored frames, refs and scopes only for its ch
   }
 });
 
-test('external input during capture disables foreground input, while stable captures carry the original watermark', async () => {
+test('external input interrupts capture without publishing targets, while stable captures carry the original watermark', async () => {
   for (const changed of [false, true]) {
     let reads = 0;
     const f = fixture({
@@ -576,9 +620,18 @@ test('external input during capture disables foreground input, while stable capt
       },
     });
     const command = { action: 'capture', mode: 'vision', window_id: 'hwnd:0x1', session_id: 'a' };
+    if (changed) {
+      await assert.rejects(
+        f.run(() => f.capture.captureComputer(command)),
+        /user_input_active/
+      );
+      assert.equal(f.state.observedWindowBySession.has('a'), false);
+      assert.equal(f.state.elementTargetsBySession.has('a'), false);
+      continue;
+    }
     const observation = await f.run(() => f.capture.captureComputer(command));
-    assert.equal(observation.payload.foreground_input_ready, !changed);
-    assert.equal(observation.payload.foreground_input_reason, changed ? 'user_input_during_capture' : undefined);
+    assert.equal(observation.payload.foreground_input_ready, true);
+    assert.equal(observation.payload.foreground_input_reason, undefined);
     let sent;
     const dispatch = createInputDispatch(
       {
@@ -598,16 +651,9 @@ test('external input during capture disables foreground input, while stable capt
         allowedWindowIds: ['hwnd:0x1'],
         observedScope: f.state.freshObservedWindowScope(command),
       });
-    if (changed) {
-      // The user's own input, not a broken host: the refusal names that and
-      // still sends nothing.
-      await assert.rejects(input(), /foreground_input_not_ready/);
-      assert.equal(sent, undefined);
-    } else {
-      await input();
-      assert.equal(sent.observed_input_monitor_id, 'worker-a');
-      assert.equal(sent.observed_input_user_sequence, 3);
-    }
+    await input();
+    assert.equal(sent.observed_input_monitor_id, 'worker-a');
+    assert.equal(sent.observed_input_user_sequence, 3);
   }
 });
 

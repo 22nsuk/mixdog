@@ -72,3 +72,30 @@ test('emulation validates compound input before attaching CDP or partially reset
   );
   assert.equal(cdpCalls, 0);
 });
+
+test('partial emulation preserves group siblings, isolates guests and forgets overrides on reset', async () => {
+  const f = recordingEmulation();
+  const configure = (command) => f.emulation.configureEmulation(f.guest, command);
+  const last = (method) => f.calls.filter((call) => call.method === method).at(-1).params;
+  await configure({ userAgent: 'Custom/2.0', locale: 'fr-FR', colorScheme: 'light', reducedMotion: true });
+  await configure({ locale: 'en-GB' });
+  assert.deepEqual(last('Network.setUserAgentOverride'), { userAgent: 'Custom/2.0', acceptLanguage: 'en-GB' });
+  await configure({ userAgent: 'Next/3.0' });
+  assert.deepEqual(last('Network.setUserAgentOverride'), { userAgent: 'Next/3.0', acceptLanguage: 'en-GB' });
+  await configure({ reducedMotion: false });
+  assert.deepEqual(last('Emulation.setEmulatedMedia').features, [
+    { name: 'prefers-color-scheme', value: 'light' },
+    { name: 'prefers-reduced-motion', value: 'no-preference' },
+  ]);
+  await configure({ colorScheme: 'dark' });
+  assert.deepEqual(last('Emulation.setEmulatedMedia').features, [
+    { name: 'prefers-color-scheme', value: 'dark' },
+    { name: 'prefers-reduced-motion', value: 'no-preference' },
+  ]);
+  await f.emulation.configureEmulation({ getUserAgent: () => 'Other/1.0' }, { locale: 'ko-KR' });
+  assert.deepEqual(last('Network.setUserAgentOverride'), { userAgent: 'Other/1.0', acceptLanguage: 'ko-KR' });
+  await configure({ reset: true });
+  await configure({ locale: 'ko-KR', reducedMotion: true });
+  assert.deepEqual(last('Network.setUserAgentOverride'), { userAgent: 'Fixture/1.0', acceptLanguage: 'ko-KR' });
+  assert.deepEqual(last('Emulation.setEmulatedMedia').features, [{ name: 'prefers-reduced-motion', value: 'reduce' }]);
+});

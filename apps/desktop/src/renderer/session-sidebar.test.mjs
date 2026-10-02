@@ -10,6 +10,71 @@ function installDom() {
   return installTestDom(null, { jsdom: { url: 'http://localhost/' }, expose: ['navigator', 'CustomEvent'] });
 }
 
+test('auxiliary sidebars omit duplicate lists while a visited Sessions surface keeps its state', async (t) => {
+  const { root, document } = installTestDom(t, { rootId: 'root', expose: ['HTMLElement', 'CustomEvent'] });
+  const { SessionSidebar } = await import('./session-sidebar.tsx');
+  let sessions = Array.from({ length: 100 }, (_, index) => ({
+    id: `retained-${index}`,
+    title: `Original ${index}`,
+    preview: '',
+    updatedAt: 100 - index,
+    activityAt: 100 - index,
+    messageCount: 1,
+    cwd: '',
+    classification: 'task',
+    projectPath: null,
+    working: false,
+  }));
+  const props = {
+    sessionsReady: true,
+    selection: { kind: 'new' },
+    onNewTask() {},
+    onNewStudio() {},
+    onResumeSession() {},
+    async onRenameSession() {},
+    async onArchiveSession() {},
+    async onDeleteSession() {},
+  };
+  const render = (open, panelActive = false) =>
+    act(async () =>
+      root.render(
+        React.createElement(
+          React.Fragment,
+          null,
+          ...Array.from({ length: 5 }, (_, index) =>
+            React.createElement(SessionSidebar, {
+              ...props,
+              key: index,
+              sessions,
+              open: index === 0 && open,
+              panelActive: index === 0 ? panelActive : true,
+              panelTitle: `Panel ${index}`,
+              children: React.createElement('span', null, `Panel body ${index}`),
+            })
+          )
+        )
+      )
+    );
+  await render(true);
+  const rows = document.querySelectorAll('.session-row[data-session-id]');
+  const row = rows[0];
+  const scroller = document.querySelector('.session-sidebar-sessions .session-sidebar-scroll');
+  assert.equal(document.querySelectorAll('.session-sidebar-sessions').length, 1);
+  assert.ok(rows.length > 0 && rows.length < sessions.length);
+  assert.equal(document.querySelectorAll('.session-sidebar-panels').length, 5);
+  scroller.scrollTop = 47;
+  await render(false);
+  await render(false, true);
+  assert.equal(document.querySelector('.session-sidebar-sessions .session-sidebar-scroll'), scroller);
+  assert.equal(scroller.scrollTop, 47);
+  sessions = sessions.map((entry, index) => (index === 0 ? { ...entry, title: 'Updated while hidden' } : entry));
+  await render(false, true);
+  await render(true);
+  assert.equal(document.querySelector('.session-row[data-session-id]'), row);
+  assert.match(row.textContent, /Updated while hidden/);
+  assert.equal(scroller.scrollTop, 47);
+});
+
 test('the fixed launcher rows lead the session list and open a task or a Studio tab', async () => {
   const { dom, restore } = installDom();
 

@@ -88,6 +88,24 @@ const { createComputerUseOverlay } = await import('./index.ts');
 const { computerUseCoordinator: coordinator } = await import('../session/coordinator.ts');
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
+test('an existing user pause renders on overlay creation without another state update', async () => {
+  fault = '';
+  coordinator.beginCommand({ sessionId: 'initial-pause', action: 'capture', mode: 'background' });
+  coordinator.pauseForUser('user_input_active');
+  const start = windows.length;
+  const overlay = createComputerUseOverlay({ stop: async () => {} }, 'ko');
+  try {
+    await settle();
+    assert.equal(windows.length, start + 1);
+    assert.equal(windows[start].isVisible(), true);
+    assert.equal(coordinator.snapshot().userControlActive, true);
+    assert.throws(() => coordinator.assertAutomationAllowed(), /computer_user_control_active/);
+  } finally {
+    overlay.dispose();
+    coordinator.reset();
+  }
+});
+
 test('Resume continues and Stop or the emergency shortcut ends a paused task; nothing else is a control', async () => {
   fault = '';
   const start = windows.length;

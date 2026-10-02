@@ -808,6 +808,12 @@ export async function setDocxHeaderFooter(zip, op) {
   };
 }
 
+// A separator says the number stands against the total ("3 / 12"): asked for with separator:' / ' and no
+// includeTotal, the footer printed "3" alone. includeTotal:false still keeps the number alone.
+export function pageNumbersIncludeTotal(op) {
+  return op.includeTotal === true || (op.includeTotal !== false && Boolean(String(op.separator ?? '').trim()));
+}
+
 // Same vocabulary as set_header_footer: kind names the story (the footer
 // unless the caller asks for the header), variant names the page.
 export async function addDocxPageNumbers(zip, op) {
@@ -821,11 +827,11 @@ export async function addDocxPageNumbers(zip, op) {
   // larger in the portable file than the same footer written through Word.
   const size = '<w:rPr><w:sz w:val="18"/><w:szCs w:val="18"/></w:rPr>';
   const prefix = op.prefix ? `<w:r>${size}<w:t xml:space="preserve">${xmlEncode(op.prefix)} </w:t></w:r>` : '';
-  const separator =
-    op.includeTotal === true
-      ? `<w:r>${size}<w:t xml:space="preserve"> ${xmlEncode(op.separator || '/')} </w:t></w:r>` +
-        `<w:fldSimple w:instr=" NUMPAGES "><w:r>${size}<w:t>1</w:t></w:r></w:fldSimple>`
-      : '';
+  const includeTotal = pageNumbersIncludeTotal(op);
+  const separator = includeTotal
+    ? `<w:r>${size}<w:t xml:space="preserve"> ${xmlEncode(String(op.separator || '/').trim() || '/')} </w:t></w:r>` +
+      `<w:fldSimple w:instr=" NUMPAGES "><w:r>${size}<w:t>1</w:t></w:r></w:fldSimple>`
+    : '';
   const numbering =
     `<w:p><w:pPr><w:jc w:val="${alignment}"/><w:rPr><w:sz w:val="18"/><w:szCs w:val="18"/></w:rPr></w:pPr>${prefix}` +
     `<w:fldSimple w:instr=" PAGE "><w:r>${size}<w:t>1</w:t></w:r></w:fldSimple>` +
@@ -857,7 +863,7 @@ export async function addDocxPageNumbers(zip, op) {
     changed: true,
     part: written.part,
     header,
-    includeTotal: op.includeTotal === true,
+    includeTotal,
     ...(written.replaced ? { replaced: true } : {}),
     ...(keptStory ? { keptExistingContent: true } : {}),
   };

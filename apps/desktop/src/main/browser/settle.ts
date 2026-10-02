@@ -124,18 +124,20 @@ async function stepSettleResult(
       if (signal?.aborted) throw signal.reason || error;
       // The old document has nothing left to render; the navigation the input
       // started is what the caller's load settle and reply observe next.
-      const replaced =
-        !guest.isDestroyed() && DOCUMENT_REPLACED.test(error instanceof Error ? error.message : String(error));
-      if (replaced) return { outcome: 'completed', text: '' };
-      return {
-        outcome: 'inconclusive',
-        // The page itself is loaded and the gesture landed; only this reading
-        // of it failed. Say so, or the caller abandons a page that is fine.
-        text:
-          'The browser input executed, but its rendering checkpoint failed; input was not replayed.' +
-          ' The page is still there — observe it again instead of repeating the action.' +
-          ` ${error instanceof Error ? error.message : String(error)}`,
-      };
+      if (!host.diagnostics(guest).pendingDialog) {
+        const replaced =
+          !guest.isDestroyed() && DOCUMENT_REPLACED.test(error instanceof Error ? error.message : String(error));
+        if (replaced) return { outcome: 'completed', text: '' };
+        return {
+          outcome: 'inconclusive',
+          // The page itself is loaded and the gesture landed; only this reading
+          // of it failed. Say so, or the caller abandons a page that is fine.
+          text:
+            'The browser input executed, but its rendering checkpoint failed; input was not replayed.' +
+            ' The page is still there — observe it again instead of repeating the action.' +
+            ` ${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
     }
   }
   throwIfBrowserCancelled(signal);

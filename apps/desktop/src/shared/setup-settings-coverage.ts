@@ -7,6 +7,7 @@ export const DESKTOP_SETUP_SETTING_ACTIONS: Record<DesktopSettingKey, string> = 
   autoCompact: 'set_compaction',
   keepAwake: 'set_desktop_settings',
   runInBackground: 'set_desktop_settings',
+  turnNotifications: 'set_desktop_settings',
   usagePinned: 'set_desktop_settings',
   computerObserveOnly: 'set_desktop_settings',
   computerControl: 'set_builtin_enabled',

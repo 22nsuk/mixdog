@@ -145,6 +145,12 @@ export function createRelayClientCallDispatch(
       }
       return {};
     }
+    // Transport-scoped too: whether THIS browser has the app on screen, which
+    // decides if a finished turn still needs a push notification.
+    if (call?.method === 'setForeground' && Array.isArray(call.params)) {
+      client.background = call.params[0] === false;
+      return {};
+    }
     if (call?.method === 'setVisibleSessions' && Array.isArray(call.params)) {
       await client.viewRecovery;
       const requested = filterSessionIds(call.params[0]);

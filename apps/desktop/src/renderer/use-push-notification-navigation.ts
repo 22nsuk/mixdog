@@ -5,6 +5,7 @@
 // consumed exactly once.
 import { useEffect, useRef } from 'react';
 
+import type { DesktopApi } from '../shared/contract';
 import { claimNotificationClick, clearNotificationClick } from './push-notification-bridge';
 
 const PUSH_OPEN_SESSION_MESSAGE = 'mixdog:open-session';
@@ -12,10 +13,15 @@ const PUSH_OPEN_SESSION_MESSAGE = 'mixdog:open-session';
 export function usePushNotificationNavigation({
   ready,
   openSession,
+  desktopReady,
+  focusDesktopSession,
 }: {
   /** The catalog has to exist before a session id can resolve to a tab. */
   ready: boolean;
   openSession(sessionId: string): void;
+  /** Desktop clicks need the restored pane layout, not the session catalog. */
+  desktopReady: boolean;
+  focusDesktopSession(sessionId: string): void;
 }): void {
   const openRef = useRef(openSession);
   openRef.current = openSession;
@@ -24,6 +30,9 @@ export function usePushNotificationNavigation({
   // A tap that lands before the catalog exists waits here instead of being
   // dropped on the floor.
   const deferred = useRef('');
+  const desktopRef = useRef({ ready: desktopReady, focus: focusDesktopSession });
+  desktopRef.current = { ready: desktopReady, focus: focusDesktopSession };
+  const deferredDesktop = useRef('');
 
   // Listening does NOT wait for readiness: the worker posts the instant it
   // focuses this window, which on a phone is routinely before the app has
@@ -46,6 +55,25 @@ export function usePushNotificationNavigation({
     navigator.serviceWorker.addEventListener('message', onMessage);
     return () => navigator.serviceWorker.removeEventListener('message', onMessage);
   }, []);
+
+  // Desktop clicks reveal only tabs that still exist when the click is handled.
+  // Do not route a queued desktop click through the phone's open-session path.
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const api = (window as unknown as { mixdogDesktop?: Partial<DesktopApi> }).mixdogDesktop;
+    return api?.onNotificationOpenSession?.((sessionId) => {
+      if (!sessionId) return;
+      if (desktopRef.current.ready) desktopRef.current.focus(sessionId);
+      else deferredDesktop.current = sessionId;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!desktopReady) return;
+    const held = deferredDesktop.current;
+    deferredDesktop.current = '';
+    if (held) desktopRef.current.focus(held);
+  }, [desktopReady]);
 
   useEffect(() => {
     if (!ready || typeof window === 'undefined') return;

@@ -87,3 +87,39 @@ test('post-action observation preserves target, OCR preference, and failure reco
   assert.equal(result.metadata.window_id, 'hwnd:0x1');
   assert.match(result.metadata.error, /fixture capture unavailable/);
 });
+
+test('explicit AX observation suppresses remembered OCR only for that read', async () => {
+  const preferences = createOcrCapturePreferenceStore();
+  preferences.remember('test', { includeOcr: true, ocrLanguage: 'ko' });
+  const requests = [];
+  const captureAfter = createCaptureAfter(
+    { sessionIdFor: () => 'test', assertExecutionNotAborted() {} },
+    preferences,
+    async (command) => {
+      requests.push(command);
+      assert.ok(command.mode !== 'ax' || command.include_ocr === false);
+      return { payload: { ok: true, accessibility_status: 'available' } };
+    }
+  );
+  const result = await captureAfter({ action: 'key', capture_after_mode: 'ax' }, 'hwnd:0x1', 0);
+  assert.equal(result.metadata.ok, true);
+  assert.equal(requests[0].ocr_language, undefined);
+  await captureAfter({ action: 'key', capture_after_mode: 'state' }, 'hwnd:0x1', 0);
+  assert.equal(requests[1].include_ocr, true);
+  assert.equal(requests[1].ocr_language, 'ko');
+});
+
+test('user input during post-action capture reaches the pause owner without a retry', async () => {
+  const reason = new Error('user_input_active: user input changed during capture');
+  let captures = 0;
+  const captureAfter = createCaptureAfter(
+    { sessionIdFor: () => 'test', assertExecutionNotAborted() {} },
+    createOcrCapturePreferenceStore(),
+    async () => {
+      captures++;
+      throw reason;
+    }
+  );
+  await assert.rejects(captureAfter({ action: 'type' }, 'hwnd:0x1', 0), (error) => error === reason);
+  assert.equal(captures, 1);
+});

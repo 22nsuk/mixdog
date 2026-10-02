@@ -251,7 +251,15 @@ export function naturalTableColumnWidths(values, properties = {}, available = 0)
   const headers = tableHeaderRows(properties, rows.length);
   const gutters = isLayoutTable(properties) ? [] : gutterColumns(properties);
   const measure = (text, rowIndex, column) =>
-    measureTextWidth(text, { ...font, bold: headerBold && rowIndex < headers }) * 1.05 +
+    measureTextWidth(text, {
+      ...font,
+      fontSize:
+        Number(tableRowStyle(properties, rowIndex)?.fontSize) > 0
+          ? Number(tableRowStyle(properties, rowIndex).fontSize)
+          : font.fontSize,
+      bold: rowBold(properties, rowIndex, rows.length, headerBold && rowIndex < headers),
+    }) *
+      1.05 +
     CELL_PADDING_POINTS +
     (gutters[column] ? GUTTER_POINTS : 0);
   return naturalColumnWidths(rows, measure, available);
@@ -284,6 +292,36 @@ function tableHeaderBold(properties, rows) {
   return rows > 1 && properties?.headerBold !== false && properties?.repeatHeader !== false;
 }
 
+// One row's own type (rowStyles[row]: fontSize, color, bold): a stat strip sets its figures at 22 pt and the labels
+// under them at 9 pt in one table, where a single fontSize set the labels at 22 pt too.
+function tableRowStyle(properties, row) {
+  const style = Array.isArray(properties?.rowStyles) ? properties.rowStyles[row] : null;
+  return style && typeof style === 'object' ? style : null;
+}
+
+// The last row is the total when totalRow is set: bold over a rule, so it reads as the sum of the rows above it and
+// not as one more of them.
+const isTotalRow = (properties, row, rows) => properties?.totalRow === true && rows > 1 && row === rows - 1;
+export const TOTAL_ROW_RULE = Object.freeze({ size: 8, color: '374151' });
+
+// A row's weight: its own rowStyles bold when given, else the header's or the total's.
+function rowBold(properties, row, rows, header) {
+  const own = tableRowStyle(properties, row)?.bold;
+  if (typeof own === 'boolean') return own;
+  return header || isTotalRow(properties, row, rows);
+}
+
+// A row's type properties: the table's, with its own rowStyles size and ink over them.
+function rowTypeProperties(properties, row) {
+  const style = tableRowStyle(properties, row);
+  if (!style) return properties;
+  return {
+    ...properties,
+    ...(Number(style.fontSize) > 0 ? { fontSize: Number(style.fontSize) } : {}),
+    ...(style.color ? { color: style.color } : {}),
+  };
+}
+
 const flushCellMargins = (first, last) => {
   if (!first && !last) return '';
   const left = first ? '<w:left w:w="0" w:type="dxa"/>' : '';
@@ -305,12 +343,15 @@ export function wordTableXml(operation, { available = 0 } = {}) {
     [];
   const heights = operation.properties?.rowHeights || [];
   const justifications = (operation.properties?.columnAlignments || []).map(wordJustification);
-  const runProperties = wordTableRunProperties(operation.properties);
   // The header row is set apart by weight, on both backends, unless the caller
   // says otherwise; a header a reader cannot tell from the data is not one.
   const headerBold = tableHeaderBold(operation.properties, rows);
-  const headerRunProperties = headerBold ? wordTableRunProperties(operation.properties, { bold: true }) : runProperties;
   const headers = tableHeaderRows(operation.properties, rows);
+  const rowRunProperties = (row) =>
+    wordTableRunProperties(rowTypeProperties(operation.properties, row), {
+      bold: rowBold(operation.properties, row, rows, headerBold && row < headers),
+    });
+  const totalBorder = `<w:tcBorders><w:top w:val="single" w:sz="${TOTAL_ROW_RULE.size}" w:space="0" w:color="${TOTAL_ROW_RULE.color}"/></w:tcBorders>`;
   const gutters = layout ? [] : gutterColumns(operation.properties);
   // A page break never strands a table's edge: the header travels with the first two rows and the last two rows
   // travel together (widow and orphan control, row by row) — a three-row table used to leave its last row alone at
@@ -319,7 +360,8 @@ export function wordTableXml(operation, { available = 0 } = {}) {
   // caption): gluing every row instead carried a 25-row table whole to the next page and left half a page blank.
   const keptRow = (row) =>
     row < rows - 1 ? rows <= 6 || row <= headers || row === rows - 2 : Boolean(operation.properties?.keepWithNext);
-  const paragraphProperties = (row) => wordTableParagraphProperties(operation.properties, { keepNext: keptRow(row) });
+  const paragraphProperties = (row) =>
+    wordTableParagraphProperties(rowTypeProperties(operation.properties, row), { keepNext: keptRow(row) });
   const grid = Array.from(
     { length: columns },
     (_, column) => `<w:gridCol${widths[column] ? ` w:w="${pointsToTwips(widths[column])}"` : ''}/>`
@@ -347,14 +389,15 @@ export function wordTableXml(operation, { available = 0 } = {}) {
           .join('');
         // Schema order inside pPr: style and spacing before justification.
         const cellParagraphProperties = `${paragraphProperties(row)}${justifications[column] ? `<w:jc w:val="${justifications[column]}"/>` : ''}`;
-        const cellRunProperties = row < headers ? headerRunProperties : runProperties;
+        const cellRunProperties = rowRunProperties(row);
         // A row reads from its top: a label beside a two-line note starts on the note's first line, where the
         // bottom edge put it on the last. The header row sits on its rule (its bottom edge), so a header that wraps
         // stands on the same line as the ones beside it. The exact line pitch keeps a Latin-only figure and a Hangul
         // label on one baseline either way; set_table_cell_style verticalAlignment overrides per cell.
         const margins = layout ? flushCellMargins(column === 0, column === columns - 1) : gutterMargin(gutters[column]);
         const edge = row < headers && headerBold ? 'bottom' : 'top';
-        return `<w:tc><w:tcPr>${width}${margins}<w:vAlign w:val="${edge}"/></w:tcPr><w:p>${cellParagraphProperties ? `<w:pPr>${cellParagraphProperties}</w:pPr>` : ''}<w:r>${cellRunProperties ? `<w:rPr>${cellRunProperties}</w:rPr>` : ''}${runs}</w:r></w:p></w:tc>`;
+        const rule = isTotalRow(operation.properties, row, rows) ? totalBorder : '';
+        return `<w:tc><w:tcPr>${width}${rule}${margins}<w:vAlign w:val="${edge}"/></w:tcPr><w:p>${cellParagraphProperties ? `<w:pPr>${cellParagraphProperties}</w:pPr>` : ''}<w:r>${cellRunProperties ? `<w:rPr>${cellRunProperties}</w:rPr>` : ''}${runs}</w:r></w:p></w:tc>`;
       }
     ).join('')}</w:tr>`;
   }).join('');

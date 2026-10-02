@@ -36,6 +36,33 @@ test('a follow-up capture of an unchanged screen keeps its text and drops the du
   assert.equal(second.metadata.elements, 2);
 });
 
+test('duplicate suppression only changes the new reply, never an earlier image or observation', async () => {
+  const host = { assertExecutionNotAborted() {}, sessionIdFor: (command) => command.session_id };
+  let pixels = 'FRAME-A';
+  const captureAfter = createCaptureAfter(host, { resolve: () => ({ includeOcr: false }) }, async () => ({
+    payload: { ok: true, accessibility_status: 'available' },
+    image: { mimeType: 'image/jpeg', data: pixels },
+  }));
+  const command = { action: 'click', session_id: 'one' };
+  const first = await captureAfter(command, 'hwnd:0x1', 0);
+  const prefix = JSON.stringify(first);
+  Object.freeze(first.image);
+  Object.freeze(first.metadata);
+  Object.freeze(first);
+  const duplicate = await captureAfter(command, 'hwnd:0x1', 0);
+  assert.equal(duplicate.image, undefined);
+  assert.equal(duplicate.metadata.image_unchanged, true);
+  assert.equal(JSON.stringify(first), prefix);
+
+  pixels = 'FRAME-B';
+  const changed = await captureAfter(command, 'hwnd:0x1', 0);
+  assert.equal(changed.image.data, 'FRAME-B');
+  assert.equal(changed.metadata.image_unchanged, undefined);
+  assert.equal(JSON.stringify(first), prefix);
+  const otherSession = await captureAfter({ ...command, session_id: 'two' }, 'hwnd:0x1', 0);
+  assert.equal(otherSession.image.data, 'FRAME-B', 'a different conversation still needs its image');
+});
+
 test('a launch capture waits until two read-only reads of the new window agree', async () => {
   const layouts = [['Button:File'], ['Button:File', 'Button:Pencil'], ['Button:File', 'Button:Pencil']];
   const events = [];

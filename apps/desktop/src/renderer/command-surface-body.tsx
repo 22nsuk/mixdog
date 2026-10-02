@@ -48,6 +48,7 @@ export function SurfaceBody({
       <ContextBody
         status={data.contextStatus}
         snapshot={commandSurfaceDisplaySnapshot(data, snapshot)}
+        sessionUsage={data.getSessionUsage}
         request={request}
         loading={loading}
         readingInHeader

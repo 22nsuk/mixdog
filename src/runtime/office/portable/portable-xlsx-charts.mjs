@@ -2,7 +2,7 @@
 // categories and series it projects out of that block, the sheet references
 // the chart part cites, and the graphic frame the drawing anchors.
 import { posix } from 'node:path';
-import { chartXml } from './portable-chart.mjs';
+import { DEFAULT_SERIES_COLORS, chartXml } from './portable-chart.mjs';
 import { fitDrawingSheetOnePageWide, workbookDigitWidth, worksheetGeometry } from './portable-sheet-page.mjs';
 import { columnLabel, columnNumber, parseCellRef, workbookSheets } from './portable-cells.mjs';
 import {
@@ -16,7 +16,7 @@ import { OFFICE_RELATIONSHIP_BASE, xmlDecode, xmlEncode } from './portable-xml.m
 import { ensureWorksheetDrawing } from './portable-sheet-parts.mjs';
 import { parseAreaRange, quoteSheetName, sheetQualifiedAreas } from './portable-sheet-xml.mjs';
 import { countDrawingAnchors, frameAnchorXml } from './portable-xlsx-drawings.mjs';
-import { sheetCellReader } from './portable-xlsx-cell-values.mjs';
+import { sheetCellLabelReader, sheetCellReader } from './portable-xlsx-cell-values.mjs';
 
 // The block a chart reads. One bounded area, or several joined by commas the
 // way Excel's own Range("A7:A12,D7:D12") reads them: the first column of the
@@ -98,7 +98,17 @@ function laneValues(cellValue, area, plotByRows, lane) {
 // Categories, series values and the sheet references the chart part cites.
 async function readChartData(zip, xml, sheet, op, { plotByRows, area, lanes }) {
   const cellValue = await sheetCellReader(zip, xml);
-  const categories = chartCategories(cellValue, area, plotByRows);
+  const labels = await sheetCellLabelReader(zip, xml);
+  const categories = chartCategories(labels.label, area, plotByRows);
+  // A column of dated categories in one format is written as dates in that format (portable-chart categoryDates).
+  let categoryDates = null;
+  if (!plotByRows) {
+    const dates = [];
+    for (let row = area.startRow + 1; row <= area.endRow; row += 1) dates.push(labels.dated(area.startCol, row));
+    if (dates.length && dates.every((date) => date && date.format === dates[0].format)) {
+      categoryDates = { values: dates.map((date) => date.serial), format: dates[0].format };
+    }
+  }
   const palette = Array.isArray(op.seriesColors) ? op.seriesColors : [];
   const pointColors = ['pie', 'doughnut', 'donut'].includes(String(op.chartType).toLowerCase()) && palette.length;
   const sheetReference = quoteSheetName(sheet.name);
@@ -127,7 +137,7 @@ async function readChartData(zip, xml, sheet, op, { plotByRows, area, lanes }) {
   const category = plotByRows
     ? `${sheetReference}!$${columnLabel(area.startCol + 1)}$${area.startRow}:$${columnLabel(area.endCol)}$${area.startRow}`
     : `${sheetReference}!$${categoryLabel}$${area.startRow + 1}:$${categoryLabel}$${area.endRow}`;
-  return { categories, series, references: { sheet: sheetReference, category, names, values } };
+  return { categories, categoryDates, series, references: { sheet: sheetReference, category, names, values } };
 }
 
 // A chart part carries a copy of the cells it reads, and a viewer that draws from the copy (a mail or phone preview)
@@ -136,17 +146,24 @@ async function readChartData(zip, xml, sheet, op, { plotByRows, area, lanes }) {
 export async function refreshChartCaches(zip) {
   const sheets = await workbookSheets(zip);
   const readers = new Map();
-  const cellReader = async (name) => {
+  // A number cache takes the cells' values; a text cache what they show (a dated label as its date text).
+  const cellReader = async (name, kind) => {
     const sheet = sheets.find((entry) => entry.name.toLowerCase() === name.toLowerCase());
     if (!sheet) return null;
-    if (!readers.has(sheet.path)) readers.set(sheet.path, await sheetCellReader(zip, await zipText(zip, sheet.path)));
-    return readers.get(sheet.path);
+    if (!readers.has(sheet.path)) {
+      const xml = await zipText(zip, sheet.path);
+      readers.set(sheet.path, {
+        num: await sheetCellReader(zip, xml),
+        str: (await sheetCellLabelReader(zip, xml)).label,
+      });
+    }
+    return readers.get(sheet.path)[kind];
   };
   // The cells a reference reads, in order; null for one that names no sheet here or no bounded block of cells.
-  const referenced = async (formula) => {
+  const referenced = async (formula, kind) => {
     const values = [];
     for (const { sheet, area } of sheetQualifiedAreas(xmlDecode(formula))) {
-      const cellValue = sheet ? await cellReader(sheet) : null;
+      const cellValue = sheet ? await cellReader(sheet, kind) : null;
       const bounds = /^[A-Z]+\d+(?::[A-Z]+\d+)?$/i.test(area) ? parseAreaRange(area) : null;
       if (!cellValue || !bounds) return null;
       for (let row = bounds.startRow; row <= bounds.endRow; row += 1) {
@@ -161,9 +178,9 @@ export async function refreshChartCaches(zip) {
     let next = '';
     let last = 0;
     for (const match of xml.matchAll(reference)) {
-      const values = await referenced(match[3]);
-      if (!values) continue;
       const [, kind, formula, , cache] = match;
+      const values = await referenced(match[3], kind);
+      if (!values) continue;
       const formatCode = kind === 'num' ? /<c:formatCode>[\s\S]*?<\/c:formatCode>/.exec(cache)?.[0] || '' : '';
       const points = values
         .map((value, index) => {
@@ -223,6 +240,16 @@ function chartFrameAnchor(op, anchorCount, chartRelationshipId) {
   );
 }
 
+// The bar the chart is about (highlight: a 0-based index or a category's text) takes the series colour and the rest
+// recede, as the Word and PDF charts draw it; -1 for none.
+const HIGHLIGHT_MUTED = 'C9CED6';
+function chartHighlightIndex(highlight, categories) {
+  if (highlight === undefined || highlight === null || highlight === '') return -1;
+  if (typeof highlight === 'number')
+    return Number.isInteger(highlight) && highlight < categories.length ? highlight : -1;
+  return categories.findIndex((category) => String(category ?? '') === String(highlight));
+}
+
 // The workbook's own face: the first font, the one the Normal style and every unstyled cell use.
 async function workbookFontName(zip) {
   const first = /<font\b[^>]*>[\s\S]*?<\/font>/.exec((await zipText(zip, 'xl/styles.xml')) || '')?.[0] || '';
@@ -233,7 +260,19 @@ async function workbookFontName(zip) {
 export async function addWorksheetChart(zip, sheet, xml, op, sheets) {
   const block = chartDataBlock(op);
   const source = await chartSourceSheet(zip, sheet, xml, sheets, block.sourceSheet);
-  const { categories, series, references } = await readChartData(zip, source.xml, source.sheet, op, block);
+  const { categories, categoryDates, series, references } = await readChartData(
+    zip,
+    source.xml,
+    source.sheet,
+    op,
+    block
+  );
+  const lit = chartHighlightIndex(op.highlight, categories);
+  if (lit >= 0 && series.length === 1) {
+    const accent = series[0].color || DEFAULT_SERIES_COLORS[0];
+    const muted = op.mutedColor || HIGHLIGHT_MUTED;
+    series[0] = { ...series[0], pointColors: categories.map((_, point) => (point === lit ? accent : muted)) };
+  }
   const chartPart = nextChartPart(zip);
   zip.file(
     chartPart,
@@ -241,6 +280,7 @@ export async function addWorksheetChart(zip, sheet, xml, op, sheets) {
       chartType: op.chartType,
       title: op.title,
       categories,
+      categoryDates,
       series,
       references,
       showValues: op.showValues === true,
@@ -249,7 +289,9 @@ export async function addWorksheetChart(zip, sheet, xml, op, sheets) {
       valueNumberFormat: op.valueNumberFormat,
       showLegend: op.showLegend,
       zeroBaseline: op.zeroBaseline,
-      font: await workbookFontName(zip),
+      // The quiet plot a labelled chart wants: no gridlines, no value axis, when asked.
+      axis: { gridlines: op.gridlines !== false, hideValueAxis: op.valueAxis === false },
+      font: op.fontName || (await workbookFontName(zip)),
     })
   );
   await ensureContentTypeOverride(zip, `/${chartPart}`, CHART_CONTENT_TYPE);

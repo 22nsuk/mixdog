@@ -481,6 +481,7 @@ const api: DesktopApi = {
     ipcRenderer.invoke(DESKTOP_IPC.applyTitleBarTheme, theme, systemPreference === true),
   setTitleBarDim: (dim) => ipcRenderer.invoke(DESKTOP_IPC.setTitleBarDim, dim),
   onZoomFactorChanged: (listener) => subscribeIpc(DESKTOP_IPC.zoomFactorChanged, listener),
+  onNotificationOpenSession: (listener) => subscribeIpc(DESKTOP_IPC.notificationOpenSession, listener),
   onBrowserOpenRequested: (listener) => subscribeIpc(DESKTOP_IPC.browserOpenRequested, listener),
   onBrowserSessionReleased: (listener) => subscribeIpc(DESKTOP_IPC.browserSessionReleased, listener),
   browserSetActiveGuest: (sessionId, webContentsId, active) =>

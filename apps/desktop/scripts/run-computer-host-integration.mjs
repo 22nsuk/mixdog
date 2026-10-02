@@ -20,7 +20,10 @@ await withTempWorkspace('mixdog-computer-host-integration-', async (staging) => 
     sourcemap: 'inline',
   });
 
-  const env = electronProcessEnv({ MIXDOG_COMPUTER_INTEGRATION_LOG: progressPath });
+  const env = electronProcessEnv({
+    MIXDOG_COMPUTER_INTEGRATION_LOG: progressPath,
+    MIXDOG_COMPUTER_INTEGRATION_PROFILE: join(staging, 'profile'),
+  });
   const child = spawnElectron(output, { env });
   const exitCode = await waitForChildExit(child, {
     timeoutMs: 120_000,

@@ -175,6 +175,7 @@ const CAPABILITY_ARITY = {
   getUsageDashboard: [0, 1],
   getUsageStats: [0, 1],
   getQuotaHistory: [0, 1],
+  getSessionUsage: [0, 0],
   consumeCodexRateLimitResetCredit: [1, 1],
   getSessionReviewDiff: [0, 0],
   getTurnReviewDiff: [0, 1],
@@ -836,6 +837,7 @@ export function requiredDesktopSettingKey(value: unknown): DesktopSettingKey {
     value === 'autoCompact' ||
     value === 'keepAwake' ||
     value === 'runInBackground' ||
+    value === 'turnNotifications' ||
     value === 'usagePinned' ||
     value === 'computerControl' ||
     value === 'computerObserveOnly' ||

@@ -10,6 +10,7 @@ import {
   type BrowserScreenshotCapture,
 } from './screenshot-engines';
 import { anchorPinnedLayout, fullPageRect } from './screenshot-full-page';
+import { captureTiledDocument } from './screenshot-tiles';
 import { normalizeScreenshotOptions } from './screenshot-policy';
 export {
   normalizeScreenshotOptions,
@@ -49,10 +50,10 @@ async function firstUsableCapture(
 export function createBrowserScreenshotService(
   cdp: BrowserCdpPort,
   screenshotTimeoutMs: number,
-  nativeTimeoutMs: number
+  nativeTimeoutMs: number,
+  visualPrivacy?: import('./visual-privacy').BrowserVisualPrivacy
 ) {
   const slow = { timeoutMs: screenshotTimeoutMs };
-  const nativeTimeouts = { fullPageMs: screenshotTimeoutMs, viewportMs: nativeTimeoutMs };
 
   async function capture(
     guest: WebContents,
@@ -66,21 +67,34 @@ export function createBrowserScreenshotService(
   ): Promise<BrowserScreenshotCapture> {
     const options = normalizeScreenshotOptions(rawOptions);
     signal?.throwIfAborted();
+    const finishPrivacyCheck = await visualPrivacy?.(guest, signal);
     const failures: unknown[] = [];
     try {
       if (options.fullPage) await anchorPinnedLayout(cdp, guest, true, signal);
       const fullPageClip = options.fullPage ? await fullPageRect(cdp, slow, guest, signal) : undefined;
+      if (fullPageClip) {
+        const data = await captureTiledDocument(
+          cdp,
+          guest,
+          fullPageClip,
+          options,
+          screenshotTimeoutMs,
+          nativeTimeoutMs,
+          signal
+        );
+        return { ...data, pageRect: fullPageClip };
+      }
       try {
         guest.invalidate();
       } catch {
         /* teardown can reject repaint */
       }
       const engines: Engines = {
-        CDP: () => captureViaCdp(cdp, slow, guest, options, fullPageClip, signal),
-        native: () => captureViaNative(guest, options, nativeTimeouts, fullPageClip, background, signal),
+        CDP: () => captureViaCdp(cdp, slow, guest, options, signal),
+        native: () => captureViaNative(guest, options, nativeTimeoutMs, signal),
       };
-      const data = await firstUsableCapture(engines, background ? ['native', 'CDP'] : ['CDP', 'native'], signal);
-      return fullPageClip ? { ...data, pageRect: fullPageClip } : data;
+      const order: EngineName[] = background ? ['native', 'CDP'] : ['CDP', 'native'];
+      return await firstUsableCapture(engines, order, signal);
     } catch (error) {
       failures.push(error);
       throw error;
@@ -93,10 +107,12 @@ export function createBrowserScreenshotService(
           throw new BrowserScreenshotRestoreError('layout', failures);
         }
       }
+      if (!failures.length) await finishPrivacyCheck?.();
     }
   }
 
   return {
+    prepareVisualOutput: (guest: WebContents, signal?: AbortSignal) => visualPrivacy?.(guest, signal),
     capture: timedBrowserOperation('screenshot', capture),
     captureElement: timedBrowserOperation('screenshot', createElementCapture(capture)),
   };

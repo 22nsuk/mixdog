@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useReducer, useState } from 'react';
+import { useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, Sparkles, X } from 'lucide-react';
 import { t } from './i18n';
@@ -41,7 +41,7 @@ export function dismissDesktopToast(id: string | undefined) {
   window.dispatchEvent(new window.CustomEvent(DESKTOP_TOAST_DISMISS_EVENT, { detail: id }));
 }
 
-/** State-owned errors close on success or unmount; event errors require dismissal. */
+/** State-owned errors also close on success or unmount, before their toast expires. */
 export function useErrorToast(error: string, scope: string) {
   useEffect(() => {
     if (!error) return;
@@ -60,6 +60,7 @@ export function DesktopToastRegion({
   onDismissBridgeError(): void;
 }) {
   const [records, dispatch] = useReducer(reduceToasts, []);
+  const expiryTimers = useRef(new Map<string, { record: (typeof records)[number]; timer: number }>());
   const [placement, setPlacement] = useState({ right: 16, top: 54, width: 320, maxHeight: 400 });
   const hostToasts = [
     ...toasts,
@@ -94,15 +95,37 @@ export function DesktopToastRegion({
     };
   }, []);
   const entries = groupToasts(records);
-  const expiringIds = entries
-    .filter((entry) => entry.tone !== 'error')
-    .flatMap((entry) => entry.ids)
-    .join('\u0000');
   useEffect(() => {
-    if (!expiringIds) return;
-    const timer = window.setTimeout(() => dispatch({ type: 'dismiss', ids: expiringIds.split('\u0000') }), 5000);
-    return () => window.clearTimeout(timer);
-  }, [expiringIds]);
+    const timers = expiryTimers.current;
+    const activeIds = new Set(records.filter((record) => !record.dismissed).map((record) => record.id));
+    for (const [id, pending] of timers) {
+      if (!activeIds.has(id)) {
+        window.clearTimeout(pending.timer);
+        timers.delete(id);
+      }
+    }
+    for (const record of records) {
+      if (record.dismissed) continue;
+      const pending = timers.get(record.id);
+      if (pending?.record === record) continue;
+      if (pending) window.clearTimeout(pending.timer);
+      const timer = window.setTimeout(
+        () => {
+          timers.delete(record.id);
+          dispatch({ type: 'dismiss', ids: [record.id] });
+        },
+        record.tone === 'error' ? 10000 : 5000
+      );
+      timers.set(record.id, { record, timer });
+    }
+  }, [records]);
+  useEffect(() => {
+    const timers = expiryTimers.current;
+    return () => {
+      for (const pending of timers.values()) window.clearTimeout(pending.timer);
+      timers.clear();
+    };
+  }, []);
   const shownErrors = entries
     .filter((entry) => entry.tone === 'error')
     .map((entry) => entry.text)

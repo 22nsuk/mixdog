@@ -220,8 +220,6 @@ export function statusCode(entry: TurnReviewFileEntry): string {
 
 // Single-quoted so the capability-inventory source scan counts this surface.
 export const TURN_REVIEW_CAPABILITY = 'getTurnReviewDiff';
-/** Longest a session entry holds the bar for its first authoritative read. */
-export const ENTRY_REVIEW_HOLD_MS = 500;
 
 export function toolPublishesPatch(item: TranscriptItem): boolean {
   const categories = item.categories;

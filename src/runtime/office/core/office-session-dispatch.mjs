@@ -9,6 +9,7 @@ import { describeOfficeCapabilities } from '../capabilities.mjs';
 import { applyBatch, closeSession, finalize, issues, qa, render, save, validate } from './office-actions.mjs';
 import { getOfficeElement, queryOfficeDocument } from './office-actions-read.mjs';
 import { snapshot } from './office-sessions.mjs';
+import { noteBatchAgainstHtml } from '../authoring/html-source-drift.mjs';
 import {
   assertTransactionUnchanged,
   beginTransaction,
@@ -41,6 +42,8 @@ async function batchAction(session, args, cwd, signal) {
     __cwd: cwd,
     ...(args.finalize === true ? { save: true } : {}),
   });
+  const drift = noteBatchAgainstHtml(session, batch);
+  if (drift) batch.htmlSource = drift;
   if (args.finalize !== true) return batch;
   return {
     ...(await finalize(

@@ -76,7 +76,7 @@ export interface BrowserGuestCdp {
   ): Promise<'completed' | 'dialog'>;
   evaluate<T>(guest: WebContents, expression: string, signal?: AbortSignal, timeoutMs?: number): Promise<T>;
   /** The attached debugger for a guest, initialised once per document. */
-  guestDebugger(guest: WebContents): Promise<Electron.Debugger>;
+  guestDebugger(guest: WebContents, answeringDialog?: boolean): Promise<Electron.Debugger>;
   waitForInitialDocument(guest: WebContents): Promise<void>;
   /** Push the current Fetch patterns to the root and every child session. */
   applyFetchPatterns(guest: WebContents, signal?: AbortSignal): Promise<void>;

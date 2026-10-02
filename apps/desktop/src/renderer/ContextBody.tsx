@@ -3,6 +3,7 @@ import { nonNegativeNumber, resolveContextDisplayUsage } from './context-usage';
 import { t } from './i18n';
 import { record } from './record-utils';
 import { ContextInspector, type ContextInspection, type ContextRequest } from './ContextInspector';
+import { statsCount, statsMoney, statsNumber, statsPercent, statsTokens } from './usage-stats-model';
 // @ts-expect-error Shared presentation contract has no separate declaration file.
 import { contextMeasurementStats, contextMeasurementLabel } from '../../../../src/ui/context-measurement.mjs';
 
@@ -60,15 +61,53 @@ export function ContextReading({ status, snapshot }: { status: unknown; snapshot
   );
 }
 
+/** What this session has spent from its first request, compactions included,
+ *  in the statistics surface's terms. One quiet line: spacing and text tone
+ *  separate the figures, no rules or dots (user: 구분선들이 있는게 맘에 안 듦). */
+function SessionUsageFooter({ usage, compactions }: { usage: unknown; compactions: number }) {
+  const totals = record(usage);
+  if (!(statsNumber(totals.turns) > 0)) return null;
+  const figures: [string, string][] = [
+    [t('List-price value'), statsMoney(totals)],
+    [t('Cache hit rate'), statsPercent(totals.cacheHitRate)],
+    [t('Input'), statsTokens(totals.input)],
+    [t('Output'), statsTokens(totals.output)],
+    [t('Cache read'), statsTokens(totals.cacheRead)],
+    [t('Cache write'), statsTokens(totals.cacheWrite)],
+  ];
+  return (
+    <footer className="context-session-usage" aria-label={t('Session usage')}>
+      {figures.map(([label, value]) => (
+        <span key={label}>
+          {label} <strong>{value}</strong>
+        </span>
+      ))}
+      <span className="context-session-usage-end">
+        <span>
+          {t('Turns')} <strong>{statsCount(totals.turns)}</strong>
+        </span>
+        {compactions > 0 && (
+          <span>
+            {t('Compactions')} <strong>{statsCount(compactions)}</strong>
+          </span>
+        )}
+      </span>
+    </footer>
+  );
+}
+
 export function ContextBody({
   status,
   snapshot,
+  sessionUsage,
   request: inspectRequest,
   loading = false,
   readingInHeader = false,
 }: {
   status: unknown;
   snapshot: unknown;
+  /** getSessionUsage: the session's lifetime spend from the usage ledger. */
+  sessionUsage?: unknown;
   request?: ContextRequest;
   /** The measured breakdown is still in flight. The headline comes from the
    *  gauge's own snapshot, so only the category list waits. */
@@ -210,6 +249,10 @@ export function ContextBody({
           </div>
         </section>
         {breakdown}
+        <SessionUsageFooter
+          usage={sessionUsage}
+          compactions={nonNegativeNumber(record(context.compaction).compactCount)}
+        />
       </div>
     </div>
   );

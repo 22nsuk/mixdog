@@ -69,6 +69,27 @@ export function patchParagraphFormat(xml, properties, numbering = null) {
   return patchWordFormat(xml, 'p', 'pPr', paragraphFormatXml(properties, numbering));
 }
 
+// A style definition's children run name … qFormat, then pPr, rPr, then the table parts; an absent pPr or rPr is
+// opened in its place first, so the patch lands inside the schema's order rather than ahead of the style's name.
+function openStyleProperties(styleXml, tag) {
+  if (new RegExp(`<w:${tag}(?:\\s[^>]*)?(?:/>|>)`).test(styleXml)) {
+    return styleXml.replace(new RegExp(`<w:${tag}(?:\\s[^>]*)?/>`), `<w:${tag}></w:${tag}>`);
+  }
+  const before = tag === 'pPr' ? /<w:(?:rPr|tblPr|trPr|tcPr|tblStylePr)\b/ : /<w:(?:tblPr|trPr|tcPr|tblStylePr)\b/;
+  const at = before.exec(styleXml)?.index ?? styleXml.lastIndexOf('</w:style>');
+  return `${styleXml.slice(0, at)}<w:${tag}></w:${tag}>${styleXml.slice(at)}`;
+}
+
+/** A style's paragraph and run formatting patched with the supplied properties only (define_styles). */
+export function patchWordStyle(styleXml, properties) {
+  let next = styleXml;
+  const paragraph = paragraphFormatXml(properties);
+  if (paragraph) next = patchWordFormat(openStyleProperties(next, 'pPr'), 'style', 'pPr', paragraph);
+  const run = wordRunProperties(properties);
+  if (run) next = patchWordFormat(openStyleProperties(next, 'rPr'), 'style', 'rPr', run);
+  return next;
+}
+
 /** Search the first body phrase, across text runs, without touching headers or footers.
  *  Only matching characters change; fields, drawings and breaks are search barriers. */
 export function formatFirstBodyPhrase(documentXml, find, properties) {

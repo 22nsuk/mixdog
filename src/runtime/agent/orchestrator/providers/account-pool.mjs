@@ -1,6 +1,6 @@
-import { createHash } from 'node:crypto';
 import {
   ACCOUNT_PROVIDERS,
+  accountScopedSessionId,
   readProviderAccountPool,
   chooseProviderAccount,
   changeProviderAccounts,
@@ -84,10 +84,11 @@ function boundAccountSend(providerName, row, messages, options) {
       return options[key]?.(...args);
     };
   }
-  const scope = createHash('sha256')
-    .update(`${providerName}:${row.id}:${options.sessionId || ''}`)
-    .digest('hex');
-  if (options.sessionId) opts.sessionId = `account-${scope}`;
+  if (options.sessionId) {
+    opts.sessionId = accountScopedSessionId(providerName, row.id, options.sessionId);
+    // The spend still belongs to the visible session (usage-accounting.mjs).
+    opts.usageSessionId = options.usageSessionId || options.sessionId;
+  }
   opts.providerState = options.providerState?.providerAccountId === row.id ? options.providerState : undefined;
   const history = messages.map((message) => {
     if (message.providerReplay?.accountId === row.id) return message;

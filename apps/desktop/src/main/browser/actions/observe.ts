@@ -90,7 +90,9 @@ export const observationActions = defineBrowserActions({
       // beside the run, because putting it in the reply helps no one.
       // Chromium's embedded debugger does not carry Page.printToPDF, so
       // printing goes through the page's own renderer instead.
+      const finishPrivacyCheck = await screenshots.prepareVisualOutput(guest, signal);
       const printed = await guest.printToPDF({ printBackground: true });
+      await finishPrivacyCheck?.();
       if (printed.length > MAX_PRINTED_PDF_BYTES) {
         throw new Error(`printed PDF is ${printed.length} bytes; limit is ${MAX_PRINTED_PDF_BYTES} bytes`);
       }

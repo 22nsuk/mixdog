@@ -674,7 +674,7 @@ html:not([data-mixdog-mobile-tabs]) :is(.session-sidebar, .session-sidebar-panel
    tool outcomes that actually differ (red / amber) — but it is not switched
    off either. These three used to sit on --mx-text-faint, our weakest ink;
    the phrase and ◈ now rest one step under full ink and the clock takes the
-   muted tier under them. The arrival glint above supplies the shine. */
+   muted tier under them. Completed rows stay static across focus changes. */
 .turn-status.complete,
 .turn-status.success {
   color: var(--mx-text-soft);

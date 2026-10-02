@@ -746,6 +746,12 @@ html[data-mixdog-mobile-tabs] .jump-to-latest::before {
      (or one Hangul 어절) onto a second line. */
   text-wrap: balance;
 }
+/* An unfinished ATX marker (# → ## → …) has no visible title yet. Its
+   heading-level margins otherwise shrink between tokens and bounce the
+   bottom-pinned transcript. Real text reveals the normal heading immediately. */
+.markdown.streaming :is(h1, h2, h3, h4, h5, h6):empty {
+  display: none;
+}
 /* Heading ladder — surveyed chat renderers land near 17/15/13px, 1.65/1.35/
    1.15em, or 3xl→sm: every rung must differ from BODY, not just from the
    rung above — size carries h1-h3, ink carries h4-h6. h4 sits at body size, so

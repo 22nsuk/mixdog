@@ -52,12 +52,27 @@ characters; colors are hex without `#`.
   metric strip. Merge the title cells across the report width only; never merge inside a data table. A row
   holding 16 pt or larger type, or a merged band that wraps, takes `set_row_height` (about 1.3 × the size per
   line); a gutter or a label column takes `set_column_width`.
+- **Metric strip** (two to four figures the report is about, above the table): one row of values — formulas that
+  read the model (`=Calc!C10`), `fontSize:20, bold:true, color:<accent>` for the one the title names and `color:'111827'`
+  for the rest, `numberFormat` with the unit (`#,##0"건"`, `0"분"`) — over one row of labels (`fontSize:9,
+  color:'6B7280'`), each figure in its own column pair (`merge_cells` across two columns, never inside the data
+  table), `set_row_height` about 1.4 × 20 pt on the value row, and one empty row before the table. The strip is the
+  report's first reading; a blank half page under a small table is the strip's place.
 - **Header row**: `set_style range:<header> properties:{ bold:true, fillColor:'EEF2F7', borders:{ bottom:{ style:'thin',
   color:'C9CED6' } }, verticalAlignment:'center' }`; figure columns `horizontalAlignment:'right'` (their header
-  too); the unit in the header (`처리량 (건)`), never in every cell. A label column right after a figure column
+  too — a date or a month is a figure Excel sets right, so its header goes right as well); the unit in the header
+  (`처리량 (건)`), never in every cell. → runtime `header_alignment_mismatch` A label column right after a figure column
   takes `indent:1` (header and body): the figures end on their column's right edge, and without it "38" and
   "김서연" beside it read as one cell.
-- **Total row**: `bold:true, borders:{ top:{ style:'medium', color:<accent> } }`, formulas (`=SUM`), never typed.
+- **Total row**: `bold:true, borders:{ top:{ style:'medium', color:<accent> } }`, formulas (`=SUM`), never typed; a row
+  that averages is labelled what it is (`평균`), never `합계`. → runtime `total_row_unmarked`
+- **Excel tables** (`add_table`) take a style in the report's palette: `style:'TableStyleLight1'` (grey banding, no
+  colour) under a report of any accent, a `TableStyleMedium` only when its hue is the report's own; left unnamed the
+  table opens in Excel's blue and clashes with a green or coral report.
+- **Checks**: one row per tie-out — what is compared, the difference (`=Report!C10-SUM(Ops[처리량 (건)])`), and the
+  verdict as words, `=IF(ABS(B2)<0.5,"✓ 통과","✗ 확인")`, marked by `add_conditional_format` in the two state hues
+  (good `fillColor:'E3F1E8', color:'1B6B3A'`, bad `fillColor:'FBE4E1', color:'8A2A20'`); a bare TRUE/FALSE says
+  nothing to the reader who opens the sheet.
 - **Body rows**: no borders; `numberFormat` per column (`#,##0`, `0.0%`, `yyyy-mm-dd`, years `0`); banding
   (`fillColor:'F7F9FB'` on every other row) only on a table over ~15 rows; `autofit_range` on the whole
   table after the values are in, `minWidth` for a label column.
@@ -65,8 +80,10 @@ characters; colors are hex without `#`.
   for a cell to fill in, black for formulas, and the three-line legend where the reader lands
   (`model-conventions.md` §1); `add_validation` on constrained inputs.
 - **Charts**: `add_chart` with `seriesColors:[<accent>, 'A6B4C4', 'D1D9E0']` (one accent, neutrals after it),
-  `title` naming the unit, `showValues:true` for six or fewer points, `showLegend` only with two or more
-  series, `zeroBaseline:true` for bars; placed at `cell` beside or under the table, as wide as the table.
+  `title` naming the unit, `showValues:true` for six or fewer points with `gridlines:false, valueAxis:false` (the
+  labels carry the numbers), `highlight` on the bar the title is about (one series: the rest take `mutedColor`),
+  `fontName` the sheet's face, `showLegend` only with two or more series, `zeroBaseline:true` for bars; placed at
+  `cell` beside or under the table, as wide as the table (`toColumn`).
   `range` is the header row plus the rows under it, categories in its first column; a series that is not
   next to its categories joins by comma the way Excel reads it (`range:'A7:A12,D7:D12'`), same rows in
   every area. `width`/`height` are points: a 420 × 260 chart at `F5` reaches about column N and row 22,

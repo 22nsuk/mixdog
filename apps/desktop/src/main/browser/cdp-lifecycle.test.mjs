@@ -49,6 +49,44 @@ function fixture(send = async () => ({}), matchInterceptRule = () => undefined, 
   return { state, guest, debug, cdp, calls, attachChild };
 }
 
+for (const bridged of [false, true]) {
+  test(`a ${bridged ? 'bridged' : 'native'} startup dialog can be answered before blocked initialization`, {
+    timeout: 3000,
+  }, async (t) => {
+    const initialization = Promise.withResolvers();
+    const answerMethod = bridged ? 'Fetch.fulfillRequest' : 'Page.handleJavaScriptDialog';
+    const f = fixture(async (method) => {
+      if (method === 'Page.addScriptToEvaluateOnNewDocument') return initialization.promise;
+      if (method === answerMethod) initialization.resolve({});
+      return {};
+    });
+    t.after(async () => {
+      initialization.resolve({});
+      await f.cdp.detach(f.guest);
+    });
+    let ready = false;
+    const normal = f.cdp.guestDebugger(f.guest).then(() => {
+      ready = true;
+    });
+    await waitUntil(() => f.calls.some((call) => call.method === 'Page.addScriptToEvaluateOnNewDocument'));
+    f.state.for(f.guest).pendingDialog = {
+      type: 'alert',
+      message: 'onload',
+      openedAt: Date.now(),
+      ...(bridged ? { bridgeRequestId: 'dialog-request' } : {}),
+    };
+    assert.equal(ready, false);
+    await f.cdp.call(
+      f.guest,
+      answerMethod,
+      bridged ? { requestId: 'dialog-request', responseCode: 200 } : { accept: true }
+    );
+    await normal;
+    assert.equal(ready, true);
+    assert.equal(f.calls.filter((call) => call.method === answerMethod).length, 1);
+  });
+}
+
 test('policy guards reach the root document and every child frame, and stay absent without a policy', async () => {
   const guarded = fixture(
     async () => ({}),
@@ -277,7 +315,9 @@ test('detach during initialization prevents late auto-attach and permits a fresh
   const f = fixture((method) => (method === 'Page.enable' && hold ? pending.promise : Promise.resolve({})));
   const ready = f.cdp.guestDebugger(f.guest);
   const rejected = assert.rejects(ready, /detach/);
-  await waitUntil(() => f.calls.some((call) => call.method === 'Page.enable'), { message: 'initialization reached Page.enable' });
+  await waitUntil(() => f.calls.some((call) => call.method === 'Page.enable'), {
+    message: 'initialization reached Page.enable',
+  });
   await f.cdp.detach(f.guest);
   hold = false;
   const next = f.cdp.guestDebugger(f.guest);

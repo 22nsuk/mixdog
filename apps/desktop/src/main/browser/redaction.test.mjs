@@ -42,3 +42,23 @@ test('known browser credential redaction never amplifies short secrets', () => {
   assert.equal(redacted.includes('a'), false);
   assert.ok(redacted.length <= source.length);
 });
+
+test('auth assignments redact the entire opaque credential and repeated redaction is stable', () => {
+  for (const value of [
+    'Authorization: Bearer MIXDOG_SYNTHETIC_ONLY_0123456789',
+    'authorization = Basic QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo=',
+    'token=synthetic-test-value',
+    '{"password":"synthetic-test-value","name":"public"}',
+    'https://example.test/?token=synthetic-test-value',
+    'Authorization: [REDACTED STORED CREDENTIAL]',
+  ]) {
+    const once = redactBrowserText(value);
+    assert.doesNotMatch(once, /MIXDOG_SYNTHETIC|QUJDREV|synthetic-test-value/);
+    assert.equal(redactBrowserText(once), once);
+    assert.equal(redactBrowserText(redactBrowserText(once)), once);
+  }
+  assert.equal(
+    redactBrowserText('Authorization: Bearer MIXDOG_SYNTHETIC_ONLY_0123456789'),
+    'Authorization: [REDACTED]'
+  );
+});

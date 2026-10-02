@@ -122,7 +122,7 @@ function typedDate(value) {
 const PLAIN_NUMBER = /^[+-]?(?:(?:0|[1-9]\d*)(?:\.\d+)?|\.\d+)$/;
 const GROUPED_NUMBER = /^[+-]?[1-9]\d{0,2}(?:,\d{3})+(?:\.\d+)?$/;
 
-function typedNumber(value) {
+export function typedNumber(value) {
   if (typeof value !== 'string') return null;
   const text = value.trim();
   const percent = text.endsWith('%');

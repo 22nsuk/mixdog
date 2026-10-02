@@ -1,22 +1,23 @@
 // Generic CDP evaluator (diagnosis tooling).
 //
-//   node scripts/dom-eval.mjs --port=9342 scripts/probes/<name>.js
+//   node scripts/dom-eval.mjs --port=9342 --url=http://127.0.0.1:5173/ scripts/probes/<name>.js
 //
 // Reads the expression from a FILE so shell quoting never mangles it, then
 // prints the returned value as JSON.
 import { readFile } from 'node:fs/promises';
 
 import { optionValue } from './cli-args.mjs';
+import { selectDomTarget } from './dom-eval-target.mjs';
 
 const argumentsList = process.argv.slice(2);
 const port = Number(optionValue('port', argumentsList) || 9342);
+const url = optionValue('url', argumentsList);
 const file = argumentsList.find((argument) => !argument.startsWith('--'));
-if (!file) throw new Error('Usage: dom-eval.mjs [--port=9342] <expression-file>');
+if (!file) throw new Error('Usage: dom-eval.mjs [--port=9342] [--url=<page-url>] <expression-file>');
 const expression = await readFile(file, 'utf8');
 
 const targets = await fetch(`http://127.0.0.1:${port}/json/list`).then((response) => response.json());
-const target = targets.find((candidate) => candidate.type === 'page');
-if (!target?.webSocketDebuggerUrl) throw new Error('No debuggable page target found.');
+const target = selectDomTarget(targets, url);
 const socket = new WebSocket(target.webSocketDebuggerUrl);
 await new Promise((resolve, reject) => {
   socket.addEventListener('open', resolve, { once: true });

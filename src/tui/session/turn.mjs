@@ -408,6 +408,11 @@ function turnDoneItem({ turn, stream, cards, getState, nextId }) {
     id: nextId(),
     elapsedMs: Date.now() - turn.startedAt,
     status: turnOutcome(turn.cancelled, turn.failed),
+    // Notifications resolve this exact terminal assistant item, never a
+    // session preview or a tool preamble from earlier in the turn.
+    ...(turn.finishedNormally && stream.currentAssistantId != null
+      ? { finalAssistantId: stream.currentAssistantId }
+      : {}),
     outputTokens: finalOutputTokens(stream, getState().spinner?.outputTokens),
     thinkingElapsedMs: stream.thinkingStartedAt ? stream.accumulatedThinkingMs : 0,
     toolCount: cards.toolCards.length,

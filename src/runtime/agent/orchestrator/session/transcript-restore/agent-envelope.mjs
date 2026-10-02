@@ -2,7 +2,7 @@
  * src/tui/session/agent-envelope.mjs - parse agent/background-task/shell
  * notification envelopes into synthetic tool-item shapes, and derive
  * status/result text. parseBackgroundTaskEnvelope
- * remains part of session-local.mjs's public surface.
+ * remains part of local-session-runtime.mjs's public surface.
  */
 import { isBackgroundErrorOnlyBody } from '../../../../shared/err-text.mjs';
 import { textBetweenTag } from '../../../../shared/tool-result-summary.mjs';

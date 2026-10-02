@@ -22,14 +22,31 @@ export const BROWSER_HIT_GUARD = `function(token, stop) {
   for (;;) {
     const owner = current.ownerDocument.defaultView;
     const expected = current;
+    let pressedTarget = null;
     const listener = event => {
       if (!event.isTrusted) return;
       const path = event.composedPath();
       // A click on the control's label is the control's own activation path;
       // custom checkboxes hide the input and show only the label.
-      const viaLabel = path.some((node) => node && node.nodeType === 1
+      const viaLabel = path.find((node) => node && node.nodeType === 1
         && node.tagName === 'LABEL' && node.control === expected);
-      if (!path.includes(expected) && !viaLabel) guard.blocked = true;
+      const landed = path.includes(expected) || viaLabel;
+      if (landed && ['pointerdown', 'mousedown', 'touchstart'].includes(event.type)) {
+        pressedTarget = viaLabel || expected;
+      }
+      if (!landed) {
+        // Autocomplete/menu items may commit on press and disappear immediately.
+        // Suppress the remaining release/click so it cannot hit the newly exposed
+        // element, without reporting the already-delivered press as a failed input.
+        const retired = pressedTarget && (!pressedTarget.isConnected
+          || pressedTarget.getClientRects?.().length === 0);
+        if (!guard.blocked && retired && ['pointerup', 'mouseup', 'touchend', 'click'].includes(event.type)) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          return;
+        }
+        guard.blocked = true;
+      }
       if (guard.blocked) { event.preventDefault(); event.stopImmediatePropagation(); }
     };
     for (const event of events) owner.addEventListener(event, listener, {capture: true, passive: false});

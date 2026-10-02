@@ -54,6 +54,104 @@ Add-Type -ReferencedAssemblies @('System.dll','System.Core.dll','System.Drawing.
   assert.equal(output, 'compiled');
 });
 
+test('close requests do not time out on slow shutdown or force a cancelled close', {
+  skip: process.platform !== 'win32' && 'Windows only',
+}, async () => {
+  const output = await isolatedProgram(
+    `
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName Accessibility
+Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -ReferencedAssemblies @('System.dll','System.Core.dll','System.Drawing.dll',[Accessibility.IAccessible].Assembly.Location) -TypeDefinition (
+  [IO.File]::ReadAllText((Join-Path $env:AUDIT_DIRECTORY 'native.cs')))
+Add-Type -ReferencedAssemblies @('System.dll','System.Windows.Forms.dll') -TypeDefinition @'
+using System;
+using System.Threading;
+using System.Windows.Forms;
+public sealed class CloseFixture : NativeWindow, IDisposable {
+    readonly bool cancel;
+    readonly Thread thread;
+    readonly ManualResetEvent ready = new ManualResetEvent(false);
+    public readonly ManualResetEvent received = new ManualResetEvent(false);
+    public readonly ManualResetEvent finished = new ManualResetEvent(false);
+    public IntPtr Target;
+    public CloseFixture(bool cancel) {
+        this.cancel = cancel;
+        thread = new Thread(delegate() {
+            CreateHandle(new CreateParams { Caption = "Mixdog hidden close fixture" });
+            Target = Handle;
+            ready.Set();
+            Application.Run();
+        });
+        thread.IsBackground = true;
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        if (!ready.WaitOne(5000)) throw new Exception("fixture did not start");
+    }
+    protected override void WndProc(ref Message message) {
+        if (message.Msg == 0x0010) {
+            received.Set();
+            if (!cancel) {
+                Thread.Sleep(1600);
+                DestroyHandle();
+                Application.ExitThread();
+            }
+            finished.Set();
+            return;
+        }
+        if (message.Msg == 0x8001) {
+            DestroyHandle();
+            Application.ExitThread();
+            return;
+        }
+        base.WndProc(ref message);
+    }
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    static extern bool PostMessage(IntPtr window, uint message, IntPtr w, IntPtr l);
+    public void Dispose() {
+        if (thread.IsAlive) PostMessage(Target, 0x8001, IntPtr.Zero, IntPtr.Zero);
+        if (!thread.Join(5000)) throw new Exception("fixture did not stop");
+        ready.Dispose();
+        received.Dispose();
+        finished.Dispose();
+    }
+}
+'@
+$slow = [CloseFixture]::new($false)
+$cancelled = [CloseFixture]::new($true)
+try {
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    $accepted = [MixWin32]::CloseWindow($slow.Target)
+    $timer.Stop()
+    $elapsed = $timer.ElapsedMilliseconds
+    if (-not $slow.finished.WaitOne(5000)) { throw 'slow close did not finish' }
+    $cancelAccepted = [MixWin32]::CloseWindow($cancelled.Target)
+    if (-not $cancelled.finished.WaitOne(5000)) { throw 'cancelled close was not handled' }
+    @{
+        accepted = $accepted
+        elapsed = $elapsed
+        closed = -not [MixWin32]::IsWindowHandle($slow.Target)
+        cancelAccepted = $cancelAccepted
+        cancelledStillOpen = [MixWin32]::IsWindowHandle($cancelled.Target)
+        invalidAccepted = [MixWin32]::CloseWindow([IntPtr]::Zero)
+    } | ConvertTo-Json -Compress
+} finally {
+    $slow.Dispose()
+    $cancelled.Dispose()
+}
+`,
+    { 'native.cs': MIXDOG_HOST_CSHARP }
+  );
+  const result = JSON.parse(output);
+  assert.equal(result.accepted, true);
+  assert.ok(result.elapsed < 1000, 'dispatch must not wait for the slow close handler');
+  assert.equal(result.closed, true);
+  assert.equal(result.cancelAccepted, true);
+  assert.equal(result.cancelledStillOpen, true);
+  assert.equal(result.invalidAccepted, false);
+});
+
 test('MSAA roles map to the control types their oleacc constants name, and editing keys carry their character', {
   skip: process.platform !== 'win32' && 'Windows only',
 }, async () => {

@@ -210,7 +210,7 @@ export async function listSchedules() {
 // Register or update a schedule in the PG store. Recurring input maps `time`
 // (+ optional `days`) to a cron; one-shot input maps an `at` datetime; the two
 // are mutually exclusive (also enforced by the store's when_at/when_cron XOR).
-// `channel` selects a channel target (model required); otherwise session.
+// `channel` selects a channel target; otherwise session. Both require a model.
 export async function saveSchedule({
   name,
   description = '',
@@ -231,7 +231,8 @@ export async function saveSchedule({
   const id = assertScheduleName(name);
   const body = String(instructions || '').trim();
   if (!body) throw new Error('schedule instructions are required');
-  if (channel && !model) throw new Error('model is required when channel is set');
+  const scheduleModel = String(model || '').trim();
+  if (!scheduleModel) throw new Error('schedule model is required — choose a model before saving');
   // 'app' → session-only; 'channel'/'both' → the run result relays to the
   // main channel (target 'channel', channelId resolved at fire time).
   const requestedMode = String(delivery || '').trim();
@@ -255,7 +256,7 @@ export async function saveSchedule({
     timezone: scheduleTimezone,
     target: mode === 'app' ? 'session' : 'channel',
     channelId: channel ? String(channel).trim() : null,
-    model: model ? String(model).trim() : null,
+    model: scheduleModel,
     cwd: cwd ? String(cwd).trim() : null,
     workflow: workflow ? String(workflow).trim() : null,
     attachments: normalizeAutomationAttachments(attachments),

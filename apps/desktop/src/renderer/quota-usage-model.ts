@@ -1,7 +1,26 @@
 // Subscription usage presentation: meter percentages, clock times, the
 // even-pace reference, the warning tone and the chart inks.
-import { uiFormatLocale } from './i18n';
-import { localDayKey } from './usage-stats-model';
+import { t, uiFormatLocale } from './i18n';
+import { usageMoney } from './usage-format';
+import { localDayKey, statsNumber, type Row } from './usage-stats-model';
+
+/** A limit window is valued at Mixdog's own rate over the whole limit at every
+ *  reading, so outside use never enters it; period totals stay totals. */
+export function quotaValue(row: Row, fullLimit = false): string {
+  if (fullLimit) return row.costPerPercent == null ? '—' : usageMoney(statsNumber(row.costPerPercent) * 100);
+  return usageMoney(row.estimatedTotalCostUsd ?? row.costUsd);
+}
+
+export function quotaValueBreakdown(row: Row): string {
+  const outside = row.outsideCostUsd == null ? '—' : usageMoney(row.outsideCostUsd);
+  return `${t('Recorded value')}: ${usageMoney(row.costUsd)} · ${t('Outside Mixdog')}: ${outside}`;
+}
+
+export function quotaValueCaution(): string {
+  return t(
+    'Estimates use Mixdog’s usage pattern. Different external models or continuous mixed use can change the result.'
+  );
+}
 
 /** A meter reading or a share of the limit, rounded to a whole percent. */
 export function quotaPercent(value: unknown): string {

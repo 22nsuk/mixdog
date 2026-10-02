@@ -15,7 +15,7 @@ export function createInlineSessionRuntimeHost({
   cwd = process.cwd(),
   log = () => {},
   measureBootPhase = async (_phase, task) => await task(),
-  loadLocalModule = () => import('../tui/session-local.mjs'),
+  loadLocalModule = () => import('./local-session-runtime.mjs'),
   loadAgentGraph = () =>
     Promise.all([
       import('../runtime/agent/orchestrator/config.mjs'),

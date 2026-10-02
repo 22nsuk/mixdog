@@ -2,7 +2,11 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import type { DesktopSettingKey, DesktopSettings } from '../shared/contract';
-import { normalizeActivityRailPins, readActivityRailPinsState, type ActivityRailPinsState } from '../shared/activity-rail-pins';
+import {
+  normalizeActivityRailPins,
+  readActivityRailPinsState,
+  type ActivityRailPinsState,
+} from '../shared/activity-rail-pins';
 import { packagedRuntimeSourceRoot } from './runtime-layout';
 
 export interface MixdogConfigModule {
@@ -50,7 +54,9 @@ export function desktopSettingsFromConfig(value: unknown): DesktopSettings {
     autoCompact: compaction.auto !== false && compaction.enabled !== false,
     keepAwake: desktop.keepAwake !== false,
     runInBackground: desktop.runInBackground !== false,
-    usagePinned: desktop.usagePinned === true,
+    turnNotifications: desktop.turnNotifications !== false,
+    // A fresh install starts pinned; an explicit unpin is kept.
+    usagePinned: desktop.usagePinned !== false,
     computerControl: desktop.computerControl === true,
     computerObserveOnly: desktop.computerObserveOnly === true,
     browserControl: desktop.browserControl === true,
@@ -65,6 +71,7 @@ export function desktopSettingsFromConfig(value: unknown): DesktopSettings {
 const DESKTOP_FLAG_KEYS: ReadonlySet<DesktopSettingKey> = new Set([
   'keepAwake',
   'runInBackground',
+  'turnNotifications',
   'usagePinned',
   'computerObserveOnly',
   'computerInstalled',

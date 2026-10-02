@@ -78,7 +78,7 @@ export const formActions = defineBrowserActions({
       adoptResolvedTargets(context, resolved);
       fieldRefs = resolved.map((entry) => entry.ref);
     }
-    let changed = false;
+    let completed = 0;
     try {
       for (const [index, field] of fields.entries()) {
         const fieldRef = fieldRefs[index];
@@ -100,11 +100,26 @@ export const formActions = defineBrowserActions({
           operation = (ref) => refActions.setCheckedRef(guest, ref, field.checked as boolean, signal);
         }
         await mutateRef(context, fieldRef, operation, !hasValues && !hasChecked);
-        changed = true;
+        completed++;
       }
     } catch (error) {
-      if (changed) state.invalidateInteraction(guest);
-      throw error;
+      if (completed) state.invalidateInteraction(guest);
+      if (signal?.aborted) throw signal.reason || error;
+      const observation = await services.reply
+        .snapshotResult(guest, { action: 'snapshot', maxChars: command.maxChars }, signal, {
+          targetIsBackground: context.targetIsBackground,
+        })
+        .catch((snapshotError) => {
+          if (signal?.aborted) throw signal.reason || snapshotError;
+          return {
+            text: `Fresh observation failed: ${String(snapshotError instanceof Error ? snapshotError.message : snapshotError)}`,
+          };
+        });
+      throw new Error(
+        `Fill stopped at field ${completed + 1} of ${fields.length}; ${completed} field(s) completed. ` +
+          'Input was not replayed. Do not repeat completed fields; inspect the failing field before continuing. ' +
+          `${error instanceof Error ? error.message : String(error)}\n\n${observation.text}`
+      );
     }
     return afterEdit(context, Boolean(command.submit));
   },

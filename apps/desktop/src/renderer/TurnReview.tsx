@@ -32,7 +32,6 @@ import {
   cachedTurnReviewState,
   statusCode,
   TURN_REVIEW_CAPABILITY,
-  ENTRY_REVIEW_HOLD_MS,
   toolPublishesPatch,
   summarizeTurnReviewOperations,
   decodeTurnReviewCapabilityValue,
@@ -413,22 +412,28 @@ export const TurnReviewBar = memo(function TurnReviewBar({
   // edits outside the worktree: it painted "1 file changed" on entry, the read
   // removed it ~1s later and the transcript dropped by the bar's height (user:
   // 세션 처음 열 때 잔상이 남았다가 툭 튄다). A cached read answers in tens of
-  // milliseconds, so the bar lands with the transcript; a slow read falls back
-  // to the estimate. A live turn in a session already answered never waits.
+  // milliseconds, so the bar lands with the transcript. A slow read remains
+  // undecided: the conversation owns the bounded entry wait, not a shorter
+  // timer that briefly paints an estimate before the real answer replaces it.
+  // A live turn in a session already answered never waits.
   const [answeredSession, setAnsweredSession] = useState('');
+  // Entry presentation is chosen once per turn, not on every focus change.
+  // A background pane may already show its transcript estimate. Its first
+  // focused refresh must not remove that bar and reinsert the same bar when
+  // the read answers. Conversely, blurring a pending foreground entry must
+  // not expose an estimate before its authoritative read has answered.
+  const reviewEntry = useRef({ scopeKey: turnScopeKey, waitForRead: active });
+  if (reviewEntry.current.scopeKey !== turnScopeKey) {
+    reviewEntry.current = { scopeKey: turnScopeKey, waitForRead: active };
+  }
   const entryPending =
     Boolean(sessionId) &&
-    active &&
+    reviewEntry.current.waitForRead &&
     hasTurnActivity &&
     answeredSession !== reviewSession &&
     !leadReviewSnapshotKindCache.has(turnScopeKey);
   const entryPendingRef = useRef(entryPending);
   entryPendingRef.current = entryPending;
-  useEffect(() => {
-    if (!entryPending) return undefined;
-    const timer = window.setTimeout(() => setAnsweredSession(reviewSession), ENTRY_REVIEW_HOLD_MS);
-    return () => window.clearTimeout(timer);
-  }, [entryPending, reviewSession]);
   // Refresh on turn boundaries, not every streaming transcript publication.
   const turnBoundaryKey = useMemo(() => {
     for (let index = items.length - 1; index >= 0; index--) {

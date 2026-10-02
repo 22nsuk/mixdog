@@ -466,6 +466,8 @@ export interface DesktopApi {
   getZoomFactor(): Promise<number>;
   setZoomFactor(factor: number): Promise<number>;
   onZoomFactorChanged(listener: (factor: number) => void): () => void;
+  /** Desktop host only: the user clicked a "task finished" OS notification. */
+  onNotificationOpenSession?(listener: (sessionId: string) => void): () => void;
   /** Agent browser bridge (desktop host only): retain the owning session's
    *  Browser surface and optionally reveal its dock for a foreground call. */
   onBrowserOpenRequested?(listener: (request: DesktopBrowserOpenRequest) => void): () => void;

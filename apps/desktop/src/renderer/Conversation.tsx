@@ -502,25 +502,6 @@ export function Conversation({
       activeStreamingTail,
     ]
   );
-  const completionAnimationKeyByItem = useMemo(() => {
-    const keys = new Map<TranscriptItem, string>();
-    settledItems.forEach((item, index) => {
-      if (item?.kind !== 'statusdone' && item?.kind !== 'turndone') return;
-      const id = item.id;
-      keys.set(
-        item,
-        id !== undefined && id !== null
-          ? `${transcriptSessionKey}:${String(id)}`
-          : `${transcriptSessionKey}:${item.kind}:${index}`
-      );
-    });
-    return keys;
-  }, [settledItems, transcriptSessionKey]);
-  const currentCompletionAnimationKeys = useMemo(
-    () => new Set(completionAnimationKeyByItem.values()),
-    [completionAnimationKeyByItem]
-  );
-  const transcriptHydrated = settledItems.length > 0;
   const transcriptRevealed = useTranscriptReveal({
     identity: transcriptIdentity.current,
     enabled: showTranscriptTimeline && transcriptRows.length > 0,
@@ -536,39 +517,6 @@ export function Conversation({
   // A short first window (down to 8 huge rows) may not fill the pane, and
   // with nothing to scroll the top threshold is never crossed.
   useTranscriptHistoryFill(viewport, requestEarlierTranscript, settledItems.length, transcriptRevealed);
-  // Animate only completions that ARRIVE while this session's transcript is
-  // already hydrated on screen. The baseline is a per-session UNION of every
-  // completion key ever committed, not the previous frame: pane focus swaps
-  // the snapshot source (live route ↔ session lane) whose item sets can lag
-  // each other, and a per-frame diff replayed the enter-pop on historical
-  // "Reasoned for …" / compaction labels on every focus change (user report).
-  // A key seen once never animates again; only genuinely new completions pop.
-  const seenCompletionFrame = useRef({
-    sessionKey: transcriptSessionKey,
-    hydrated: transcriptHydrated,
-    keys: new Set(currentCompletionAnimationKeys),
-  });
-  const freshCompletionAnimationKeys =
-    seenCompletionFrame.current.sessionKey === transcriptSessionKey && seenCompletionFrame.current.hydrated
-      ? new Set([...currentCompletionAnimationKeys].filter((key) => !seenCompletionFrame.current.keys.has(key)))
-      : new Set<string>();
-  useLayoutEffect(() => {
-    const seen = seenCompletionFrame.current;
-    if (seen.sessionKey !== transcriptSessionKey) {
-      seenCompletionFrame.current = {
-        sessionKey: transcriptSessionKey,
-        hydrated: transcriptHydrated,
-        keys: new Set(currentCompletionAnimationKeys),
-      };
-      return;
-    }
-    // Union + latched hydration: a transient empty frame during a source swap
-    // must not re-arm animation for keys that already rendered.
-    seen.hydrated = seen.hydrated || transcriptHydrated;
-    currentCompletionAnimationKeys.forEach((key) => {
-      seen.keys.add(key);
-    });
-  }, [currentCompletionAnimationKeys, transcriptSessionKey, transcriptHydrated]);
   const jumpToLatest = useCallback(() => {
     resumeFollow();
   }, [resumeFollow]);
@@ -659,9 +607,7 @@ export function Conversation({
   };
   const renderTranscriptRow = (row: TranscriptRowModel) =>
     transcriptRowNode(row, {
-      completionAnimationKeyByItem,
       disclosureScope,
-      freshCompletionAnimationKeys,
       optimisticActivityStartedAt,
       readOnly,
       renderAssistantRow,

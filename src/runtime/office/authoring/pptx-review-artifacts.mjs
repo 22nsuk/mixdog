@@ -21,7 +21,15 @@ export async function pptxReviewArtifacts(session, preview) {
   // The receipt reads an authored deck against the brief it was written to. A deck opened for editing has no
   // brief, and its pages are reviewed as edits, so its render carries the pages alone — a template's receipt
   // ran to fifteen thousand characters beside three page images.
-  const receipt = session.authored === true ? await readCompositionReceipt(session) : null;
+  // A PDF of designed pages keeps the receipt its working deck was read into at author time (the PDF
+  // itself holds no shapes); each render reads its own copy against the printed pixels.
+  const receipt = session.authoredFrame
+    ? session.frameReceipt
+      ? structuredClone(session.frameReceipt)
+      : null
+    : session.authored === true
+      ? await readCompositionReceipt(session)
+      : null;
   if (receipt) {
     const air = await renderedAirByPage(result._images).catch(() => null);
     if (air) attachRenderedAir(receipt, air);

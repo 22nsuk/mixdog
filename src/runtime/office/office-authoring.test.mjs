@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { join } from 'node:path';
-import { readFile, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { readdir, readFile, writeFile } from 'node:fs/promises';
 import JSZip from 'jszip';
 import { executeOfficeTool } from './index.mjs';
 import { value, workspace } from './office-test-support.mjs';
@@ -9,7 +9,13 @@ import { runPptxAuthoringScript } from './authoring/pptx-script-runner.mjs';
 import { normalizeParagraphProperties } from './authoring/pptx-script-normalize.mjs';
 import { loadPackage, zipText } from './portable/portable-opc.mjs';
 import { documentSessionKey, documentSessions, sessions } from './core/office-core.mjs';
-import { landStagedDeck, reusableAuthoredSession, swapAuthoredDocument } from './authoring/pptx-author-session.mjs';
+import {
+  landStagedDeck,
+  releaseStagingTarget,
+  reusableAuthoredSession,
+  stagingTarget,
+  swapAuthoredDocument,
+} from './authoring/pptx-author-session.mjs';
 
 process.env.MIXDOG_OOXML_VALIDATOR_DISABLED = '1';
 
@@ -39,10 +45,26 @@ test('author without a script points at the pptx skill instead of serving a guid
 test('author writes a deck from a pptxgenjs script and opens a session on it', async (t) => {
   const cwd = await workspace(t);
   const path = join(cwd, 'authored.pptx');
+  const neighbor = join(cwd, '.authored.authoring.pptx');
+  await writeFile(neighbor, 'unrelated existing deck');
   const authored = value(
-    await executeOfficeTool({ action: 'author', path, script: DECK_SCRIPT, mode: 'portable', render: false }, { cwd })
+    await executeOfficeTool(
+      {
+        action: 'author',
+        path,
+        script: `${DECK_SCRIPT}\nconsole.log(process.cwd());`,
+        mode: 'portable',
+        render: false,
+      },
+      { cwd }
+    )
   );
   assert.equal(authored.ok, true);
+  assert.ok(
+    authored.logs.some((entry) => entry.text === cwd),
+    'scripts keep the target directory as their cwd'
+  );
+  assert.equal(await readFile(neighbor, 'utf8'), 'unrelated existing deck');
   assert.ok(authored.bytes > 1000);
   assert.equal(authored.output, path);
   assert.equal(authored.artifacts?.[0]?.operation, 'create');
@@ -148,6 +170,8 @@ await pres.writeFile({ fileName: OUTPUT });`;
 test('author reports script failures with the offending line', async (t) => {
   const cwd = await workspace(t);
   const path = join(cwd, 'broken.pptx');
+  const neighbor = join(cwd, '.broken.authoring.pptx');
+  await writeFile(neighbor, 'unrelated existing deck');
   const failed = value(
     await executeOfficeTool(
       {
@@ -163,6 +187,27 @@ test('author reports script failures with the offending line', async (t) => {
   assert.equal(failed.reason, 'script_failed');
   assert.match(failed.error.message, /undefinedCall/);
   assert.equal(failed.error.line, 3);
+  assert.equal(await readFile(neighbor, 'utf8'), 'unrelated existing deck');
+  assert.ok(!(await readdir(cwd)).some((name) => name.startsWith('.mixdog-authoring-')));
+});
+
+test('every authoring format isolates simultaneous stages and cleans only its own directory', async (t) => {
+  const cwd = await workspace(t);
+  for (const format of ['pptx', 'docx', 'xlsx', 'pdf']) {
+    const target = join(cwd, `report.${format}`);
+    const neighbor = join(cwd, `.report.authoring.${format}`);
+    await writeFile(neighbor, `existing ${format}`);
+    const [first, second] = await Promise.all([stagingTarget(target), stagingTarget(target)]);
+    assert.notEqual(dirname(first), dirname(second));
+    assert.equal(dirname(dirname(first)), cwd);
+    await writeFile(first, 'first document');
+    await writeFile(second, 'second document');
+    await releaseStagingTarget(first);
+    assert.equal(await readFile(second, 'utf8'), 'second document');
+    await releaseStagingTarget(second);
+    assert.equal(await readFile(neighbor, 'utf8'), `existing ${format}`);
+  }
+  assert.ok(!(await readdir(cwd)).some((name) => name.startsWith('.mixdog-authoring-')));
 });
 
 test('author rejects invalid modes before closing or rewriting an existing deck', async (t) => {

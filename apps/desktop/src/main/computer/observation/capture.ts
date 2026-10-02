@@ -263,6 +263,11 @@ export function createCaptureEngine(host: CaptureEngineHost) {
         return await captureComputer(command, forcedWindowId, true);
       }
       const { foregroundReady, foregroundInputReason } = foregroundInputState(inputObservation, inputAfter);
+      if (foregroundInputReason === 'user_input_during_capture') {
+        // Actual user input pauses the session; an unavailable observer does
+        // not. Never publish actionable targets from the interrupted capture.
+        throw new Error('user_input_active: user input changed during capture');
+      }
       if (inputObservation) {
         inputObservation = {
           ...inputObservation,

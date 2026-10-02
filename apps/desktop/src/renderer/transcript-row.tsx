@@ -1,7 +1,7 @@
-import { Suspense, lazy, memo, useEffect, useRef } from 'react';
+import { Suspense, memo, useEffect, useRef } from 'react';
 import type { TranscriptItem } from './desktop-types';
 import { t, uiFormatLocale } from './i18n';
-import { preloadMarkdownBody } from './markdown-body-loader';
+import MarkdownBody from './MarkdownBody';
 import { MxIcon } from './MxIcon';
 import {
   createStreamingMarkdownCache,
@@ -20,7 +20,10 @@ import { ToolCard } from './transcript-tool-ui';
 import { isInternalTranscriptDisplayText, isTranscriptCancelledStatusText, isTranscriptHiddenToolItem } from '../../../../src/runtime/shared/tool-execution-contract.mjs';
 import { stripInjectedDisplayText, stripSessionEnvelope } from '../shared/session-title.mjs';
 
-export const MarkdownBody = lazy(preloadMarkdownBody);
+// StreamingMarkdownBody already loads the same renderer in this module.
+// Wrapping history in React.lazy suspended even after preloading completed,
+// holding the first transcript behind React's fallback reveal throttle.
+export { MarkdownBody };
 
 const StableMarkdownBody = memo(function StableMarkdownBody({ text }: { text: string }) {
   if (isPlainTextMarkdown(text)) return <p>{text}</p>;
@@ -232,13 +235,11 @@ export const TranscriptRow = memo(
   function TranscriptRow({
     item,
     completion,
-    completionAnimate = false,
     attachedUser = false,
     disclosureScope = '',
   }: {
     item: TranscriptItem;
     completion?: TranscriptItem;
-    completionAnimate?: boolean;
     attachedUser?: boolean;
     disclosureScope?: string;
   }) {
@@ -252,7 +253,7 @@ export const TranscriptRow = memo(
       return <ToolCard item={item} disclosureScope={disclosureScope} />;
     }
     if (item.kind === 'statusdone' || item.kind === 'turndone') {
-      return <CompletionStatus item={item} animate={completionAnimate} />;
+      return <CompletionStatus item={item} />;
     }
     if (item.kind === 'notice') {
       const tone = item.tone === 'error' || item.tone === 'warn' ? item.tone : '';
@@ -350,7 +351,7 @@ export const TranscriptRow = memo(
           </div>
           {!user && !item.streaming && completion && (
             <footer className="response-footer" aria-label={t('Response details')}>
-              <CompletionStatus item={completion} animate={completionAnimate} />
+              <CompletionStatus item={completion} />
               {metadata.shortTime && <time className="message-time">{metadata.shortTime}</time>}
               {text && (
                 <CopyControl value={text} label={t('Copy response')} className="message-actions response-copy" />
@@ -369,7 +370,6 @@ export const TranscriptRow = memo(
   (previous, next) =>
     transcriptItemsEqual(previous.item, next.item) &&
     transcriptItemsEqual(previous.completion, next.completion) &&
-    previous.completionAnimate === next.completionAnimate &&
     previous.attachedUser === next.attachedUser &&
     previous.disclosureScope === next.disclosureScope
 );

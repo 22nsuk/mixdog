@@ -81,6 +81,18 @@ export const installRemoteLiveness = (ctx: RemoteShimContext): void => {
   // when it expires. A return within the grace takes the live-socket wake
   // path (ping probe, half-dead recycle, resync) instead of a full redial.
   const BACKGROUND_GRACE_MS = 30_000;
+  // The socket outlives the grace above, so "connected" no longer means "on
+  // screen": the desktop is told directly, or it would hold back the push
+  // notification for a turn that finishes while the phone is in a pocket. A
+  // fresh connection starts in the foreground on the desktop side, so only a
+  // change on the live socket is reported.
+  let reportedBackground = false;
+  const reportForeground = (foreground: boolean): void => {
+    if (reportedBackground === !foreground) return;
+    reportedBackground = !foreground;
+    if (ctx.socket?.readyState !== WebSocket.OPEN) return;
+    ctx.fire('setForeground', [foreground]);
+  };
   const clearBackgroundGrace = (): void => {
     if (ctx.backgroundGraceTimer === null) return;
     window.clearTimeout(ctx.backgroundGraceTimer);
@@ -88,6 +100,7 @@ export const installRemoteLiveness = (ctx: RemoteShimContext): void => {
   };
   const beginBackgroundGrace = (): void => {
     if (!backgroundSuspendApplies()) return;
+    reportForeground(false);
     ctx.resyncOnWake = true;
     if (ctx.backgroundGraceTimer !== null) return;
     ctx.backgroundGraceTimer = window.setTimeout(() => {
@@ -101,6 +114,7 @@ export const installRemoteLiveness = (ctx: RemoteShimContext): void => {
       return;
     }
     clearBackgroundGrace();
+    reportForeground(true);
     if (ctx.backgroundSuspended) beginRemoteConnectionTimeline('wake');
     ctx.backgroundSuspended = false;
     const shouldResync = ctx.resyncOnWake || event?.type === 'online';

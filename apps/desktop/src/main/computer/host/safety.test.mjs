@@ -205,7 +205,7 @@ test('focus recovery falls back to the owner when the action closed its window',
 
 test('waiting on a condition never invalidates the refs the caller holds', () => {
   const start = hostSource.indexOf('function Get-WindowPredicates($req)');
-  const end = hostSource.indexOf('function Get-MenuCandidates($root, $name)');
+  const end = hostSource.indexOf('function Get-MenuCandidates(', start);
   assert.ok(start > 0 && end > start);
   const body = hostSource.slice(start, end);
   // Snapshot-Window bumps the generation and clears the map; a predicate read

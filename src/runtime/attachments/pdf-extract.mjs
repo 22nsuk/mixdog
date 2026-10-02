@@ -48,13 +48,17 @@ function pageBodyText(content) {
     if (typeof item?.str !== 'string') continue;
     if (item.str) {
       const placement = runPlacement(item);
+      // A run on another baseline is another line even when the writer marked no line end (a browser's
+      // print does not): "784" over its label read as "784office". A baseline shift under half the
+      // smaller run's size (a superscript, a mixed-size run) stays on the line.
+      const shift = placement && cursor ? Math.abs(placement.line - cursor.line) : 0;
+      const newLine = shift > Math.min(placement?.size || 0, cursor?.size || 0) * 0.5;
+      if (newLine && body && !body.endsWith('\n')) body += '\n';
       // A writer splits one word into several runs for kerning, and a
       // Korean line into a run per token; joining those with a space
       // invents "2026 년". Only a gap the page itself leaves is a space.
       const separated =
-        placement && cursor && placement.line === cursor.line
-          ? placement.start - cursor.end > cursor.size * 0.22
-          : !placement || !cursor;
+        placement && cursor && !newLine ? placement.start - cursor.end > cursor.size * 0.22 : !placement || !cursor;
       const glued = !body || body.endsWith('\n') || body.endsWith(' ') || item.str.startsWith(' ') || !separated;
       body += (glued ? '' : ' ') + item.str;
       cursor = placement;

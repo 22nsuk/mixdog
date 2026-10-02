@@ -89,7 +89,7 @@ function Get-ElementPage($total, $offset, $max, $generation, $fingerprint) {
 
 function Format-ObservationValue($value, $maximum = 120) {
     $text = ([string]$value) -replace '[\r\n\t]+', ' '
-    $text = $text.Replace('"', "'").Trim()
+    $text = $text.Trim()
     if ($text.Length -gt [int]$maximum) { return $text.Substring(0, [int]$maximum) }
     return $text
 }

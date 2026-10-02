@@ -64,15 +64,17 @@ export function redactBrowserText(value: unknown): string {
     /\b(https?:\/\/)([^/\s:@]+):([^@\s/]+)@/gi,
     (_match, scheme: string, user: string) => `${scheme}${user}:***@`
   );
+  // Consume the complete auth value before an assignment can remove just
+  // its scheme and leave an opaque credential behind.
+  for (const [pattern, marker] of TOKEN_REDACTIONS) text = text.replace(pattern, marker);
   text = text.replace(
     /([?&](?:access[_-]?token|api[_-]?key|apikey|auth|authorization|code|id[_-]?token|key|password|passwd|refresh[_-]?token|secret|session[_-]?(?:id|token)|token)=)[^&#\s]*/gi,
     '$1[REDACTED]'
   );
   text = text.replace(
-    /((?:"|')?(?:access[_-]?token|api[_-]?key|apikey|authorization|id[_-]?token|password|passwd|refresh[_-]?token|secret|session[_-]?(?:id|token)|token)(?:"|')?\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^,\s;&}\]\r\n]+)/gi,
+    /((?:"|')?(?:access[_-]?token|api[_-]?key|apikey|authorization|id[_-]?token|password|passwd|refresh[_-]?token|secret|session[_-]?(?:id|token)|token)(?:"|')?\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|\[REDACTED(?:_[A-Z_]+| STORED CREDENTIAL)?\]|[^,\s;&}\]\r\n]+)/gi,
     '$1[REDACTED]'
   );
-  for (const [pattern, marker] of TOKEN_REDACTIONS) text = text.replace(pattern, marker);
   text = text.replace(/^((?:set-)?cookie\s*:\s*).+$/gim, '$1[REDACTED]');
   return text;
 }

@@ -121,7 +121,11 @@ test('form and ref-scroll failures after dispatch cannot enter the recovery loop
     const run = action === 'scroll' ? pointerActions.scroll : formActions[formAction];
     await assert.rejects(run(context), /not replayed/);
     assert.equal(writes, 1);
-    assert.equal(recoveries, 0);
+    assert.equal(
+      recoveries,
+      action === 'fields' ? 1 : 0,
+      'a partial batch attempts an observation, never another input'
+    );
     assert.equal(state.peek(guest).refSet, undefined);
   }
 });

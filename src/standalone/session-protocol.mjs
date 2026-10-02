@@ -38,6 +38,7 @@ export const SESSION_READ_ACTIONS = Object.freeze([
   'inspectHuggingFaceModel',
   'getLocalProviderModelDetails',
   'getSessionReviewDiff',
+  'getSessionUsage',
   'getTurnReviewDiff',
   'getTurnLiveness',
   'getUpdateSettings',

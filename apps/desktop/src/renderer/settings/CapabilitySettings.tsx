@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import type {
   DesktopCapability,
@@ -25,7 +25,7 @@ import { CategoryPanel } from './capability-panels';
 export { getCachedCapabilitySettings, preloadCapabilitySettings } from './capability-data';
 export { OAuthControl } from './capability-panels';
 
-export function CapabilitySettings({
+export const CapabilitySettings = memo(function CapabilitySettings({
   api,
   category,
   refreshNonce = 0,
@@ -44,6 +44,15 @@ export function CapabilitySettings({
   const [confirmation, setConfirmation] = useState<SettingsConfirmation | null>(null);
   const [liveSnapshot, setLiveSnapshot] = useState<SessionSnapshot>(null);
   const [updaterState, setUpdaterState] = useState<DesktopUpdaterState>({ status: 'disabled' });
+  const activeRef = useRef(active);
+  activeRef.current = active;
+  const latestSnapshot = useRef(liveSnapshot);
+  const latestUpdaterState = useRef(updaterState);
+  useLayoutEffect(() => {
+    if (!active) return;
+    setLiveSnapshot(latestSnapshot.current);
+    setUpdaterState(latestUpdaterState.current);
+  }, [active]);
   const [revision, setRevision] = useState(0);
   const loadSequence = useRef(0);
   const updateChecked = useRef(false);
@@ -83,29 +92,28 @@ export function CapabilitySettings({
   );
 
   useEffect(() => {
-    const cached = getCachedCapabilitySettings(api);
-    // Reads now cost ~30ms in one sweep, so every open re-reads unless it just
-    // happened: a settings panel showing a minute-old snapshot (or a value that
-    // was still warming up when it was cached) is the worse trade. A hidden,
-    // prewarmed dialog only adopts the shared sweep: re-reading it there
-    // repeated the boot sweep seconds later, over the tunnel on a phone.
-    const stale = Boolean(cached && Date.now() - cached.loadedAt >= 2_000);
-    void load(active && (revision > 0 || refreshNonce > 0 || stale));
+    // A hidden panel adopts the shared cache without another sweep. Every
+    // opening refreshes it: a two-second cache grace period could otherwise
+    // keep a change made while hidden invisible until a later visit.
+    void load(active);
     return () => {
       loadSequence.current += 1;
     };
   }, [active, api, load, refreshNonce, revision]);
   useEffect(() => {
     let live = true;
+    const receive = (snapshot: SessionSnapshot) => {
+      if (!live) return;
+      latestSnapshot.current = snapshot;
+      if (activeRef.current) setLiveSnapshot(snapshot);
+    };
     void api
       .getSnapshot?.()
-      .then((snapshot) => {
-        if (live) setLiveSnapshot(snapshot);
-      })
+      .then(receive)
       .catch(() => {});
-    const unsubscribe = api.subscribeState?.((snapshot) => {
-      if (live) setLiveSnapshot(snapshot);
-    });
+    // Keep receiving while hidden, but publish to React only while visible.
+    // The layout effect above adopts the latest value before reopening paints.
+    const unsubscribe = api.subscribeState?.(receive);
     return () => {
       live = false;
       unsubscribe?.();
@@ -113,15 +121,16 @@ export function CapabilitySettings({
   }, [api]);
   useEffect(() => {
     let live = true;
+    const receive = (next: DesktopUpdaterState) => {
+      if (!live) return;
+      latestUpdaterState.current = next;
+      if (activeRef.current) setUpdaterState(next);
+    };
     void api
       .getUpdaterState?.()
-      .then((next) => {
-        if (live) setUpdaterState(next);
-      })
+      .then(receive)
       .catch(() => {});
-    const unsubscribe = api.subscribeUpdaterState?.((next) => {
-      if (live) setUpdaterState(next);
-    });
+    const unsubscribe = api.subscribeUpdaterState?.(receive);
     return () => {
       live = false;
       unsubscribe?.();
@@ -182,7 +191,9 @@ export function CapabilitySettings({
     setPending('desktop-update');
     setError('');
     try {
-      setUpdaterState(await api.checkForDesktopUpdate());
+      const next = await api.checkForDesktopUpdate();
+      latestUpdaterState.current = next;
+      if (activeRef.current) setUpdaterState(next);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -195,7 +206,9 @@ export function CapabilitySettings({
     setPending('desktop-update');
     setError('');
     try {
-      setUpdaterState(await api.showDesktopUpdate());
+      const next = await api.showDesktopUpdate();
+      latestUpdaterState.current = next;
+      if (activeRef.current) setUpdaterState(next);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -321,4 +334,4 @@ export function CapabilitySettings({
       </div>
     </PaneSurfaceGate>
   );
-}
+});

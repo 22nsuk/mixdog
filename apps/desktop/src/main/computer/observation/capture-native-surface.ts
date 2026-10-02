@@ -73,7 +73,8 @@ export async function nativeWindowSurface(
   command: ComputerCommand,
   windowId: string,
   backend: NativeCaptureBackend,
-  attempts: CaptureAttempt[]
+  attempts: CaptureAttempt[],
+  client?: Bounds
 ): Promise<Surface & { bounds: Bounds }> {
   await host.authorizeCapture?.(command, windowId);
   host.assertExecutionNotAborted();
@@ -96,7 +97,15 @@ export async function nativeWindowSurface(
         windowId,
         backend
       ),
-    (value) => frameQualityIssue(value.image, value.bounds.width, value.bounds.height)
+    (value) =>
+      frameQualityIssue(
+        value.image,
+        value.bounds.width,
+        value.bounds.height,
+        client && client.width > 0 && client.height > 0
+          ? { ...client, x: client.x - value.bounds.x, y: client.y - value.bounds.y }
+          : undefined
+      )
   );
   return surface;
 }

@@ -194,14 +194,18 @@ function categoryAxis({
   reversed = horizontal,
   size = CHART_TEXT.sheet.body,
   low = false,
+  numberFormat = '',
 } = {}) {
+  // Dated categories (a month column formatted m"월") read in their cells' format on a text axis: auto would turn
+  // them into a date scale, and without the linked format Excel labelled the months with their serials (46174).
   return (
     `<c:catAx><c:axId val="${CATEGORY_AXIS_ID}"/>` +
     `<c:scaling><c:orientation val="${reversed ? 'maxMin' : 'minMax'}"/></c:scaling><c:delete val="${hidden ? 1 : 0}"/><c:axPos val="${horizontal ? 'l' : 'b'}"/>` +
+    (numberFormat ? `<c:numFmt formatCode="${xmlEncode(numberFormat)}" sourceLinked="1"/>` : '') +
     `<c:majorTickMark val="none"/><c:minorTickMark val="none"/><c:tickLblPos val="${low ? 'low' : 'nextTo'}"/>` +
     '<c:spPr><a:ln w="9525"><a:solidFill><a:srgbClr val="C7CBD1"/></a:solidFill></a:ln></c:spPr>' +
     axisText(size) +
-    `<c:crossAx val="${VALUE_AXIS_ID}"/><c:crosses val="autoZero"/><c:auto val="1"/>` +
+    `<c:crossAx val="${VALUE_AXIS_ID}"/><c:crosses val="autoZero"/><c:auto val="${numberFormat ? 0 : 1}"/>` +
     '<c:lblAlgn val="ctr"/><c:lblOffset val="100"/><c:noMultiLvlLbl val="0"/></c:catAx>'
   );
 }
@@ -288,6 +292,9 @@ export function chartXml({
   font = '',
   // CHART_TEXT.sheet or CHART_TEXT.slide.
   text = CHART_TEXT.sheet,
+  // Dated categories: their serials and the cells' date format, written as a number reference Excel reads in that
+  // format; the labels in `categories` are the cache's text otherwise.
+  categoryDates = null,
 } = {}) {
   const family = resolveChartFamily(chartType);
   if (!family) {
@@ -334,7 +341,7 @@ export function chartXml({
           size: text.label,
           pointColors: pointColorsFor(family, entry, rows),
         }) +
-        `<c:cat>${stringReference(categoryFormula, rows)}</c:cat>` +
+        `<c:cat>${categoryDates ? numberReference(categoryFormula, categoryDates.values, categoryDates.format) : stringReference(categoryFormula, rows)}</c:cat>` +
         `<c:val>${numberReference(valueFormula, entry.values, entry.numberFormat || valueNumberFormat)}</c:val>` +
         (family.element === 'lineChart' ? '<c:smooth val="0"/>' : '') +
         '</c:ser>'
@@ -386,6 +393,7 @@ export function chartXml({
           reversed,
           size: text.body,
           low: negative,
+          numberFormat: categoryDates?.format || '',
         })}${valueAxis({
           size: text.body,
           horizontal: family.direction === 'bar',

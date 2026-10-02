@@ -26,10 +26,10 @@ export const TOOL_DEFS = [
           type: 'string',
           enum: OFFICE_ACTIONS,
           description:
-            'detect/describe discover; author: HTML/pptxgenjs PPTX; transactions/recover/begin/diff/commit/rollback checkpoints; create/attach/open; snapshot/get/query; batch edits; issues/qa/validate review; render exports PDF and page images; save/finalize/close; secure: PDF passwords.',
+            'detect/describe discover; author: PPTX/PDF/DOCX/XLSX; transactions/recover/begin/diff/commit/rollback checkpoints; create/attach/open; snapshot/get/query; batch edits; issues/qa/validate review; render exports PDF and page images; save/finalize/close; secure: PDF passwords.',
         },
         path: { type: 'string', description: 'Document path; relative paths resolve from the caller project.' },
-        script: { type: 'string', description: 'author: HTML slides or a pptxgenjs script (pptx skill).' },
+        script: { type: 'string', description: 'author: HTML, or pptxgenjs for .pptx; see the format skill.' },
         render: {
           type: 'boolean',
           description:

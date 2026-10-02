@@ -58,7 +58,7 @@ async function setDesktopSettingsAction({ args, api, mutate, saved }: SetupActio
   const applied: string[] = [];
   for (const [key, value] of Object.entries(input)) {
     if (
-      !['keepAwake', 'runInBackground', 'usagePinned', 'computerObserveOnly'].includes(key) ||
+      !['keepAwake', 'runInBackground', 'turnNotifications', 'usagePinned', 'computerObserveOnly'].includes(key) ||
       typeof value !== 'boolean'
     ) {
       throw new Error(`Unsupported Desktop setting: ${key}`);

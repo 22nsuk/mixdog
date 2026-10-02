@@ -68,7 +68,7 @@ export const FORMAT_SIGNATURES = {
     add_table: signature(['values'], ['paragraph', 'rows', 'columns', 'properties'], {
       propertySets: ['table'],
       notes:
-        'properties.alignment places the table on the page (left, center, right); properties.columnAlignments sets the text of each column (one of left, center, right, justify per column); without it a column of figures (184,200, 2.1%, 2.6억 원) sets right and the rest left. Without style, borders, or shading the table takes a bold header row with a rule under it and hairlines between rows; headerBold:false keeps the header plain. properties.headerRows (default 1) is how many rows the header takes: a two-level header, its group label merged across the columns it spans (merge_table_cells), is headerRows:2, and every header row is set bold on its bottom edge and repeats on a continuation page.',
+        'properties.alignment places the table on the page (left, center, right); properties.columnAlignments sets the text of each column (one of left, center, right, justify per column); without it a column of figures (184,200, 2.1%, 2.6억 원) sets right and the rest left. Without style, borders, or shading the table takes a bold header row with a rule under it and hairlines between rows; headerBold:false keeps the header plain. properties.headerRows (default 1) is how many rows the header takes: a two-level header, its group label merged across the columns it spans (merge_table_cells), is headerRows:2, and every header row is set bold on its bottom edge and repeats on a continuation page. properties.totalRow:true sets the last row as the total (bold over a rule). properties.rowStyles gives rows their own type, one entry per row from the first (null keeps the table\'s): [{ fontSize: 22, color: "1F5E4B" }, { fontSize: 9, color: "6B7280", bold: false }] is a stat strip — figures over their labels in one table.',
     }),
     set_table_style: signature(['table', 'properties'], [], {
       propertySets: ['tableStyle'],
@@ -100,6 +100,10 @@ export const FORMAT_SIGNATURES = {
       propertySets: ['documentFont'],
       notes:
         "The document's own face, size, and ink — what every paragraph without its own reads, and what a paragraph added later in Word or by append_text starts from. properties: name, nameEastAsia, size, color.",
+    }),
+    define_styles: signature(['styles'], [], {
+      notes:
+        'styles maps a style name to its fields — { "Title": { size: 24, bold: true, spacingAfter: 8 }, "Heading 1": { size: 15, bold: true, color: "1F5E4B", spacingBefore: 18, spacingAfter: 6, keepWithNext: true }, "Normal": { lineSpacing: 18, spacingAfter: 8, alignment: "left" }, "Caption": { size: 9, color: "6B7280" } } — fields: name, nameEastAsia, size, bold, italic, color, alignment, spacingBefore, spacingAfter, lineSpacing, lineSpacingRule, keepWithNext, keepTogether. Built-in styles are reached by their English name in any Word language. Define them before the paragraphs: append_text style:"Heading 1" then takes the definition with no properties of its own, and a paragraph the reader adds in Word under that style matches.',
     }),
     set_font: signature(['find', 'properties'], [], {
       propertySets: ['font'],
@@ -179,7 +183,7 @@ export const FORMAT_SIGNATURES = {
       ['section', 'kind', 'variant', 'prefix', 'separator', 'includeTotal', 'alignment'],
       {
         notes:
-          "Writes into the footer unless kind:'header' asks otherwise; variant picks default, first, or even, as for set_header_footer. The number alone, centred, on both backends; prefix ('Page') and includeTotal:true with separator ('/' by default) add to it.",
+          "Writes into the footer unless kind:'header' asks otherwise; variant picks default, first, or even, as for set_header_footer. The number alone, centred, on both backends; prefix ('Page') adds to it, and a separator (' / ') or includeTotal:true adds the total ('3 / 12'; includeTotal:false keeps the number alone). A cover without the running line: set_header_footer variant:'first' text:'' (and the same for the footer) after the default ones.",
       }
     ),
     insert_break: signature([], ['paragraph', 'kind'], {
@@ -239,7 +243,11 @@ export const FORMAT_SIGNATURES = {
       }
     ),
     set_cell: signature(['cell', 'value'], ['sheet']),
-    set_formula: signature(['cell', 'formula'], ['sheet']),
+    set_formula: signature(['formula'], ['sheet'], {
+      oneOf: [['cell'], ['range']],
+      notes:
+        'cell writes one formula. range fills it as Excel does: the formula is written for the top-left cell and every other cell takes it moved — relative references follow the cell, $-pinned ones stay, a table column (Ops[처리량 (건)]) stays — so range:"C6:C9" with =SUMIFS(Ops[처리량 (건)],Ops[월],B6) writes B7, B8, B9 into the rows below.',
+    }),
     set_range: signature(['range', 'values'], ['sheet']),
     append_row: signature(['values'], ['sheet'], {
       notes:
@@ -310,11 +318,16 @@ export const FORMAT_SIGNATURES = {
         'dataLabelPosition',
         'dataLabelColor',
         'plotBy',
+        'highlight',
+        'mutedColor',
+        'gridlines',
+        'valueAxis',
+        'fontName',
       ],
       {
         propertySets: ['chart'],
         notes:
-          "plotBy:'rows' reads one bounded range the other way — the first row supplies the categories and every other row is a series named by its first cell — for a sheet that grows a column per period. The first source column supplies categories; remaining columns become series. A series that is not beside its categories joins by comma the way Excel reads it (range:'A7:A12,D7:D12', same rows in every area). A source on another sheet names it on every area (range:\"'Calc'!A1:A7,'Calc'!D1:D7\"); sheet is where the frame stands. cell (H2) places the frame's top-left corner on the grid; left/top are points and win when both are given; width/height are points (420 × 260 at F5 reaches about N22), and the print area has to reach past the frame. toColumn (F) with cell ends the frame at that column's right edge in place of width, so a chart spans a table exactly: a column's points depend on the workbook's font (a Korean Excel's is wider), which a width cannot know.",
+          "highlight (a 0-based index or a category) sets one bar or slice-free point in the series colour and the rest in mutedColor (C9CED6), so the chart says which one it is about — one series only. gridlines:false and valueAxis:false quiet the plot when every bar carries its value (showValues). fontName sets every text in the chart in the sheet's face (a Korean workbook's Malgun Gothic), where it otherwise takes the workbook default. plotBy:'rows' reads one bounded range the other way — the first row supplies the categories and every other row is a series named by its first cell — for a sheet that grows a column per period. The first source column supplies categories; remaining columns become series. A series that is not beside its categories joins by comma the way Excel reads it (range:'A7:A12,D7:D12', same rows in every area). A source on another sheet names it on every area (range:\"'Calc'!A1:A7,'Calc'!D1:D7\"); sheet is where the frame stands. cell (H2) places the frame's top-left corner on the grid; left/top are points and win when both are given; width/height are points (420 × 260 at F5 reaches about N22), and the print area has to reach past the frame. toColumn (F) with cell ends the frame at that column's right edge in place of width, so a chart spans a table exactly: a column's points depend on the workbook's font (a Korean Excel's is wider), which a width cannot know.",
       }
     ),
     add_conditional_format: signature(
@@ -330,8 +343,7 @@ export const FORMAT_SIGNATURES = {
       ['range', 'formula1'],
       ['sheet', 'type', 'operator', 'formula2', 'inputMessage', 'errorMessage'],
       {
-        notes:
-          `type: ${XLSX_VALIDATION_TYPES.join(', ')}. Without type, choices ("a,b,c" or $A$1:$A$9) mean list; other formulas mean custom. Numeric/date/time/textLength rules take operator: ${XLSX_VALIDATION_OPERATORS.join(', ')} (default between). between/notBetween require formula2; other operators use formula1. Example: type:"whole", operator:"greaterThanOrEqual", formula1:"0". Under protect_sheet unlock entry cells with set_style properties:{ locked:false }.`,
+        notes: `type: ${XLSX_VALIDATION_TYPES.join(', ')}. Without type, choices ("a,b,c" or $A$1:$A$9) mean list; other formulas mean custom. Numeric/date/time/textLength rules take operator: ${XLSX_VALIDATION_OPERATORS.join(', ')} (default between). between/notBetween require formula2; other operators use formula1. Example: type:"whole", operator:"greaterThanOrEqual", formula1:"0". Under protect_sheet unlock entry cells with set_style properties:{ locked:false }.`,
       }
     ),
     freeze_panes: signature([], ['sheet', 'row', 'column'], {

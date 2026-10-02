@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { gateTestBudget, runGateLegs } from './lib/gate-scheduler.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const started = Date.now();
@@ -22,30 +23,41 @@ if (build.status !== 0) {
 }
 
 const logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mixdog-gate-local-'));
+const resourceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mixdog-gate-resources-'));
+const budget = gateTestBudget();
 const legs = [
   { name: 'runtime', cmds: ['npm test', 'npm run smoke:patch'] },
-  { name: 'runtime-slow', cmds: ['npm run test:slow'] },
   { name: 'desktop-tests-fast', cmds: ['npm test --prefix apps/desktop'] },
+  { name: 'runtime-slow', cmds: ['npm run test:slow'] },
   { name: 'desktop-tests-slow', cmds: ['npm run test:slow --prefix apps/desktop'] },
   { name: 'desktop', cmds: ['npm run build --prefix apps/desktop', 'npm run test:daemon:e2e --prefix apps/desktop'] },
 ];
 
-function runCmd(cmd, logFd) {
+function runCmd(cmd, logFd, concurrency) {
   return new Promise((resolve) => {
     fs.writeSync(logFd, `\n$ ${cmd}\n`);
-    const child = spawn(cmd, { cwd: root, shell: true, stdio: ['ignore', logFd, logFd] });
+    const child = spawn(cmd, {
+      cwd: root,
+      shell: true,
+      stdio: ['ignore', logFd, logFd],
+      env: {
+        ...process.env,
+        MIXDOG_TEST_CONCURRENCY: String(concurrency),
+        MIXDOG_TEST_OOXML_CACHE_DIR: resourceDir,
+      },
+    });
     child.on('error', () => resolve(1));
     child.on('close', (code) => resolve(code ?? 1));
   });
 }
 
-async function runLeg(leg) {
+async function runLeg(leg, concurrency) {
   const t0 = Date.now();
   leg.log = path.join(logDir, `${leg.name}.log`);
   const fd = fs.openSync(leg.log, 'w');
   leg.ok = true;
   for (const cmd of leg.cmds) {
-    if ((await runCmd(cmd, fd)) !== 0) {
+    if ((await runCmd(cmd, fd, concurrency)) !== 0) {
       leg.ok = false;
       break;
     }
@@ -54,17 +66,28 @@ async function runLeg(leg) {
   leg.ms = Date.now() - t0;
 }
 
-console.log(`[gate:local] running ${legs.length} legs in parallel; logs: ${logDir}`);
-await Promise.all(legs.map(runLeg));
+console.log(`[gate:local] build separately, then tests sharing ${budget} workers; logs: ${logDir}`);
+try {
+  // TypeScript/bundling must not compete with four independent test runners.
+  await runLeg(legs.at(-1), budget);
+  await runGateLegs(legs.slice(0, -1), budget, runLeg);
+} finally {
+  fs.rmSync(resourceDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+}
 
 console.log('\n=== gate:local summary ===');
 for (const leg of legs) {
   console.log(`${leg.ok ? 'PASS' : 'FAIL'}  ${leg.name}  ${(leg.ms / 1000).toFixed(1)}s  ${leg.log}`);
   if (!leg.ok) {
-    const lines = fs.readFileSync(leg.log, 'utf8').split(/\r?\n/).filter((l) => l.includes('[failure-summary]'));
+    const lines = fs
+      .readFileSync(leg.log, 'utf8')
+      .split(/\r?\n/)
+      .filter((l) => l.includes('[failure-summary]'));
     for (const l of lines) console.log(`    ${l}`);
   }
 }
-console.log('Not covered locally: runtime-macos, computer-backend, desktop-tests computer lane (Windows-only), relay, graph');
+console.log(
+  'Not covered locally: runtime-macos, computer-backend, desktop-tests computer lane (Windows-only), relay, graph'
+);
 console.log(`Total: ${((Date.now() - started) / 1000).toFixed(1)}s`);
 process.exit(legs.every((l) => l.ok) ? 0 : 1);

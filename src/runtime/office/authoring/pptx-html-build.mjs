@@ -1,7 +1,7 @@
 // The HTML authoring path, second half: the measurement pptx-html-measure.mjs
 // read from the browser becomes a deck of native PowerPoint objects — text
 // boxes that keep the browser's line breaks, shapes, lines, tables, charts,
-// and pictures — on the 13.333 × 7.5 in wide layout.
+// and pictures — on the 13.333 × 7.5 in wide layout, or the sheet the measure names.
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
@@ -24,9 +24,23 @@ const MIDDLE_LIFT = 0.09; // em a middle-anchored single line sits above the bro
 const middleBaseline = (spacing) => 1.02 * spacing - 0.09; // the same, for a middle-anchored block
 const EDGE = 24; // px: text slack never carries a box past this margin
 
+// The deck canvas lands on the 13.333 in wide layout; a measured sheet (a PDF's designed pages) carries its own inches.
+const WIDE_INCHES = 13.333;
+const pageInches = (measure) => ({
+  width: measure.inchWidth || WIDE_INCHES,
+  height: measure.inchHeight || (WIDE_INCHES * (measure.height || 1080)) / measure.width,
+});
+
 function units(measure) {
-  const K = 13.333 / measure.width; // inches per CSS px
-  return { K, PT: 0.5 * (1920 / measure.width), inch: (v) => v * K, W: measure.width, H: measure.height || 1080 };
+  const inches = pageInches(measure).width;
+  const K = inches / measure.width; // inches per CSS px
+  return {
+    K,
+    PT: 0.5 * (1920 / measure.width) * (inches / WIDE_INCHES),
+    inch: (v) => v * K,
+    W: measure.width,
+    H: measure.height || 1080,
+  };
 }
 
 // The page clips what runs past it (section.slide is overflow: hidden); PowerPoint would keep the part past
@@ -586,7 +600,12 @@ export async function buildPptxFromMeasure(measure, output) {
   const PptxGenJS = require('pptxgenjs');
   const sharp = require('sharp');
   const pres = new PptxGenJS();
-  pres.layout = 'LAYOUT_WIDE';
+  const page = pageInches(measure);
+  if (page.width === WIDE_INCHES && Math.abs(page.height - 7.5) < 0.01) pres.layout = 'LAYOUT_WIDE';
+  else {
+    pres.defineLayout({ name: 'MIXDOG_SHEET', width: page.width, height: page.height });
+    pres.layout = 'MIXDOG_SHEET';
+  }
   const u = units(measure);
   for (const measured of measure.slides) {
     const slide = pres.addSlide();

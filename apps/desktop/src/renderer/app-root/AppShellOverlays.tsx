@@ -1,5 +1,5 @@
 import type React from 'react';
-import { lazy, Suspense, useEffect, useRef, type ComponentProps } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, type ComponentProps } from 'react';
 import { OPEN_DOCTOR_EVENT } from '../command-surface-doctor-event';
 import type { SettingsSection as SlashSettingsSection } from '../slash-commands';
 import type { DesktopModelSelection } from '../../shared/contract';
@@ -127,6 +127,15 @@ export function AppShellOverlays({
     return () => window.removeEventListener(OPEN_DOCTOR_EVENT, openDoctor);
   }, [setCommandSurface, setCommandSurfaceSessionId, setSettingsOpen]);
 
+  const closeSettings = useCallback(() => setSettingsOpen(false), [setSettingsOpen]);
+  const composeFromSettings = useCallback(
+    (text: string) => {
+      setSettingsOpen(false);
+      window.dispatchEvent(new CustomEvent('mixdog:composer-draft', { detail: text }));
+    },
+    [setSettingsOpen]
+  );
+
   return (
     <>
       {quickAccessMode && (
@@ -183,11 +192,8 @@ export function AppShellOverlays({
           <SettingsView
             open={settingsOpen}
             initialSection={settingsSection}
-            onCompose={(text) => {
-              setSettingsOpen(false);
-              window.dispatchEvent(new CustomEvent('mixdog:composer-draft', { detail: text }));
-            }}
-            onClose={() => setSettingsOpen(false)}
+            onCompose={composeFromSettings}
+            onClose={closeSettings}
           />
         )}
         {(['context', 'usage', 'doctor', 'inherit', 'stats'] as const).map((surface) => {

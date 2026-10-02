@@ -99,6 +99,7 @@ export const CATALOG = {
         'set_paragraph_format',
         'set_font',
         'set_document_font',
+        'define_styles',
         'add_image',
         // Drawn as a picture before either backend sees it (office-actions-batch withDocumentCharts).
         'add_chart',
@@ -169,6 +170,8 @@ export const CATALOG = {
         'headerBold',
         'headerRows',
         'keepWithNext',
+        'rowStyles',
+        'totalRow',
       ],
       tableStyle: ['style', 'alignment', 'columnAlignments', 'columnWidths', 'borders', 'shading'],
       tableCell: [
@@ -317,6 +320,11 @@ export const CATALOG = {
         'valueNumberFormat',
         'dataLabelPosition',
         'dataLabelColor',
+        'highlight',
+        'mutedColor',
+        'gridlines',
+        'valueAxis',
+        'fontName',
       ],
       table: ['name', 'style'],
       pivot: ['source', 'destination', 'name', 'rows', 'columns', 'values'],

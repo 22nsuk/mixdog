@@ -28,6 +28,7 @@ import { filterSessionIds } from './desktop-state';
 import { longRunningRequestTimeout } from './local-provider-install-timeout';
 import { createSnapshotDeltaDecoder, releaseHiddenSessionStateEntries } from './state-delta';
 import { reportTranscriptRead } from '../shared/transcript-read-diagnostics';
+import type { SessionFinalAnswer } from './session-final-answer';
 
 export interface DesktopTransport {
   postMessage(message: DesktopServiceInbound): void;
@@ -692,6 +693,9 @@ export class DesktopServiceClient implements DesktopService {
   }
   renameSession(sessionId: string, title: string): Promise<unknown> {
     return this.invoke('renameSession', [sessionId, title]);
+  }
+  readSessionFinalAnswer(sessionId: string, startedAt: number): Promise<SessionFinalAnswer | null> {
+    return this.invokeRead('readSessionFinalAnswer', [sessionId, startedAt]);
   }
   setSessionArchived(sessionId: string, archived: boolean): Promise<unknown> {
     return this.invoke('setSessionArchived', [sessionId, archived]);

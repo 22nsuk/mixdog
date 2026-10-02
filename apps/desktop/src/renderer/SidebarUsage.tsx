@@ -287,6 +287,9 @@ export function SidebarUsage({
   const snapshot = useSyncExternalStore(subscribeUsageDashboard, getUsageDashboardSnapshot);
   const dashboard = snapshot.dashboard;
   const rowsPresent = rows(dashboard).length > 0;
+  const anyConnected = SUBSCRIPTIONS.some((subscription) =>
+    subscriptionConnected(subscriptionRow(dashboard, subscription))
+  );
   const resetAts = rows(dashboard)
     .flatMap((row) => quotaWindows(row))
     .map((window) => timestamp(window.resetAt))
@@ -431,7 +434,8 @@ export function SidebarUsage({
       <header className="sidebar-usage-heading session-panel-header">
         <span className="session-panel-title">{t('Providers')}</span>
         <div className="session-panel-header-actions">
-          {onTogglePin && (
+          {/* Nothing to pin without a connected subscription. */}
+          {onTogglePin && anyConnected && (
             <button
               type="button"
               className={`session-panel-action sidebar-usage-pin ${pinned ? 'is-active' : ''}`}
@@ -440,7 +444,7 @@ export function SidebarUsage({
               data-tooltip={pinned ? t('Unpin usage from the rail') : t('Pin usage to the rail')}
               onClick={onTogglePin}
             >
-              <RailPinIcon pinned={pinned} />
+              <RailPinIcon pinned={pinned} size={14} />
             </button>
           )}
           {onOpenStats && (

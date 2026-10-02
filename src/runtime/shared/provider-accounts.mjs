@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { updateJsonAtomicSync } from './atomic-file.mjs';
@@ -93,6 +93,16 @@ function update(provider, mutate) {
     { mode: 0o600, secret: true, fsyncDir: true }
   );
   return normalizeLabels(result.providers[provider]);
+}
+
+/**
+ * The provider-side session one account sends under: account-bound
+ * connection and delta state stays apart per account without changing the
+ * visible Mixdog session. Usage recorded before spend kept the visible id
+ * carries this id, so a session's past spend is found through it as well.
+ */
+export function accountScopedSessionId(provider, accountId, sessionId) {
+  return `account-${createHash('sha256').update(`${provider}:${accountId}:${sessionId}`).digest('hex')}`;
 }
 
 export function providerAccountPath(provider, id, dataDir = resolvePluginData()) {

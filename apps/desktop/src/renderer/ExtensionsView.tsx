@@ -1,5 +1,5 @@
 import { Blocks, Plus, Sparkles } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { memo, useEffect, useState } from 'react';
 
 import type { ExtensionsSection } from './extension-sections';
 import { t } from './i18n';
@@ -20,7 +20,7 @@ const CREATE_LABEL = {
   skills: 'Add skill or MCP',
 } as const satisfies Record<ExtensionsSection, string>;
 
-export function ExtensionsPane({
+export const ExtensionsPane = memo(function ExtensionsPane({
   active,
   section,
   onSectionChange,
@@ -69,8 +69,14 @@ export function ExtensionsPane({
           active={section}
           onChange={onSectionChange}
         />
-        <CapabilitySettings api={api} category={section} createOpen={createOpen} onCreateOpenChange={setCreateOpen} />
+        <CapabilitySettings
+          api={api}
+          category={section}
+          active={active}
+          createOpen={createOpen}
+          onCreateOpenChange={setCreateOpen}
+        />
       </div>
     </div>
   );
-}
+});

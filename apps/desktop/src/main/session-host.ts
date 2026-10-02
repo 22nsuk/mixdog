@@ -24,6 +24,7 @@ import type {
   ToolApprovalDecision,
 } from '../shared/contract';
 import { desktopSessionSummaries } from './desktop-state';
+import { sessionFinalAnswer, type SessionFinalAnswer } from './session-final-answer';
 import type { DesktopService, SerializableDesktopServiceOptions } from './desktop-service-contract';
 import { mixdogDataDirectory } from './computer/shared/common';
 import { SessionHostCatalog, catalogRelevantStoreEntry } from './session-host-catalog';
@@ -373,6 +374,11 @@ export class SessionHost implements DesktopService {
     return this.transport.readSession(sessionId, forceFull, publish, readTraceId, page);
   }
 
+  async readSessionFinalAnswer(sessionId: string, startedAt: number): Promise<SessionFinalAnswer | null> {
+    // Read this session without selecting it or publishing a pane snapshot.
+    return sessionFinalAnswer(await this.readSession(sessionId, false, false), startedAt);
+  }
+
   async startProject(projectPath: string): Promise<SessionSnapshot> {
     return this.lifecycle.startProject(projectPath);
   }
@@ -517,7 +523,10 @@ export class SessionHost implements DesktopService {
     // buckets span every session the process owns. Share only the outstanding
     // store read: each caller gets fresh row objects and the latest job counts,
     // and the next settled call must observe subsequent store changes.
-    return rows.map((row) => ({ ...row, shellJobCount: this.shellJobsPoller.statusFor(String(row.sessionId || '')).count }));
+    return rows.map((row) => ({
+      ...row,
+      shellJobCount: this.shellJobsPoller.statusFor(String(row.sessionId || '')).count,
+    }));
   }
 
   private publishAgentPoolShellJobs(): void {

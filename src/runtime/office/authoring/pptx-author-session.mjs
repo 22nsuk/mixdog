@@ -1,6 +1,6 @@
-import { access, copyFile, rm } from 'node:fs/promises';
+import { access, copyFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
-import { basename, dirname, extname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { callMicrosoftOffice } from '../com/com-adapter.mjs';
 import { closeSession } from '../core/office-actions.mjs';
 import { emptyOfficeDesignState, officeSessionForDocument, releaseOfficeSession } from '../core/office-core.mjs';
@@ -54,10 +54,16 @@ export function reusableAuthoredSession(target, mode = 'auto') {
   return reusable ? existing : null;
 }
 
-// The script writes beside the target, not over it, so a failed script leaves both the file on disk
-// and the open session holding the previous deck untouched.
-export function stagingTarget(target) {
-  return join(dirname(target), `.${basename(target, extname(target))}.authoring${extname(target)}`);
+// Each call owns a directory on the target's filesystem. A failed author must
+// never consume an existing neighbor or another call's staged document.
+export async function stagingTarget(target) {
+  await mkdir(dirname(target), { recursive: true });
+  const directory = await mkdtemp(join(dirname(target), '.mixdog-authoring-'));
+  return join(directory, basename(target));
+}
+
+export async function releaseStagingTarget(staging) {
+  await rm(dirname(staging), { recursive: true, force: true });
 }
 
 export async function swapAuthoredDocument(session, source, signal, { callOffice = callMicrosoftOffice } = {}) {

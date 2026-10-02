@@ -27,7 +27,7 @@ const CHECKLIST_RULES = Object.freeze({
     {
       id: 'page-utilization',
       label: 'Rendered pages do not contain accidental blank or sparse pages.',
-      codes: ['blank_page', 'sparse_page'],
+      codes: ['blank_page', 'sparse_page', 'page_bottom_empty'],
     },
     {
       id: 'ink-legibility',
@@ -105,7 +105,7 @@ const CHECKLIST_RULES = Object.freeze({
     {
       id: 'page-utilization',
       label: 'Rendered pages do not contain accidental blank or sparse pages.',
-      codes: ['blank_page', 'sparse_page'],
+      codes: ['blank_page', 'sparse_page', 'page_bottom_empty'],
     },
   ],
 });

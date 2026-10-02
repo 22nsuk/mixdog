@@ -92,6 +92,8 @@ export function isAdvisoryOfficeIssue(issue) {
 const POLISH_GUIDANCE = Object.freeze({
   blank_page: 'Remove the accidental page or rebalance preceding content so the page has a clear purpose.',
   sparse_page: 'Rebalance sections, tables, and page breaks instead of padding the page with decoration.',
+  page_bottom_empty:
+    'Let a long table break across the page, move a shorter block up, or tighten the blocks above; never pad the foot with decoration.',
   broken_chart: 'Rebuild the native chart from source-bound data, save, close, and verify the series after reopen.',
   empty_chart:
     'Populate the chart embedded workbook from the cited source range, then verify seriesCount after reopen.',
@@ -147,6 +149,12 @@ const POLISH_GUIDANCE = Object.freeze({
   heading_style_inconsistent:
     'Set every heading of one level in the same type; a level that changes size mid-document reads as two levels.',
   short_table_split: 'Keep the short table together or move it intact to the next page.',
+  table_label_oversized:
+    "Set the table's labels at caption size and keep display size for its figures: add_table properties.rowStyles, or set_table_cell_style on the label row.",
+  total_row_unmarked:
+    'Set the total apart from the rows it sums: add_table properties.totalRow:true in Word, set_style bold with borders.top on the row in Excel.',
+  header_alignment_mismatch:
+    "Align the header with its column: a column of figures stands on its right edge, so its header takes horizontalAlignment:'right'.",
   shape_overlap: 'Move or resize the reported shapes while preserving a consistent alignment grid.',
   text_overflow: 'Shorten the copy or enlarge the text area before reducing type size.',
   small_font: 'Reduce content density or split the slide; keep presentation body text at least 12 pt.',
@@ -244,7 +252,7 @@ const POLISH_GUIDANCE = Object.freeze({
   // Text fit and placement (portable review).
   text_clipped: 'Enlarge the box or shorten the copy; text cut at a box edge is always visible to the reader.',
   text_box_too_narrow: 'Widen the text box so lines wrap at a readable measure instead of one or two words per line.',
-  shape_out_of_bounds: 'Move or resize the shape inside the 13.33 × 7.5 canvas; nothing past the edge is shown.',
+  shape_out_of_bounds: 'Move or resize the shape inside the slide canvas; nothing past the edge is shown.',
   oversized_heading_text:
     'Set the paragraph in the body style, or lift its first line out as a heading over body text: prose at heading size reads as one shouted block.',
   shapes_too_close: 'Open the gap between the shapes to at least 0.3 in, or merge them into one block.',

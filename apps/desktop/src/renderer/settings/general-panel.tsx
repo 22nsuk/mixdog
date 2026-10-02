@@ -23,6 +23,7 @@ import {
 } from '../side-panel-preferences';
 import { AutoSaveRow, Group, SelectRow, ToggleRow } from './capability-controls';
 import { label, rows, type PanelContext } from './capability-data';
+import { DesktopNotificationToggle } from './desktop-notification-toggle';
 import { PushNotificationToggle } from './push-notification-toggle';
 import { NARROW_SHELL_QUERY } from '../use-responsive-shell-bands';
 
@@ -149,6 +150,7 @@ export function GeneralPanel({ data, pending, run, api }: PanelContext) {
         />
       </Group>
       <PushNotificationToggle api={api} />
+      <DesktopNotificationToggle />
       <UiLanguageChoices pending={pending} />
       <ThemeChoices data={data} pending={pending} />
       <SidePanelChoices pending={pending} />

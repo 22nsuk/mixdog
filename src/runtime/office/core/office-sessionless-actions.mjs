@@ -9,7 +9,7 @@
  * returns null so the caller falls through to the session-bound dispatch.
  */
 import { mkdir } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { dirname, extname } from 'node:path';
 import { detectMicrosoftOffice } from '../com/com-adapter.mjs';
 import { pdfOcrReadiness } from '../pdf/pdf-analysis.mjs';
 import { describeOfficeCapabilities } from '../capabilities.mjs';
@@ -18,6 +18,8 @@ import { unicodeFontPath } from '../pdf/pdf-fonts.mjs';
 import { inspectOfficeDesignLibrary } from '../design/library/design-library.mjs';
 import { openCreateOrAttachOffice } from './office-actions-open.mjs';
 import { authorPptx } from '../authoring/pptx-author-action.mjs';
+import { authorPdf } from '../authoring/pdf-author-action.mjs';
+import { authorHtmlDocument } from '../authoring/html-document-author.mjs';
 import {
   FILE_KIND_TO_FORMAT,
   documentFormat,
@@ -97,7 +99,10 @@ async function describeWithoutSession(args, cwd) {
 }
 
 async function authorAction(args, cwd, dataDir, signal, startedAt) {
-  const authored = await authorPptx(args, { cwd, dataDir, signal });
+  const extension = extname(String(args.path || args.output || '')).toLowerCase();
+  const author =
+    { '.pdf': authorPdf, '.docx': authorHtmlDocument, '.xlsx': authorHtmlDocument }[extension] || authorPptx;
+  const authored = await author(args, { cwd, dataDir, signal });
   const images = Array.isArray(authored?._images) ? authored._images : [];
   delete authored._images;
   const session = authored.session ? sessions.get(authored.session) : null;

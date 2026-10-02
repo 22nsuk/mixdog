@@ -508,6 +508,8 @@ test('usage pin waits for its initial setting and data, without letting a late r
     );
   }
   const snapshot = { dashboard: {}, status: 'loading', loading: true, refreshedAt: 0 };
+  // Seed an explicit unpin so the toggle below pins.
+  window.localStorage.setItem('mixdog.desktop.usage-rail-pin.v1', '0');
   await view.render(React.createElement(Probe, { snapshot }));
   assert.equal(view.host.querySelector('output').textContent, 'pending');
   await view.settle(() => toggle());

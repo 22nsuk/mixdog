@@ -109,6 +109,8 @@ export interface PowerShellResponse {
 
 export interface ComputerCommandResult {
   text: string;
+  /** Trusted status, separate from user-owned text such as clipboard data. */
+  isError?: boolean;
   image?: { mimeType: string; data: string };
   captureAttempts?: import('./capture-attempts').CaptureAttempt[];
 }

@@ -8,6 +8,7 @@ import type { WebContents } from 'electron';
 
 import type { BrowserCdpPort } from './cdp';
 import type { BrowserTargetSession } from './snapshot-accessibility-read';
+import { BROWSER_FRAME_HAS_TRANSFORM } from './frame-transform';
 
 export interface FrameOffsetHost {
   cdp: BrowserCdpPort;
@@ -26,9 +27,7 @@ interface Point {
 }
 
 const FRAME_OWNER_HIT_TEST = `function(x, y) {
-                for (let node = this; node; node = node.parentElement) {
-                  if (this.ownerDocument.defaultView.getComputedStyle(node).transform !== 'none') return false;
-                }
+                if ((${BROWSER_FRAME_HAS_TRANSFORM})(this)) return false;
                 let hit = this.ownerDocument.elementFromPoint(x, y);
                 while (hit?.shadowRoot) {
                   const next = hit.shadowRoot.elementFromPoint(x, y);

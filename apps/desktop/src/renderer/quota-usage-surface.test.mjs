@@ -9,6 +9,7 @@ import { prefetchQuotaUsage } from './quota-usage-cache.ts';
 import { applyAccountUsageWindows } from './usage-dashboard-store.ts';
 import { t } from './i18n.ts';
 import { usageMoney } from './usage-format.ts';
+import { quotaValue } from './quota-usage-model.ts';
 import { UsageLedger, makeUsageRecord } from '../../../../src/runtime/shared/llm/usage-ledger.mjs';
 import { createUsageStatsApi } from '../../../../src/session-runtime/usage-stats-api.mjs';
 
@@ -190,12 +191,12 @@ test('the usage dialog header switches to subscription usage and opens there nex
     t('{{time}} left', { time: '3h 30m' })
   );
   const { summary } = responses.at(-1);
-  assert.ok(summary.costPerPercent > 0);
-  assert.equal(document.querySelectorAll('.stats-card > b')[2].textContent, usageMoney(summary.costUsd));
-  assert.equal(
-    document.querySelectorAll('.stats-card')[2].querySelector('em').textContent,
-    t('About {{amount}} at 100%', { amount: usageMoney(summary.costPerPercent * 100) })
+  assert.ok(
+    summary.costPerPercent > 0.1 && summary.costPerPercent <= 0.12,
+    'existing history supplies a value immediately, weighted toward the newer $2.4 / 20-point observation'
   );
+  assert.equal(document.querySelectorAll('.stats-card > b')[2].textContent, usageMoney(summary.costPerPercent * 100));
+  assert.equal(document.querySelectorAll('.stats-card')[2].querySelector('em'), null);
   assert.equal(document.querySelectorAll('.stats-card > b')[3].textContent, usageMoney(summary.costPerPercent));
   // 30 % in the first hour runs out 2 h 20 m later, before the 18:00 reset.
   assert.equal(document.querySelectorAll('.stats-card')[0].dataset.tone, 'danger');
@@ -234,7 +235,7 @@ test('the usage dialog header switches to subscription usage and opens there nex
   // A window's list-price value: in all, per percent of the limit, and the whole limit at that rate.
   assert.deepEqual(
     [...document.querySelector('.quota-history-table tbody tr').cells].slice(-3).map((cell) => cell.textContent),
-    [usageMoney(summary.costUsd), usageMoney(summary.costPerPercent), usageMoney(summary.costPerPercent * 100)]
+    [usageMoney(3), usageMoney(summary.costPerPercent), usageMoney(summary.costPerPercent * 100)]
   );
 
   await act(async () => button('Last 24 hours').click());
@@ -251,6 +252,71 @@ test('the usage dialog header switches to subscription usage and opens there nex
   await render({ ...props, open: false });
   await render(props);
   assert.equal(tab('Subscription usage').getAttribute('aria-selected'), 'true', 'the last choice reopens');
+});
+
+test('subscription values distinguish recorded money, inferred outside use and their total', async (context) => {
+  const render = harness(context);
+  const ledger = new UsageLedger(':memory:');
+  context.after(() => ledger.close());
+  const reading = (ts, usedPct) => ({
+    provider: 'anthropic-oauth',
+    account: 'default',
+    label: '5H',
+    ts,
+    usedPct,
+    resetAt,
+  });
+  ledger.recordQuota([reading(opened, 0)]);
+  let used = 0;
+  for (let index = 0; index < 60; index += 1) {
+    const ts = opened + (index * 2 + 1) * MINUTE;
+    ledger.record([
+      {
+        ...makeUsageRecord({
+          ts,
+          provider: 'anthropic-oauth',
+          account: 'default',
+          model: 'model-priced',
+          sessionId: 'mixed-session',
+          sourceType: 'lead',
+          inputTokens: 100,
+          outputTokens: 10,
+        }),
+        costUsd: 0.5,
+        costSource: 'subscription',
+      },
+    ]);
+    used += index % 4 === 0 ? 2.5 : 0.5;
+    ledger.recordQuota([reading(ts + MINUTE, used)]);
+  }
+  const { api } = usageHost(context, ledger, { viewedAt: at(2, 1) });
+  focusQuotaUsage('anthropic-oauth');
+  await render({ surface: 'stats', open: true, onClose() {}, api });
+  const cards = document.querySelectorAll('.stats-card');
+  assert.match(cards[2].querySelector('b').textContent, /^\$/);
+  const amount = Number(cards[2].querySelector('b').textContent.replace(/[^0-9.]/g, ''));
+  assert.ok(amount > 95 && amount < 105, 'before 100%, the card shows the full-limit estimate');
+  assert.equal(cards[2].querySelector('em'), null, 'no forecast sentence or breakdown under the amount');
+  assert.ok(cards[2].querySelector('b').title.includes(`${t('Recorded value')}: ${usageMoney(30)}`));
+  const outside = [...document.querySelectorAll('.quota-table .stats-model-row')].find(
+    (row) => row.firstElementChild.textContent === t('Outside Mixdog')
+  );
+  assert.match(outside.lastElementChild.textContent, /^\$/);
+  const total = Number(
+    document.querySelector('.quota-table .stats-provider-row .stats-cost-cell').textContent.replace(/[^0-9.]/g, '')
+  );
+  assert.ok(total > 58 && total < 62, 'the period table still shows recorded $30 plus outside use');
+  assert.match(document.querySelector('.quota-history-table tbody tr').cells[3].textContent, /^\$/);
+  await act(async () => document.querySelector('button.quota-chart-slot').click());
+  assert.ok(!document.querySelector('.stats-trend-detail-totals').textContent.includes('≈'));
+});
+
+test('a limit window is valued at Mixdog’s own rate over the whole limit, outside use excluded', () => {
+  // $40 of Mixdog requests and $30 of outside use; Mixdog's rate is $2 per point.
+  const summary = { costUsd: 40, outsideCostUsd: 30, estimatedTotalCostUsd: 70, costPerPercent: 2 };
+  assert.equal(quotaValue(summary, true), usageMoney(200), 'the same value before and after the meter reaches 100%');
+  assert.equal(quotaValue(summary), usageMoney(70), 'calendar periods and history retain their actual totals');
+  assert.equal(quotaValue({ ...summary, costPerPercent: null }, true), '—');
 });
 
 test('subscription usage opens at once from its last answer, on the subscription shown last', async (context) => {

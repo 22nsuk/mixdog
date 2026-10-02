@@ -129,7 +129,11 @@ export const SETUP_EXTENDED_PROPERTIES = Object.freeze({
       days: { ...text, description: 'Schedule day selector, e.g. weekdays or mon,wed,fri.' },
       parser: { type: 'string', enum: ['github', 'generic', 'stripe', 'sentry'] },
       channel: text,
-      model: text,
+      model: {
+        ...text,
+        description:
+          'Required for new schedules; no default-model fallback. Use provider/model[@effort][+fast][?parameter=value] or an existing preset name. On overwrite, omission preserves the saved model, which must be non-empty.',
+      },
       cwd: text,
       workflow: text,
       attachments: {
@@ -163,6 +167,7 @@ export const SETUP_EXTENDED_PROPERTIES = Object.freeze({
   desktop: object({
     keepAwake: boolean,
     runInBackground: boolean,
+    turnNotifications: boolean,
     usagePinned: boolean,
     computerObserveOnly: boolean,
   }),

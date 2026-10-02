@@ -89,11 +89,11 @@ test('usage getters omit snapshots while context, inheritance and commands retai
   await act(async () => current.requestCapability('getUsageStats', [{ view: 'day', anchor: '2026-09-01' }]));
   assert.deepEqual(reads[2], [{ capability: 'getUsageStats', args: [{ view: 'day', anchor: '2026-09-01' }] }]);
   await render({ surface: 'context', sessionId: 'session-test', api });
-  assert.deepEqual(invokes.at(-1), {
-    capability: 'contextStatus',
-    args: [{ inspect: true }],
-    sessionId: 'session-test',
-  });
+  // The gauge, then the footer's session spend from the same session.
+  assert.deepEqual(invokes.slice(-2), [
+    { capability: 'contextStatus', args: [{ inspect: true }], sessionId: 'session-test' },
+    { capability: 'getSessionUsage', args: [], sessionId: 'session-test' },
+  ]);
   assert.deepEqual(current.data.snapshot, snapshot);
   const metadata = current.data.contextStatus;
   await act(async () =>
@@ -805,9 +805,11 @@ test('an open context surface keeps the reading it opened with while the session
   };
 
   await render({ surface: 'context', open: true, sessionId: 'sess-sub', api, onClose() {} });
-  assert.equal(capabilityInvocations, 1);
+  // One opening reading: the gauge and the session spend beside it.
+  assert.equal(capabilityInvocations, 2);
   await act(async () => {
     resolvers[0]({ value: { initial: true }, snapshot: { sessionId: 'sess-sub' } });
+    resolvers[1]({ value: null, snapshot: { sessionId: 'sess-sub' } });
   });
 
   // A streaming turn pushes state frames continuously. The dialog must not
@@ -818,7 +820,7 @@ test('an open context surface keeps the reading it opened with while the session
       listener();
     }
   });
-  assert.equal(capabilityInvocations, 1);
+  assert.equal(capabilityInvocations, 2);
 
   await render({ surface: 'context', open: false, sessionId: 'sess-sub', api, onClose() {} });
   clearSurfaceDataCache();

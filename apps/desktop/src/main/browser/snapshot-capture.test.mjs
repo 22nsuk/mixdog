@@ -1,20 +1,24 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { JSDOM } from 'jsdom';
 import { createBrowserSnapshotCapture } from './snapshot-capture.ts';
 
-function fixture({ childFailure = false } = {}) {
+function fixture({ childFailure = false, pageDocument } = {}) {
   const refs = new Map();
   const calls = [];
   const capture = createBrowserSnapshotCapture({
-    evaluate: async () => ({
-      url: 'https://example.test',
-      title: 'Frames',
-      text: 'Parent evidence',
-      scrollY: 0,
-      scrollHeight: 900,
-      viewportHeight: 900,
-      viewportWidth: 1280,
-    }),
+    evaluate: async (_guest, expression) =>
+      pageDocument
+        ? pageDocument.window.eval(expression)
+        : {
+            url: 'https://example.test',
+            title: 'Frames',
+            text: 'Parent evidence',
+            scrollY: 0,
+            scrollHeight: 900,
+            viewportHeight: 900,
+            viewportWidth: 1280,
+          },
     cdp: {
       call: async (_guest, method, args, _signal, options) => {
         calls.push({ method, args, options });
@@ -77,4 +81,21 @@ test('an unavailable child frame is reported without discarding the parent contr
     ['Parent action']
   );
   assert.match(snapshot.warnings.join('\n'), /child detached/);
+});
+
+test('an empty rendered body never falls back to hidden content or script source', async () => {
+  const dom = new JSDOM('<script type="application/json">SCRIPT_SECRET</script><div hidden>HIDDEN_SECRET</div>', {
+    runScripts: 'outside-only',
+    url: 'https://example.test',
+  });
+  try {
+    Object.defineProperty(dom.window.document.body, 'innerText', { value: '' });
+    assert.match(dom.window.document.documentElement.textContent, /HIDDEN_SECRET/);
+    const f = fixture({ pageDocument: dom });
+    const snapshot = await f.capture.captureAccessibilitySnapshot({}, {});
+    assert.doesNotMatch(snapshot.text, /SCRIPT_SECRET|HIDDEN_SECRET/);
+    assert.match(snapshot.text, /Child evidence/);
+  } finally {
+    dom.window.close();
+  }
 });

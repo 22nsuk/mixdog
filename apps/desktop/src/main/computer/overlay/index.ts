@@ -9,7 +9,6 @@ import { globalShortcut, screen } from 'electron';
 import { computerUseCoordinator, type ComputerUseSnapshot } from '../session/coordinator';
 import { createComputerOverlayController, type ComputerUseOverlayControls } from './controls';
 import { createComputerUseCursorOverlay } from './cursor-overlay';
-import { createComputerUseKeyboardOverlay } from './keyboard-overlay';
 import { computerUseOverlayPresentation } from './model';
 import { createOverlayFade } from './overlay-fade';
 import { createOverlayWindows } from './overlay-windows';
@@ -25,7 +24,6 @@ export interface ComputerUseOverlay {
 
 export function createComputerUseOverlay(controls: ComputerUseOverlayControls, locale = 'en'): ComputerUseOverlay {
   const cursorOverlay = createComputerUseCursorOverlay();
-  const keyboardOverlay = createComputerUseKeyboardOverlay();
   let disposed = false;
   let latestSnapshot: ComputerUseSnapshot = computerUseCoordinator.snapshot();
   let latestPresentation = computerUseOverlayPresentation(latestSnapshot, locale);
@@ -107,12 +105,6 @@ export function createComputerUseOverlay(controls: ComputerUseOverlayControls, l
     });
   };
 
-  const unsubscribe = computerUseCoordinator.subscribe((snapshot) => {
-    if (latestSnapshot.userControlActive && !snapshot.userControlActive) windows.resetRendererFailures();
-    latestSnapshot = snapshot;
-    if (!snapshot.userControlActive && snapshot.cleanupState === 'ready') controller.clearResolvedError();
-    scheduleRender();
-  });
   let shortcutRegistered = false;
   let shortcutWarned = false;
   /** Another process may own the chord; retry on every render until it is ours. */
@@ -139,6 +131,12 @@ export function createComputerUseOverlay(controls: ComputerUseOverlayControls, l
     }
   };
   ensureShortcut();
+  const unsubscribe = computerUseCoordinator.subscribe((snapshot) => {
+    if (latestSnapshot.userControlActive && !snapshot.userControlActive) windows.resetRendererFailures();
+    latestSnapshot = snapshot;
+    if (!snapshot.userControlActive && snapshot.cleanupState === 'ready') controller.clearResolvedError();
+    scheduleRender();
+  });
   const onDisplaysChanged = (): void => {
     if (disposed) return;
     if (latestPresentation.visible) {
@@ -168,7 +166,6 @@ export function createComputerUseOverlay(controls: ComputerUseOverlayControls, l
       if (shortcutRegistered) globalShortcut.unregister(STOP_SHORTCUT);
       windows.destroyAll();
       cursorOverlay.dispose();
-      keyboardOverlay.dispose();
     },
   };
 }

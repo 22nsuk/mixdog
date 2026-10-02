@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { DesktopProjectSummary } from '../shared/contract';
 import { SidebarPanelBoundary } from './sidebar-panel-surface';
 import type { SidebarPanelKey } from './app-shell-components';
@@ -212,6 +212,17 @@ export function useAppSidebarSurface({
   // and edits projects; NEW TASK is minted from its own entries only.
   const projectsRename = useStableEvent((path: string, alias: string) => void renameProject(path, alias));
   const projectsRemove = useStableEvent((path: string) => void removeProject(path));
+  const projectsChooseFolder = useCallback(async () => (await window.mixdogDesktop?.chooseProject()) ?? null, []);
+  const projectsMemoryControl = useCallback<NonNullable<React.ComponentProps<typeof ProjectsPane>['onMemoryControl']>>(
+    async (input) =>
+      (
+        await window.mixdogDesktop.invokeCapability({
+          capability: 'memoryControl',
+          args: [input, { silent: true }],
+        })
+      ).value,
+    []
+  );
   const renderSidebarPanel = (panel: SidebarPanelKey, active: boolean): React.ReactNode => {
     if (!mountedSidebarPanels.has(panel)) return null;
     const label = SIDEBAR_PANEL_TITLES[panel];
@@ -244,18 +255,11 @@ export function useAppSidebarSurface({
           projects={projects}
           projectsReady={projectsReady}
           selectedProjectPath={selectedProjectPath}
-          onChooseFolder={async () => (await window.mixdogDesktop?.chooseProject()) ?? null}
+          onChooseFolder={projectsChooseFolder}
           onCreateProject={projectsCreate}
           onRename={projectsRename}
           onRemove={projectsRemove}
-          onMemoryControl={async (input) =>
-            (
-              await window.mixdogDesktop.invokeCapability({
-                capability: 'memoryControl',
-                args: [input, { silent: true }],
-              })
-            ).value
-          }
+          onMemoryControl={projectsMemoryControl}
         />
       );
     }

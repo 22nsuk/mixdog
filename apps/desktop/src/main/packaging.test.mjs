@@ -30,7 +30,7 @@ test('daemon-owned desktop children never inherit service identity', () => {
 test('packaged preload path matches electron-vite output', async () => {
   const main = await readFile(new URL('./index.ts', import.meta.url), 'utf8');
   const vite = await readFile(new URL('../../electron.vite.config.ts', import.meta.url), 'utf8');
-  assert.match(main, /preload:\s*join\(__dirname,\s*'\.\.\/preload\/index\.js'\)/);
+  assert.match(main, /preload:\s*join\(import\.meta\.dirname,\s*'\.\.\/preload\/index\.js'\)/);
   assert.match(vite, /format:\s*'cjs'/);
   // Two preload entries (window + Computer Use overlay) keep their own names.
   assert.match(vite, /entryFileNames:\s*'\[name\]\.js'/);
@@ -93,7 +93,7 @@ test('production desktop uses only the packaged daemon service adapter', async (
   const builder = await readFile(new URL('../../electron-builder.yml', import.meta.url), 'utf8');
   const daemonBuild = await readFile(new URL('../../scripts/build-daemon.mjs', import.meta.url), 'utf8');
   const runtimePreparation = await readFile(new URL('../../scripts/prepare-runtime.mjs', import.meta.url), 'utf8');
-  assert.equal(packageJson.scripts.start, 'npm run build && electron-vite preview --skipBuild');
+  assert.equal(packageJson.scripts.start, 'npm run build && node scripts/dev-profile.mjs --preview');
   assert.doesNotMatch(vite, /'desktop-service':/);
   assert.match(daemonBuild, /src['"],\s*['"]main['"],\s*['"]desktop-service\.ts/);
   assert.match(main, /new SessionTransport\(/);

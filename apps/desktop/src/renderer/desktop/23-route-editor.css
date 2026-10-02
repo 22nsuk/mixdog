@@ -755,8 +755,10 @@
    box between the body and the inspector must hand the height down — the
    pane gate's unlayered display:block/min-height:100% (settings.css) sits in
    that chain, so it is re-pinned to 100% height here. */
+/* Grows with the window but stops at 760, like Settings and the usage
+   statistics (user: 팝업들 최대길이 제한); the panes scroll past it. */
 .command-surface[data-surface="context"] {
-  height: var(--settings-panel-height);
+  height: min(760px, var(--settings-panel-height));
 }
 .command-surface[data-surface="context"] .mixdog-settings__body {
   flex: 1 1 auto;

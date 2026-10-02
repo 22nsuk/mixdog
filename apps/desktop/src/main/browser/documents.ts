@@ -27,37 +27,55 @@ const BROWSER_DOCUMENT_TEXT = `(() => {
     if (root === document) return document.body?.tagName === 'FRAMESET' ? '' : document.body?.innerText || '';
     const hostStyle = getComputedStyle(root.host);
     if (hostStyle.display === 'none' || hostStyle.visibility === 'hidden') return '';
-    return Array.from(root.childNodes).map(node => node.nodeType === 3
-      ? node.textContent : (node.innerText || '')).join('\\n');
+    return Array.from(root.childNodes).map(node => {
+      if (node.nodeType === 3) return node.textContent;
+      if (node.nodeType !== 1) return '';
+      const style = getComputedStyle(node);
+      // innerText on an unrendered STYLE/SCRIPT node falls back to its source.
+      if (style.display === 'none' || style.visibility === 'hidden') return '';
+      return node.innerText || '';
+    }).join('\\n');
   });
   const text = parts.join('\\n');
   if (text.length > 1000000) throw new Error('document text exceeded observation limit');
   return text;
 })()`;
 
-/** Two counters ride in a revision: `version` moves on any activity including
+/** Separate counters ride in a revision: `version` moves on any activity including
  *  the gesture itself (a pointer press, a key, a scroll), while `dom` moves
  *  only when the document or a control's value changes. Comparing `dom`
- *  across a gesture is how a reply can say the page did not react. */
+ *  across a gesture is how a reply can say the page did not react. `scroll`
+ *  also tracks nested scrollers whose movement leaves scrollX/scrollY unchanged. */
 export const BROWSER_OBSERVATION_REVISION = `(() => {
   let state = globalThis.__mixdogObservationRevision;
   if (!state) {
-    state = { version: 0, dom: 0, roots: new WeakSet() };
+    state = { version: 0, dom: 0, scroll: 0, roots: new WeakSet() };
     globalThis.__mixdogObservationRevision = state;
+    const positions = new WeakMap();
+    state.recordScroll = node => {
+      const scroller = node === document ? document.scrollingElement : node;
+      if (!scroller) return;
+      const position = [scroller.scrollLeft, scroller.scrollTop].join(':');
+      if (positions.get(scroller) === position) return;
+      positions.set(scroller, position);
+      state.version++;
+      state.scroll++;
+    };
     const touched = () => { state.version++; };
     const mutated = () => { state.version++; state.dom++; };
     state.observer = new MutationObserver(mutated);
     for (const event of ['input', 'change']) document.addEventListener(event, mutated, true);
-    for (const event of ['scroll', 'pointerdown', 'keydown']) document.addEventListener(event, touched, true);
+    for (const event of ['pointerdown', 'keydown']) document.addEventListener(event, touched, true);
   }
   for (const root of (${BROWSER_DOCUMENT_ROOTS})()) {
     if (!state.roots.has(root)) {
       state.observer.observe(root, {subtree: true, childList: true, attributes: true, characterData: true});
+      root.addEventListener('scroll', event => state.recordScroll(event.target), true);
       state.roots.add(root);
     }
   }
   if (state.observer.takeRecords().length) { state.version++; state.dom++; }
-  return [performance.timeOrigin, state.version, innerWidth, innerHeight, scrollX, scrollY, state.dom].join(':');
+  return [performance.timeOrigin, state.version, innerWidth, innerHeight, scrollX, scrollY, state.dom, state.scroll].join(':');
 })()`;
 
 /** Whether the documents behind two revisions differ: a new document, a DOM
@@ -79,6 +97,8 @@ export function browserDocumentChanged(
     if (a.length < 7 || b.length < 7) return undefined;
     if (a[0] !== b[0] || a[6] !== b[6] || a[2] !== b[2] || a[3] !== b[3]) return true;
     if (options.includeScroll && (a[4] !== b[4] || a[5] !== b[5])) return true;
+    if (options.includeScroll && a.length >= 8 && b.length >= 8 && a[7] !== b[7]) return true;
+    if (options.includeScroll && a.length >= 9 && b.length >= 9 && a[8] !== b[8]) return true;
   }
   return false;
 }
@@ -102,6 +122,10 @@ export function filterBrowserReadLines(text: string, query: string): string {
 
 export function createBrowserDocuments(host: BrowserFrameHost) {
   const collect = createBrowserFrameCollector(host);
+  const explicitScrolls = new WeakMap<WebContents, number>();
+  const recordScroll = (guest: WebContents) => {
+    explicitScrolls.set(guest, (explicitScrolls.get(guest) || 0) + 1);
+  };
 
   async function pageText(guest: WebContents, signal?: AbortSignal): Promise<string> {
     const texts = await collect<string>(guest, BROWSER_DOCUMENT_TEXT, signal);
@@ -178,12 +202,13 @@ export function createBrowserDocuments(host: BrowserFrameHost) {
     };
   }
   async function revision(guest: WebContents, signal?: AbortSignal) {
-    return (await collect<string>(guest, BROWSER_OBSERVATION_REVISION, signal)).join('|');
+    const frames = await collect<string>(guest, BROWSER_OBSERVATION_REVISION, signal);
+    return frames.map((frame) => `${frame}:${explicitScrolls.get(guest) || 0}`).join('|');
   }
   async function renderCheckpoint(guest: WebContents, background: boolean, signal?: AbortSignal): Promise<void> {
     await collect<boolean>(guest, `(${browserRenderCheckpoint(background)}).then(() => true)`, signal);
   }
   const observeChanges = (guest: WebContents, signal?: AbortSignal) =>
     observeBrowserDocumentChanges(host, collect, BROWSER_DOCUMENT_ROOTS, guest, signal);
-  return { collect, pageText, readPage, extractPage, revision, renderCheckpoint, observeChanges };
+  return { collect, pageText, readPage, extractPage, revision, recordScroll, renderCheckpoint, observeChanges };
 }

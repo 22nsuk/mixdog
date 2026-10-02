@@ -213,7 +213,6 @@ void app
               pausedSessionIds: ['fixture'],
               activities: [],
               cursors: [],
-              keystrokes: [],
               targetLeases: [],
             },
             locale,

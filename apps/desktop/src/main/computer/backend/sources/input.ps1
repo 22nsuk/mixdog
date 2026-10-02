@@ -586,13 +586,14 @@ function Do-Toggle($ref) {
     return $result
 }
 
-# Nearest top-level ancestor (child of the desktop root) for an element.
+# Nearest native top-level ancestor, before crossing an owned-window boundary.
 function Get-TopWindow($el) {
     $cur = $el
     for ($i = 0; $i -lt 50; $i++) {
+        $handle = New-Object IntPtr($cur.Current.NativeWindowHandle)
+        if ($handle -ne [IntPtr]::Zero -and [MixWin32]::TopLevelWindow($handle) -eq $handle) { return $cur }
         $parent = $Walker.GetParent($cur)
         if ($null -eq $parent) { return $cur }
-        if ([System.Windows.Automation.Automation]::Compare($parent, $AE::RootElement)) { return $cur }
         $cur = $parent
     }
     return $cur
@@ -1352,6 +1353,7 @@ function Get-WindowPredicates($req) {
     [void]$cr.Add($AE::IsEnabledProperty)
     [void]$cr.Add($AE::IsOffscreenProperty)
     [void]$cr.Add($AE::IsValuePatternAvailableProperty)
+    [void]$cr.Add([System.Windows.Automation.ValuePattern]::ValueProperty)
     [void]$cr.Add($AE::IsTextPatternAvailableProperty)
     [void]$cr.Add($AE::IsKeyboardFocusableProperty)
     $act = $cr.Activate()
@@ -1367,13 +1369,9 @@ function Get-WindowPredicates($req) {
         try { $name = [string]$el.Cached.Name } catch { $textComplete = $false }
         $value = ''
         if (@('Edit', 'ComboBox', 'Document', 'Spinner') -contains $ct) {
-            $pat = $null
-            try {
-                if ($el.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$pat)) {
-                    $value = [string]$pat.Current.Value
-                }
-            }
-            catch { $textComplete = $false }
+            $cachedValue = Get-CachedSupported $el ([System.Windows.Automation.ValuePattern]::ValueProperty)
+            if ($null -ne $cachedValue) { $value = [string]$cachedValue }
+            elseif (Get-CachedFlag $el $AE::IsValuePatternAvailableProperty) { $textComplete = $false }
         }
         # A terminal or document body has no value; its visible lines are what
         # a present/absent predicate has to match.
@@ -1419,7 +1417,8 @@ function Get-WindowPredicates($req) {
         }
         foreach ($node in $msaaNodes) {
             if ($observations.Count -ge $max) { $textComplete = $false; break }
-            if (-not $node.Refresh()) { $textComplete = $false; continue }
+            # SnapshotWithStatus already refreshed each node. Re-reading the
+            # entire tree doubles cross-process calls and can mix two layouts.
             if ($node.Width -le 0 -or $node.Height -le 0) { continue }
             $msaaName = [string]$node.Name
             $msaaValue = [string]$node.Value
@@ -1458,13 +1457,15 @@ function Normalize-MenuLabel($label) {
     return $text.Trim().ToLower()
 }
 
-function Get-MenuCandidates($root, $name) {
+function Get-MenuCandidates($root, $name, $menuOnly = $false) {
     $wanted = Normalize-MenuLabel $name
-    $types = @('MenuItem', 'Button', 'SplitButton', 'ListItem')
+    $types = if ($menuOnly) { @('MenuItem') } else { @('MenuItem', 'Button', 'SplitButton', 'ListItem') }
     $conds = foreach ($t in $types) {
         New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::$t)
     }
-    $cond = New-Object System.Windows.Automation.OrCondition([System.Windows.Automation.Condition[]]$conds)
+    $cond = if (@($conds).Count -eq 1) { $conds } else {
+        New-Object System.Windows.Automation.OrCondition([System.Windows.Automation.Condition[]]$conds)
+    }
     $found = New-Object System.Collections.ArrayList
     $elements = @()
     try {
@@ -1487,7 +1488,7 @@ function Get-MenuCandidates($root, $name) {
     return @($found)
 }
 
-function Get-MsaaMenuCandidates($info, $name) {
+function Get-MsaaMenuCandidates($info, $name, $menuOnly = $false) {
     $wanted = Normalize-MenuLabel $name
     $found = New-Object System.Collections.ArrayList
     $seen = @{}
@@ -1513,6 +1514,7 @@ function Get-MsaaMenuCandidates($info, $name) {
         foreach ($node in $nodes) {
             if (-not $node.Refresh() -or -not $node.Enabled -or $node.Offscreen) { continue }
             if ([string]$node.ControlType -notin @('MenuItem', 'Button', 'SplitButton', 'ListItem')) { continue }
+            if ($menuOnly -and [string]$node.ControlType -ne 'MenuItem') { continue }
             $label = Normalize-MenuLabel $node.Name
             if ($label -ne $wanted) { continue }
             $identity = '{0}|{1}|{2}|{3}|{4}|{5}|{6}' -f
@@ -1606,11 +1608,11 @@ function Do-InvokeMenu($req) {
                 $segment = $path[$i]
                 # Native applications usually expose menu state through MSAA immediately.
                 # Use that exact path before asking UIA to walk an entire provider tree.
-                $msaaCandidates = Get-MsaaMenuCandidates $info $segment
+                $msaaCandidates = Get-MsaaMenuCandidates $info $segment ($i -gt 0)
                 if ($msaaCandidates.Count -gt 1) {
                     throw "menu_path_ambiguous: '$segment' matched $($msaaCandidates.Count) entries; use a more exact path"
                 }
-                if ($msaaCandidates.Count -eq 1) {
+                if ($msaaCandidates.Count -eq 1 -and -not [string]::IsNullOrWhiteSpace([string]$msaaCandidates[0].DefaultAction)) {
                     $walked += $segment
                     try {
                         Assert-ExecutionAuthorization $req $info.Handle
@@ -1636,7 +1638,7 @@ function Do-InvokeMenu($req) {
                 # Do not initialize a potentially stalled UIA provider while MSAA can
                 # resolve the exact path. Reacquire only when the next level needs UIA.
                 if ($null -eq $root) { $root = Find-Window $req.window $req.window_id }
-                $candidates = Get-MenuCandidates $root $segment
+                $candidates = Get-MenuCandidates $root $segment ($i -gt 0)
                 if ($candidates.Count -eq 0 -and $i -gt 0) {
                     # A submenu may live outside the parent item's UIA subtree, but it must
                     # still belong to this exact window's owned popup chain.
@@ -1645,7 +1647,7 @@ function Do-InvokeMenu($req) {
                         $popupHandle = [MixWin32]::ParseWindowId([string]$popupId)
                         if ($popupHandle -eq $info.Handle -or -not [MixWin32]::IsOwnedBy($popupHandle, $info.Handle)) { continue }
                         $popupRoot = $AE::FromHandle($popupHandle)
-                        foreach ($candidate in @(Get-MenuCandidates $popupRoot $segment)) {
+                        foreach ($candidate in @(Get-MenuCandidates $popupRoot $segment $true)) {
                             [void]$popupCandidates.Add($candidate)
                         }
                     }

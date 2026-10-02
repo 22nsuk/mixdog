@@ -214,7 +214,7 @@ export class SessionTransport implements DesktopTransport {
         () =>
           daemonModule.ensureDaemon({
             cwd: this.cwd,
-            log: (line) => this.emit('error', 'daemon', line),
+            log: (line) => this.emit('diagnostic', 'session-daemon-log', { detail: line, attempt }),
           }),
         { attempt }
       );

@@ -13,7 +13,13 @@ import { applyPdfBatch } from '../pdf/pdf-adapter.mjs';
 import { createChartPdf } from '../pdf/pdf-writer.mjs';
 import { renderPdfPages } from '../pdf/pdf-render.mjs';
 import { assertOfficeOperationContracts } from '../capabilities.mjs';
-import { quoteUnquotedSheetReferences, validateXlsxOperations } from '../portable/xlsx-contract.mjs';
+import {
+  expandFilledFormulas,
+  quoteUnquotedSheetReferences,
+  validateXlsxOperations,
+} from '../portable/xlsx-contract.mjs';
+import { translateSharedFormula } from '../portable/xlsx-formula-engine.mjs';
+import { documentBrief } from '../quality/document-brief.mjs';
 import { applyTabularBatch } from './tabular.mjs';
 import { expandOfficeDesignOperations } from '../design/design-system.mjs';
 import { createPptxSlideSelection } from '../design/library/design-library.mjs';
@@ -433,6 +439,12 @@ async function prepareBatchOperations(session, args) {
   session.designRequest = designRequest;
   session.design = prepared.design;
   session.designState ||= emptyOfficeDesignState();
+  // A Word document or workbook written to a brief (design.brief, the deck's key: value lines) is held to it as an
+  // authored deck is: its figures against the facts, and a scored page review at finalize.
+  if (['docx', 'xlsx'].includes(session.format) && typeof args.design?.brief === 'string') {
+    const brief = documentBrief(args.design.brief);
+    if (brief) session.authoredBrief = brief;
+  }
   const baseDir = args.__cwd || dirname(session.target);
   let operations = Array.isArray(prepared.operations)
     ? prepared.operations.map((operation) => localizeOperation(operation, baseDir))
@@ -454,6 +466,9 @@ async function prepareBatchOperations(session, args) {
   operations = await withImportedSlideBackgrounds(session, operations);
   prepared.scratch = [];
   operations = await withDocumentCharts(session, operations, prepared.scratch);
+  // set_formula over a range is written cell by cell, each formula moved as Excel's fill moves it, before either
+  // backend sees it: both then write cells they already write.
+  if (session.format === 'xlsx') operations = expandFilledFormulas(operations, translateSharedFormula);
   if (session.format === 'xlsx' || TABULAR_FORMATS.has(session.format)) validateXlsxOperations(operations);
   // Excel rejects `My Sheet!A1` outright; the portable writer quotes it from
   // the sheet list, and an Excel session gets the same courtesy here.

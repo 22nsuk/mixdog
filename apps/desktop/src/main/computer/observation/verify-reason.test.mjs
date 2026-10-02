@@ -40,10 +40,17 @@ test('verify reports why absent stayed unknown instead of only that it did', asy
   const payload = JSON.parse(result.text);
   assert.equal(payload.decision, 'unknown');
   assert.equal(payload.unknown_reason, 'element_text_incomplete');
-  assert.match(payload.unknown_hint, /narrow the target/);
+  assert.match(payload.unknown_hint, /capture the window/);
   // The undecided read shows what the window did say, bounded to 12 entries.
   assert.equal(payload.observed_text_sample.length, 12);
   assert.equal(payload.observed_text_sample[0], 'item 0');
+});
+
+test('incomplete provider coverage is not misreported as pagination on an exact window', () => {
+  const reason = verifyUnknownReason({ needsElementText: true, observedElements: 4, textComplete: false });
+  assert.equal(reason.reason, 'element_text_incomplete');
+  assert.match(reason.hint, /did not complete its element-text read/);
+  assert.doesNotMatch(reason.hint, /more text|narrow the target/);
 });
 
 test('a closed exact window ends an unmet wait at once instead of spending the budget', async () => {

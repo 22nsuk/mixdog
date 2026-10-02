@@ -10,7 +10,13 @@ registerHooks({
             'data:text/javascript,' +
             encodeURIComponent(`
         export const BrowserWindow = { fromWebContents: guest => guest.owner };
-        export const nativeImage = { createFromBuffer: () => globalThis.screenshotFixtureImage };
+        export const nativeImage = {
+          createFromBuffer: () => globalThis.screenshotFixtureImage,
+          createFromBitmap: (_bitmap, size) => ({
+            ...globalThis.screenshotFixtureImage,
+            getSize: () => size,
+          }),
+        };
       `),
           shortCircuit: true,
         }
@@ -25,6 +31,7 @@ const image = {
   getSize: () => ({ width: 800, height: 600 }),
   toJPEG: () => bytes,
   toPNG: () => Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+  toBitmap: () => Buffer.alloc(800 * 600 * 4),
   crop: (rect) => ({
     getSize: () => ({ width: rect.width, height: rect.height }),
     toJPEG: () => bytes,
@@ -32,11 +39,40 @@ const image = {
   }),
 };
 
-function fixture({ cdpCapture, nativeCapture, layout, layoutMetrics, resize } = {}) {
+test('agent visual checks run before capture and before a successful frame can leave the service', async () => {
+  let captured = 0;
+  const guest = {
+    invalidate() {},
+    capturePage: async () => {
+      captured++;
+      return image;
+    },
+  };
+  const before = createBrowserScreenshotService({}, 100, 100, async () => {
+    throw new Error('private before capture');
+  });
+  await assert.rejects(before.capture(guest, true), /private before capture/);
+  assert.equal(captured, 0);
+  const after = createBrowserScreenshotService({}, 100, 100, async () => async () => {
+    throw new Error('private after capture');
+  });
+  await assert.rejects(after.capture(guest, true), /private after capture/);
+  assert.equal(captured, 1);
+});
+
+function fixture({
+  cdpCapture,
+  nativeCapture,
+  layout,
+  layoutMetrics,
+  resize,
+  viewport = { width: 320, height: 240, clientWidth: 320, clientHeight: 240 },
+} = {}) {
   globalThis.screenshotFixtureImage = image;
   const calls = [];
   const captureParams = [];
   let size = [320, 240];
+  let scroll = { x: 0, y: 0 };
   const guest = {
     invalidate() {},
     getZoomFactor: () => 1,
@@ -56,6 +92,20 @@ function fixture({ cdpCapture, nativeCapture, layout, layoutMetrics, resize } = 
   };
   const cdp = {
     call: async (_guest, method, params) => {
+      if (method === 'Runtime.releaseObject') return {};
+      if (method === 'Runtime.evaluate' && params.expression === 'window') {
+        return { result: { objectId: 'document-window' } };
+      }
+      if (method === 'Runtime.callFunctionOn') {
+        const position = params.arguments[0].value;
+        const bounds = layoutMetrics || { width: 800, height: 600 };
+        if (position)
+          scroll = {
+            x: Math.min(position.x, Math.max(0, bounds.width - viewport.width)),
+            y: Math.min(position.y, Math.max(0, bounds.height - viewport.height)),
+          };
+        return { result: { value: { ...scroll, ...viewport } } };
+      }
       if (method === 'Page.captureScreenshot') {
         calls.push('CDP');
         captureParams.push(params);
@@ -101,9 +151,8 @@ test('an element taller than the window is cut out of the document capture, not 
   );
   assert.equal(shot.partial, false);
   // The element sits at document y=50, so the whole 700x500 box is in frame.
-  assert.deepEqual({ width: shot.width, height: shot.height }, { width: 700, height: 500 });
-  assert.deepEqual(f.calls, ['prepare', 'CDP', 'restore']);
-  assert.deepEqual(f.captureParams[0].clip, { x: 0, y: 0, width: 800, height: 600, scale: 1 });
+  assert.deepEqual({ width: shot.width, height: shot.height }, { width: 1750, height: 1250 });
+  assert.deepEqual(f.calls, ['prepare', ...Array(9).fill('native'), 'restore']);
 });
 
 test('an element crop keeps the requested lossless format', async () => {
@@ -130,7 +179,7 @@ test('an element larger than the document is clipped to what the page actually h
     { viewport: { width: 320, height: 240 }, scroll: { x: 0, y: 0 } }
   );
   assert.equal(shot.partial, true);
-  assert.deepEqual({ width: shot.width, height: shot.height }, { width: 800, height: 600 });
+  assert.deepEqual({ width: shot.width, height: shot.height }, { width: 2000, height: 1500 });
 });
 
 test('an uncapturable document leaves the cropped viewport image as the answer', async () => {
@@ -225,9 +274,9 @@ test('full-page layout preparation failures stop capture and still attempt resto
 test('full-page restoration errors are reported even after capture success, preserving prior failures', async () => {
   for (const failCapture of [false, true]) {
     const f = fixture({
-      cdpCapture: () => {
-        if (failCapture) throw new Error('CDP capture failed');
-        return { data: bytes.toString('base64') };
+      nativeCapture: () => {
+        if (failCapture) throw new Error('viewport capture failed');
+        return image;
       },
       layout: (phase) => {
         if (phase === 'restore') throw new Error('layout restore failed');
@@ -237,97 +286,62 @@ test('full-page restoration errors are reported even after capture success, pres
     await assert.rejects(f.service.capture(f.guest, false, { fullPage: true }), (error) => {
       assert.match(error.message, /layout restoration failed/);
       assert.match(error.message, /layout restore failed/);
-      if (failCapture) assert.match(error.message, /CDP capture failed/);
+      if (failCapture) assert.match(error.message, /viewport capture failed/);
       assert.equal(error.errors.length, failCapture ? 2 : 1);
       return true;
     });
-    assert.deepEqual(f.calls, ['prepare', 'CDP', 'restore']);
+    assert.deepEqual(f.calls, ['prepare', ...Array(failCapture ? 1 : 9).fill('native'), 'restore']);
   }
 });
 
-test('viewport restoration failure is terminal and preserves a failed capture instead of falling back', async () => {
-  for (const failCapture of [false, true]) {
-    const f = fixture({
-      nativeCapture: () => {
-        if (failCapture) throw new Error('native capture failed');
-        return image;
-      },
-      resize: (width) => {
-        if (width === 320) throw new Error('viewport reset failed');
-      },
-    });
-    await assert.rejects(f.service.capture(f.guest, true, { fullPage: true }), (error) => {
-      assert.match(error.message, /viewport restoration failed.*viewport reset failed/);
-      if (failCapture) assert.match(error.message, /native capture failed/);
-      assert.equal(error.errors.length, failCapture ? 2 : 1);
-      return true;
-    });
-    assert.deepEqual(f.calls, ['prepare', 'resize:800x600', 'native', 'resize:320x240', 'restore']);
-    assert.deepEqual(f.size(), [800, 600], 'failed restoration must not be reported as successful recovery');
-  }
-});
-
-test('native capture failure permits a fallback only after the original viewport is restored', async () => {
+test('a background full-page screenshot stitches viewport pixels without resizing its owner', async () => {
   const f = fixture({
-    nativeCapture: () => {
-      throw new Error('native capture failed');
-    },
-    cdpCapture: () => {
-      assert.deepEqual(f.size(), [320, 240]);
-      return { data: bytes.toString('base64') };
-    },
+    resize: () => assert.fail('device emulation must not be overridden by a window resize'),
+    cdpCapture: () => assert.fail('a full-size CDP bitmap can still contain blank offscreen pixels'),
   });
-  assert.equal((await f.service.capture(f.guest, true, { fullPage: true })).data, bytes.toString('base64'));
-  assert.deepEqual(f.calls, ['prepare', 'resize:800x600', 'native', 'resize:320x240', 'CDP', 'restore']);
+  const result = await f.service.capture(f.guest, true, { fullPage: true });
+  assert.equal(result.data, bytes.toString('base64'));
+  assert.deepEqual([result.width, result.height], [2000, 1500]);
+  assert.deepEqual(f.calls, ['prepare', ...Array(9).fill('native'), 'restore']);
   assert.deepEqual(f.size(), [320, 240]);
 });
 
-test('full-page cancellation restores the viewport without dispatching a late capture or fallback', async () => {
-  for (const phase of ['resize', 'capture']) {
-    const controller = new AbortController();
-    const reason = new Error(`cancel during ${phase}`);
-    const f = fixture({
-      resize: (width) => {
-        if (phase === 'resize' && width === 800) controller.abort(reason);
-      },
-      nativeCapture: () => {
-        controller.abort(reason);
-        throw reason;
-      },
-    });
-    await assert.rejects(
-      f.service.capture(f.guest, true, { fullPage: true }, controller.signal),
-      (error) => error === reason
-    );
-    assert.deepEqual(f.size(), [320, 240]);
-    assert.deepEqual(f.calls, [
-      'prepare',
-      'resize:800x600',
-      ...(phase === 'capture' ? ['native'] : []),
-      'resize:320x240',
-      'restore',
-    ]);
-  }
-});
-
-test('simultaneous viewport and layout restoration failures retain the original capture error', async () => {
+test('full-page capture failure never substitutes a clipped viewport as a successful document', async () => {
   const f = fixture({
     nativeCapture: () => {
-      throw new Error('native capture failed');
-    },
-    resize: (width) => {
-      if (width === 320) throw new Error('viewport reset failed');
-    },
-    layout: (phase) => {
-      if (phase === 'restore') throw new Error('layout reset failed');
-      return {};
+      throw new Error('viewport unavailable');
     },
   });
-  await assert.rejects(f.service.capture(f.guest, true, { fullPage: true }), (error) => {
-    assert.match(error.message, /native capture failed/);
-    assert.match(error.message, /viewport reset failed/);
-    assert.match(error.message, /layout reset failed/);
-    return true;
+  await assert.rejects(f.service.capture(f.guest, true, { fullPage: true }), /viewport unavailable/);
+  assert.deepEqual(f.calls, ['prepare', 'native', 'restore']);
+});
+
+test('fractional CSS viewport precision at 75% zoom does not create an uncapturable extra pixel row', async () => {
+  const f = fixture({
+    layoutMetrics: { width: 1313, height: 2016 },
+    viewport: { width: 1333.3333740234375, height: 533.3333129882812, clientWidth: 1313, clientHeight: 533 },
+    nativeCapture: () => ({
+      ...image,
+      getSize: () => ({ width: 1000, height: 400 }),
+      toBitmap: () => Buffer.alloc(1000 * 400 * 4),
+    }),
   });
-  assert.deepEqual(f.calls, ['prepare', 'resize:800x600', 'native', 'resize:320x240', 'restore']);
+  const shot = await f.service.capture(f.guest, true, { fullPage: true });
+  assert.deepEqual([shot.width, shot.height], [985, 1512]);
+});
+
+test('full-page cancellation restores layout without dispatching another capture', async () => {
+  const controller = new AbortController();
+  const reason = new Error('cancel during capture');
+  const f = fixture({
+    nativeCapture: () => {
+      controller.abort(reason);
+      throw reason;
+    },
+  });
+  await assert.rejects(
+    f.service.capture(f.guest, true, { fullPage: true }, controller.signal),
+    (error) => error === reason
+  );
+  assert.deepEqual(f.calls, ['prepare', 'native', 'restore']);
 });

@@ -17,7 +17,7 @@ export function createSessionCommandsApi(bag) {
     routeState,
     syncContextStats,
     replaceItems,
-    // Injected by the store composer (session-local.mjs): the doctor checks
+    // Injected by the store composer (local-session-runtime.mjs): the doctor checks
     // live in the app layer, which the session layer must not import.
     doctor,
   } = bag;
