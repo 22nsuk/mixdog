@@ -30,10 +30,10 @@ jobs:
             head: 828f5422b61f84e25f924cdfba03f481cd1df95f
           - pr: 15
             node: '22'
-            head: a1e6f0efbb220c535d7e0f8aecdf57f8b4020135
+            head: a3a8f734371d0f281e21ab8c81231e58ca474f9b
           - pr: 15
             node: '24'
-            head: a1e6f0efbb220c535d7e0f8aecdf57f8b4020135
+            head: a3a8f734371d0f281e21ab8c81231e58ca474f9b
     env:
       ONNXRUNTIME_NODE_INSTALL: skip
       UPSTREAM_SHA: 5046987dcbbb8275890a30baebc0360e19917c09
@@ -93,7 +93,9 @@ jobs:
       - name: Test preview authority, retry and LRU boundaries
         if: matrix.pr == 15
         shell: bash
-        run: npm test --prefix apps/desktop -- src/main/local-page-server.test.mjs src/main/local-page-permissions.test.mjs src/main/local-access-denied.test.mjs src/main/selected-file-access.test.mjs
+        run: |
+          node scripts/test-direct.mjs src/runtime/shared/projects-authority.test.mjs
+          npm test --prefix apps/desktop -- src/main/local-page-server.test.mjs src/main/local-page-permissions.test.mjs src/main/local-access-denied.test.mjs src/main/selected-file-access.test.mjs
       - name: Check desktop main types
         if: matrix.pr == 15
         shell: bash
