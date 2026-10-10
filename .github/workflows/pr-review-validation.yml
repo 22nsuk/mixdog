@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: pr-review-windows-validation
+  cancel-in-progress: true
+
 jobs:
   focused:
     name: Windows PR ${{ matrix.pr }} / Node ${{ matrix.node }}
@@ -17,7 +21,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ['22', '24']
         include:
           - pr: 11
             node: '22'
