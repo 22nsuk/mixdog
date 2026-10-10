@@ -1,0 +1,85 @@
+name: PR Review Windows Validation
+
+# Validation-only branch: this workflow is not part of either product PR.
+on:
+  push:
+    branches: [validation/pr11-pr15-20261011]
+    paths: [.github/workflows/pr-review-validation.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    name: Windows PR ${{ matrix.pr }} / Node ${{ matrix.node }}
+    runs-on: windows-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22', '24']
+        include:
+          - pr: 11
+            node: '22'
+            head: 828f5422b61f84e25f924cdfba03f481cd1df95f
+          - pr: 11
+            node: '24'
+            head: 828f5422b61f84e25f924cdfba03f481cd1df95f
+          - pr: 15
+            node: '22'
+            head: a1e6f0efbb220c535d7e0f8aecdf57f8b4020135
+          - pr: 15
+            node: '24'
+            head: a1e6f0efbb220c535d7e0f8aecdf57f8b4020135
+    env:
+      ONNXRUNTIME_NODE_INSTALL: skip
+      UPSTREAM_SHA: 5046987dcbbb8275890a30baebc0360e19917c09
+      PR_HEAD: ${{ matrix.head }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: tribgames/mixdog
+          ref: 5046987dcbbb8275890a30baebc0360e19917c09
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Apply the exact PR to current upstream without committing
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$UPSTREAM_SHA"
+          git fetch --no-tags https://github.com/22nsuk/mixdog.git "$PR_HEAD"
+          test "$(git rev-parse FETCH_HEAD)" = "$PR_HEAD"
+          git -c user.name=Validation -c user.email=validation@example.invalid merge --no-commit --no-ff "$PR_HEAD"
+          git diff --cached --check
+          echo "upstream=$UPSTREAM_SHA"
+          echo "pr-head=$PR_HEAD"
+          echo "combined-tree=$(git write-tree)"
+          git diff --cached --stat
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: ${{ matrix.node }}
+          package-manager-cache: false
+      - name: Install root dependencies
+        shell: bash
+        run: npm ci --no-audit --no-fund
+      - name: Install desktop dependencies
+        if: matrix.pr == 15
+        shell: bash
+        run: npm ci --prefix apps/desktop --no-audit --no-fund
+      - name: Repeat raw-version tests on the real Windows filesystem
+        if: matrix.pr == 11
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            echo "Windows raw-version run $attempt"
+            node scripts/test-direct.mjs src/runtime/agent/orchestrator/tools/builtin/raw-content-version.test.mjs
+          done
+      - name: Test preview authority, retry and LRU boundaries
+        if: matrix.pr == 15
+        shell: bash
+        run: npm test --prefix apps/desktop -- src/main/local-page-server.test.mjs src/main/local-page-permissions.test.mjs src/main/local-access-denied.test.mjs src/main/selected-file-access.test.mjs
+      - name: Check desktop main types
+        if: matrix.pr == 15
+        shell: bash
+        run: npm run typecheck:node --prefix apps/desktop
