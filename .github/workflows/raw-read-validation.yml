@@ -1,32 +1,80 @@
 name: Raw Read Follow-up Validation
+# Temporary validation branch only; not included in either product PR.
 on:
   push:
     branches: [validation/raw-read-poststat-20261011]
     paths: [.github/workflows/raw-read-validation.yml]
 permissions:
   contents: read
+concurrency:
+  group: raw-read-followup-validation
+  cancel-in-progress: true
 jobs:
-  source:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 5
+  focused:
+    name: ${{ matrix.os }} / Node ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+        node: ['22', '24']
+    env:
+      ONNXRUNTIME_NODE_INSTALL: skip
+      PR_HEAD: bca7c12834633915af5cac619d8e5e83787de233
+      PR11_HEAD: 828f5422b61f84e25f924cdfba03f481cd1df95f
+      BASE_SHA: 5046987dcbbb8275890a30baebc0360e19917c09
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
-          ref: 5046987dcbbb8275890a30baebc0360e19917c09
+          ref: bca7c12834633915af5cac619d8e5e83787de233
+          fetch-depth: 0
           persist-credentials: false
-      - name: Archive reviewed text sources only
-        shell: python
-        run: |
-          import pathlib, subprocess, zipfile
-          files = subprocess.check_output(['git', 'ls-files', '-z']).decode().split('\0')
-          with zipfile.ZipFile('raw-read-source.zip', 'w', zipfile.ZIP_DEFLATED) as out:
-              for file in files:
-                  path = pathlib.Path(file)
-                  if (file.startswith(('src/', 'scripts/')) and path.suffix in ('.mjs', '.js', '.cjs', '.jsx', '.json')) or file in ('package.json', 'package-lock.json'):
-                      out.write(path, file)
-              out.writestr('REVIEW_SOURCE_SHA', subprocess.check_output(['git', 'rev-parse', 'HEAD']).decode())
-      - uses: actions/upload-artifact@v4
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
-          name: raw-read-source
-          path: raw-read-source.zip
-          retention-days: 3
+          node-version: ${{ matrix.node }}
+          package-manager-cache: false
+      - name: Match the repository gate package manager
+        shell: bash
+        run: |
+          npm install --global npm@10.9.9 --no-audit --no-fund
+          node --version
+          npm --version
+      - name: Install locked dependencies
+        shell: bash
+        run: npm ci --no-audit --no-fund
+      - name: Verify exact source and standalone regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$PR_HEAD"
+          git diff "$BASE_SHA" "$PR_HEAD" --check
+          git diff --exit-code -- package.json package-lock.json
+          node scripts/test-direct.mjs src/runtime/agent/orchestrator/tools/builtin/raw-content-publication.test.mjs
+      - name: Negative control with original caller modules
+        if: matrix.os == 'ubuntu-22.04' && matrix.node == '22'
+        shell: bash
+        run: |
+          set -euo pipefail
+          a=src/runtime/agent/orchestrator/tools/builtin/read-snapshot-runtime.mjs
+          b=src/runtime/agent/orchestrator/tools/patch/v4a-convert.mjs
+          trap 'git restore --source="$PR_HEAD" -- "$a" "$b"' EXIT
+          git restore --source="$BASE_SHA" -- "$a" "$b"
+          if node scripts/test-direct.mjs src/runtime/agent/orchestrator/tools/builtin/raw-content-publication.test.mjs; then
+            echo 'Regression suite failed to detect the original readers'
+            exit 1
+          fi
+          git restore --source="$PR_HEAD" -- "$a" "$b"
+          git diff --exit-code
+          node scripts/test-direct.mjs src/runtime/agent/orchestrator/tools/builtin/raw-content-publication.test.mjs
+      - name: Combine with the exact PR 11 without modifying its branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags https://github.com/22nsuk/mixdog.git "$PR11_HEAD"
+          test "$(git rev-parse FETCH_HEAD)" = "$PR11_HEAD"
+          git -c user.name=Validation -c user.email=validation@example.invalid merge --no-commit --no-ff "$PR11_HEAD"
+          git diff --cached --check
+          echo "combined-tree=$(git write-tree)"
+          git diff --cached --stat
+          node scripts/test-direct.mjs src/runtime/agent/orchestrator/tools/builtin/raw-content-publication.test.mjs src/runtime/agent/orchestrator/tools/builtin/raw-content-version.test.mjs
