@@ -22,7 +22,7 @@ jobs:
           with zipfile.ZipFile('raw-read-source.zip', 'w', zipfile.ZIP_DEFLATED) as out:
               for file in files:
                   path = pathlib.Path(file)
-                  if file.startswith(('src/', 'scripts/')) and path.suffix in ('.mjs', '.js', '.json') or file in ('package.json', 'package-lock.json'):
+                  if (file.startswith(('src/', 'scripts/')) and path.suffix in ('.mjs', '.js', '.cjs', '.jsx', '.json')) or file in ('package.json', 'package-lock.json'):
                       out.write(path, file)
               out.writestr('REVIEW_SOURCE_SHA', subprocess.check_output(['git', 'rev-parse', 'HEAD']).decode())
       - uses: actions/upload-artifact@v4
