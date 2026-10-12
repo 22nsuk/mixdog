@@ -189,6 +189,10 @@ export interface RemoteShimCollaborators {
   quietRecycledSockets: WeakSet<WebSocket>;
 }
 
+/** Parameters resolved synchronously on the connection that will send them.
+ * Used only for negotiated payload fields; ordinary calls still pass arrays. */
+export type RemoteCallParams = unknown[] | (() => unknown[]);
+
 /** What the responsibility modules publish for one another (each install*
  *  function fills in its own part). */
 export interface RemoteShimServices {
@@ -224,8 +228,8 @@ export interface RemoteShimServices {
   // remote-shim-calls.ts
   publishLanes: () => void;
   laneSubscription: <T>(lane: string, listeners: Set<T>, listener: T) => () => void;
-  invoke: <T = unknown>(method: string, params?: unknown[]) => Promise<T>;
-  call: <T = unknown>(method: string, params?: unknown[]) => Promise<T>;
+  invoke: <T = unknown>(method: string, params?: RemoteCallParams) => Promise<T>;
+  call: <T = unknown>(method: string, params?: RemoteCallParams) => Promise<T>;
   readCatalog: <T>(
     catalog: ReturnType<typeof createRemoteCatalog<T>>,
     method: 'listSessions' | 'listAgentPool'
