@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createRemoteApi } from './remote-shim-api.ts';
 import { requiredModelSelection } from '../main/ipc-validation.ts';
-import { automationAutoEffortSuffix } from './automation-settings-shared.ts';
+import { automationAutoEffortSuffix } from './automation-editor-support.ts';
 import { publishedCeilings, withShim, until, FakeSocket } from './remote-shim-test-harness.mjs';
 import { inspectRouteDiagnostics, readRouteDiagnostics } from '../../../../src/runtime/shared/route-diagnostics.mjs';
 
