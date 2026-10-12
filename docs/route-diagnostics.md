@@ -9,7 +9,11 @@ model request, change settings, or read diagnostic logs.
 **Current** shows the active session's route, or the draft route before a
 session exists. **History** shows the latest user turn's preparation, frozen
 before its preflight checkpoint. Its timestamp is the start of that turn.
-A later model/effort change does not rewrite that record. A copied transcript
+A later model/effort change does not rewrite that record. Receipt-less skill,
+recovery and notification messages do not hide the recorded turn. A runtime
+turn with its own receipt owns its preparation, including `runtime-prompt`.
+A genuine unrecorded user request or a compaction summary ends the search.
+A copied transcript
 from another session, an older unrecorded turn, or history removed by compaction
 is unavailable, not reconstructed from today's settings.
 
@@ -59,6 +63,10 @@ unavailable while their existing context report continues to work.
 
 Only known scalar fields are retained: provider/model identifiers, configured
 and prepared effort, Fast, Auto, context window and recognized service tier.
+The context window follows `selectedContextWindow || contextWindow`, matching
+turn preparation for both drafts and sessions. The tier is the configured
+`modelParameters.serviceTier`; even with Fast off it is not proof of a sent or
+billed tier.
 Arbitrary model parameters, prompts, tool results, credentials, probabilities,
 and raw errors are excluded. Technical field/reason identifiers stay stable;
 the surrounding headings use the existing localized UI.
@@ -74,7 +82,12 @@ Route selection parameters are projected only after the sending connection's
 handshake and view-sync waits. A cold or reconnecting client must not strip an
 explicit Auto opt-out merely because capability flags have not arrived yet;
 a host that does not advertise support still never receives `autoEffort`.
-The current strict host validator and legacy omission semantics are unchanged.
+Closing a connection rejects an RPC waiting on its view sync. Model selection,
+inheritance and continuation calls are not silently replayed on a replacement
+host. New-task submission retains its existing stable-ID recovery and projects
+the route again on each attempt. A new call made while reconnecting uses the
+replacement host's capability. The current strict host validator and legacy
+omission semantics are unchanged.
 
 ## Regression checks
 
@@ -83,7 +96,8 @@ serialization and canonical-reader round trips, actual turn preparation,
 context cache and preview boundaries, the rendered disclosure, and the real
 remote shim with E2EE framing. The remote matrix covers Auto omitted/false/true,
 Fast/parameters/context percentage, select/inherit/continue/restored drafts,
-cold handshakes, reconnection during view sync, and optional diagnostic data.
+cold handshakes, interruption during view sync, fresh calls during reconnect
+with and without view sync, and optional diagnostic data.
 Schedule/webhook editors share the tested `+noauto` capability gate. The legacy
 selection field list is pinned to v1.1.2 (`22d55fe1`); this is a contract test,
 not a claim to have launched every old packaged application or physical phone.

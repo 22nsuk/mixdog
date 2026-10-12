@@ -4,7 +4,8 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { JSDOM } from 'jsdom';
 import { RouteDiagnostics } from './RouteDiagnostics.tsx';
-import { captureRouteDiagnostics, inspectRouteDiagnostics } from '../../../../src/runtime/shared/route-diagnostics.mjs';
+import { captureRouteDiagnostics } from '../../../../src/runtime/shared/route-diagnostics.mjs';
+import { inspectRouteDiagnostics } from '../../../../src/runtime/agent/orchestrator/runtime-core/route-diagnostics.mjs';
 import { t } from './i18n.ts';
 
 function fixture() {

@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { _sessionForDisk, _storedSessionFromFile } from '../store/serialize.mjs';
-import { inspectRouteDiagnostics } from '../../../../shared/route-diagnostics.mjs';
+import { inspectRouteDiagnostics } from '../../runtime-core/route-diagnostics.mjs';
 
 // Exercise the real turn preparation, including buildUserTurn and the
 // preflight checkpoint. Only provider discovery, the local judge and disk

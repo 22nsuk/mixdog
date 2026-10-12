@@ -33,8 +33,8 @@ export function routeSettingsSnapshot(route = {}) {
     fast: flag(route.fast),
     autoEffort: route.autoEffort !== false,
     autoEffortSource: own(route, 'autoEffort') ? 'recorded-field' : 'implicit-default',
-    contextWindow: number(route.contextWindow),
-    serviceTier: TIERS.has(route.modelParameters?.service_tier) ? route.modelParameters.service_tier : null,
+    contextWindow: number(route.selectedContextWindow || route.contextWindow),
+    serviceTier: TIERS.has(route.modelParameters?.serviceTier) ? route.modelParameters.serviceTier : null,
   };
 }
 
@@ -77,42 +77,6 @@ function readReceipt(value) {
     configured,
     auto: autoEffortDecisionSnapshot(value.auto),
     preparedEffort: effort(value.preparedEffort),
-  };
-}
-
-/** Fresh per call, outside the context token cache. No disk, model or logs. */
-export function inspectRouteDiagnostics(session, route = {}) {
-  const current = session?.id ? session : route;
-  const messages = Array.isArray(session?.liveTurnMessages) ? session.liveTurnMessages : session?.messages;
-  let lastTurn = null;
-  let stepEffort = null;
-  if (Array.isArray(messages)) {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const message = messages[i];
-      if (message?.role === 'user') {
-        const receipt = readReceipt(message.meta?.routeDiagnostics);
-        if (receipt && receipt.sessionId === text(session?.id)) {
-          const recordedEffort = effort(message.meta?.effortConfiguration?.effort);
-          lastTurn = {
-            ...receipt,
-            recordedEffort: stepEffort || recordedEffort,
-            effortSource: stepEffort ? 'tool-step' : recordedEffort ? 'turn-configuration' : 'not-recorded',
-          };
-        }
-        // A legacy or new unrecorded user turn invalidates older receipts.
-        break;
-      }
-      if (message?.role === 'tool' && !stepEffort) stepEffort = effort(message.meta?.effortConfiguration?.effort);
-    }
-  }
-  return {
-    version: 1,
-    sessionId: text(session?.id),
-    current: routeSettingsSnapshot(current),
-    currentSource: session?.id ? 'session' : 'route',
-    lastTurn,
-    // An explicit boundary, not a success-looking fallback.
-    evidence: 'runtime-prepared-not-provider-confirmed',
   };
 }
 

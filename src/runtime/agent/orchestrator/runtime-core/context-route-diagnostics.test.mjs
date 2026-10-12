@@ -55,11 +55,16 @@ test('an entry preview never receives a current-route receipt beside a retained 
 test('a draft has current route data but never fabricates a past execution', () => {
   const api = createContextStatus({
     getSession: () => null,
-    getRoute: () => ({ provider: 'openai', model: 'test', effort: 'high', autoEffort: false, contextWindow: 10000 }),
+    getRoute: () => ({
+      provider: 'openai', model: 'test', effort: 'high', autoEffort: false,
+      selectedContextWindow: 10000, modelParameters: { serviceTier: 'priority' },
+    }),
     getCurrentCwd: () => process.cwd(), getMode: () => 'default',
   });
   const status = api.contextStatus({ inspect: true });
   assert.equal(status.routeDiagnostics.currentSource, 'route');
   assert.equal(status.routeDiagnostics.current.autoEffort, false);
+  assert.equal(status.routeDiagnostics.current.contextWindow, 10000);
+  assert.equal(status.routeDiagnostics.current.serviceTier, 'priority');
   assert.equal(status.routeDiagnostics.lastTurn, null);
 });

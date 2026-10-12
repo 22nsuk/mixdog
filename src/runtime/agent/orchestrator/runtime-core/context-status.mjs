@@ -9,7 +9,7 @@ import {
   summarizeContextMessagesAtRevision,
   toolSchemaSignature,
 } from '../session/context-utils.mjs';
-import { inspectRouteDiagnostics } from '../../../shared/route-diagnostics.mjs';
+import { inspectRouteDiagnostics } from './route-diagnostics.mjs';
 import { scopedProviderRequestTools } from './provider-request-tools.mjs';
 import { hasRouteHistoryMessage } from './session-route-policy.mjs';
 import { contextGauge, contextStatusValue, emptyContextStatus, requestTokenBudget } from './context-status-shape.mjs';
