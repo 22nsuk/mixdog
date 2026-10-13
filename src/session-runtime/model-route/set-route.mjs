@@ -12,7 +12,7 @@ import {
 } from '../../runtime/agent/orchestrator/runtime-core/config-helpers.mjs';
 import { getModelMetadataSync } from '../../runtime/agent/orchestrator/providers/model-catalog.mjs';
 import { workflowPresetId } from '../../runtime/agent/orchestrator/runtime-core/workflow.mjs';
-import { resolveRouteContextState, selectionFastCapable } from '../route-state.mjs';
+import { resolveRouteContextState, resolveRouteMetadataState, selectionFastCapable } from '../route-state.mjs';
 import { writeStatuslineRoute } from '../statusline-route.mjs';
 import {
   sessionHasRouteHistory,
@@ -84,7 +84,7 @@ async function recreateEmptySession(deps) {
   await createCurrentSession('model-switch-empty');
 }
 
-/** Rewrite the addressed empty session to the route it was asked to run on. */
+/** Rewrite the addressed idle session to the route it was asked to run on. */
 function updateSessionInPlace(deps, session, updateOptions) {
   const { getRoute, getSession, setSession, mgr, statusRoutes } = deps;
   const route = getRoute();
@@ -105,25 +105,39 @@ function updateSessionInPlace(deps, session, updateOptions) {
   writeStatuslineRoute(statusRoutes, getSession(), route);
 }
 
-/** Validate, persist and adopt the requested route as the runtime's route. */
-async function adoptRoute(deps, persist, next, options) {
+/** Persist a fully prepared route; do not yield between the idle check and live apply. */
+function adoptRoute(deps, persist, prepared, options) {
   const {
     getConfig,
     getRoute,
     setRouteState,
     resolveRoute,
-    refreshRouteEffort,
     refreshStatuslineUsageSnapshot,
     scheduleStatuslineUsageRefresh,
   } = deps;
-  const { selectedRoute, fastCapable, modelMeta } = await resolveSelectedRoute(deps, next);
+  const { selectedRoute, fastCapable, modelMeta } = prepared;
+  const session = deps.getSession();
+  const changesSessionModel =
+    session && (session.provider !== selectedRoute.provider || session.model !== selectedRoute.model);
+  if (
+    options?.applyToCurrentSession === true &&
+    changesSessionModel &&
+    (deps.getActiveTurnCount?.() > 0 || session.liveTurnMessages?.length > 0)
+  ) {
+    throw new Error('Cannot change the session model while a turn is running.');
+  }
   persist.saveRouteModelSettings(selectedRoute, fastCapable);
   // An heir opening on its source's model is not a main-model choice.
   const leadRoute = persist.persistAdoptedModelSettings(selectedRoute, {
     keepMainModel: options?.keepMainModel === true,
   });
-  setRouteState(resolveRoute(getConfig(), leadRoute ? { model: workflowPresetId('lead') } : selectedRoute));
-  await refreshRouteEffort(modelMeta);
+  setRouteState(
+    resolveRouteMetadataState(
+      getConfig(),
+      resolveRoute(getConfig(), leadRoute ? { model: workflowPresetId('lead') } : selectedRoute),
+      modelMeta
+    )
+  );
   refreshStatuslineUsageSnapshot(getRoute());
   scheduleStatuslineUsageRefresh();
 }
@@ -137,11 +151,16 @@ async function adoptRoute(deps, persist, next, options) {
 export function createContinueSessionInModel(deps, persist) {
   const { getSession, invalidateContextStatusCache } = deps;
   return async function continueSessionInModel(sessionId, next) {
-    const session = getSession();
+    let session = getSession();
     if (!sessionId || !session?.id || session.id !== sessionId) {
       throw new Error(`session ${sessionId || ''} is not the active session`);
     }
-    await adoptRoute(deps, persist, next, {});
+    const prepared = await resolveSelectedRoute(deps, next);
+    session = getSession();
+    if (!session?.id || session.id !== sessionId) {
+      throw new Error(`session ${sessionId} is not the active session`);
+    }
+    adoptRoute(deps, persist, prepared, { applyToCurrentSession: true });
     updateSessionInPlace(deps, session, { crossProvider: true });
     invalidateContextStatusCache();
     return true;
@@ -152,23 +171,30 @@ export function createSetRoute(deps, persist) {
   const { getRoute, getSession, invalidateContextStatusCache, createCurrentSession } = deps;
 
   return async function setRoute(next, options = {}) {
-    // Selection is for a new/inherited session. An explicit durable address
-    // permits initializing an EMPTY session, never rewriting an existing
-    // conversation's model, context boundary or provider cache.
+    // A bare selection is for a new/inherited session. Explicit live apply
+    // also permits moving an idle conversation in place after confirmation.
     const applyToCurrentSession = options?.applyToCurrentSession === true;
-    await adoptRoute(deps, persist, next, options);
+    const prepared = await resolveSelectedRoute(deps, next);
+    adoptRoute(deps, persist, prepared, options);
     const session = getSession();
-    // Model/provider changes are next-session-only for a session the user
-    // has already talked in or compacted (provider-keyed prompt cache). But
+    // Model/provider changes default to next-session-only for a session the
+    // user has already talked in or compacted (provider-keyed prompt cache). But
     // a current session with no model reply, no compaction summary and no
     // in-flight first turn — empty, or holding only refused prompts — has no
     // cache to protect, so /model takes effect live: route + statusline
     // update immediately. Only a truly empty session is recreated below.
     const currentSessionEmpty = !!session && !sessionRouteCommitted(session);
     if (!currentSessionEmpty) {
-      // Some desktop effort changes travel as a same-model route update.
-      // Only effort/Fast may affect the source, starting with its next turn.
-      if (applyToCurrentSession) persist.applySessionTuning();
+      if (applyToCurrentSession && session) {
+        const route = getRoute();
+        if (session.provider !== route.provider || session.model !== route.model) {
+          updateSessionInPlace(deps, session, { crossProvider: true });
+          invalidateContextStatusCache();
+        } else {
+          // Same-model effort/Fast tuning keeps its context and cache.
+          persist.applySessionTuning();
+        }
+      }
       return getRoute();
     }
     // An addressed runtime keeps its durable id: the empty session is updated

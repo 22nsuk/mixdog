@@ -3,9 +3,8 @@
 // fields from provider metadata.
 import { ensureProviderEnabled } from '../runtime/agent/orchestrator/runtime-core/config-helpers.mjs';
 import { clean } from '../runtime/agent/orchestrator/runtime-core/session-text.mjs';
-import { effortItemsFor } from '../runtime/agent/orchestrator/runtime-core/effort.mjs';
 import { runAbortable, throwIfAborted } from '../runtime/shared/abort-race.mjs';
-import { resolveRouteContextState, resolveRouteEffortState, routeModelDisplay } from './route-state.mjs';
+import { resolveRouteMetadataState } from './route-state.mjs';
 
 export function createRouteResolution({ rt, collectProviderModels, ensureProvidersReady, lookupModelMeta }) {
   function routeHasModel() {
@@ -43,27 +42,7 @@ export function createRouteResolution({ rt, collectProviderModels, ensureProvide
     // A rapid second resume/model change can replace the route while provider
     // metadata is loading. Never let the older completion overwrite it.
     if (expectedRoute && rt.route !== expectedRoute) return null;
-    const { effectiveEffort, fastCapable } = resolveRouteEffortState(targetRoute, modelMeta);
-    const contextState = resolveRouteContextState(targetRoute, modelMeta);
-    const contextValue = clean(targetRoute.modelParameters?.context);
-    const contextOption = (modelMeta?.modelParameterOptions || [])
-      .find((option) => option?.id === 'context')
-      ?.options?.find((option) => clean(option?.value) === contextValue);
-    const modelDisplay = routeModelDisplay(rt.config, targetRoute, modelMeta);
-    const selectedContextWindow = [contextState.selectedContextWindow, contextOption?.contextWindow]
-      .map(Number)
-      .find((value) => value > 0);
-    rt.route = {
-      ...targetRoute,
-      fast: fastCapable ? targetRoute.fast === true : false,
-      fastCapable,
-      effectiveEffort,
-      effortOptions: effortItemsFor(rt.route.provider, modelMeta, effectiveEffort),
-      contextPercent: contextState.contextPercent,
-      contextDefaultPercent: contextState.contextDefaultPercent,
-      ...(selectedContextWindow ? { selectedContextWindow } : {}),
-      ...(modelDisplay ? { modelDisplay } : {}),
-    };
+    rt.route = resolveRouteMetadataState(rt.config, targetRoute, modelMeta);
     return rt.route;
   }
 

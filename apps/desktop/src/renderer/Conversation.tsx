@@ -807,6 +807,8 @@ export function Conversation({
             promptHistoryList={routeSnapshot.promptHistoryList}
             provider={String(draftModelSelection?.provider || routeSnapshot.provider || '')}
             model={String(draftModelSelection?.model || routeSnapshot.model || '')}
+            sessionProvider={sessionProvider}
+            sessionModel={sessionModel}
             effort={String(draftModelSelection?.effort ?? routeSnapshot.effort ?? '')}
             fast={draftModelSelection?.fast ?? Boolean(routeSnapshot.fast)}
             fastCapable={Boolean(routeSnapshot.fastCapable)}

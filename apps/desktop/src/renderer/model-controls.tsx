@@ -8,6 +8,7 @@ import type {
 import { beginBootSurface, reportBootSurfaceReady, reportBootSurfaceStage } from './boot-metrics';
 import { routePreferenceStore } from './app-route-preference';
 import { useModelSelection } from './use-model-selection';
+import { confirmSessionModelChange } from './model-switch-confirmation';
 import type { RecordValue } from './desktop-types';
 import { t } from './i18n';
 import {
@@ -312,6 +313,8 @@ export function contextTokensForPercent(
 export const ModelSelector = memo(function ModelSelector({
   provider: sourceProvider,
   model: sourceModel,
+  sessionProvider,
+  sessionModel,
   effort: sourceEffort,
   fast: sourceFast,
   fastCapable: sourceFastCapable,
@@ -332,6 +335,9 @@ export const ModelSelector = memo(function ModelSelector({
   answersModelPickerRequests?: boolean;
   provider: string;
   model: string;
+  /** Actual session route, which may differ from a saved next-session selection. */
+  sessionProvider?: string;
+  sessionModel?: string;
   effort: string;
   fast: boolean;
   fastCapable: boolean;
@@ -376,6 +382,7 @@ export const ModelSelector = memo(function ModelSelector({
   // the current token may publish its snapshot; useModelSelection already
   // ignores a stale settle.
   const latestRouteToken = useRef(0);
+  const pendingModelWrites = useRef(new Map<string, number>());
   const modelBootKey = `${provider || 'none'}:${model || 'none'}`;
   beginBootSurface('model-controls', modelBootKey);
   // An in-flight write no longer locks the controls. The selection is previewed
@@ -538,11 +545,30 @@ export const ModelSelector = memo(function ModelSelector({
     reportBootSurfaceStage('model-controls', modelBootKey, 'data');
   }, [model, modelBootKey, startupCatalogSettled]);
 
-  const route = async (selection: DesktopModelSelection, modelChoice = false) => {
+  const confirmSelection = (next: DesktopModelSelection) => {
+    const live = { provider: sessionProvider || sourceProvider, model: sessionModel || sourceModel };
+    // A queued selection may have already committed while its acknowledgement
+    // is travelling. Changing back must also confirm against that preview.
+    const current =
+      (pendingModelWrites.current.get(sessionId || '') || 0) > 0 &&
+      next.provider === live.provider && next.model === live.model
+        ? { provider, model }
+        : live;
+    return confirmSessionModelChange(next, current, sessionId);
+  };
+  const route = async (selection: DesktopModelSelection, modelChoice = false, confirmed = false) => {
     if (modelUnavailable) return false;
     if (onDraftSelection) {
       onDraftSelection(selection);
       return true;
+    }
+    if (!confirmed && !confirmSelection(selection)) return false;
+    const changesModel =
+      selection.provider !== (sessionProvider || sourceProvider) ||
+      selection.model !== (sessionModel || sourceModel);
+    const pendingKey = sessionId || '';
+    if (changesModel) {
+      pendingModelWrites.current.set(pendingKey, (pendingModelWrites.current.get(pendingKey) || 0) + 1);
     }
     const token = begin(selection);
     latestRouteToken.current = token;
@@ -559,6 +585,11 @@ export const ModelSelector = memo(function ModelSelector({
       }
     } finally {
       if (!applied) settle(token);
+      if (changesModel) {
+        const remaining = pendingModelWrites.current.get(pendingKey)! - 1;
+        if (remaining > 0) pendingModelWrites.current.set(pendingKey, remaining);
+        else pendingModelWrites.current.delete(pendingKey);
+      }
     }
     return applied;
   };
@@ -611,6 +642,7 @@ export const ModelSelector = memo(function ModelSelector({
         : {}),
       ...(optionMaxWindow > 0 ? { contextPercent: nextContextPercent } : {}),
     };
+    if (!onDraftSelection && !confirmSelection(selection)) return false;
     // "Continue in another model" after a quota stop: this explicit pick goes
     // to the continue flow instead of the ordinary route change.
     const continueInModel = sessionId ? takeQuotaContinue(sessionId) : null;
@@ -618,7 +650,7 @@ export const ModelSelector = memo(function ModelSelector({
       continueInModel(selection);
       return true;
     }
-    return route(selection, !sameModel);
+    return route(selection, !sameModel, true);
   };
   const changeFast = async (enabled: boolean) => {
     if (tuningUnavailable) return;

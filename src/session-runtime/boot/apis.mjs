@@ -422,6 +422,7 @@ function modelRouteApiFor(boot) {
       rt.route = v;
     },
     getSession: () => rt.session,
+    getActiveTurnCount: () => rt.activeTurnCount,
     setSession: boot.adoptSession,
     getAddressedSessionId: () => rt.addressedSessionId,
     getConfigHasSecrets: () => rt.configHasSecrets,

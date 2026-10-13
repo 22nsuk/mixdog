@@ -17,6 +17,7 @@ import {
   type SettingsSection,
 } from './slash-commands';
 import { TURN_LOCKED_SLASH_COMMANDS, asRecord } from './text-format';
+import { confirmSessionModelChange } from './model-switch-confirmation';
 
 type SlashExecutorDeps = {
   draftMode?: boolean;
@@ -24,6 +25,8 @@ type SlashExecutorDeps = {
   turnBusy: boolean;
   provider: string;
   model: string;
+  sessionProvider?: string;
+  sessionModel?: string;
   effort: string;
   fast: boolean;
   fastCapable: boolean;
@@ -322,33 +325,47 @@ async function runModel(run: SlashRun, argument: string): Promise<boolean | unde
     return true;
   }
   const preset = await findPreset(run, argument);
+  let selection: DesktopModelSelection;
+  let identity: Pick<DesktopModelSelection, 'provider' | 'model'>;
   if (preset) {
-    await commandCapability(run, 'setModel', [preset.id || preset.name]);
-    return !run.failed;
+    // Let the runtime resolve the preset and its saved tuning exactly as it
+    // does for /model, but apply the result to this addressed idle session.
+    selection = { provider: '', model: String(preset.id || preset.name) };
+    identity = { provider: String(preset.provider || ''), model: String(preset.model || '') };
+  } else {
+    const models = (await deps.invokeResult(() => window.mixdogDesktop.listProviderModels({ quick: false }))) || [];
+    const normalized = argument.toLowerCase();
+    const match = models.find(
+      (entry) =>
+        `${entry.provider}:${entry.model}`.toLowerCase() === normalized ||
+        entry.model.toLowerCase() === normalized ||
+        entry.display.toLowerCase() === normalized
+    );
+    if (!match) {
+      deps.setAttachmentError(`Model not found: ${argument}`);
+      return false;
+    }
+    selection = { provider: match.provider, model: match.model };
+    identity = selection;
   }
-  const models = (await deps.invokeResult(() => window.mixdogDesktop.listProviderModels({ quick: false }))) || [];
-  const normalized = argument.toLowerCase();
-  const match = models.find(
-    (entry) =>
-      `${entry.provider}:${entry.model}`.toLowerCase() === normalized ||
-      entry.model.toLowerCase() === normalized ||
-      entry.display.toLowerCase() === normalized
-  );
-  if (!match) {
-    deps.setAttachmentError(`Model not found: ${argument}`);
-    return false;
-  }
-  const selection = { provider: match.provider, model: match.model };
   if (deps.draftMode && deps.onDraftModelSelection) {
-    deps.onDraftModelSelection(selection);
+    deps.onDraftModelSelection(preset ? { ...identity } : selection);
     return true;
   }
   const sessionId = deps.sessionId;
   if (!sessionId) return false;
+  if (
+    !confirmSessionModelChange(
+      identity,
+      { provider: deps.sessionProvider || deps.provider, model: deps.sessionModel || deps.model },
+      sessionId
+    )
+  ) return false;
   const next = await deps.invokeResult(() => window.mixdogDesktop.setModelRoute(selection, sessionId));
-  if (next === undefined) return false;
+  if (next == null) return false;
   deps.applySnapshot(next);
-  const sameModel = match.provider === deps.provider && match.model === deps.model;
-  deps.onRoutePreferenceApplied?.(selection, sameModel ? undefined : { modelChoice: true });
+  const appliedSelection = { provider: String(next.provider || ''), model: String(next.model || '') };
+  const sameModel = appliedSelection.provider === deps.provider && appliedSelection.model === deps.model;
+  deps.onRoutePreferenceApplied?.(appliedSelection, sameModel ? undefined : { modelChoice: true });
   return undefined;
 }
