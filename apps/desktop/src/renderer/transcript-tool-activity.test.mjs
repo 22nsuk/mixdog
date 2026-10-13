@@ -1197,12 +1197,13 @@ test('the tool activity expansion setting opens command rows as previews and Ctr
     assert.deepEqual(rowOpen(), [true, true], 'a new Ctrl+O opens calls closed in an earlier one');
     await act(async () => toggleToolActivityExpandAll());
 
-    setToolActivityExpansion('collapsed');
-    await act(async () => {});
+    await act(async () => setToolActivityExpansion('collapsed'));
     assert.equal(document.querySelector('.tool-activity-header').getAttribute('aria-expanded'), 'false');
   } finally {
-    setToolActivityExpansion('collapsed');
-    await act(async () => dom.root.unmount());
+    await act(async () => {
+      setToolActivityExpansion('collapsed');
+      dom.root.unmount();
+    });
     dom.close();
   }
 });
@@ -1249,8 +1250,10 @@ test('a height-clamped preview builds only a bounded part, still offers show mor
     assert.ok(document.querySelector('.tool-activity-item-body').textContent.includes('item 40 of'));
     assert.equal(document.querySelector('.tool-activity-preview-more'), null);
   } finally {
-    setToolActivityExpansion('collapsed');
-    await act(async () => dom.root.unmount());
+    await act(async () => {
+      setToolActivityExpansion('collapsed');
+      dom.root.unmount();
+    });
     dom.close();
   }
 });
