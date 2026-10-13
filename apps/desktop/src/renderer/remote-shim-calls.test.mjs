@@ -126,11 +126,15 @@ test('late route projection keeps the current send and response deadline phases'
   let projected;
   const encrypt = ctx.secureChannel.encryptJson;
   ctx.secureChannel.encryptJson = (payload) => { projected = payload; return encrypt(payload); };
+  let settled = null;
   const read = ctx.call('setModelRoute', () => {
     projections++;
     assert.equal(prepared, true);
     return [{ model: 'next', autoEffort: false, contextTokens: 640_000 }, 'session'];
-  });
+  }).then(
+    (value) => (settled = { value }),
+    (error) => (settled = { error })
+  );
   await flush();
   assert.equal(projections, 0);
   assert.equal(ctx.pending.size, 0);
@@ -143,10 +147,17 @@ test('late route projection keeps the current send and response deadline phases'
   release();
   await flush();
   assert.equal(sent.length, 1);
-  t.mock.timers.tick(19_000);
+  // Visit the original deadline exactly: jumping far past it would exercise
+  // the frozen-page grace and could hide a missing response-deadline rearm.
+  t.mock.timers.tick(1_000);
+  await flush();
+  assert.equal(settled, null, 'the old send deadline must be cancelled');
+  t.mock.timers.tick(18_000);
+  await flush();
   assert.equal(ctx.pending.size, 1, 'response deadline starts after encryption/send');
   ctx.pending.get(1).resolve('applied');
-  assert.equal(await read, 'applied');
+  await read;
+  assert.deepEqual(settled, { value: 'applied' });
   assert.deepEqual(probes, []);
 });
 

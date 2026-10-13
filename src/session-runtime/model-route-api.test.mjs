@@ -100,11 +100,30 @@ test('setRoute on an addressed empty session updates it in place through the man
 });
 
 test('setRoute falls back to mutating the session when the manager cannot update it', async () => {
-  const { api, state } = fixture({ updateSessionRoute: () => null });
+  const { api, state } = fixture({
+    updateSessionRoute: () => null,
+    // Live adoption now uses real capability derivation, not the fixture's
+    // refreshRouteEffort stub. Declare the effort this synthetic model supports.
+    lookupModelMeta: async (_provider, model) => ({
+      id: model, fastCapable: true, reasoningLevels: ['low', 'medium', 'high'],
+    }),
+  });
   await api.setRoute({ provider: 'anthropic', model: 'claude-x', effort: 'low' }, { applyToCurrentSession: true });
   assert.equal(state.session.model, 'claude-x');
   assert.equal(state.session.effort, 'low');
   assert.deepEqual(state.session.modelParameters, {});
+});
+
+test('setRoute fallback does not apply effort absent from authoritative model capabilities', async () => {
+  const { api, state } = fixture({
+    updateSessionRoute: () => null,
+    lookupModelMeta: async (_provider, model) => ({ id: model, fastCapable: true }),
+  });
+  await api.setRoute({ provider: 'anthropic', model: 'claude-x', effort: 'low' }, { applyToCurrentSession: true });
+  assert.equal(state.session.model, 'claude-x');
+  assert.equal(state.route.effort, 'low', 'the requested preference is retained');
+  assert.equal(state.route.effectiveEffort, null, 'the resolved model advertises no effort');
+  assert.equal(state.session.effort, null, 'the fallback uses the resolved effort, not the raw preference');
 });
 
 test('setRoute rejects a model the provider catalog cannot resolve', async () => {
