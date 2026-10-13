@@ -3,6 +3,9 @@ import { t, uiFormatLocale } from './i18n';
 import { readRouteDiagnostics } from '../../../../src/runtime/shared/route-diagnostics.mjs';
 import './route-diagnostics.css';
 
+// A stable machine diagnostic, not a translated UI label.
+const UNAVAILABLE_DIAGNOSTIC = 'route-diagnostics-unavailable';
+
 type Fields = Record<string, unknown>;
 const scalar = (value: unknown): string => {
   if (typeof value === 'boolean') return value ? t('On') : t('Off');
@@ -51,7 +54,7 @@ export function RouteDiagnostics({ value, sessionId, routeAutoEffort, loading = 
   return (
     <details className="route-diagnostics">
       <summary>{t('Model')} · {t('Details')}</summary>
-      <p className="route-diagnostics-note"><code>{data?.evidence || 'route-diagnostics-unavailable'}</code></p>
+      <p className="route-diagnostics-note"><code>{data?.evidence || UNAVAILABLE_DIAGNOSTIC}</code></p>
       {data && (
         <div className="route-diagnostics-columns">
           <section>
