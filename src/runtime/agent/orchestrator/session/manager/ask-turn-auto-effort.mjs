@@ -6,6 +6,7 @@
 // turns) on models whose effort can change mid-conversation without
 // invalidating the prompt cache, and on custom Chat/Responses routes whose
 // model declares effort levels (the effort is sent with each request).
+import { autoEffortDecisionSnapshot } from '../../../../shared/route-diagnostics.mjs';
 import { readSection } from '../../../../shared/config.mjs';
 import { autoEffortModel, turnEffortConfigurationMode } from '../../providers/effort-configuration.mjs';
 import { autoEffortBase, normalizeAutoEffortMode, resolveAutoEffort } from '../../providers/auto-effort.mjs';
@@ -39,13 +40,19 @@ export function turnStepAutoEffort(autoEffort, effortConfiguration) {
     : null;
 }
 
-export function autoEffortMode() {
-  if (process.env.MIXDOG_AUTO_EFFORT) return normalizeAutoEffortMode(process.env.MIXDOG_AUTO_EFFORT);
-  try {
-    return builtinFeatureActive(readSection('agent'), 'autoEffort') ? 'on' : 'off';
-  } catch {
-    return 'off';
+function configuredAutoEffort() {
+  if (process.env.MIXDOG_AUTO_EFFORT) {
+    return { mode: normalizeAutoEffortMode(process.env.MIXDOG_AUTO_EFFORT), source: 'environment' };
   }
+  try {
+    return { mode: builtinFeatureActive(readSection('agent'), 'autoEffort') ? 'on' : 'off', source: 'built-in' };
+  } catch {
+    return { mode: 'off', source: 'unavailable' };
+  }
+}
+
+export function autoEffortMode() {
+  return configuredAutoEffort().mode;
 }
 
 function lastText(messages, role) {
@@ -64,18 +71,25 @@ function lastText(messages, role) {
  * briefly (its first-use load is the longest wait): a missing, still-loading,
  * or slow model yields null and the default effort.
  */
-export async function resolveTurnAutoEffort({ sessionId, session, provider, input }) {
-  const mode = autoEffortMode();
+export async function resolveTurnAutoEffort({ sessionId, session, provider, input, onDecision }) {
+  const { mode, source } = configuredAutoEffort();
+  // A private turn-owner observer, not another log: never include request text,
+  // probabilities, provider configuration, or raw error messages.
+  const skipped = (reason, judge = null) => {
+    onDecision?.(autoEffortDecisionSnapshot({ mode, source, reason, judge, applied: false }));
+    return null;
+  };
   // promptSource marks runtime-injected turns (completion notices, queued work).
   // Agent sessions are judged like any other: their spawn brief and later Lead
   // `send` messages arrive as plain prompts.
-  if (mode === 'off' || input?.promptSource) return null;
+  if (mode === 'off') return skipped(source === 'unavailable' ? 'configuration-unavailable' : 'master-off');
+  if (input?.promptSource) return skipped('runtime-prompt');
   // The session's route turned Auto effort off: its chosen effort stands.
-  if (session?.autoEffort === false) return null;
+  if (session?.autoEffort === false) return skipped('route-off');
   const request = promptContentText(input?.prompt).trim();
   // Skill bodies and runtime blocks arrive as tagged text, not as a request.
-  if (!request || request.startsWith('<')) return null;
-  if (!turnEffortConfigurationMode(session, provider)) return null;
+  if (!request || request.startsWith('<')) return skipped('empty-or-tagged-prompt');
+  if (!turnEffortConfigurationMode(session, provider)) return skipped('unsupported-route');
   const chosen = String(session.effort || '').toLowerCase();
   const base = autoEffortBase(chosen);
   // The previous user request shows the work a short follow-up continues.
@@ -96,7 +110,7 @@ export async function resolveTurnAutoEffort({ sessionId, session, provider, inpu
   };
   if (!judged.probs) {
     recordEffortDecision({ ...record, skipped: judged.skipped });
-    return null;
+    return skipped('judge-unavailable', judged.skipped);
   }
   const resolved = resolveAutoEffort({
     base,
@@ -109,6 +123,10 @@ export async function resolveTurnAutoEffort({ sessionId, session, provider, inpu
     ms: judged.ms,
     probs: judged.probs.map((value) => Number(value.toFixed(3))),
   });
-  if (!resolved) return null;
-  return { ...resolved, applied: mode === 'on' && resolved.effort !== chosen, mode, request };
+  if (!resolved) return skipped('outside-auto-range');
+  const applied = mode === 'on' && resolved.effort !== chosen;
+  onDecision?.(autoEffortDecisionSnapshot({
+    mode, source, reason: mode === 'observe' ? 'observe-only' : 'selected', selectedEffort: resolved.effort, applied,
+  }));
+  return { ...resolved, applied, mode, request };
 }

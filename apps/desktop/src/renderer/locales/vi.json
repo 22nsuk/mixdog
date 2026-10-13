@@ -630,6 +630,7 @@
   "Changed line": "Dòng được thay đổi",
   "Changelog": "Nhật ký thay đổi",
   "Changes": "Thay đổi",
+  "Changing the model for this session may invalidate the prompt cache and increase the cost and latency of subsequent requests. The conversation will be kept. Change the model?": "Thay đổi mô hình cho phiên này có thể làm mất hiệu lực bộ nhớ đệm lời nhắc và tăng chi phí cũng như độ trễ của các yêu cầu tiếp theo. Cuộc trò chuyện sẽ được giữ lại. Đổi mô hình?",
   "Changes apply from the next connection.": "Thay đổi áp dụng từ lần kết nối sau.",
   "Changes in Pull Request #{{number}}": "Thay đổi trong Pull request #{{number}}",
   "Changes in Pull Request #{{value0}}": "Thay đổi trong Pull request #{{value0}}",

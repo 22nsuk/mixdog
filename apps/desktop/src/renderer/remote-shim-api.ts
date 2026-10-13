@@ -77,6 +77,8 @@ export const createRemoteApi = (ctx: RemoteShimContext): DesktopApi => {
   // Per-route Auto reasoning follows its own flag: an older host's selection
   // validator rejects the unknown `autoEffort` key, so it never reaches one.
   const routeAutoEffort = (): boolean => ctx.peerRouteAutoEffort === true;
+  // Invoked by lazy RPC params on the actual sending connection, not before
+  // a cold handshake or while an earlier host's view sync is still pending.
   const hostSelection = <T>(selection: T): T => {
     if (routeAutoEffort() || !selection || typeof selection !== 'object' || !('autoEffort' in selection)) {
       return selection;
@@ -198,7 +200,7 @@ export const createRemoteApi = (ctx: RemoteShimContext): DesktopApi => {
     searchSessionContent: (query) => call('searchSessionContent', [query]),
     subscribeAgentPool: (listener) => agentsCatalog.subscribe(listener),
     renameSession: (sessionId, title) => call('renameSession', [sessionId, title]),
-    continueSessionInModel: (sessionId, route) => call('continueSessionInModel', [sessionId, hostSelection(route)]),
+    continueSessionInModel: (sessionId, route) => call('continueSessionInModel', () => [sessionId, hostSelection(route)]),
     scheduleQuotaResume: (sessionId) => call('scheduleQuotaResume', [sessionId]),
     cancelQuotaResume: (sessionId) => call('cancelQuotaResume', [sessionId]),
     stopShellJob: (sessionId, taskId) => call('stopShellJob', [sessionId, taskId]),
@@ -339,7 +341,7 @@ export const createRemoteApi = (ctx: RemoteShimContext): DesktopApi => {
       const stable = { ...options, id: options?.id || newBrowserId() };
       return recoverableCreation(
         () =>
-          call('submitNewTask', [
+          call('submitNewTask', () => [
             prompt,
             stable,
             draft?.route ? { ...draft, route: hostSelection(draft.route) } : (draft ?? {}),
@@ -379,9 +381,9 @@ export const createRemoteApi = (ctx: RemoteShimContext): DesktopApi => {
       call('resolveToolApprovalForSession', [sessionId, id, decision]),
     subscribeSessionState: (listener) => sessionInbox.subscribe(listener),
     inheritSession: (sourceSessionId, selection, options) =>
-      call('inheritSession', [sourceSessionId, hostSelection(selection ?? null), options ?? null]),
+      call('inheritSession', () => [sourceSessionId, hostSelection(selection ?? null), options ?? null]),
     listProviderModels: (options) => call('listProviderModels', [options]),
-    setModelRoute: (selection, sessionId) => call('setModelRoute', [hostSelection(selection), sessionId]),
+    setModelRoute: (selection, sessionId) => call('setModelRoute', () => [hostSelection(selection), sessionId]),
     setFast: (enabled, sessionId) => call('setFast', [enabled, sessionId]),
     readSettings: () => call('readSettings'),
     updateSetting: (key, enabled) => call('updateSetting', [key, enabled]),

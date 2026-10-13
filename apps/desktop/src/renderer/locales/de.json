@@ -669,6 +669,7 @@
   "Changed line": "Geänderte Zeile",
   "Changelog": "Änderungsprotokoll",
   "Changes": "Änderungen",
+  "Changing the model for this session may invalidate the prompt cache and increase the cost and latency of subsequent requests. The conversation will be kept. Change the model?": "Ein Modellwechsel für diese Sitzung kann den Prompt-Cache ungültig machen und die Kosten sowie die Antwortzeit nachfolgender Anfragen erhöhen. Die Unterhaltung bleibt erhalten. Modell ändern?",
   "Changes apply from the next connection.": "Änderungen gelten ab der nächsten Verbindung.",
   "Changes in Pull Request #{{number}}": "Änderungen in Pull Request #{{number}}",
   "Changes in Pull Request #{{value0}}": "Änderungen in Pull Request #{{value0}}",

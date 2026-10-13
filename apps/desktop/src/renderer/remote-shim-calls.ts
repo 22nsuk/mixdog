@@ -4,7 +4,7 @@ import { RELAY_PAYLOAD_TOO_LARGE_CODE } from '../shared/remote-payload-limit';
 import type { createRemoteCatalog } from '../shared/remote-catalog';
 import { armRemoteCallDeadline } from './remote-call-deadline';
 import { remoteConnectionInterruptedError } from './remote-connection-state';
-import type { RemoteShimContext } from './remote-shim-state';
+import type { RemoteCallParams, RemoteShimContext } from './remote-shim-state';
 
 export const installRemoteCalls = (ctx: RemoteShimContext): void => {
   // Push lanes this browser actually reads. Terminal output, diagnostics and
@@ -51,8 +51,10 @@ export const installRemoteCalls = (ctx: RemoteShimContext): void => {
     ws.send(directFrame);
   };
 
-  const invoke = async <T = unknown>(method: string, params: unknown[] = []): Promise<T> => {
+  const invoke = async <T = unknown>(method: string, params: RemoteCallParams = []): Promise<T> => {
     const ws = await ctx.connect();
+    // Project negotiated fields on the sending connection, after readiness.
+    const resolvedParams = typeof params === 'function' ? params() : params;
     return await new Promise<T>((resolve, reject) => {
       const id = ctx.nextId++;
       // Bounded send phase: a frame that cannot leave this page in time (a
@@ -72,7 +74,7 @@ export const installRemoteCalls = (ctx: RemoteShimContext): void => {
       // Once the frame is sent the network deadline restarts: on a busy
       // phone the ordered encryption queue alone used most of it, failing
       // reads the desktop then answered in milliseconds.
-      void sendApplicationFrame(ws, { id, method, params }).then(
+      void sendApplicationFrame(ws, { id, method, params: resolvedParams }).then(
         () => {
           if (!ctx.pending.has(id)) return;
           cancelDeadline();
@@ -104,7 +106,7 @@ export const installRemoteCalls = (ctx: RemoteShimContext): void => {
     });
   };
 
-  const call = async <T = unknown>(method: string, params: unknown[] = []): Promise<T> => {
+  const call = async <T = unknown>(method: string, params: RemoteCallParams = []): Promise<T> => {
     await ctx.connect();
     if (ctx.peerViewSync && method !== 'abortSession' && method !== 'resolveToolApprovalForSession') {
       await ctx.viewSync.ready();

@@ -630,6 +630,7 @@
   "Changed line": "변경된 줄",
   "Changelog": "변경 내역",
   "Changes": "변경 사항",
+  "Changing the model for this session may invalidate the prompt cache and increase the cost and latency of subsequent requests. The conversation will be kept. Change the model?": "이 세션의 모델을 변경하면 프롬프트 캐시가 무효화되어 이후 요청의 비용과 응답 시간이 증가할 수 있습니다. 기존 대화는 유지됩니다. 모델을 변경하시겠습니까?",
   "Changes apply from the next connection.": "변경 사항은 다음 연결부터 적용됩니다.",
   "Changes in Pull Request #{{number}}": "풀 리퀘스트 #{{number}}의 변경 사항",
   "Changes in Pull Request #{{value0}}": "풀 리퀘스트 #{{value0}}의 변경 사항",

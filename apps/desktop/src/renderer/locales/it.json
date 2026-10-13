@@ -707,6 +707,7 @@
   "Changed line": "Riga modificata",
   "Changelog": "Registro delle modifiche",
   "Changes": "Modifiche",
+  "Changing the model for this session may invalidate the prompt cache and increase the cost and latency of subsequent requests. The conversation will be kept. Change the model?": "Cambiare il modello per questa sessione può invalidare la cache dei prompt e aumentare il costo e la latenza delle richieste successive. La conversazione verrà mantenuta. Cambiare modello?",
   "Changes apply from the next connection.": "Le modifiche si applicano dalla prossima connessione.",
   "Changes in Pull Request #{{number}}": "Modifiche nella pull request n.{{number}}",
   "Changes in Pull Request #{{value0}}": "Modifiche nella pull request n.{{value0}}",

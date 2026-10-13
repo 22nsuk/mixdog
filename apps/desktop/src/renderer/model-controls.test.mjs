@@ -10,7 +10,7 @@ const { dom } = installTestDom(null, {
   jsdom: {
     url: 'https://mixdog.test/',
   },
-  expose: ['HTMLElement', 'Node'],
+  expose: ['HTMLElement', 'Node', 'CustomEvent'],
   actEnvironment: false,
 });
 globalThis.HTMLElement.prototype.scrollIntoView = () => {};
@@ -84,6 +84,7 @@ const { ModelSelector } = await import('./model-controls.tsx');
 const { invalidateSharedModelCatalogRequest } = await import('./model-catalog-cache.ts');
 
 test.beforeEach(() => {
+  window.confirm = () => true;
   requests.length = 0;
   availableModels = [model];
   providerSetup = { api: [{ id: 'openai', authenticated: true }] };
@@ -760,3 +761,92 @@ test('exact context tokens: input parsing, clamping, and the default/stop collap
   assert.equal(routedExactContextTokens(640000, 500000, max), 640000);
   assert.equal(routedExactContextTokens(undefined, 500000, max), 0);
 });
+
+for (const mode of ['accept', 'cancel', 'draft', 'quota-cancel', 'same-live-model']) {
+  test(`model picker ${mode} confirms before mutation and preserves cancelled selections`, async () => {
+    const nextModel = { ...model, model: `gpt-confirm-${mode}`, display: `Confirm ${mode}` };
+    const initialModel = mode === 'same-live-model' ? nextModel : model;
+    const desiredModel = mode === 'same-live-model' ? model : nextModel;
+    const accepted = mode === 'accept' || mode === 'same-live-model';
+    availableModels = [model, nextModel];
+    const writes = [];
+    const applied = [];
+    const preferences = [];
+    const drafts = [];
+    const prompts = [];
+    const oldSetRoute = window.mixdogDesktop.setModelRoute;
+    const { beginQuotaContinue, takeQuotaContinue, cancelQuotaContinue } = await import('./quota-continue.ts');
+    const sessionId = mode === 'draft' ? '' : `session-confirm-${mode}`;
+    const quotaSelection = () => { throw new Error('cancelled quota continuation must not run'); };
+    window.confirm = (message) => {
+      assert.equal(writes.length, 0);
+      assert.equal(preferences.length, 0);
+      prompts.push(message);
+      return mode === 'accept';
+    };
+    window.mixdogDesktop.setModelRoute = async (selection, id) => {
+      writes.push({ selection, id });
+      return { ...selection, sessionId: id, sessionProvider: selection.provider, sessionModel: selection.model };
+    };
+    const host = document.createElement('main');
+    document.body.append(host);
+    const root = createRoot(host);
+    try {
+      await act(async () => root.render(React.createElement(ModelSelector, {
+        provider: initialModel.provider,
+        model: initialModel.model,
+        sessionProvider: model.provider,
+        sessionModel: model.model,
+        effort: 'high',
+        fast: false,
+        fastCapable: true,
+        modelDisabled: false,
+        tuningDisabled: false,
+        answersModelPickerRequests: true,
+        sessionId,
+        invokeResult: (action) => action(),
+        applySnapshot: (snapshot) => applied.push(snapshot),
+        onOpenSettings() {},
+        onDraftSelection: mode === 'draft' ? (selection) => drafts.push(selection) : undefined,
+        onRoutePreferenceApplied: (selection) => preferences.push(selection),
+      })));
+      if (mode === 'quota-cancel') {
+        await act(async () => assert.equal(beginQuotaContinue(sessionId, quotaSelection), true));
+      } else {
+        await act(async () => document.querySelector('.model-trigger').click());
+        const row = [...document.querySelectorAll('.route-sheet-row')].find((button) =>
+          button.textContent.includes('Model')
+        );
+        await act(async () => row.click());
+      }
+      const nextOption = [...document.querySelectorAll('.model-group--provider [role="option"]')].find((button) =>
+        button.textContent.includes(desiredModel.display)
+      );
+      assert.ok(nextOption);
+      await act(async () => nextOption.click());
+      assert.equal(prompts.length, mode === 'draft' || mode === 'same-live-model' ? 0 : 1);
+      if (prompts.length) assert.match(prompts[0], /prompt cache.*cost and latency/);
+      assert.equal(writes.length, accepted ? 1 : 0);
+      assert.equal(applied.length, accepted ? 1 : 0);
+      assert.equal(preferences.length, accepted ? 1 : 0);
+      if (mode === 'draft') {
+        assert.equal(drafts.length, 1);
+        assert.equal(drafts[0].model, nextModel.model);
+      } else if (!accepted) {
+        assert.ok(document.querySelector('.model-trigger').textContent.includes(model.display));
+        assert.equal(window.localStorage.getItem('mixdog.desktop-recent-models'), null);
+      } else {
+        assert.equal(writes[0].id, sessionId);
+        assert.equal(writes[0].selection.model, desiredModel.model);
+      }
+      if (mode === 'quota-cancel') {
+        assert.equal(takeQuotaContinue(sessionId), quotaSelection, 'cancel must preserve the pending quota action');
+      }
+    } finally {
+      cancelQuotaContinue(sessionId);
+      await act(async () => root.unmount());
+      host.remove();
+      window.mixdogDesktop.setModelRoute = oldSetRoute;
+    }
+  });
+}

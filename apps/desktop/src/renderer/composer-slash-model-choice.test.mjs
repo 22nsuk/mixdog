@@ -5,6 +5,7 @@ test('/model counts as a model choice only when it picks a different model', asy
   const { createSlashExecutor } = await import('./composer-slash-executor.ts');
   const previousWindow = globalThis.window;
   globalThis.window = {
+    confirm: () => true,
     mixdogDesktop: {
       listProviderModels: async () => [
         { provider: 'openai', model: 'gpt-6-sol', display: 'Sol' },

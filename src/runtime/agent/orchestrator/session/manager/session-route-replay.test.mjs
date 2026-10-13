@@ -47,7 +47,7 @@ async function persisted(id) {
   throw new Error('route update was never persisted');
 }
 
-async function plant(id) {
+async function plant(id, extra = {}) {
   await saveSessionAsync(
     {
       id,
@@ -57,6 +57,7 @@ async function plant(id) {
       messages: [{ role: 'user', content: 'hi' }, replayAssistant()],
       generation: 0,
       closed: false,
+      ...extra,
     },
     { expectedGeneration: 0 }
   );
@@ -77,4 +78,52 @@ test('an ordinary route change keeps provider replay fields', async () => {
   updateSessionRoute(id, { provider: 'openai-oauth', model: 'gpt-x' });
   assert.ok(loadSession(id).messages[1].assistantBlocks);
   assert.ok((await persisted(id)).messages[1].assistantBlocks);
+});
+
+test('explicit same-provider model continuation keeps history and resets replay and usage baselines', async () => {
+  const id = `sess_replay_model_${process.pid}`;
+  await plant(id, {
+    providerState: { continuation: 'old-model' },
+    lastInputTokens: 900,
+    lastOutputTokens: 120,
+    lastCachedReadTokens: 800,
+    lastCacheWriteTokens: 100,
+    lastContextTokens: 900,
+  });
+  const updated = updateSessionRoute(id, { provider: 'anthropic-oauth', model: 'gpt-x' }, { crossProvider: true });
+  assert.equal(updated.id, id);
+  assert.equal(updated.provider, 'anthropic-oauth');
+  assert.equal(updated.model, 'gpt-x');
+  assert.deepEqual(updated.messages[0], { role: 'user', content: 'hi' });
+  assert.deepEqual(updated.messages[1], { role: 'assistant', content: 'answer' });
+  assert.equal(updated.providerState, undefined);
+  for (const field of [
+    'lastInputTokens', 'lastOutputTokens', 'lastCachedReadTokens', 'lastCacheWriteTokens', 'lastContextTokens',
+  ]) assert.equal(updated[field], 0, field);
+  const saved = await persisted(id);
+  assert.equal(saved.provider, updated.provider);
+  assert.deepEqual(saved.messages[1], { role: 'assistant', content: 'answer' });
+});
+
+
+test('live route diagnostics retain their historical receipt through replay cleanup and disk persistence', async () => {
+  const { captureRouteDiagnostics } = await import('../../../../shared/route-diagnostics.mjs');
+  const { inspectRouteDiagnostics } = await import('../../runtime-core/route-diagnostics.mjs');
+  const id = `sess_replay_diagnostics_${process.pid}`;
+  const receipt = captureRouteDiagnostics({ id, provider: 'anthropic-oauth', model: 'claude-x',
+    effort: 'high', autoEffort: false, contextWindow: 128_000 }, { turnEffort: 'high', at: 1700000000000 });
+  const user = { role: 'user', content: 'keep this request', meta: { routeDiagnostics: receipt } };
+  await plant(id, { messages: [user, replayAssistant()] });
+  const updated = updateSessionRoute(id, { provider: 'openai-oauth', model: 'gpt-x', effort: 'low',
+    autoEffort: false, contextTokens: 333_333, selectedContextWindow: 333_333 }, { crossProvider: true });
+  for (const session of [updated, await persisted(id)]) {
+    assert.deepEqual(session.messages[0], user);
+    assert.deepEqual(session.messages[1], { role: 'assistant', content: 'answer' });
+    const diagnostics = inspectRouteDiagnostics(session);
+    assert.equal(diagnostics.current.model, 'gpt-x');
+    assert.equal(diagnostics.current.contextWindow, 333_333);
+    assert.equal(diagnostics.lastTurn.configured.model, 'claude-x');
+    assert.equal(diagnostics.lastTurn.configured.contextWindow, 128_000);
+    assert.equal(diagnostics.lastTurn.preparedEffort, 'high');
+  }
 });

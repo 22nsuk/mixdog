@@ -747,6 +747,7 @@
   "Changed line": "Изменённая строка",
   "Changelog": "Список изменений",
   "Changes": "Изменения",
+  "Changing the model for this session may invalidate the prompt cache and increase the cost and latency of subsequent requests. The conversation will be kept. Change the model?": "Смена модели для этого сеанса может сделать кеш промптов недействительным и увеличить стоимость и задержку последующих запросов. Переписка сохранится. Сменить модель?",
   "Changes apply from the next connection.": "Изменения вступят в силу при следующем подключении.",
   "Changes in Pull Request #{{number}}": "Изменения в pull request №{{number}}",
   "Changes in Pull Request #{{value0}}": "Изменения в pull request №{{value0}}",

@@ -2,6 +2,8 @@ import type { DesktopCapability, DesktopModelSelection } from '../shared/contrac
 import type { CommandSurface as CommandSurfaceName, SettingsSection } from './slash-commands';
 import type { SurfaceApi } from './command-surface-cache';
 import { commandSurfaceDisplaySnapshot } from './command-surface-state';
+import { RouteDiagnostics } from './RouteDiagnostics';
+import { record } from './record-utils';
 import { ContextBody } from './ContextBody';
 import { UsageSurfaceBody } from './UsageSurface';
 import type { UsageSurfaceMode } from './usage-surface-mode';
@@ -44,14 +46,22 @@ export function SurfaceBody({
   const busy = Boolean(pending);
   if (surface === 'context') {
     return (
-      <ContextBody
-        status={data.contextStatus}
-        snapshot={commandSurfaceDisplaySnapshot(data, snapshot)}
-        sessionUsage={data.getSessionUsage}
-        request={request}
-        loading={loading}
-        readingInHeader
-      />
+      <>
+        <ContextBody
+          status={data.contextStatus}
+          snapshot={commandSurfaceDisplaySnapshot(data, snapshot)}
+          sessionUsage={data.getSessionUsage}
+          request={request}
+          loading={loading}
+          readingInHeader
+        />
+        <RouteDiagnostics
+          value={record(data.contextStatus).routeDiagnostics}
+          sessionId={sessionId || String(record(commandSurfaceDisplaySnapshot(data, snapshot)).sessionId || '')}
+          routeAutoEffort={typeof window !== 'undefined' ? window.mixdogDesktop?.routeAutoEffort : undefined}
+          loading={loading}
+        />
+      </>
     );
   }
   if (surface === 'stats') {

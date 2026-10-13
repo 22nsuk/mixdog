@@ -4,6 +4,7 @@
 // under the abort-aware wrapper with the caller's approval hook installed
 // (runAskAgentLoop). Provider-not-available and trim failures throw here so
 // the caller marks the session errored instead of leaving stage='connecting'.
+import { captureRouteDiagnostics } from '../../../../shared/route-diagnostics.mjs';
 import { getProvider } from '../../providers/registry.mjs';
 import { prepareExplicitSkills } from '../explicit-skills.mjs';
 import { prepareTurnEffortConfiguration } from '../../providers/effort-configuration.mjs';
@@ -27,7 +28,11 @@ export async function prepareAskTurn({ sessionId, opened, input, cwdOverride, tr
   // Register the live session object for synchronous close snapshots.
   runtime.session = session;
   if (!provider) throw new Error(`Provider "${session.provider}" not available`);
-  const autoEffort = await resolveTurnAutoEffort({ sessionId, session, provider, input });
+  let effortDecision;
+  const autoEffort = await resolveTurnAutoEffort({
+    sessionId, session, provider, input,
+    onDecision: (decision) => { effortDecision = decision; },
+  });
   const turnEffort = autoEffort?.applied ? autoEffort.effort : session.effort || null;
   const effortConfiguration = prepareTurnEffortConfiguration(
     session,
@@ -65,6 +70,16 @@ export async function prepareAskTurn({ sessionId, opened, input, cwdOverride, tr
     turnPromptSource: input.promptSource,
     effortConfiguration,
   });
+  // Attach bounded evidence before the preflight checkpoint; the normal
+  // message persistence retains it for resumed and worker sessions too.
+  userTurn.userTurnMessage.meta = {
+    ...userTurn.userTurnMessage.meta,
+    routeDiagnostics: captureRouteDiagnostics(session, {
+      decision: effortDecision,
+      turnEffort: effortConfiguration?.effort ?? turnEffort,
+      at: startedAt,
+    }),
+  };
   const { historyMessages, outgoing } = userTurn;
   turn.userTurnContent = userTurn.userTurnMessage.content;
   turn.outgoing = outgoing;

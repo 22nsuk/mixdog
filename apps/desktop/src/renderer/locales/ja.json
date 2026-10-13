@@ -630,6 +630,7 @@
   "Changed line": "変更された行",
   "Changelog": "変更履歴",
   "Changes": "変更内容",
+  "Changing the model for this session may invalidate the prompt cache and increase the cost and latency of subsequent requests. The conversation will be kept. Change the model?": "このセッションのモデルを変更すると、プロンプトキャッシュが無効になり、以降のリクエストのコストと応答時間が増える可能性があります。会話は保持されます。モデルを変更しますか？",
   "Changes apply from the next connection.": "変更は次回の接続から適用されます。",
   "Changes in Pull Request #{{number}}": "プルリクエスト #{{number}} の変更",
   "Changes in Pull Request #{{value0}}": "プルリクエスト #{{value0}} の変更",

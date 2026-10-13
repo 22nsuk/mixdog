@@ -630,6 +630,7 @@
   "Changed line": "更改的行",
   "Changelog": "更新日志",
   "Changes": "更改",
+  "Changing the model for this session may invalidate the prompt cache and increase the cost and latency of subsequent requests. The conversation will be kept. Change the model?": "更改此会话的模型可能会使提示缓存失效，并增加后续请求的费用和响应时间。对话将予以保留。是否更改模型？",
   "Changes apply from the next connection.": "更改将在下次连接时生效。",
   "Changes in Pull Request #{{number}}": "拉取请求 #{{number}} 中的更改",
   "Changes in Pull Request #{{value0}}": "拉取请求 #{{value0}} 中的更改",

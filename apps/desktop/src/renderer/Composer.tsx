@@ -227,6 +227,8 @@ export type ComposerProps = {
   promptHistoryList?: unknown[];
   provider: string;
   model: string;
+  sessionProvider?: string;
+  sessionModel?: string;
   effort: string;
   fast: boolean;
   fastCapable: boolean;
@@ -286,6 +288,8 @@ export const Composer = memo(function Composer(props: ComposerProps) {
     promptHistoryList,
     provider,
     model,
+    sessionProvider,
+    sessionModel,
     effort,
     fast,
     fastCapable,
@@ -499,6 +503,8 @@ export const Composer = memo(function Composer(props: ComposerProps) {
     turnBusy,
     provider,
     model,
+    sessionProvider,
+    sessionModel,
     effort,
     fast,
     fastCapable,
@@ -817,6 +823,8 @@ export const Composer = memo(function Composer(props: ComposerProps) {
           modelAside={modelAside}
           provider={provider}
           model={model}
+          sessionProvider={sessionProvider}
+          sessionModel={sessionModel}
           effort={effort}
           fast={fast}
           fastCapable={fastCapable}

@@ -107,26 +107,9 @@ function assertSetRouteStaysNextSessionOnly() {
       'setRoute must default applyToCurrentSession to false (model changes apply to the next session only)'
     );
   }
-  // A live session whose route is committed (a model reply, a compaction
-  // summary, or an in-flight turn) is never rewritten in place, whatever
-  // applyToCurrentSession says: only effort/Fast tuning may reach it, from its
-  // next turn. Prompts that were all refused before any reply commit nothing.
-  if (
-    !/const currentSessionEmpty = !!session && !sessionRouteCommitted\(session\)/.test(setRouteBlock) ||
-    !/export function sessionRouteCommitted/.test(runtimeSrc) ||
-    !/hasRouteHistoryMessage\(session\?\.liveTurnMessages\) \|\|/.test(runtimeSrc) ||
-    !/message\?\.role === 'assistant'/.test(runtimeSrc) ||
-    !/if \(!currentSessionEmpty\) \{/.test(setRouteBlock) ||
-    !/return getRoute\(\);/.test(setRouteBlock)
-  ) {
-    throw new Error(
-      'setRoute must early-return before touching a live session that owns route history (model changes apply to the next session only)'
-    );
-  }
-  // Empty current session must apply live so /model before the first chat
-  // updates route + statusline at once, but compact summary anchors are route
-  // history and must keep a compacted session next-session-only. Seeded system
-  // or synthetic assistant/tool rows alone must NOT make the session non-empty.
+  // Explicit idle-session changes are covered by behavioral route tests.
+  // Keep the default/empty-session policy: compact summary anchors own route
+  // history, while seeded system or synthetic assistant/tool rows alone do not.
   if (
     !/hasRouteHistoryMessage\(session\?\.messages\)/.test(runtimeSrc) ||
     !/hasRouteHistoryMessage\(session\?\.liveTurnMessages\)/.test(runtimeSrc) ||
@@ -136,7 +119,7 @@ function assertSetRouteStaysNextSessionOnly() {
     !/function hasRouteHistoryMessage/.test(runtimeSrc)
   ) {
     throw new Error(
-      'setRoute must apply live only to route-empty sessions and must treat compact summary anchors as non-empty route history'
+      'setRoute must distinguish route-empty sessions from compact summary anchors when choosing its default policy'
     );
   }
   if (
@@ -195,7 +178,7 @@ function assertTuiSetRouteKeepsNextSessionDefault() {
   }
 }
 
-test('setRoute stays next-session-only and refreshes cache fields on live-apply', () => {
+test('setRoute defaults to next-session-only and refreshes cache fields on live-apply', () => {
   assertSetRouteStaysNextSessionOnly();
   assertUpdateSessionRouteRefreshesCacheFields();
   assertTuiSetRouteKeepsNextSessionDefault();

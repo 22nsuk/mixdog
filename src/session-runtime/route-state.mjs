@@ -5,7 +5,7 @@ import {
   modelSettingsFor,
 } from '../runtime/agent/orchestrator/runtime-core/config-helpers.mjs';
 import { clean, hasOwn } from '../runtime/agent/orchestrator/runtime-core/session-text.mjs';
-import { coerceEffortFor } from '../runtime/agent/orchestrator/runtime-core/effort.mjs';
+import { coerceEffortFor, effortItemsFor } from '../runtime/agent/orchestrator/runtime-core/effort.mjs';
 import { fastCapableFor } from '../runtime/agent/orchestrator/runtime-core/model-capabilities.mjs';
 import { providerCachedModelMetadataSync } from '../runtime/agent/orchestrator/providers/provider-catalog-cache.mjs';
 import { contextWindowRange, normalizeContextTokens } from '../runtime/shared/llm/default-context-window.mjs';
@@ -110,4 +110,35 @@ export function routeModelDisplay(config, targetRoute, modelMeta) {
     (metaName && metaName !== clean(targetRoute.model) ? metaName : '') ||
     clean(targetRoute.modelDisplay)
   );
+}
+
+/** Resolve a prepared route without I/O so adoption and live apply share one tick. */
+export function resolveRouteMetadataState(config, targetRoute, modelMeta) {
+  const { effectiveEffort, fastCapable } = resolveRouteEffortState(targetRoute, modelMeta);
+  const contextState = resolveRouteContextState(targetRoute, modelMeta);
+  const contextValue = clean(targetRoute.modelParameters?.context);
+  const contextOption = (modelMeta?.modelParameterOptions || [])
+    .find((option) => option?.id === 'context')
+    ?.options?.find((option) => clean(option?.value) === contextValue);
+  const modelDisplay = routeModelDisplay(config, targetRoute, modelMeta);
+  const selectedContextWindow = [contextState.selectedContextWindow, contextOption?.contextWindow]
+    .map(Number)
+    .find((value) => value > 0);
+  // Retain main's exact-token selection semantics in synchronous live adoption.
+  const contextTokens = contextState.contextDefaultPercent === undefined
+    ? normalizeContextTokens(targetRoute.contextTokens)
+    : contextState.contextTokens;
+  const { contextTokens: _requestedTokens, ...routeFields } = targetRoute;
+  return {
+    ...routeFields,
+    fast: fastCapable ? targetRoute.fast === true : false,
+    fastCapable,
+    effectiveEffort,
+    effortOptions: effortItemsFor(targetRoute.provider, modelMeta, effectiveEffort),
+    contextPercent: contextState.contextPercent,
+    contextDefaultPercent: contextState.contextDefaultPercent,
+    ...(contextTokens ? { contextTokens } : {}),
+    ...(selectedContextWindow ? { selectedContextWindow } : {}),
+    ...(modelDisplay ? { modelDisplay } : {}),
+  };
 }

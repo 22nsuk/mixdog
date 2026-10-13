@@ -70,12 +70,15 @@ export function createSessionRouteApi(bag) {
 
   const setRoute = async (opts) => {
     if (getState().commandBusy && !routeWrite) return false;
-    // Any route change supersedes waiting for the old route's quota reset.
-    bag.supersedeQuotaResume?.(getState().sessionId);
+    const routeOpts = opts && typeof opts === 'object' ? opts : {};
+    // Live requests are resolved and checked by the runtime before any model
+    // preview: a preset name is not a model id, and omitted fields belong to
+    // the selected route rather than necessarily to the current session.
+    const applyToCurrentSession = routeOpts.applyToCurrentSession === true;
+    if (!applyToCurrentSession) bag.supersedeQuotaResume?.(getState().sessionId);
     const token = ++routeSequence;
     const previousWrite = routeWrite;
-    const routeOpts = opts && typeof opts === 'object' ? opts : {};
-    const preview = optimisticRoutePatch(routeOpts, getState());
+    const preview = applyToCurrentSession ? null : optimisticRoutePatch(routeOpts, getState());
     // Preview immediately, serialize persistence without dropping a later
     // click. Earlier completions cannot replace the newest visible choice.
     set({ commandBusy: true, ...(preview || {}) });
@@ -84,19 +87,22 @@ export function createSessionRouteApi(bag) {
       if (previousWrite) await previousWrite.catch(() => {});
       const previousRoute = routeState();
       try {
-        // Explicit addressing initializes an empty session in place; the
-        // runtime continues to own established-session route policy.
-        const applyToCurrentSession = routeOpts.applyToCurrentSession === true;
+        // Explicit addressing applies to this idle session; the runtime
+        // owns cache/replay cleanup when an established model changes.
         const keepMainModel = routeOpts.keepMainModel === true;
         const { applyToCurrentSession: _drop, keepMainModel: _keep, ...nextRoute } = routeOpts;
         const resolvedRoute = await runtime.setRoute(nextRoute, { applyToCurrentSession, keepMainModel });
+        if (applyToCurrentSession) bag.supersedeQuotaResume?.(getState().sessionId);
         if (token === routeSequence) {
           if (applyToCurrentSession) syncContextStats({ allowEstimated: true });
           publishRoute();
         }
         return resolvedRoute;
       } catch (error) {
-        if (token === routeSequence && preview) {
+        if (token === routeSequence) {
+          // A prior serialized request may already have committed while its
+          // publication was superseded. Restore that authoritative baseline
+          // even when this live request had no optimistic preview.
           set({ ...previousRoute, stats: { ...getState().stats } });
         }
         throw error;
