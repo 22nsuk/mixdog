@@ -6,6 +6,7 @@
  * carrying the partial turn, and the usage accounting (promptTokenCount is
  * already the total, cached tokens included).
  */
+import { geminiUsageCompleteness } from './lib/usage-completeness.mjs';
 import { traceAgentUsage } from '../agent-trace.mjs';
 import { createProviderReplay } from './lib/provider-replay.mjs';
 import { parseToolCalls, collectGeminiGroundingSources, parseGeminiTextPartMetadata } from './gemini-schema.mjs';
@@ -18,7 +19,14 @@ export function normalizeAntigravityUsage(um) {
   const outputTokens =
     (um.candidatesTokenCount || um.candidates_token_count || 0) +
     (um.thoughtsTokenCount || um.thoughts_token_count || 0);
-  return { inputTokens, outputTokens, cachedTokens, promptTokens: inputTokens, raw: um };
+  return {
+    ...geminiUsageCompleteness(um, inputTokens, outputTokens),
+    inputTokens,
+    outputTokens,
+    cachedTokens,
+    promptTokens: inputTokens,
+    raw: um,
+  };
 }
 
 /**

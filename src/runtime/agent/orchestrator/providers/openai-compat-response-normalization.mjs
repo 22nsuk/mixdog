@@ -6,6 +6,7 @@ import {
   writeCompatCacheTrace,
   writeXaiResponsesCacheTrace,
 } from './openai-compat-xai.mjs';
+import { isReportedTokenCount } from './lib/usage-completeness.mjs';
 import { createProviderReplay } from './lib/provider-replay.mjs';
 
 const reportedNumber = (value) =>
@@ -90,6 +91,8 @@ export function chatCompletionUsage(providerName, usage) {
   return withCostUsd(
     {
       inputTokens: input,
+      inputTokensComplete: isReportedTokenCount(usage.prompt_tokens ?? usage.input_tokens),
+      outputTokensComplete: isReportedTokenCount(usage.completion_tokens ?? usage.output_tokens),
       outputTokens: usage.completion_tokens ?? usage.output_tokens ?? 0,
       cachedTokens: extractCompatCachedTokens(usage),
       cacheWriteTokens: extractCacheWriteTokens(usage),
@@ -107,6 +110,8 @@ export function responsesUsage(usage) {
   return withCostUsd(
     {
       inputTokens,
+      inputTokensComplete: isReportedTokenCount(usage.input_tokens ?? usage.prompt_tokens),
+      outputTokensComplete: isReportedTokenCount(usage.output_tokens ?? usage.completion_tokens),
       outputTokens: usage.output_tokens ?? usage.completion_tokens ?? 0,
       cachedTokens: extractCompatCachedTokens(usage),
       cacheWriteTokens: extractCacheWriteTokens(usage),

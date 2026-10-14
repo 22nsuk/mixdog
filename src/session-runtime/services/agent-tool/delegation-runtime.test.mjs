@@ -35,6 +35,46 @@ process.on('exit', () => {
   } catch {}
 });
 
+const { sendViaHttpSse } = await import(
+  '../../../runtime/agent/orchestrator/providers/openai-oauth-http-sse.mjs'
+);
+const { parseSSEStream } = await import('../../../runtime/agent/orchestrator/providers/anthropic-sse.mjs');
+const { buildAnthropicTurnResult } = await import(
+  '../../../runtime/agent/orchestrator/providers/anthropic-turn-result.mjs'
+);
+const adapterSse = (events) =>
+  new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''));
+const fromResponsesWire = async (usage) =>
+  (
+    await sendViaHttpSse({
+      auth: { type: 'openai-direct', apiKey: 'fixture' },
+      body: { model: 'fixture' },
+      useModel: 'fixture',
+      fetchFn: async () =>
+        adapterSse([
+          { type: 'response.completed', response: { id: 'fixture', status: 'completed', output: [], usage } },
+        ]),
+    })
+  ).usage;
+const fromAnthropicWire = async (usage) =>
+  buildAnthropicTurnResult(
+    await parseSSEStream(
+      adapterSse([
+        { type: 'message_start', message: { model: 'fixture', usage } },
+        { type: 'content_block_start', index: 0, content_block: { type: 'text', text: 'fixture' } },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_delta', delta: { stop_reason: 'end_turn' } },
+        { type: 'message_stop' },
+      ]),
+      null,
+      null,
+      null,
+      null,
+      {}
+    ),
+    { provider: 'anthropic', useModel: 'fixture', opts: {} }
+  ).usage;
+
 const cases = [
   ['missing usage', [undefined], null, null],
   ['output only', [{ outputTokens: 7 }], null, 7],
@@ -59,8 +99,22 @@ const cases = [
   ],
 ];
 
+for (const [name, adapt] of [
+  ['Responses HTTP', fromResponsesWire],
+  ['Anthropic SSE API-key', fromAnthropicWire],
+]) {
+  cases.push([
+    `${name} loses no missing-input evidence`,
+    [{ input_tokens: 10, output_tokens: 2 }, { output_tokens: 3 }],
+    null,
+    5,
+    adapt,
+  ]);
+  cases.push([`${name} retains explicit zero`, [{ input_tokens: 0, output_tokens: 0 }], 0, 0, adapt]);
+}
+
 for (const operation of ['spawn', 'send']) {
-  for (const [name, usages, inputTokens, outputTokens] of cases) {
+  for (const [name, usages, inputTokens, outputTokens, adapt = (value) => value] of cases) {
     test(`${operation}: real turn preserves ${name}`, async () => {
       let sends = 0;
       const providerName = 'delegation-runtime-fixture';
@@ -76,7 +130,7 @@ for (const operation of ['spawn', 'send']) {
                 /delegation fixture/,
                 'the real read tool returned fixture bytes'
               );
-            const usage = usages[sends++];
+            const usage = await adapt(usages[sends++]);
             assert.ok(sends <= usages.length, 'unexpected extra provider call');
             return {
               content: sends === usages.length ? 'fixture answer' : '',

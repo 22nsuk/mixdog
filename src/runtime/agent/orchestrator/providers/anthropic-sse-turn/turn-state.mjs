@@ -6,6 +6,8 @@
  * turn's progress is hidden in a closure.
  */
 
+import { isReportedTokenCount } from '../lib/usage-completeness.mjs';
+
 export function createAnthropicTurnState() {
   return {
     content: '',
@@ -13,7 +15,18 @@ export function createAnthropicTurnState() {
     hasThinkingContent: false,
     contentBlockTypes: new Set(),
     toolCalls: [],
-    usage: { inputTokens: 0, outputTokens: 0, cachedTokens: 0, cacheWriteTokens: 0, raw: null },
+    usage: {
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedTokens: 0,
+      cacheWriteTokens: 0,
+      raw: null,
+      inputTokensComplete: false,
+      outputTokensComplete: false,
+      promptTokensComplete: false,
+      cachedTokensComplete: false,
+      cacheWriteTokensComplete: false,
+    },
     stopReason: null,
     stopDetails: undefined,
     fallbackEvents: [],
@@ -27,10 +40,22 @@ export function createAnthropicTurnState() {
 // Final usage can revise any slot. Omitted fields preserve the earlier
 // report; explicit zero replaces it. Update before terminal early exits.
 export function updateTurnUsage(usage, raw) {
-  if (raw.input_tokens != null) usage.inputTokens = raw.input_tokens;
-  if (raw.output_tokens != null) usage.outputTokens = raw.output_tokens;
-  if (raw.cache_read_input_tokens != null) usage.cachedTokens = raw.cache_read_input_tokens;
-  if (raw.cache_creation_input_tokens != null) usage.cacheWriteTokens = raw.cache_creation_input_tokens;
+  if (raw.input_tokens != null) {
+    usage.inputTokens = raw.input_tokens;
+    usage.inputTokensComplete = isReportedTokenCount(raw.input_tokens);
+  }
+  if (raw.output_tokens != null) {
+    usage.outputTokens = raw.output_tokens;
+    usage.outputTokensComplete = isReportedTokenCount(raw.output_tokens);
+  }
+  if (raw.cache_read_input_tokens != null) {
+    usage.cachedTokens = raw.cache_read_input_tokens;
+    usage.cachedTokensComplete = isReportedTokenCount(raw.cache_read_input_tokens);
+  }
+  if (raw.cache_creation_input_tokens != null) {
+    usage.cacheWriteTokens = raw.cache_creation_input_tokens;
+    usage.cacheWriteTokensComplete = isReportedTokenCount(raw.cache_creation_input_tokens);
+  }
   // The 1-hour-TTL share of cache writes, priced separately.
   if (raw.cache_creation?.ephemeral_1h_input_tokens != null) {
     usage.cacheWrite1hTokens = raw.cache_creation.ephemeral_1h_input_tokens;
@@ -38,4 +63,11 @@ export function updateTurnUsage(usage, raw) {
   usage.raw = { ...(usage.raw || {}), ...raw };
   // Input excludes cache; all three slots contribute to prompt volume.
   usage.promptTokens = usage.inputTokens + usage.cachedTokens + usage.cacheWriteTokens;
+  // OpenCode Go converts this additive split to inclusive input. Missing
+  // cache components must not become a complete inclusive prompt count.
+  usage.promptTokensComplete =
+    usage.inputTokensComplete &&
+    usage.cachedTokensComplete &&
+    usage.cacheWriteTokensComplete &&
+    isReportedTokenCount(usage.promptTokens);
 }

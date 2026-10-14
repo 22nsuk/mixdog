@@ -3,6 +3,7 @@
  * run: completion chunks, the terminal usage record and the two ways a
  * stream ends (finish / fail).
  */
+import { isReportedTokenCount } from './lib/usage-completeness.mjs';
 import { textEncoder } from './cursor-wire-transport.mjs';
 
 // Normalized usage of a Cursor run, from the terminal usage record.
@@ -11,6 +12,12 @@ export function cursorUsage(rawUsage) {
     rawUsage.input_tokens_known === false ? null : Number(rawUsage.prompt_tokens ?? rawUsage.input_tokens ?? 0);
   return {
     inputTokens,
+    inputTokensComplete:
+      rawUsage.input_tokens_known !== false &&
+      isReportedTokenCount(rawUsage.prompt_tokens ?? rawUsage.input_tokens),
+    outputTokensComplete:
+      rawUsage.output_tokens_known !== false &&
+      isReportedTokenCount(rawUsage.completion_tokens ?? rawUsage.output_tokens),
     outputTokens: Number(rawUsage.completion_tokens ?? rawUsage.output_tokens ?? 0),
     cachedTokens: rawUsage.cache_tokens_known === false ? null : Number(rawUsage.cached_tokens ?? 0),
     promptTokens: inputTokens,
@@ -38,6 +45,7 @@ export function createStreamSink({ controller, id, model, filter, watchdog, stat
   const emit = (fields) => send(completionChunk(id, model, fields));
   const terminalUsage = () => ({
     completion_tokens: state.outputTokens,
+    output_tokens_known: state.outputTokensComplete === true,
     // Checkpoint occupancy is not per-request prompt usage
     // and supplies no cache split or billable token count.
     input_tokens_known: false,

@@ -47,8 +47,24 @@ The loop carries per-counter completeness alongside its existing numeric
 subtotals. If any contributing call omits or reports an invalid input/output
 count, that counter remains unmeasured even after a later measured call. The
 legacy numeric accounting is unchanged; observations never infer measurement
-from a normalized zero. This only covers usage exposed by the provider adapter:
-missing evidence already replaced by that adapter cannot be reconstructed here.
+from a normalized zero. Built-in adapters mark completeness at their wire
+boundary, before defaults/coercion lose field presence: OpenAI-compatible Chat
+Completions/Responses (HTTP and WebSocket), Anthropic (SSE and non-streaming
+fallback), Gemini/Antigravity, and Cursor. Final Anthropic API-key results retain
+these flags; OpenCode Go's inclusive input also requires measured cache
+components. Stream revisions preserve earlier measurements on omitted/null
+fields and replace them on explicit zero; Cursor requires a valid token delta
+and never repairs a malformed delta with a later one.
+
+Gemini output includes candidate and thought tokens. Missing components remain
+unknown unless the reported total exactly reconciles the known prompt, output
+and tool-use prompt components. Its legacy derived input is only certified when
+all output components and an explicit zero tool-use prompt count prove the
+subtraction. These checks change only measurement evidence, not token subtotals,
+costs, ledger records or provider retries. No historical zero is backfilled;
+custom adapters that already discarded presence information must supply the
+completeness flags themselves. Provider-internal omissions before the wire
+response remain unknowable.
 
 A busy `send` still follows its existing queue path: it does not create another
 background job and therefore is **not another sample** here. The in-process
@@ -101,3 +117,9 @@ provider through spawn/send, terminal reconciliation, job projection and the
 wire read model. It covers missing, one-sided, zero and mixed multi-call usage.
 Automation tests traverse the actual internal-tool provider and job starter for
 all three delegation modes, preserving the caller stamp rather than tool args.
+
+Adapter regression tests drive fixture SSE/SDK/protobuf events through the real
+stream consumers, final result builders, loop accumulation and observation
+projection. Responses HTTP and Anthropic SSE also run through the real
+`askSession`/`read`/spawn/send path. These are deterministic transport fixtures,
+not paid live-provider calls. Existing usage-ledger/cost tests remain unchanged.
