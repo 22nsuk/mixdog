@@ -20,6 +20,7 @@
 // path cannot double-notify) and absorbs its own errors, so reporting on a
 // turn can never break the turn.
 import { reconcileBackgroundTask } from '../../../runtime/shared/background-tasks.mjs';
+import { finishDelegationObservation } from './delegation-observation.mjs';
 
 function reconcileJobTerminalResult(job, value) {
   if (!job?.taskId) return;
@@ -49,6 +50,7 @@ export function terminalResultHook({ job, turnReview, completionValue, notifyEar
   return (terminalResult) => {
     turnReview.complete();
     const value = completionValue(terminalResult);
+    finishDelegationObservation(job, value.error ? 'failed' : 'completed', terminalResult);
     job._terminalResultValue = value;
     notifyEarly(job, value, notifyContext || {});
     reconcileJobTerminalResult(job, value);
@@ -57,6 +59,7 @@ export function terminalResultHook({ job, turnReview, completionValue, notifyEar
 
 /** Watchdog stall that still recovered a partial handoff: a completion. */
 export function reconcileJobWatchdogPartial(job, value) {
+  finishDelegationObservation(job, 'partial');
   if (!job?.taskId) return;
   try {
     reconcileBackgroundTask(job.taskId, {
@@ -69,6 +72,7 @@ export function reconcileJobWatchdogPartial(job, value) {
 
 export function reconcileJobStreamStalled(job, error) {
   if (!job?.taskId || job._terminalResultValue !== undefined) return;
+  finishDelegationObservation(job, job.status === 'cancelled' ? 'cancelled' : 'failed');
   try {
     reconcileBackgroundTask(job.taskId, {
       status: 'failed',

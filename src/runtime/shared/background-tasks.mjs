@@ -512,6 +512,8 @@ export function renderBackgroundTask(taskOrId, { includeResult = false, ownerToo
       : null;
   for (const [key, value] of Object.entries(visibleMeta)) {
     if (key === 'task_id' || key === 'surface' || key === 'operation') continue;
+    // Structured delegation measurements belong to the agent status projection.
+    if (task.surface === 'agent' && key === 'delegation') continue;
     if (logs && (key === 'stdout' || key === 'stderr')) continue;
     if (key === 'cwd' && (ownerTool || (includeResult && task.surface === 'shell'))) continue;
     lines.push(`${key}: ${value}`);

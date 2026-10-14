@@ -1,3 +1,4 @@
+import { runDelegationObservation, finishDelegationObservation } from './delegation-observation.mjs';
 import {
   resolveAgentWatchdogPolicy,
   resolveHandoffMessageStartIndex,
@@ -96,10 +97,12 @@ export function createSendFlow({ mgr, defaultCwd, sessionSurface, canUseSessionS
     try {
       handoffMsgStart = resolveHandoffMessageStartIndex(mgr.getSession(sessionId));
       const turnHooks = buildTurnHooks({ sessionId, notifyContext, job, turnReview, completionValue });
+      runDelegationObservation(job);
       const result = await runTurn(prepared, turnHooks);
       // Early preview no longer suppresses the canonical body notification;
       // notifyTaskCompletion fires once with output via resolve/reconcile.
       const finalValue = completionValue(result);
+      finishDelegationObservation(job, finalValue.error ? 'failed' : 'completed', result);
       if (finalValue.error) {
         finalStatus = 'error';
         if (job) job._terminalResultValue = finalValue;

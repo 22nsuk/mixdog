@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { nonNegativeNumber, resolveContextDisplayUsage } from './context-usage';
 import { t } from './i18n';
+import { DelegationObservations } from './DelegationObservations';
 import { record } from './record-utils';
 import { ContextInspector, type ContextInspection, type ContextRequest } from './ContextInspector';
 import { statsCount, statsMoney, statsNumber, statsPercent, statsSpeed, statsTokens } from './usage-stats-model';
@@ -257,6 +258,11 @@ export function ContextBody({
         <SessionUsageFooter
           usage={sessionUsage}
           compactions={nonNegativeNumber(record(context.compaction).compactCount)}
+        />
+        <DelegationObservations
+          key={String(record(snapshot).sessionId || '')}
+          sessionId={String(record(snapshot).sessionId || '')}
+          jobs={record(snapshot).agentJobs}
         />
       </div>
     </div>

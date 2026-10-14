@@ -1,3 +1,4 @@
+import { runDelegationObservation, finishDelegationObservation } from '../delegation-observation.mjs';
 /**
  * agent-tool/spawn-flow/spawn-run.mjs — one prepared worker's turn: the
  * progress-idle watchdog with its worker-row stampers, turn-review
@@ -152,11 +153,13 @@ export function createSpawnRunner({
             }
           : {}),
       };
+      runDelegationObservation(job);
       const result = await runTurn(prepared, turnHooks);
       // The early preview no longer promises body suppression, so the canonical
       // notifyTaskCompletion is left to fire exactly once with output via the
       // resolve/reconcile/finally path.
       const finalValue = completionValue(result);
+      finishDelegationObservation(job, finalValue.error ? 'failed' : 'completed', result);
       // Non-job return path (or job path where the terminal-result reconcile
       // already ran): if the finish was abnormal-empty, surface it as a thrown
       // error so finalStatus becomes 'error' and the caller's error path (and

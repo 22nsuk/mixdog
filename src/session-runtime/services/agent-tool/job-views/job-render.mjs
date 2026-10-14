@@ -26,6 +26,7 @@ function jobHead({ taskId, type, status, startedAt, finishedAt, error }, source,
     startedAt,
     finishedAt: finishedAt || null,
     error: error || null,
+    ...(source.delegation ? { delegation: { ...source.delegation } } : {}),
   };
 }
 
