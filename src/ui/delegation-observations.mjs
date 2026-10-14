@@ -9,7 +9,7 @@ const number = (value) => (Number.isSafeInteger(value) && value >= 0 ? value : n
 
 export function delegationObservations(jobs, sessionId) {
   if (!Array.isArray(jobs) || typeof sessionId !== 'string' || !sessionId) {
-    return { available: false, rows: [], unmeasured: 0 };
+    return { available: false, rows: [], unmeasured: 0, retained: null, inputMeasured: null, outputMeasured: null };
   }
   const byId = new Map();
   for (const value of jobs) {
@@ -21,6 +21,8 @@ export function delegationObservations(jobs, sessionId) {
   const rows = [];
   for (const [id, job] of byId) {
     const observation = row(job.delegation);
+    // The transport is session-scoped, but never count an explicitly foreign caller.
+    if (text(observation.callerSessionId) && observation.callerSessionId !== sessionId) continue;
     if (observation.version !== 1 || observation.callerSessionId !== sessionId) {
       unmeasured += 1;
       continue;
@@ -47,5 +49,12 @@ export function delegationObservations(jobs, sessionId) {
     });
   }
   rows.sort((a, b) => b.startedAt.localeCompare(a.startedAt) || a.id.localeCompare(b.id));
-  return { available: true, rows, unmeasured };
+  return {
+    available: true,
+    rows,
+    unmeasured,
+    retained: rows.length + unmeasured,
+    inputMeasured: rows.filter((entry) => entry.inputTokens !== null).length,
+    outputMeasured: rows.filter((entry) => entry.outputTokens !== null).length,
+  };
 }

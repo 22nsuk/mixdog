@@ -23,7 +23,7 @@ The clocks are monotonic and local to the executing host:
   end of failed preparation. Not a model/provider latency measurement.
 - **Execution:** entry into the turn to the first reported outcome. This can
   include session locking, compaction and provider/tool work.
-- **Time to outcome:** request creation to that outcome; durations are **not
+- **Time to first outcome:** request creation to that outcome; durations are **not
   summed across parallel workers** as an elapsed-time or speedup estimate.
 
 The first outcome is frozen before completion notification / subsequent storage
@@ -85,6 +85,26 @@ legacy jobs, missing mode stamps and missing usage do not get fabricated values.
 The context dialog holds its opening snapshot; close and reopen it for a new
 reading. This section does not turn it into a live monitor.
 
+The coverage summary counts **all retained jobs in the current caller's
+snapshot**, before the 25-row page limit. Duplicate task IDs count once. Legacy
+or unsupported observations count in the retained denominator but cannot
+contribute measured input/output; explicitly foreign callers are excluded from
+both counts. Input and output are counted independently from valid observed
+counters, including explicit zero and measured failed/cancelled/partial jobs.
+Unmeasured or still-running jobs remain in the denominator; there is no
+completed-only selection. Thus `5 / 31` means five of 31 retained jobs have a
+measured counter, not five tokens, five successful jobs or historical coverage.
+Unavailable snapshots show `—`; an available empty snapshot shows zero jobs and
+`0 / 0` for both counters. Paging does not change the summary.
+
+The UI labels returned-turn input/output and time to **first** outcome explicitly.
+Its scope notice distinguishes admission wait from busy-worker queues or Lead
+waiting, and first report from whole-task completion. Whole-task aggregation,
+revision-linked validation, explicit rework tracking and evidence-based
+recommendations are follow-up work; this PR does not infer them from job status,
+follow-up requests or retained sample counts. It adds no ranking or efficiency
+score and does not extend retention to simulate a historical baseline.
+
 ## Ownership and compatibility
 
 No new read/write endpoint, permission, file store or telemetry service is added.
@@ -111,6 +131,9 @@ the capture sites. `src/ui/delegation-observations.test.mjs` covers the pure wir
 read model. Desktop component tests cover rendering, old hosts, missing fields,
 owner isolation, escaping and paged history. No live provider, performance,
 quality or billing claim is made by these tests.
+Coverage regressions exercise off-page records, per-counter missingness, explicit
+zero, duplicate IDs, legacy/future records, foreign callers, empty/unavailable
+snapshots and count updates when the displayed session changes.
 
 `delegation-runtime.slow.test.mjs` also runs real `askSession` turns with a fixture
 provider through spawn/send, terminal reconciliation, job projection and the

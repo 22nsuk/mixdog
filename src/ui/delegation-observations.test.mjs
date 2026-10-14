@@ -54,7 +54,8 @@ test('deduplicates job ids, not reused tags or sessions; does not attribute sibl
     'lead'
   );
   assert.equal(result.rows.length, 2);
-  assert.equal(result.unmeasured, 3);
+  assert.equal(result.unmeasured, 2);
+  assert.equal(result.retained, 4);
   assert.equal(result.rows[1].operation, 'send');
   assert.equal(delegationObservations([a], 'other').rows.length, 0);
 });
@@ -63,7 +64,33 @@ test('older/missing snapshots are unavailable, not a fabricated zero-usage repor
   for (const value of [undefined, null, 'bad', {}])
     assert.equal(delegationObservations(value, 'lead').available, false);
   assert.equal(delegationObservations([], '').available, false);
-  assert.deepEqual(delegationObservations([], 'lead'), { available: true, rows: [], unmeasured: 0 });
+  assert.deepEqual(delegationObservations([], 'lead'), {
+    available: true, rows: [], unmeasured: 0, retained: 0, inputMeasured: 0, outputMeasured: 0,
+  });
+  assert.equal(delegationObservations(undefined, 'lead').retained, null);
+  assert.equal(delegationObservations(undefined, 'lead').inputMeasured, null);
+  assert.equal(delegationObservations(undefined, 'lead').outputMeasured, null);
+});
+
+test('coverage counts each retained job once and measures input/output independently across outcomes', () => {
+  const jobs = [
+    job('zero', 'focused', { inputTokens: 0, outputTokens: 0 }),
+    job('failed', 'balanced', { outcome: 'failed', inputTokens: 7, outputTokens: null }),
+    job('cancelled', 'swarm', { outcome: 'cancelled', inputTokens: null, outputTokens: 9 }),
+    job('partial', null, { outcome: 'partial', inputTokens: '0', outputTokens: -1 }),
+    job('running', 'focused', { phase: 'running', outcome: null, inputTokens: null }),
+    { taskId: 'legacy' },
+    job('future', 'swarm', { version: 2, inputTokens: 100, outputTokens: 100 }),
+    job('foreign', 'swarm', { callerSessionId: 'other' }),
+    job('foreign-future', 'swarm', { callerSessionId: 'other', version: 2 }),
+    { delegation: { inputTokens: 200 } },
+  ];
+  jobs.push(jobs[0]);
+  const result = delegationObservations(JSON.parse(JSON.stringify(jobs)), 'lead');
+  assert.equal(result.retained, 7);
+  assert.equal(result.unmeasured, 2);
+  assert.equal(result.inputMeasured, 2);
+  assert.equal(result.outputMeasured, 2);
 });
 
 test('rejects invalid counters and keeps measured zero; observations round-trip over the wire', () => {

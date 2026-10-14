@@ -53,9 +53,9 @@ function Observation({ row }: { row: DelegationObservationRow }) {
     [t('Admission wait'), duration(row.queueWaitMs)],
     [t('Preparation'), duration(row.preparationMs)],
     [t('Execution'), duration(row.executionMs)],
-    [t('Time to outcome'), duration(row.elapsedMs)],
-    [t('Input'), count(row.inputTokens)],
-    [t('Output'), count(row.outputTokens)],
+    [t('Time to first outcome'), duration(row.elapsedMs)],
+    [t('Returned-turn input'), count(row.inputTokens)],
+    [t('Returned-turn output'), count(row.outputTokens)],
     [t('Tool calls'), count(row.toolCalls)],
   ];
   return (
@@ -100,12 +100,34 @@ export const DelegationObservations = memo(function DelegationObservations({
     <details className="delegation-observations">
       <summary>
         <span>{t('Delegation activity')}</span>
-        <strong>{model.available ? model.rows.length : '—'}</strong>
+        <strong aria-label={t('Retained jobs')}>{count(model.retained)}</strong>
       </summary>
       <div className="delegation-observations-body">
+        <p>
+          {t('Current session snapshot on this host; reopen to refresh. Counts include all retained jobs, including those without observation data.')}
+        </p>
         <p>{t('Finished jobs expire after 30 minutes; restart or capacity cleanup can remove history sooner.')}</p>
+        <dl className="delegation-observation-coverage">
+          <div>
+            <dt>{t('Retained jobs')}</dt>
+            <dd>{count(model.retained)}</dd>
+          </div>
+          <div>
+            <dt>{t('Jobs with measured input')}</dt>
+            <dd>{model.available ? `${count(model.inputMeasured)} / ${count(model.retained)}` : '—'}</dd>
+          </div>
+          <div>
+            <dt>{t('Jobs with measured output')}</dt>
+            <dd>{model.available ? `${count(model.outputMeasured)} / ${count(model.retained)}` : '—'}</dd>
+          </div>
+        </dl>
+        <p>{t('Measured job counts include explicit zero; input and output are counted independently.')}</p>
+        <p>
+          {t('Admission wait covers resource admission, not busy-worker queues or lead waiting. Time to first outcome ends at the first report, not whole-task completion.')}
+        </p>
         <p>{t('— means unmeasured. Usage is for the returned turn, not the whole job or a bill.')}</p>
         <p>{t('An outcome is not a quality check. Follow-ups are not automatically rework.')}</p>
+        <p>{t('Whole-task totals, validation, rework and recommendations are not tracked here.')}</p>
         {!model.available && <p role="status">{t('Observation data unavailable.')}</p>}
         {model.available && model.rows.length === 0 && <p role="status">{t('No observed jobs in this snapshot.')}</p>}
         {model.unmeasured > 0 && <p>{t('Jobs without observation data: {{total}}.', { total: model.unmeasured })}</p>}

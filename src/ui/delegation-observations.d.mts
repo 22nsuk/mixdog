@@ -24,4 +24,7 @@ export function delegationObservations(
   available: boolean;
   rows: DelegationObservationRow[];
   unmeasured: number;
+  retained: number | null;
+  inputMeasured: number | null;
+  outputMeasured: number | null;
 };

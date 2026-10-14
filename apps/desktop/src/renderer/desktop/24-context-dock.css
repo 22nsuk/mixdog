@@ -899,15 +899,18 @@
 .delegation-route {
   margin: 6px 0;
 }
+.delegation-observation-coverage,
 .delegation-observation dl {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
   margin: 10px 0 0;
 }
+.delegation-observation-coverage dt,
 .delegation-observation dt {
   color: var(--mx-text-muted);
 }
+.delegation-observation-coverage dd,
 .delegation-observation dd {
   margin: 2px 0 0;
   font-variant-numeric: tabular-nums;
@@ -919,6 +922,7 @@
   .delegation-observations {
     margin-inline: 12px;
   }
+  .delegation-observation-coverage,
   .delegation-observation dl {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
