@@ -62,8 +62,12 @@ test('read-only context observations show all modes, outcomes and unknown usage 
 });
 
 test('no history/old hosts are explained and legacy jobs are not mislabeled by the current mode', () => {
-  assert.ok(doc(undefined).body.textContent.includes(t('Observation data unavailable.')));
-  assert.ok(doc([]).body.textContent.includes(t('No observed jobs in this snapshot.')));
+  const unavailable = doc(undefined);
+  assert.ok(unavailable.body.textContent.includes(t('Observation data unavailable.')));
+  assert.equal(unavailable.querySelector('summary strong').textContent, '—');
+  const empty = doc([]);
+  assert.ok(empty.body.textContent.includes(t('No observed jobs in this snapshot.')));
+  assert.equal(empty.querySelector('summary strong').textContent, '0');
   const document = doc([{ task_id: 'old' }, job('unknown', null)]);
   assert.ok(document.body.textContent.includes(t('Unknown')));
   assert.equal(document.querySelectorAll('article').length, 1);

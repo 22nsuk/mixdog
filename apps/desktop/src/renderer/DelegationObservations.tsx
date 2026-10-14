@@ -100,7 +100,7 @@ export const DelegationObservations = memo(function DelegationObservations({
     <details className="delegation-observations">
       <summary>
         <span>{t('Delegation activity')}</span>
-        <strong>{model.rows.length}</strong>
+        <strong>{model.available ? model.rows.length : '—'}</strong>
       </summary>
       <div className="delegation-observations-body">
         <p>{t('Finished jobs expire after 30 minutes; restart or capacity cleanup can remove history sooner.')}</p>
