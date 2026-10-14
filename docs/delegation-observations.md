@@ -43,6 +43,13 @@ repeat the first job's usage. Missing, invalid or nonfinite counters remain
 `null` / `—`; a measured zero remains zero. Provider input-token conventions
 may differ. These counters are not monetary costs or a total-job bill.
 
+The loop carries per-counter completeness alongside its existing numeric
+subtotals. If any contributing call omits or reports an invalid input/output
+count, that counter remains unmeasured even after a later measured call. The
+legacy numeric accounting is unchanged; observations never infer measurement
+from a normalized zero. This only covers usage exposed by the provider adapter:
+missing evidence already replaced by that adapter cannot be reconstructed here.
+
 A busy `send` still follows its existing queue path: it does not create another
 background job and therefore is **not another sample** here. The in-process
 manager may drain multiple queued turns but return only the final turn's usage;
@@ -59,6 +66,8 @@ cleanup can remove rows sooner. Restart clears the registry. Active jobs are
 not expired by the terminal TTL. The UI pages 25 observations at a time.
 An empty snapshot is not proof that no delegation ever happened. Old hosts,
 legacy jobs, missing mode stamps and missing usage do not get fabricated values.
+The context dialog holds its opening snapshot; close and reopen it for a new
+reading. This section does not turn it into a live monitor.
 
 ## Ownership and compatibility
 
@@ -86,3 +95,9 @@ the capture sites. `src/ui/delegation-observations.test.mjs` covers the pure wir
 read model. Desktop component tests cover rendering, old hosts, missing fields,
 owner isolation, escaping and paged history. No live provider, performance,
 quality or billing claim is made by these tests.
+
+`delegation-runtime.test.mjs` also runs real `askSession` turns with a fixture
+provider through spawn/send, terminal reconciliation, job projection and the
+wire read model. It covers missing, one-sided, zero and mixed multi-call usage.
+Automation tests traverse the actual internal-tool provider and job starter for
+all three delegation modes, preserving the caller stamp rather than tool args.

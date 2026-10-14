@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createJobStarter } from './services/agent-tool/spawn-flow/job-start.mjs';
+import { cleanupBackgroundTasks } from '../runtime/shared/background-tasks.mjs';
 
 import { executeInternalTool } from '../runtime/agent/orchestrator/internal-tools.mjs';
 import {
@@ -8,6 +10,43 @@ import {
   registerAutomationAgentTool,
   runAutomationTurns,
 } from './automation-agents.mjs';
+
+for (const mode of ['focused', 'balanced', 'swarm']) {
+  for (const operation of ['spawn', 'send']) {
+    test(`automation ${operation} preserves the caller's ${mode} mode in the job`, async (t) => {
+      const start = createJobStarter({
+        mgr: {},
+        notifyStatusChange() {},
+        notifySessionCompletion: () => true,
+        admission: {
+          acquire: async () => ({ release: async () => {} }),
+          runWithLease: (_lease, run) => run(),
+        },
+      });
+      let job;
+      t.after(() => cleanupBackgroundTasks({ surface: 'agent', force: true }));
+      t.after(
+        registerAutomationAgentTool(async (args, context) => {
+          job = start(args.type, {}, async () => ({ content: 'fixture' }), context);
+          await job.promise;
+          return 'fixture';
+        })
+      );
+      await executeInternalTool(
+        'agent',
+        { type: operation, orchestrationMode: 'none' },
+        {
+          scopeId: AUTOMATION_TOOL_SCOPE,
+          callerSessionId: 'automation-fixture',
+          orchestrationMode: mode,
+        }
+      );
+      assert.equal(job.meta.delegation.callerSessionId, 'automation-fixture');
+      assert.equal(job.meta.delegation.mode, mode);
+      assert.equal(job.status, 'completed');
+    });
+  }
+}
 
 test('an automation run turns each delegated agent result into its next turn', async (t) => {
   const controlCalls = [];
@@ -31,10 +70,16 @@ test('an automation run turns each delegated agent result into its next turn', a
       // The header-only preview is taken but does not start a turn; the body does.
       setTimeout(() => {
         assert.equal(
-          deliverAutomationCompletion('sess-auto', 'preview', { execution_id: 'task-1', model_visible: false }),
+          deliverAutomationCompletion('sess-auto', 'preview', {
+            execution_id: 'task-1',
+            model_visible: false,
+          }),
           true
         );
-        assert.equal(deliverAutomationCompletion('sess-auto', 'worker done', { execution_id: 'task-1' }), true);
+        assert.equal(
+          deliverAutomationCompletion('sess-auto', 'worker done', { execution_id: 'task-1' }),
+          true
+        );
       }, 5);
       return { content: 'delegated' };
     },

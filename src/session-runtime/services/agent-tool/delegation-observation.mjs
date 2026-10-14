@@ -72,8 +72,8 @@ export function finishDelegationObservation(job, outcome, result = null, now = p
     preparationMs: timing.admitted === null ? null : (observation.preparationMs ?? elapsed(timing.admitted, now)),
     executionMs: timing.running === null ? null : elapsed(timing.running, now),
     elapsedMs: elapsed(timing.requested, now),
-    inputTokens: count(result?.usage?.inputTokens),
-    outputTokens: count(result?.usage?.outputTokens),
+    inputTokens: result?.usage?.inputTokensComplete === false ? null : count(result?.usage?.inputTokens),
+    outputTokens: result?.usage?.outputTokensComplete === false ? null : count(result?.usage?.outputTokens),
     toolCalls: count(result?.toolCallsTotal),
   });
 }

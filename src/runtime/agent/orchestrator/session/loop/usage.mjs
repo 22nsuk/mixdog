@@ -11,6 +11,13 @@ function measuredContextTokens(usage) {
   return Number.isFinite(value) && value > 0 ? Math.round(value) : null;
 }
 
+// Keep the legacy numeric subtotals, but preserve whether EVERY contributing
+// call reported each counter. Normalizing a missing counter to zero must not
+// turn an unmeasured call into a measured zero in downstream observations.
+function tokenCountComplete(usage, key) {
+  return usage?.[`${key}Complete`] !== false && Number.isSafeInteger(usage?.[key]) && usage[key] >= 0;
+}
+
 export function normalizeUsage(usage) {
   if (!usage) return null;
   const costUsd = Number(usage.costUsd);
@@ -18,6 +25,8 @@ export function normalizeUsage(usage) {
   return {
     inputTokens: usage.inputTokens || 0,
     outputTokens: usage.outputTokens || 0,
+    inputTokensComplete: tokenCountComplete(usage, 'inputTokens'),
+    outputTokensComplete: tokenCountComplete(usage, 'outputTokens'),
     ...reasoningUsage(usage),
     cachedTokens: usage.cachedTokens || 0,
     cacheWriteTokens: usage.cacheWriteTokens || 0,
@@ -80,6 +89,8 @@ export function addUsage(total, usage) {
     ...total,
     inputTokens: (total.inputTokens || 0) + delta.inputTokens,
     outputTokens: (total.outputTokens || 0) + delta.outputTokens,
+    inputTokensComplete: tokenCountComplete(total, 'inputTokens') && delta.inputTokensComplete,
+    outputTokensComplete: tokenCountComplete(total, 'outputTokens') && delta.outputTokensComplete,
     ...combineReasoningUsage(total, delta),
     cachedTokens: (total.cachedTokens || 0) + delta.cachedTokens,
     cacheWriteTokens: (total.cacheWriteTokens || 0) + delta.cacheWriteTokens,

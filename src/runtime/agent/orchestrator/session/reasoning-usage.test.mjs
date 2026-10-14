@@ -7,6 +7,25 @@ import { _sessionForDisk } from './store/serialize.mjs';
 import { createContextStatus } from '../runtime-core/context-status.mjs';
 import { sessionTokenCounters } from '../runtime-core/context-status-shape.mjs';
 
+test('token completeness survives normalization and mixed calls without changing legacy subtotals', () => {
+  for (const missing of [undefined, null, '', '12', true, -1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+    const normalized = normalizeUsage({ inputTokens: missing, outputTokens: 0 });
+    assert.equal(normalized.inputTokensComplete, false);
+    assert.equal(normalized.outputTokensComplete, true);
+    assert.equal(normalizeUsage(normalized).inputTokensComplete, false);
+  }
+  const known = { inputTokens: 10, outputTokens: 2 };
+  const mixed = addUsage(addUsage(null, known), {});
+  assert.equal(mixed.inputTokens, 10);
+  assert.equal(mixed.outputTokens, 2);
+  assert.equal(mixed.inputTokensComplete, false);
+  assert.equal(mixed.outputTokensComplete, false);
+  assert.equal(addUsage(mixed, known).inputTokensComplete, false);
+  const explicitIncomplete = normalizeUsage({ ...known, inputTokensComplete: false });
+  assert.equal(explicitIncomplete.inputTokensComplete, false);
+  assert.equal(explicitIncomplete.outputTokensComplete, true);
+});
+
 test('provider-reported reasoning formats normalize without inspecting text or signatures', () => {
   const formats = [
     { output_tokens_details: { reasoning_tokens: 17 } },
