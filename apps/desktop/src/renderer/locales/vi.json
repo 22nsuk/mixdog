@@ -2076,7 +2076,7 @@
   "MCP_BEARER_TOKEN": "MCP_BEARER_TOKEN",
   "Meandering": "Uốn khúc",
   "Measured at": "Đo ở",
-  "Measured job counts include explicit zero; input and output are counted independently.": "Giá trị không được đo rõ ràng vẫn được tính; đầu vào và đầu ra được đếm độc lập.",
+  "Measured job counts include explicit zero; input and output are counted independently.": "Giá trị 0 được đo rõ ràng vẫn được tính; đầu vào và đầu ra được đếm độc lập.",
   "Measured total; category colors show estimated proportions.": "Tổng là số đo thực; màu danh mục thể hiện tỷ lệ ước tính.",
   "Media cancellation": "Hủy phương tiện",
   "Media catalog": "Danh mục phương tiện",

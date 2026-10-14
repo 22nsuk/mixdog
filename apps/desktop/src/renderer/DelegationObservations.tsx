@@ -100,7 +100,7 @@ export const DelegationObservations = memo(function DelegationObservations({
     <details className="delegation-observations">
       <summary>
         <span>{t('Delegation activity')}</span>
-        <strong aria-label={t('Retained jobs')}>{count(model.retained)}</strong>
+        <strong title={t('Retained jobs')}>{count(model.retained)}</strong>
       </summary>
       <div className="delegation-observations-body">
         <p>
