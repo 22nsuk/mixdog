@@ -55,6 +55,8 @@ these flags; OpenCode Go's inclusive input also requires measured cache
 components. Stream revisions preserve earlier measurements on omitted/null
 fields and replace them on explicit zero; Cursor requires a valid token delta
 and never repairs a malformed delta with a later one.
+Cursor also retains an explicitly measured zero on stream failure; absent or
+malformed deltas do not acquire fabricated measurement evidence.
 
 Gemini output includes candidate and thought tokens. Missing components remain
 unknown unless the reported total exactly reconciles the known prompt, output
@@ -82,7 +84,9 @@ Use the existing usage ledger/statistics for its independently defined accountin
 An unrecovered exception has no returned terminal-turn aggregate. Its
 `error.partialUsage` describes one provider request, not necessarily the earlier
 calls in the turn, so it cannot establish whole-turn coverage even when both
-of that request's counters are complete. Such failures keep `—` and count in
+of that request's counters are complete. The same applies to a watchdog handoff
+assembled from partial text without a terminal-turn usage aggregate.
+Such failures and handoffs keep `—` and count in
 the retained denominator only. A recovered partial response that the existing
 loop folds into a returned result follows the normal completeness rules. A
 failed terminal result with actual returned usage can still be measured. These

@@ -75,7 +75,7 @@ export function createStreamSink({ controller, id, model, filter, watchdog, stat
     const failure = error instanceof Error ? error : new Error(String(error));
     // Output the provider already reported is carried in the shape the
     // successful result reports; input/cache stay unknown, as in finish().
-    if (state.outputTokens > 0 && !failure.partialUsage) {
+    if ((state.outputTokens > 0 || state.outputTokensComplete === true) && !failure.partialUsage) {
       try {
         failure.partialUsage = cursorUsage(terminalUsage());
       } catch {

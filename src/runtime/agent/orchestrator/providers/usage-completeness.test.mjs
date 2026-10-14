@@ -314,7 +314,7 @@ function cursorRun(updates, fail = false) {
       emit() {},
     });
   if (fail) {
-    sink.fail(new Error('fixture failure'));
+    sink.fail(fail instanceof Error ? fail : new Error('fixture failure'));
     return error.partialUsage;
   }
   sink.finish();
@@ -335,6 +335,18 @@ for (const [name, updates, value, expected] of [
     assert.equal(usage.outputTokens, value);
     assert.deepEqual(observed([usage]), [null, expected]);
   });
+
+test('Cursor failure preserves explicit zero without inventing missing usage or replacing prior evidence', () => {
+  const zero = cursorRun([{ tokenDelta: { tokens: 0 } }], true);
+  assert.equal(zero?.outputTokens, 0);
+  assert.equal(zero.outputTokensComplete, true);
+  assert.deepEqual(observed([zero]), [null, 0]);
+  assert.equal(cursorRun([{ turnEnded: {} }], true), undefined);
+  assert.equal(cursorRun([{ tokenDelta: {} }, { tokenDelta: { tokens: 0 } }], true), undefined);
+  const prior = { inputTokens: 9, outputTokens: 2 };
+  const failure = Object.assign(new Error('existing partial usage'), { partialUsage: prior });
+  assert.equal(cursorRun([{ tokenDelta: { tokens: 0 } }], failure), prior);
+});
 
 test('partial and failed adapter paths retain completeness', async () => {
   const cursor = cursorRun([{ tokenDelta: { tokens: 2 } }], true);
