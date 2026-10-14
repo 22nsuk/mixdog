@@ -76,6 +76,17 @@ const fromAnthropicWire = async (usage) =>
   ).usage;
 
 const cases = [
+  [
+    'unrecovered request subtotal is not complete turn usage',
+    [
+      { inputTokens: 10, outputTokens: 2 },
+      Object.assign(new Error('fixture unrecovered provider failure'), {
+        partialUsage: { inputTokens: 3, outputTokens: 1, inputTokensComplete: true, outputTokensComplete: true },
+      }),
+    ],
+    null,
+    null,
+  ],
   ['missing usage', [undefined], null, null],
   ['output only', [{ outputTokens: 7 }], null, 7],
   ['input only', [{ inputTokens: 9 }], 9, null],
@@ -130,8 +141,10 @@ for (const operation of ['spawn', 'send']) {
                 /delegation fixture/,
                 'the real read tool returned fixture bytes'
               );
-            const usage = await adapt(usages[sends++]);
+            const reported = usages[sends++];
             assert.ok(sends <= usages.length, 'unexpected extra provider call');
+            if (reported instanceof Error) throw reported;
+            const usage = await adapt(reported);
             return {
               content: sends === usages.length ? 'fixture answer' : '',
               ...(usage ? { usage } : {}),
@@ -211,16 +224,21 @@ for (const operation of ['spawn', 'send']) {
               job = getBackgroundTask(/agent task: (\S+)/.exec(ack)[1]);
             }
             await job.promise;
-            assert.equal(job.status, 'completed', job.error);
-            assert.equal(job.result.content, 'fixture answer');
+            const failed = usages.at(-1) instanceof Error;
+            assert.equal(job.status, failed ? 'failed' : 'completed', job.error);
+            if (!failed) assert.equal(job.result.content, 'fixture answer');
             assert.equal(sends, usages.length);
             const wire = JSON.parse(JSON.stringify(views.listJobs(context)));
-            const [observed] = delegationObservations(wire, context.callerSessionId).rows;
+            const coverage = delegationObservations(wire, context.callerSessionId);
+            const [observed] = coverage.rows;
             assert.equal(observed.inputTokens, inputTokens);
             assert.equal(observed.outputTokens, outputTokens);
-            assert.equal(observed.toolCalls, usages.length - 1);
-            assert.equal(observed.outcome, 'completed');
-            assert.equal(job.result.usage, undefined, 'handoff contract stays unchanged');
+            assert.equal(observed.toolCalls, failed ? null : usages.length - 1);
+            assert.equal(observed.outcome, failed ? 'failed' : 'completed');
+            assert.equal(coverage.retained, 1);
+            assert.equal(coverage.inputMeasured, inputTokens === null ? 0 : 1);
+            assert.equal(coverage.outputMeasured, outputTokens === null ? 0 : 1);
+            assert.equal(job.result?.usage, undefined, 'handoff contract stays unchanged');
           } finally {
             cleanupBackgroundTasks({ surface: 'agent', force: true });
             deleteSession(session.id, { deferSummaryUpdate: true });

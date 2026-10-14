@@ -70,10 +70,24 @@ A busy `send` still follows its existing queue path: it does not create another
 background job and therefore is **not another sample** here. The in-process
 manager may drain multiple queued turns but return only the final turn's usage;
 the canonical session service returns its settled turn. Earlier queued turns,
-unreported retries/failures, separate compactions, descendants and hidden
-maintenance agents are not added into these usage values. No whole-job usage,
+unreported retries/failures, usage outside the returned turn, descendants and
+hidden maintenance agents are not independently added into these values.
+Fresh-context compaction performed inside the turn is already folded into the
+loop's returned usage and **remains included**; these counters are not limited
+to the worker's final provider request. Separate compaction outside that return
+value is not added. No whole-job usage,
 acceptance rate, retry rate or quality score is inferred from incomplete evidence.
 Use the existing usage ledger/statistics for its independently defined accounting.
+
+An unrecovered exception has no returned terminal-turn aggregate. Its
+`error.partialUsage` describes one provider request, not necessarily the earlier
+calls in the turn, so it cannot establish whole-turn coverage even when both
+of that request's counters are complete. Such failures keep `—` and count in
+the retained denominator only. A recovered partial response that the existing
+loop folds into a returned result follows the normal completeness rules. A
+failed terminal result with actual returned usage can still be measured. These
+distinctions preserve the existing numeric/cost accounting and do not infer
+full failed-turn usage from a last request's subtotal.
 
 This is a bounded, **host-local recent observation view**, not durable history or
 a cross-session analytics database. It reuses the background task registry:
@@ -138,6 +152,11 @@ snapshots and count updates when the displayed session changes.
 `delegation-runtime.slow.test.mjs` also runs real `askSession` turns with a fixture
 provider through spawn/send, terminal reconciliation, job projection and the
 wire read model. It covers missing, one-sided, zero and mixed multi-call usage.
+It also proves that an unrecovered request subtotal after an earlier measured
+call cannot become measured turn usage. `delegation-compaction.test.mjs` runs
+the actual pre-send compactor, loop finalization and observation read model to
+verify that compaction usage already folded into the returned aggregate stays
+included.
 Automation tests traverse the actual internal-tool provider and job starter for
 all three delegation modes, preserving the caller stamp rather than tool args.
 
