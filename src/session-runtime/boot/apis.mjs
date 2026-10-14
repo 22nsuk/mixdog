@@ -286,6 +286,7 @@ function providerAuthApiFor(boot) {
   const { rt, cfgMod, reg, ensureProvidersReady } = boot;
   return createProviderAuthApi({
     cfgMod,
+    resolveRoute,
     getConfig: () => rt.config,
     saveConfigAndAdopt: boot.saveConfigAndAdopt,
     displayConfig: boot.displayConfig,

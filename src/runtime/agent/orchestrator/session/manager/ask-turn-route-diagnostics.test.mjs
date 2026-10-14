@@ -7,8 +7,8 @@ import { _sessionForDisk, _storedSessionFromFile } from '../store/serialize.mjs'
 import { inspectRouteDiagnostics } from '../../runtime-core/route-diagnostics.mjs';
 
 // Exercise the real turn preparation, including buildUserTurn and the
-// preflight checkpoint. Only provider discovery, the local judge and disk
-// persistence are replaced: no credentials, downloads or model requests.
+// preflight checkpoint. Provider discovery, the local judge, the prefetch
+// bridge and disk persistence are controlled: no credentials or model requests.
 const provider = {
   config: {}, customConfig: { protocol: 'openai-chat' },
   getCachedModelInfo: (id) => ({ id, contextWindow: 10000, reasoningLevels: ['low', 'medium', 'high'] }),
@@ -22,10 +22,19 @@ mock.module('../store.mjs', { namedExports: {
 } });
 let judged = { probs: [0, 0, 1, 0], ms: 1 };
 let judgeCalls = 0;
+let judgeStarted = null;
 const judge = await import('../../../../effort-judge/judge-client.mjs');
 mock.module('../../../../effort-judge/judge-client.mjs', { namedExports: {
-  ...judge, judgeTurn: async () => { judgeCalls++; return judged; },
+  ...judge, judgeTurn: async () => { judgeCalls++; judgeStarted?.(); return judged; },
   recordEffortDecision: () => {}, effortJudgeSupportsSteps: () => false,
+} });
+let prefetchWait = null;
+mock.module('./prefetch-bridge.mjs', { namedExports: {
+  _tryBridgeExplicitPrefetch: async () => {
+    if (!prefetchWait) return null;
+    prefetchWait.entered.resolve();
+    return prefetchWait.release.promise;
+  },
 } });
 const { prepareAskTurn } = await import('./ask-turn-execute.mjs');
 const { resolveTurnAutoEffort } = await import('./ask-turn-auto-effort.mjs');
@@ -101,3 +110,71 @@ for (const [reason, extra, input] of [
     assert.equal(decision.applied, false);
   });
 }
+
+test('tuning during prefetch updates current settings without rewriting preparation evidence', async (t) => {
+  environment(t, 'off');
+  prefetchWait = { entered: Promise.withResolvers(), release: Promise.withResolvers() };
+  t.after(() => { prefetchWait = null; });
+  const active = session({
+    fast: false, autoEffort: true, modelParameters: { serviceTier: 'default' },
+  });
+  let atCheckpoint;
+  const pending = prepareAskTurn({
+    sessionId: active.id,
+    input: { prompt: 'fix a test' },
+    opened: {
+      turn: { session: active }, runtime: {}, turnSignal: new AbortController().signal,
+      askGeneration: 1, turnToken: 'turn-tuning', startedAt: 1700000000000,
+      checkpoint: { schedule: () => { atCheckpoint = inspectRouteDiagnostics(active); } },
+    },
+  });
+  await prefetchWait.entered.promise;
+  active.effort = 'high';
+  active.fast = true;
+  active.autoEffort = false;
+  active.modelParameters.serviceTier = 'priority';
+  prefetchWait.release.resolve(null);
+  const prepared = await pending;
+  assert.equal(prepared.turnEffort, 'medium');
+  assert.equal(atCheckpoint.lastTurn.preparedEffort, 'medium');
+  assert.equal(atCheckpoint.lastTurn.configured.effort, 'medium');
+  assert.equal(atCheckpoint.lastTurn.configured.fast, false);
+  assert.equal(atCheckpoint.lastTurn.configured.autoEffort, true);
+  assert.equal(atCheckpoint.lastTurn.configured.serviceTier, 'default');
+  assert.equal(atCheckpoint.current.effort, 'high');
+  assert.equal(atCheckpoint.current.fast, true);
+  assert.equal(atCheckpoint.current.autoEffort, false);
+  assert.equal(atCheckpoint.current.serviceTier, 'priority');
+  assert.deepEqual(inspectRouteDiagnostics(saved).lastTurn, atCheckpoint.lastTurn);
+});
+
+test('an unavailable judge retains the existing post-wait fallback effort semantics', async (t) => {
+  environment(t, 'on');
+  const entered = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  judgeStarted = entered.resolve;
+  judged = release.promise;
+  t.after(() => {
+    judgeStarted = null;
+    judged = { probs: [0, 0, 1, 0], ms: 1 };
+  });
+  const active = session();
+  const pending = prepareAskTurn({
+    sessionId: active.id,
+    input: { prompt: 'fix a test' },
+    opened: {
+      turn: { session: active }, runtime: {}, turnSignal: new AbortController().signal,
+      askGeneration: 1, turnToken: 'turn-judge-wait', startedAt: 1700000000000,
+      checkpoint: { schedule() {} },
+    },
+  });
+  await entered.promise;
+  active.effort = 'high';
+  release.resolve({ skipped: 'timeout' });
+  const prepared = await pending;
+  const report = inspectRouteDiagnostics(active);
+  assert.equal(prepared.turnEffort, 'high');
+  assert.equal(report.lastTurn.auto.reason, 'judge-unavailable');
+  assert.equal(report.lastTurn.configured.effort, 'high');
+  assert.equal(report.lastTurn.preparedEffort, 'high');
+});

@@ -238,8 +238,11 @@ export type ComposerProps = {
   contextPercent?: number;
   contextTokens?: number;
   draftMode?: boolean;
-  onDraftModelSelection?: (selection: DesktopModelSelection) => void;
-  onRoutePreferenceApplied?: (selection: DesktopModelSelection, options?: { modelChoice?: boolean }) => void;
+  onDraftModelSelection?: (selection: DesktopModelSelection, options?: { replace?: boolean }) => void;
+  onRoutePreferenceApplied?: (
+    selection: DesktopModelSelection,
+    options?: { modelChoice?: boolean; replace?: boolean }
+  ) => void;
   /** Session readout seated right after the model trigger — the context
    *  gauge (user: 컨텍스트는 모델 선택기 옆). */
   modelAside?: ReactNode;

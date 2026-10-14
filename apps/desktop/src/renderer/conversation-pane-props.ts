@@ -44,8 +44,11 @@ export type ConversationProps = {
   draftModelSelection?: DesktopModelSelection | null;
   draftWorkflow?: DesktopWorkflowState | null;
   draftOrchestrationMode?: DesktopOrchestrationMode | null;
-  onDraftModelSelection?: (selection: DesktopModelSelection) => void;
-  onRoutePreferenceApplied?: (selection: DesktopModelSelection, options?: { modelChoice?: boolean }) => void;
+  onDraftModelSelection?: (selection: DesktopModelSelection, options?: { replace?: boolean }) => void;
+  onRoutePreferenceApplied?: (
+    selection: DesktopModelSelection,
+    options?: { modelChoice?: boolean; replace?: boolean }
+  ) => void;
   onDraftWorkflow?: (workflow: DesktopWorkflowState) => void;
   onDraftOrchestrationMode?: (mode: DesktopOrchestrationMode) => void;
   onOpenCommandSurface: (surface: CommandSurfaceName) => void;

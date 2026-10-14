@@ -14,7 +14,7 @@ export function createProviderAuthApi(deps) {
     isKeychainPrewarmReady: deps.isKeychainPrewarmReady === undefined ? () => true : deps.isKeychainPrewarmReady,
     hasProviderSetupCached: deps.hasProviderSetupCached === undefined ? () => true : deps.hasProviderSetupCached,
   };
-  const { cfgMod, displayConfig } = resolved;
+  const { cfgMod, displayConfig, resolveRoute } = resolved;
   const refresh = createAuthRefresh(resolved);
 
   return {
@@ -25,7 +25,18 @@ export function createProviderAuthApi(deps) {
     ...createSetupApi(resolved),
     ...createLoginApi(resolved, refresh),
     listPresets() {
-      return cfgMod.listPresets(displayConfig());
+      const config = displayConfig();
+      return cfgMod.listPresets(config).map((preset) => {
+        const route = resolveRoute(config, { model: preset.id || preset.name });
+        // Runtime routes also contain preset metadata. Only selection fields
+        // may cross the desktop's strict model-selection boundary.
+        const selection = Object.fromEntries(
+          ['provider', 'model', 'effort', 'fast', 'autoEffort', 'modelParameters', 'contextPercent', 'contextTokens']
+            .filter((key) => route[key] != null)
+            .map((key) => [key, route[key]])
+        );
+        return { ...preset, selection };
+      });
     },
   };
 }

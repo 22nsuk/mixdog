@@ -18,9 +18,9 @@ function createRoutePreferenceStore() {
     get(provider: string, model: string) {
       return selections.get(keyFor(provider, model));
     },
-    remember(selection: DesktopModelSelection) {
+    remember(selection: DesktopModelSelection, options?: { replace?: boolean }) {
       const key = keyFor(selection.provider, selection.model);
-      const remembered = mergeRoutePreference(selections.get(key), selection);
+      const remembered = options?.replace ? { ...selection } : mergeRoutePreference(selections.get(key), selection);
       selections.set(key, remembered);
       return remembered;
     },

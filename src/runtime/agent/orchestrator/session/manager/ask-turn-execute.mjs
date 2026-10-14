@@ -43,6 +43,13 @@ export async function prepareAskTurn({ sessionId, opened, input, cwdOverride, tr
   // installed judge was trained on steps (session/loop/step-auto-effort.mjs).
   const stepAutoEffort = turnStepAutoEffort(autoEffort, effortConfiguration);
   applyTurnContextMeta(session, provider);
+  // Freeze the settings used for preparation before prefetch can yield to a
+  // same-model tuning write. Current settings may change; this receipt cannot.
+  const routeDiagnostics = captureRouteDiagnostics(session, {
+    decision: effortDecision,
+    turnEffort: effortConfiguration?.effort ?? turnEffort,
+    at: startedAt,
+  });
   const effectiveCwd = cwdOverride || session.cwd;
   // A failed-turn retry resubmits the prompt the failure left unanswered;
   // rewind that copy so the model sees the prompt once (an answered tail is
@@ -74,11 +81,7 @@ export async function prepareAskTurn({ sessionId, opened, input, cwdOverride, tr
   // message persistence retains it for resumed and worker sessions too.
   userTurn.userTurnMessage.meta = {
     ...userTurn.userTurnMessage.meta,
-    routeDiagnostics: captureRouteDiagnostics(session, {
-      decision: effortDecision,
-      turnEffort: effortConfiguration?.effort ?? turnEffort,
-      at: startedAt,
-    }),
+    routeDiagnostics,
   };
   const { historyMessages, outgoing } = userTurn;
   turn.userTurnContent = userTurn.userTurnMessage.content;

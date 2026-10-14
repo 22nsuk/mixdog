@@ -35,8 +35,11 @@ type SlashExecutorDeps = {
   modelParameters?: Record<string, string>;
   /** Whether the current model offers the Ultrafast service tier. */
   ultrafastCapable?: () => boolean;
-  onDraftModelSelection?: (selection: DesktopModelSelection) => void;
-  onRoutePreferenceApplied?: (selection: DesktopModelSelection, options?: { modelChoice?: boolean }) => void;
+  onDraftModelSelection?: (selection: DesktopModelSelection, options?: { replace?: boolean }) => void;
+  onRoutePreferenceApplied?: (
+    selection: DesktopModelSelection,
+    options?: { modelChoice?: boolean; replace?: boolean }
+  ) => void;
   invokeResult: <T>(action: () => T | Promise<T>) => Promise<T | undefined>;
   invokeCapabilityResult: <T>(
     capability: DesktopCapability,
@@ -326,12 +329,15 @@ async function runModel(run: SlashRun, argument: string): Promise<boolean | unde
   }
   const preset = await findPreset(run, argument);
   let selection: DesktopModelSelection;
-  let identity: Pick<DesktopModelSelection, 'provider' | 'model'>;
   if (preset) {
-    // Let the runtime resolve the preset and its saved tuning exactly as it
-    // does for /model, but apply the result to this addressed idle session.
-    selection = { provider: '', model: String(preset.id || preset.name) };
-    identity = { provider: String(preset.provider || ''), model: String(preset.model || '') };
+    const resolved = asRecord(preset.selection);
+    if (!resolved?.provider || !resolved.model) {
+      // Older hosts cannot supply saved-setting precedence for a preset.
+      // Never send a provider-less selector or guess from raw preset tuning.
+      deps.setAttachmentError('This host cannot resolve model presets. Update the host or select a concrete model.');
+      return false;
+    }
+    selection = resolved as unknown as DesktopModelSelection;
   } else {
     const models = (await deps.invokeResult(() => window.mixdogDesktop.listProviderModels({ quick: false }))) || [];
     const normalized = argument.toLowerCase();
@@ -346,17 +352,16 @@ async function runModel(run: SlashRun, argument: string): Promise<boolean | unde
       return false;
     }
     selection = { provider: match.provider, model: match.model };
-    identity = selection;
   }
   if (deps.draftMode && deps.onDraftModelSelection) {
-    deps.onDraftModelSelection(preset ? { ...identity } : selection);
+    deps.onDraftModelSelection(selection, preset ? { replace: true } : undefined);
     return true;
   }
   const sessionId = deps.sessionId;
   if (!sessionId) return false;
   if (
     !confirmSessionModelChange(
-      identity,
+      selection,
       { provider: deps.sessionProvider || deps.provider, model: deps.sessionModel || deps.model },
       sessionId
     )
@@ -366,6 +371,9 @@ async function runModel(run: SlashRun, argument: string): Promise<boolean | unde
   deps.applySnapshot(next);
   const appliedSelection = { provider: String(next.provider || ''), model: String(next.model || '') };
   const sameModel = appliedSelection.provider === deps.provider && appliedSelection.model === deps.model;
-  deps.onRoutePreferenceApplied?.(appliedSelection, sameModel ? undefined : { modelChoice: true });
+  deps.onRoutePreferenceApplied?.(
+    preset ? { ...selection, ...appliedSelection } : appliedSelection,
+    preset ? { replace: true, ...(sameModel ? {} : { modelChoice: true }) } : sameModel ? undefined : { modelChoice: true }
+  );
   return undefined;
 }
