@@ -112,7 +112,7 @@ read model. Desktop component tests cover rendering, old hosts, missing fields,
 owner isolation, escaping and paged history. No live provider, performance,
 quality or billing claim is made by these tests.
 
-`delegation-runtime.test.mjs` also runs real `askSession` turns with a fixture
+`delegation-runtime.slow.test.mjs` also runs real `askSession` turns with a fixture
 provider through spawn/send, terminal reconciliation, job projection and the
 wire read model. It covers missing, one-sided, zero and mixed multi-call usage.
 Automation tests traverse the actual internal-tool provider and job starter for
