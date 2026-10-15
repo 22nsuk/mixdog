@@ -58,15 +58,17 @@ test('a quota-failed Lead or Goal turn queues its resume and a fire resumes it o
   t.mock.module('../lib/keychain-cjs.cjs', { defaultExport: keychain, namedExports: keychain });
 
   const sends = [];
-  let exhausted = false;
+  let exhaustedSessionId = null;
   const provider = {
     name: 'openai',
     contextWindow: 128000,
-    async send(messages, model) {
+    async send(messages, model, _tools, options = {}) {
       const users = messages.filter((message) => message.role === 'user');
-      sends.push({ messages: messages.length, lastUser: users.at(-1)?.content, users: users.length });
-      if (exhausted) {
-        exhausted = false;
+      sends.push({ sessionId: options.admissionOwner, messages: messages.length, lastUser: users.at(-1)?.content, users: users.length });
+      // A late continuation from the previous Goal must not consume the
+      // failure armed for another runtime. Admission identifies the caller.
+      if (exhaustedSessionId === options.admissionOwner) {
+        exhaustedSessionId = null;
         throw Object.assign(new Error('All connected accounts have exhausted their quota.'), {
           code: 'provider_accounts_exhausted',
           quotaExhausted: { provider: 'openai', model, resetAt: RESET_AT },
@@ -179,7 +181,7 @@ test('a quota-failed Lead or Goal turn queues its resume and a fire resumes it o
     const last = frame.items.at(-1);
     if (!frame.busy && last?.kind === 'turndone' && last.status === 'failed') failedFrames.push(frame.quotaResume);
   });
-  exhausted = true;
+  exhaustedSessionId = S;
   const failed = await api.submitAndWait('build the parser', {});
   assert.equal(failed.status, 'failed');
   assert.ok(store.quotaResumeEntry(S), 'the resume is queued when the failed turn settles');
@@ -211,6 +213,7 @@ test('a quota-failed Lead or Goal turn queues its resume and a fire resumes it o
   await until(() => api.getState().quotaResume === null, 'the snapshot field to clear');
   await until(() => sends.length >= sendsBefore + 2, 'the retry request');
   const retry = sends[sendsBefore + 1];
+  assert.equal(retry.sessionId, S);
   const failedRequest = sends[sendsBefore];
   assert.equal(retry.lastUser, failedRequest.lastUser, 'the unanswered prompt is replayed');
   assert.equal(retry.users, failedRequest.users, 'the model sees the prompt once');
@@ -223,22 +226,25 @@ test('a quota-failed Lead or Goal turn queues its resume and a fire resumes it o
   // An automatic Goal turn has no user row to replay: the resume revives its
   // Goal and the Goal's own continuation runs the turn.
   const G = 'sess_quota_resume_goal';
+  await api.goalControl({ action: 'pause' });
+  await until(() => !api.getState().busy && api.getState().queued.length === 0, 'the previous Goal to stop');
   await api.dispose();
   api = await createLocalSessionRuntime({ provider: 'openai', model: 'gpt-4o-mini', toolMode: 'full', cwd });
   assert.equal(api.reserveSession(G), true);
-  exhausted = true;
+  exhaustedSessionId = G;
   const goalTurn = await api.goalControl({ action: 'create', objective: 'Write the lexer' });
   const lexerGoalId = goalTurn.goal.id;
   await until(() => store.quotaResumeEntry(G) !== null && !api.getState().busy, 'the Goal turn resume');
   await until(() => api.getState().goal?.status === 'usage_limited', 'the Goal to wait on the limit');
+  assert.equal(exhaustedSessionId, null, 'the intended Goal consumed its quota fault');
   const goalEntry = store.quotaResumeEntry(G);
   assert.match(goalEntry.turnKey, /^segment:/);
   assert.equal(store.quotaSuspendedGoal(G, goalEntry.turnKey), lexerGoalId);
   const usersBefore = api.getState().items.filter((item) => item.kind === 'user').length;
-  const goalSendsBefore = sends.length;
+  const goalSendsBefore = sends.filter((send) => send.sessionId === G).length;
   assert.equal(api.fireQuotaResume({ generation: goalEntry.generation }), 'fired');
   assert.equal(store.quotaResumeEntry(G), null);
-  await until(() => sends.length > goalSendsBefore, 'the Goal continuation request');
+  await until(() => sends.filter((send) => send.sessionId === G).length > goalSendsBefore, 'the Goal continuation request');
   // Provider dispatch reads the synchronous draft; getState exposes the
   // frame-batched snapshot, which can still show the suspended Goal here.
   await until(
@@ -253,4 +259,5 @@ test('a quota-failed Lead or Goal turn queues its resume and a fire resumes it o
     'no prompt is replayed for a Goal turn'
   );
   await until(() => !api.getState().busy && api.getState().queued.length === 0, 'the Goal session to go idle');
+  await api.goalControl({ action: 'pause' });
 });
