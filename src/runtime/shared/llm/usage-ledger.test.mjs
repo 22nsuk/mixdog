@@ -328,6 +328,7 @@ async function assertUnreadableLegacyRollup(t, contents) {
   assert.equal(stats.coverage.ledger, true);
   assert.equal(stats.totals.turns, 0);
   assert.equal(ledger.get('importedThrough'), null);
+  assert.equal(ledger.db.prepare('SELECT COUNT(*) AS n FROM legacy_days').get().n, 0);
   assert.equal(
     warnings.some((line) => line.includes('warning') && line.includes('usage-rollup.local.json')),
     true
@@ -346,6 +347,12 @@ test('a corrupt legacy rollup warns, still returns stats, and imports after the 
 
 test('an empty legacy rollup warns and still returns stats without marking the import', async (t) => {
   await assertUnreadableLegacyRollup(t, '');
+});
+
+test('wrong-shaped legacy rollup JSON warns and does not mark the import', async (t) => {
+  for (const contents of ['null', '[]', '{}', '{"days": null}', '{"days": "x"}']) {
+    await assertUnreadableLegacyRollup(t, contents);
+  }
 });
 
 test('a valid legacy rollup is imported once and is not counted twice', async (t) => {
