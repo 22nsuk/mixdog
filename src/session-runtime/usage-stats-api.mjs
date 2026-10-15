@@ -221,7 +221,8 @@ export function createUsageStatsApi({
       if (!store) throw new Error('Usage ledger is unavailable');
       await store.settleWrites();
       const usage = await store.sessionUsageAsync(sessionUsageIds(sessionId, accountPool));
-      return { sessionId, ...sessionUsageSnapshot(usage) };
+      const taskUsage = await store.taskUsageAsync(sessionId);
+      return { sessionId, ...sessionUsageSnapshot(usage), taskUsage };
     },
 
     /**

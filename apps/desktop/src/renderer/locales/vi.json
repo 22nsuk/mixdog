@@ -4392,5 +4392,16 @@
   "Zoom options": "Tùy chọn thu phóng",
   "Zoom out": "Thu nhỏ",
   "Zoom Out": "Thu nhỏ",
-  "Zoom to {{value0}}%": "Thu phóng về {{value0}}%"
+  "Zoom to {{value0}}%": "Thu phóng về {{value0}}%",
+  "Task usage": "Mức sử dụng theo tác vụ",
+  "Recent runtime turns and explicitly linked descendants. Ledger subtotals may be incomplete; settlement is not verified completion. Reopen to refresh.": "Các lượt chạy gần đây và lượt con được liên kết rõ ràng. Tổng phụ trong sổ ghi có thể chưa đầy đủ; kết thúc lượt chạy không có nghĩa là đã hoàn thành và được xác minh. Mở lại để cập nhật.",
+  "No recorded task runs.": "Chưa có lượt chạy tác vụ được ghi lại.",
+  "Linked runs": "Lượt chạy liên kết",
+  "Ledger records": "Bản ghi trong sổ",
+  "Measured input / output records": "Bản ghi đo đầu vào / đầu ra",
+  "First turn duration": "Thời gian lượt đầu",
+  "Linked settlement span": "Thời gian đến khi lượt liên kết kết thúc",
+  "Calls without usage": "Lần gọi không báo mức sử dụng",
+  "Unsettled work": "Công việc chưa kết thúc",
+  "Attribution gaps": "Khoảng trống quy thuộc"
 }

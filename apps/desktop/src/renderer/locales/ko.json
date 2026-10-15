@@ -4392,5 +4392,16 @@
   "Zoom options": "확대/축소 옵션",
   "Zoom out": "축소",
   "Zoom Out": "축소",
-  "Zoom to {{value0}}%": "{{value0}}%로"
+  "Zoom to {{value0}}%": "{{value0}}%로",
+  "Task usage": "작업 사용량",
+  "Recent runtime turns and explicitly linked descendants. Ledger subtotals may be incomplete; settlement is not verified completion. Reopen to refresh.": "최근 런타임 턴과 명시적으로 연결된 하위 실행입니다. 원장 소계는 불완전할 수 있으며, 실행 정리는 검증된 완료를 뜻하지 않습니다. 다시 열면 갱신됩니다.",
+  "No recorded task runs.": "기록된 작업 실행이 없습니다.",
+  "Linked runs": "연결된 실행",
+  "Ledger records": "원장 기록",
+  "Measured input / output records": "입력 / 출력 측정 기록",
+  "First turn duration": "첫 턴 실행 시간",
+  "Linked settlement span": "연결된 실행 정리까지",
+  "Calls without usage": "사용량 미보고 호출",
+  "Unsettled work": "정리 미완료 항목",
+  "Attribution gaps": "귀속 불명확 항목"
 }

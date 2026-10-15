@@ -3,6 +3,7 @@ import { nonNegativeNumber, resolveContextDisplayUsage } from './context-usage';
 import { t } from './i18n';
 import { record } from './record-utils';
 import { ContextInspector, type ContextInspection, type ContextRequest } from './ContextInspector';
+import { TaskUsage } from './TaskUsage';
 import { statsCount, statsMoney, statsNumber, statsPercent, statsSpeed, statsTokens } from './usage-stats-model';
 // @ts-expect-error Shared presentation contract has no separate declaration file.
 import { contextMeasurementStats, contextMeasurementLabel } from '../../../../src/ui/context-measurement.mjs';
@@ -258,6 +259,7 @@ export function ContextBody({
           usage={sessionUsage}
           compactions={nonNegativeNumber(record(context.compaction).compactCount)}
         />
+        <TaskUsage value={record(sessionUsage).taskUsage} sessionId={record(snapshot).sessionId || context.sessionId} />
       </div>
     </div>
   );

@@ -30,6 +30,7 @@ export function registerAutomationAgentTool(executeAgentControl) {
         callerCwd: callerCtx.callerCwd,
         invocationSource: 'model-tool',
         callerSessionId: callerCtx.callerSessionId || null,
+        taskRunId: callerCtx.taskRunId || null,
         clientHostPid: process.pid,
         signal: callerCtx.signal,
       });

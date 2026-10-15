@@ -2,6 +2,7 @@
 // Running one turn on an agent child session through the owning session
 // runtime. Creating that child lives in ./agent-child.mjs.
 import { randomUUID } from 'node:crypto';
+import { registerTaskSubmission, recordTaskOperation } from '../../../runtime/shared/llm/task-usage-context.mjs';
 import { createAgentChildFactory } from './agent-child.mjs';
 import { partialHandoffTextFromSession } from '../../../runtime/agent/orchestrator/agent-runtime/agent-progress-watchdog.mjs';
 
@@ -58,15 +59,17 @@ export function createAgentTurns({
     descriptor.status = 'running';
     descriptor.stage = 'running';
     descriptor.updatedAt = Date.now();
+    const submissionId = `agent-turn-${randomUUID()}`;
     try {
       const options = {
-        id: `agent-turn-${randomUUID()}`,
+        id: submissionId,
         mode: 'prompt',
         priority: 'next',
         context,
         transcriptMeta: { sender: 'lead' },
         ...(entry.runtime.isWireSafe === true || typeof onToolResult !== 'function' ? {} : { onToolResult }),
       };
+      await registerTaskSubmission(sessionId, submissionId);
       const detail = await target.call(entry.runtime, String(prompt || ''), options);
       if (detail?.status === 'failed') {
         throw new Error(String(detail.error || 'agent session turn failed'));
@@ -96,6 +99,7 @@ export function createAgentTurns({
       descriptor.stage = descriptor.status;
       throw error;
     } finally {
+      await recordTaskOperation('reject', { sessionId, submissionId });
       takeCancelTranscript(sessionId);
       descriptor.updatedAt = Date.now();
       retainUnwatched(entry, 'agent child idle');

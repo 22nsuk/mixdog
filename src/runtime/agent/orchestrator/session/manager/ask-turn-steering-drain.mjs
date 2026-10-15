@@ -4,6 +4,7 @@
 // — the manager's pending-message entries, grouped into one steering item per
 // mode and adopted by this turn (so their delivery/ack/release rides it).
 import { _groupPendingMessageEntries, drainPendingMessages, releasePendingMessages } from './pending-messages.mjs';
+import { noteTaskSteering } from '../../../../shared/llm/task-usage-context.mjs';
 
 /**
  * @param {object} input
@@ -58,6 +59,7 @@ export function createAskSteeringDrain({ sessionId, turn, askOpts }) {
         }
       }
     }
+    noteTaskSteering(out);
     return out;
   };
 }

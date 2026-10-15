@@ -22,6 +22,7 @@ import {
 import { QUOTA_SCHEMA, readQuotaHistory, readQuotaWindows, recordQuotaSamples } from './usage-ledger-quota.mjs';
 import { SHARE_ENV } from 'node:worker_threads';
 import { createWorkerRequestClient } from '../worker-requests.mjs';
+import { TASK_USAGE_SCHEMA, linkTaskUsage, taskUsageOperation, readTaskUsage } from './task-usage-store.mjs';
 
 // One worker (usage-ledger-worker.mjs) runs the ledger's heavy SQLite work —
 // rollups, queued live writes, unpriced-refresh queries and repair writes — on
@@ -311,6 +312,7 @@ export class UsageLedger {
     this.writeQueue = [];
     this.writing = null;
     this.quotaWrites = new Set();
+    this.taskWrites = new Set();
     this.captureBegun = false;
     if (existing) {
       this.migration = null;
@@ -353,6 +355,7 @@ export class UsageLedger {
             CREATE TABLE IF NOT EXISTS legacy_days (day TEXT PRIMARY KEY, document TEXT NOT NULL);
             ${QUOTA_SCHEMA}
             ${DAY_REVISION_SCHEMA}
+            ${TASK_USAGE_SCHEMA}
             PRAGMA user_version=2;
         `);
     this.prepareStatements();
@@ -449,21 +452,20 @@ export class UsageLedger {
     try {
       for (const row of rows) {
         const rank = row.origin === 'gateway' ? 1 : 0;
-        if (
-          !this.insert({
-            ...row,
-            session_id: row.sessionId,
-            source_type: row.sourceType,
-            cache_read: row.cacheRead,
-            cache_write: row.cacheWrite,
-            cost_usd: row.costUsd,
-            cost_source: row.costSource,
-            rates: row.rates ? JSON.stringify(row.rates) : null,
-            duration_ms: row.durationMs,
-            rank,
-          })
-        )
-          continue;
+        const isNew = this.insert({
+          ...row,
+          session_id: row.sessionId,
+          source_type: row.sourceType,
+          cache_read: row.cacheRead,
+          cache_write: row.cacheWrite,
+          cost_usd: row.costUsd,
+          cost_source: row.costSource,
+          rates: row.rates ? JSON.stringify(row.rates) : null,
+          duration_ms: row.durationMs,
+          rank,
+        });
+        linkTaskUsage(this.db, row, encodeUsageId(row.id), isNew);
+        if (!isNew) continue;
         this.indexRecord(row, rank);
         if (row.origin === 'live' && !this.get('liveSince')) this.set('liveSince', row.ts);
         inserted += 1;
@@ -528,6 +530,38 @@ export class UsageLedger {
     }
     // Quota readings post on their own; a failed one already reported itself.
     await Promise.allSettled(this.quotaWrites);
+    await Promise.allSettled(this.taskWrites);
+  }
+
+  taskOperation(action, data) {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const result = taskUsageOperation(this.db, action, data);
+      this.db.exec('COMMIT');
+      return result;
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  taskOperationAsync(action, data) {
+    const write =
+      this.path === ':memory:'
+        ? Promise.resolve().then(() => this.taskOperation(action, data))
+        : this.workerRequest('taskOperation', { action, data });
+    this.taskWrites.add(write);
+    write.then(
+      () => this.taskWrites.delete(write),
+      () => this.taskWrites.delete(write)
+    );
+    return write;
+  }
+
+  taskUsageAsync(sessionId, limit = 10) {
+    return this.path === ':memory:'
+      ? Promise.resolve(readTaskUsage(this.db, sessionId, limit))
+      : this.workerRequest('taskUsage', { sessionId, limit });
   }
 
   /** Readings of subscription quota windows (usage-ledger-quota.mjs). */

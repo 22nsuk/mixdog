@@ -4575,5 +4575,16 @@
   "Zoom options": "Параметры масштаба",
   "Zoom out": "Уменьшить",
   "Zoom Out": "Уменьшить масштаб",
-  "Zoom to {{value0}}%": "Масштаб {{value0}}%"
+  "Zoom to {{value0}}%": "Масштаб {{value0}}%",
+  "Task usage": "Использование по задачам",
+  "Recent runtime turns and explicitly linked descendants. Ledger subtotals may be incomplete; settlement is not verified completion. Reopen to refresh.": "Недавние ходы и явно связанные дочерние запуски. Промежуточные суммы реестра могут быть неполными; окончание запусков не означает проверенного завершения. Откройте заново для обновления.",
+  "No recorded task runs.": "Записанных запусков задач нет.",
+  "Linked runs": "Связанные запуски",
+  "Ledger records": "Записи реестра",
+  "Measured input / output records": "Записи с измеренным вводом / выводом",
+  "First turn duration": "Длительность первого хода",
+  "Linked settlement span": "Время до окончания связанных запусков",
+  "Calls without usage": "Вызовы без данных об использовании",
+  "Unsettled work": "Незавершённая работа",
+  "Attribution gaps": "Пробелы в привязке"
 }

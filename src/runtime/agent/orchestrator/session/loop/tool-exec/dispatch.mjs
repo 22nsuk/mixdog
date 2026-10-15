@@ -15,6 +15,7 @@ import { executeInternalTool, isInternalTool } from '../../../internal-tools.mjs
 import { buildSkillsListResponse, viewSkill } from '../tool-helpers.mjs';
 import { isOnDeferredToolSurface } from '../deferred-call-through.mjs';
 import { _executeCodeGraphToolLazy } from '../../manager/runtime-loaders.mjs';
+import { currentTaskRun } from '../../../../../shared/llm/task-usage-context.mjs';
 
 function dispatchMcp(name, args, { cwd, callerSessionId, sessionRef, executeOpts }) {
   const mcpScopeId = sessionRef?.mcpScopeId || null;
@@ -43,6 +44,7 @@ function dispatchInternal(name, args, { cwd, callerSessionId, sessionRef, execut
     scopeId: sessionRef?.mcpScopeId || null,
     callerSessionId,
     callerCwd: cwd,
+    taskRunId: currentTaskRun()?.id || null,
     setCallerCwd: async (nextCwd) => {
       const applyForCaller = sessionRef?._applyResolvedCwdForCaller;
       if (typeof applyForCaller === 'function') {

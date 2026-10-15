@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { PRIORITY_RANK, normalizePriority, resourceAdmission } from '../../../shared/resource-admission.mjs';
 import { accountProviderSend } from '../../../shared/llm/usage-accounting.mjs';
+import { bindTaskRun } from '../../../shared/llm/task-usage-context.mjs';
 
 // Normal provider traffic is not concurrency-gated. Independent sessions and
 // accounts start immediately; a finite limit exists only when an operator
@@ -529,7 +530,7 @@ export function wrapProviderAdmission(provider, providerName, scheduler = provid
       () =>
         scheduler.run(
           key,
-          (admissionSignal, admissionMetrics) => {
+          bindTaskRun((admissionSignal, admissionMetrics) => {
             // Admission is the common request-clock boundary for WS/SSE/HTTP.
             // Queue wait therefore cannot consume first-byte or agent-watchdog
             // time. Provider-local retry remains the sole retry owner.
@@ -548,7 +549,7 @@ export function wrapProviderAdmission(provider, providerName, scheduler = provid
               model,
               admittedOpts
             );
-          },
+          }),
           {
             signal,
             ownerKey: opts.admissionOwner || opts.sessionId || null,

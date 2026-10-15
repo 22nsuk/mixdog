@@ -846,3 +846,13 @@
   overflow: hidden;
   padding: 0;
 }
+.context-task-usage {
+  padding: 18px 20px;
+  font-size: 12px;
+}
+.context-task-usage summary { cursor: pointer; font-weight: 600; }
+.context-task-usage p { color: var(--mx-text-muted); }
+.context-task-usage article { margin-top: 12px; }
+.context-task-usage dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
+.context-task-usage dt { color: var(--mx-text-muted); }
+.context-task-usage dd { margin: 2px 0 0; font-variant-numeric: tabular-nums; }

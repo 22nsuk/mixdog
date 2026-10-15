@@ -4392,5 +4392,16 @@
   "Zoom options": "縮放選項",
   "Zoom out": "縮小",
   "Zoom Out": "縮小",
-  "Zoom to {{value0}}%": "縮放至 {{value0}}%"
+  "Zoom to {{value0}}%": "縮放至 {{value0}}%",
+  "Task usage": "工作用量",
+  "Recent runtime turns and explicitly linked descendants. Ledger subtotals may be incomplete; settlement is not verified completion. Reopen to refresh.": "近期執行階段輪次及明確關聯的下級執行。帳本小計可能不完整；執行結束不代表已經驗證完成。重新開啟以更新。",
+  "No recorded task runs.": "沒有已記錄的工作執行。",
+  "Linked runs": "關聯執行",
+  "Ledger records": "帳本記錄",
+  "Measured input / output records": "已測量輸入 / 輸出記錄",
+  "First turn duration": "首輪執行時間",
+  "Linked settlement span": "關聯執行結束跨度",
+  "Calls without usage": "未回報用量的呼叫",
+  "Unsettled work": "尚未結束的工作",
+  "Attribution gaps": "歸屬缺口"
 }

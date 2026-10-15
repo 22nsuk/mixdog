@@ -12,6 +12,7 @@ import { createAgentRegistry } from './agent-tree/agent-registry.mjs';
 import { createAgentRehydration, lastStoredAgentHandoff } from './agent-tree/agent-rehydrate.mjs';
 import { createAgentTurns } from './agent-tree/agent-turns.mjs';
 import { randomUUID } from 'node:crypto';
+import { registerTaskSubmission, recordTaskOperation } from '../../runtime/shared/llm/task-usage-context.mjs';
 
 export { SESSION_ID_PATTERN } from './agent-tree/agent-registry.mjs';
 
@@ -114,13 +115,22 @@ export function createAgentTree({
       if (!descriptor || descriptor.closed) throw new Error('agent session is closed');
       const runtime = sessionOwner(descriptor.id)?.runtime;
       if (!runtime || !stateBusy(runtime.getState())) return null;
-      const accepted = await runtime.submitAsync(String(prompt || ''), {
-        id: `agent-message-${randomUUID()}`,
-        mode: 'prompt',
-        priority: 'next',
-        context,
-        transcriptMeta: { sender: 'lead' },
-      });
+      const submissionId = `agent-message-${randomUUID()}`;
+      await registerTaskSubmission(descriptor.id, submissionId);
+      let accepted;
+      try {
+        accepted = await runtime.submitAsync(String(prompt || ''), {
+          id: submissionId,
+          mode: 'prompt',
+          priority: 'next',
+          context,
+          transcriptMeta: { sender: 'lead' },
+        });
+      } catch (error) {
+        await recordTaskOperation('reject', { sessionId: descriptor.id, submissionId });
+        throw error;
+      }
+      if (accepted === false) await recordTaskOperation('reject', { sessionId: descriptor.id, submissionId });
       if (accepted === false) throw new Error('agent follow-up was not accepted');
       return { queueDepth: runtime.getState()?.queued?.length ?? null };
     },

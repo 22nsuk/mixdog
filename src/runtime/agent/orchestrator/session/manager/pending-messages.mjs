@@ -2,6 +2,7 @@
 import { mkdirSync, readFileSync } from 'node:fs';
 import { loadSession } from '../store.mjs';
 import { ForeignPendingMessageController } from './foreign-pending-messages.mjs';
+import { registerTaskSubmission } from '../../../../shared/llm/task-usage-context.mjs';
 import {
   currentPendingLifecycleToken,
   lifecycleTokenStale,
@@ -458,6 +459,7 @@ export function enqueuePendingMessage(sessionId, message) {
     _sessionPendingMessages.set(sessionId, q);
   }
   q.push(entry);
+  void registerTaskSubmission(sessionId, entry.id);
   const bufferedDepth = schedulePendingMessagePersist(sessionId, entry);
   return Math.max(q.length, bufferedDepth || 0);
 }

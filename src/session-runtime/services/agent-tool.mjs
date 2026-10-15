@@ -12,6 +12,7 @@ import { createCloseFlow } from './agent-tool/close-flow.mjs';
 import { createTerminalTrace } from './agent-tool/terminal-trace.mjs';
 import { createAgentExecute } from './agent-tool/execute.mjs';
 import { createTurnReviewCollector } from './agent-tool/turn-review.mjs';
+import { withTaskCaller } from '../../runtime/shared/llm/task-usage-context.mjs';
 // Re-export the static tool descriptor so importers of this facade keep the
 // identical public surface (`import { AGENT_TOOL } from './agent-tool.mjs'`).
 export { AGENT_TOOL };
@@ -137,7 +138,7 @@ export function createStandaloneAgent({
 
   return {
     tools: [AGENT_TOOL],
-    execute,
+    execute: (args, context) => withTaskCaller(context, () => execute(args, context)),
     onStatusChange: (listener) => {
       if (typeof listener !== 'function') return () => {};
       statusListeners.add(listener);

@@ -7,6 +7,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { serveWorkerRequests } from '../worker-requests.mjs';
 import { UsageLedger } from './usage-ledger.mjs';
+import { readTaskUsage } from './task-usage-store.mjs';
 import { readSessionUsage, rollupDelta, rollupUsage } from './usage-ledger-rollup.mjs';
 import { readQuotaHistory, readQuotaWindows } from './usage-ledger-quota.mjs';
 import { applyUsageRepairIfUnchanged, selectUsageRepairCandidates } from './usage-ledger-repair.mjs';
@@ -58,6 +59,8 @@ function recordBatch(ledger, rows) {
 }
 
 const operations = {
+  taskOperation: ({ path, action, data }) => write(path, (ledger) => ledger.taskOperation(action, data)),
+  taskUsage: ({ path, sessionId, limit }) => read(path, (db) => readTaskUsage(db, sessionId, limit)),
   rollup: ({ path, options }) => read(path, (db) => rollupUsage(db, options)),
   rollupDelta: ({ path, options, known, now }) => read(path, (db) => rollupDelta(db, options, known, now)),
   sessionUsage: ({ path, sessionIds }) => read(path, (db) => readSessionUsage(db, sessionIds)),

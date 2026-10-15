@@ -18,6 +18,7 @@ import { armTurnDurability, claimTurnRuntime } from './ask-turn-open.mjs';
 import { prepareAskTurn, runAskAgentLoop } from './ask-turn-execute.mjs';
 import { commitAskTurn, publishAskTurn } from './ask-turn-settle.mjs';
 import { finalizeAskTurnFailure } from './ask-turn-failure.mjs';
+import { withTaskRun } from '../../../../shared/llm/task-usage-context.mjs';
 
 export { _api_call_with_interrupt } from './ask-call-interrupt.mjs';
 export {
@@ -181,16 +182,35 @@ export async function askSession(sessionId, prompt, context, onToolCall, cwdOver
       // From here the turn's own unwind (ask-turn-failure) acks or releases
       // its entries; the queue keeps owning only the not-yet-started ones.
       queue.markStarted();
-      const turn = await runAskTurn({
-        sessionId,
-        opened,
-        input,
-        askOpts,
-        onToolCall,
-        cwdOverride,
-        transcript,
-        askStartedAt,
-      });
+      const turn = await withTaskRun(
+        {
+          id: opened.turnToken,
+          sessionId,
+          startedAt: opened.startedAt,
+          signal: opened.turnSignal,
+          mode: opened.turn.session.orchestrationMode,
+          source: input.promptSource?.source || (input.pendingEntries.length ? 'queued' : 'prompt'),
+          submissionIds: input.pendingEntries.length
+            ? input.pendingEntries.map((entry) => entry.id)
+            : transcript.raw?.checkpointId
+              ? [transcript.raw.checkpointId]
+              : [],
+          allowParent: input.pendingEntries.length === 0 && !input.promptSource,
+          requireSubmission: input.pendingEntries.length > 0 || transcript.raw?.sender === 'lead',
+          messageId: input.pendingEntries.length ? null : transcript.user?.messageId,
+        },
+        () =>
+          runAskTurn({
+            sessionId,
+            opened,
+            input,
+            askOpts,
+            onToolCall,
+            cwdOverride,
+            transcript,
+            askStartedAt,
+          })
+      );
       result = turn.result;
       // Turn complete. Drain the pending-message queue: any `agent type=send`
       // that arrived while this turn was in flight runs next, in order, as a

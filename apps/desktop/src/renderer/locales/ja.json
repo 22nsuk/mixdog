@@ -4392,5 +4392,16 @@
   "Zoom options": "ズームオプション",
   "Zoom out": "縮小",
   "Zoom Out": "ズームアウト",
-  "Zoom to {{value0}}%": "{{value0}}%にする"
+  "Zoom to {{value0}}%": "{{value0}}%にする",
+  "Task usage": "タスク使用量",
+  "Recent runtime turns and explicitly linked descendants. Ledger subtotals may be incomplete; settlement is not verified completion. Reopen to refresh.": "最近のランタイムターンと明示的に紐づいた子実行です。台帳の小計は不完全な場合があり、実行終了は検証済みの完了を意味しません。開き直すと更新されます。",
+  "No recorded task runs.": "記録されたタスク実行はありません。",
+  "Linked runs": "紐づいた実行",
+  "Ledger records": "台帳記録",
+  "Measured input / output records": "入力 / 出力の測定記録",
+  "First turn duration": "最初のターンの実行時間",
+  "Linked settlement span": "紐づいた実行の終了まで",
+  "Calls without usage": "使用量未報告の呼び出し",
+  "Unsettled work": "未終了の項目",
+  "Attribution gaps": "帰属不明の項目"
 }

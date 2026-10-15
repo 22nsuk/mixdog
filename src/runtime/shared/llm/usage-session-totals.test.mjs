@@ -51,6 +51,7 @@ function expected(included) {
     sessionId: 'session-a',
     // None of these rows carries a request duration, so no speed is known.
     outputTokensPerSecond: null,
+    taskUsage: { version: 1, sessionId: 'session-a', scope: 'linked-runtime-turns', tasks: [] },
     turns: included.length,
     input: sum('input'),
     output: sum('output'),

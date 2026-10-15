@@ -4512,5 +4512,16 @@
   "Zoom options": "Opzioni di zoom",
   "Zoom out": "Riduci",
   "Zoom Out": "Rimpicciolisci",
-  "Zoom to {{value0}}%": "Zoom al {{value0}}%"
+  "Zoom to {{value0}}%": "Zoom al {{value0}}%",
+  "Task usage": "Utilizzo per attività",
+  "Recent runtime turns and explicitly linked descendants. Ledger subtotals may be incomplete; settlement is not verified completion. Reopen to refresh.": "Turni recenti ed esecuzioni discendenti collegate esplicitamente. I subtotali del registro possono essere incompleti; la fine delle esecuzioni non equivale a un completamento verificato. Riapri per aggiornare.",
+  "No recorded task runs.": "Nessuna esecuzione di attività registrata.",
+  "Linked runs": "Esecuzioni collegate",
+  "Ledger records": "Voci del registro",
+  "Measured input / output records": "Voci misurate in ingresso / uscita",
+  "First turn duration": "Durata del primo turno",
+  "Linked settlement span": "Tempo fino alla fine delle esecuzioni collegate",
+  "Calls without usage": "Chiamate senza utilizzo dichiarato",
+  "Unsettled work": "Lavoro non terminato",
+  "Attribution gaps": "Lacune di attribuzione"
 }
