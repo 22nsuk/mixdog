@@ -1,8 +1,12 @@
 import { extractCacheWriteTokens, extractCachedTokens } from '../../agent-trace.mjs';
 
+import { isReportedTokenCount } from '../lib/usage-completeness.mjs';
+
 export function normalizeWsUsage(u, serviceTier) {
   return {
     inputTokens: u.input_tokens || 0,
+    inputTokensComplete: isReportedTokenCount(u.input_tokens),
+    outputTokensComplete: isReportedTokenCount(u.output_tokens),
     outputTokens: u.output_tokens || 0,
     cachedTokens: extractCachedTokens(u),
     cacheWriteTokens: extractCacheWriteTokens(u),

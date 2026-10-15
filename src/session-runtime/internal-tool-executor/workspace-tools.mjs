@@ -182,6 +182,8 @@ export function createWorkspaceToolHandlers({
         callerCwd,
         invocationSource: 'model-tool',
         callerSessionId,
+        orchestrationMode:
+          callerCtx?.orchestrationMode ?? (callerSessionId === rt.session?.id ? rt.session?.orchestrationMode : null),
         clientHostPid: callerCtx?.clientHostPid || rt.session?.clientHostPid || process.pid,
         signal: callerCtx?.signal,
         notifyFn: notifyFnForSession(callerSessionId),

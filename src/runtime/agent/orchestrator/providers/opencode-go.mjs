@@ -65,6 +65,7 @@ export function toInclusiveOpenCodeGoUsage(usage) {
   const converted = {
     ...usage,
     inputTokens: inclusiveInput,
+    inputTokensComplete: usage.promptTokensComplete === true,
     promptTokens: Math.max(Number(usage.promptTokens) || 0, inclusiveInput),
   };
   inclusiveUsage.add(converted);

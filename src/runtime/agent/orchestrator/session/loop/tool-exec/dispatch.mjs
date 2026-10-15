@@ -51,6 +51,7 @@ function dispatchInternal(name, args, { cwd, callerSessionId, sessionRef, execut
       if (sessionRef && typeof nextCwd === 'string') sessionRef.cwd = nextCwd;
       return nextCwd;
     },
+    orchestrationMode: sessionRef?.orchestrationMode ?? null,
     clientHostPid: sessionRef?.clientHostPid,
     signal: executeOpts.signal,
     routingSessionId: callerSessionId,

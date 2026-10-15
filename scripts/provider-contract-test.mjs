@@ -1283,6 +1283,9 @@ test('OpenCode Go Anthropic delegation traces additive inner usage before inclus
   assert.deepEqual(outerUsage, {
     inputTokens: 100,
     outputTokens: 5,
+    inputTokensComplete: true,
+    outputTokensComplete: true,
+    promptTokensComplete: true,
     cachedTokens: 35,
     cacheWriteTokens: 5,
     promptTokens: 100,

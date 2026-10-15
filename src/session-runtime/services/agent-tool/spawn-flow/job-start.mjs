@@ -7,6 +7,11 @@ import { sanitizeTaskMeta, startBackgroundTask } from '../../../../runtime/share
 import { resourceAdmission } from '../../../../runtime/shared/resource-admission.mjs';
 import { clean, terminalPidForContext } from '../helpers.mjs';
 import { renderResult } from '../render.mjs';
+import {
+  beginDelegationObservation,
+  admitDelegationObservation,
+  finishDelegationObservation,
+} from '../delegation-observation.mjs';
 
 /** The completion callback that hands a worker's result back to its caller session; null without a handoff. */
 function handoffNotifier(handoffSessionId, notifySessionCompletion) {
@@ -17,7 +22,7 @@ function handoffNotifier(handoffSessionId, notifySessionCompletion) {
   };
 }
 
-export function createJobStarter({ mgr, notifyStatusChange, notifySessionCompletion }) {
+export function createJobStarter({ mgr, notifyStatusChange, notifySessionCompletion, admission = resourceAdmission }) {
   return function startJob(type, meta, run, notifyContext = null) {
     const clientHostPid = terminalPidForContext(notifyContext);
     const callerSessionId = clean(notifyContext?.callerSessionId || notifyContext?.sessionId);
@@ -47,6 +52,7 @@ export function createJobStarter({ mgr, notifyStatusChange, notifySessionComplet
       // Cancellation reaches the owner once, with the worker's partial output.
       notifyOnCancel: true,
       cancel: () => {
+        finishDelegationObservation(task, 'cancelled');
         try {
           admissionController.abort(new Error('agent task cancelled before resource admission'));
         } catch {}
@@ -59,26 +65,34 @@ export function createJobStarter({ mgr, notifyStatusChange, notifySessionComplet
         setImmediate(notifyStatusChange);
       },
       run: async () => {
-        const lease = await resourceAdmission.acquire('agent', {
-          signal: admissionController.signal,
-          label: jobMeta?.tag || type,
-          ownerKey: ownerSessionId || clientHostPid || null,
-        });
+        let lease;
         try {
+          lease = await admission.acquire('agent', {
+            signal: admissionController.signal,
+            label: jobMeta?.tag || type,
+            ownerKey: ownerSessionId || clientHostPid || null,
+          });
+          admitDelegationObservation(task);
           // Yield one macrotask before doing agent work. startBackgroundTask uses
           // a Promise microtask, which otherwise begins CPU-heavy spawn prep
           // before the TUI receives/render the "running" result.
           await new Promise((resolve) => setImmediate(resolve));
           if (task?.status === 'cancelled') return null;
-          return await resourceAdmission.runWithLease(lease, () => run(task, ownerNotifyContext));
+          const result = await admission.runWithLease(lease, () => run(task, ownerNotifyContext));
+          finishDelegationObservation(task, result?.stallAbort ? 'partial' : result?.error ? 'failed' : 'completed');
+          return result;
+        } catch (error) {
+          finishDelegationObservation(task, task?.status === 'cancelled' ? 'cancelled' : 'failed');
+          throw error;
         } finally {
-          await lease.release();
+          await lease?.release();
           // startBackgroundTask stamps the terminal state in its next promise
           // continuation; publish after that continuation, not before it.
           setImmediate(notifyStatusChange);
         }
       },
     });
+    beginDelegationObservation(task, { callerSessionId, orchestrationMode: notifyContext?.orchestrationMode });
     notifyStatusChange();
     return task;
   };

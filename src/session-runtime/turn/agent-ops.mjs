@@ -3,7 +3,12 @@
  * runtime notifications, and the deferred tool surface (status + selection).
  */
 import { clean } from '../../runtime/agent/orchestrator/runtime-core/session-text.mjs';
-import { toolRow, toolSearchMatches, sortedNamesByMeasuredUsage, selectDeferredTools } from '../../runtime/agent/orchestrator/runtime-core/tool-catalog.mjs';
+import {
+  toolRow,
+  toolSearchMatches,
+  sortedNamesByMeasuredUsage,
+  selectDeferredTools,
+} from '../../runtime/agent/orchestrator/runtime-core/tool-catalog.mjs';
 
 function splitToolStatusCounts(rows) {
   const list = Array.isArray(rows) ? rows : [];
@@ -37,6 +42,7 @@ export function createAgentOps(deps) {
       callerCwd: getCurrentCwd(),
       invocationSource: 'user-command',
       callerSessionId,
+      orchestrationMode: session?.orchestrationMode ?? null,
       clientHostPid: session?.clientHostPid || process.pid,
       notifyFn: notifyFnForSession(callerSessionId),
     });

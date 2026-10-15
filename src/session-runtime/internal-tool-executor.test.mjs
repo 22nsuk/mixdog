@@ -264,3 +264,14 @@ test('session merge-worktree / remove-worktree drive the Lead workspace authorit
   const { execute: bare } = harness();
   await assert.rejects(bare('session', { action: 'merge-worktree' }, {}), /unavailable in this runtime/);
 });
+
+test('agent observation mode comes from the caller session, never from agent arguments or another Lead', async () => {
+  const { execute, calls, rt } = harness();
+  rt.session.orchestrationMode = 'focused';
+  await execute('agent', { type: 'spawn', orchestrationMode: 'swarm' }, { callerSessionId: rt.session.id });
+  assert.equal(calls.at(-1)[2].orchestrationMode, 'focused');
+  await execute('agent', {}, { callerSessionId: 'child', orchestrationMode: 'balanced' });
+  assert.equal(calls.at(-1)[2].orchestrationMode, 'balanced');
+  await execute('agent', {}, { callerSessionId: 'unknown-child' });
+  assert.equal(calls.at(-1)[2].orchestrationMode, null);
+});

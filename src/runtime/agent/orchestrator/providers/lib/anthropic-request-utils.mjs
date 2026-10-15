@@ -1,3 +1,4 @@
+import { isReportedTokenCount } from './usage-completeness.mjs';
 import { providerNativeToolPrefixCount } from '../../runtime-core/provider-request-tools.mjs';
 import { actionInputContract } from './action-input-contract.mjs';
 import { isNativeServerToolBlockType } from './anthropic-native-blocks.mjs';
@@ -318,6 +319,14 @@ export function normalizeAnthropicNonStreamingResponse(message, fallbackModel = 
     providerMetadata: anthropicFallbackProviderMetadata(fallbackEvents),
     usage: {
       inputTokens: input,
+      inputTokensComplete: isReportedTokenCount(usage.input_tokens),
+      outputTokensComplete: isReportedTokenCount(usage.output_tokens),
+      promptTokensComplete: [
+        usage.input_tokens,
+        usage.cache_read_input_tokens,
+        usage.cache_creation_input_tokens,
+        input + cacheRead + cacheWrite,
+      ].every(isReportedTokenCount),
       outputTokens: Number(usage.output_tokens) || 0,
       cachedTokens: cacheRead,
       cacheWriteTokens: cacheWrite,

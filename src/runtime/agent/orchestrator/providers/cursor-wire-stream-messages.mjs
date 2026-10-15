@@ -3,6 +3,7 @@
  * to the shared stream state and relayed to the SSE sink. Returns the
  * message's forward-progress kind for the watchdog.
  */
+import { isReportedTokenCount } from './lib/usage-completeness.mjs';
 import { decodeMessage } from './cursor-wire-protobuf.mjs';
 import { MAX_CHECKPOINT_BYTES, cursorInteractionProgress } from './cursor-wire-guards.mjs';
 import { buildCursorInteractionResponse } from './cursor-wire-interactions.mjs';
@@ -31,6 +32,12 @@ function applyInteractionUpdate(update, state, filter, emit) {
     state.batchBoundaryChunkSeq = state.chunkSeq;
   }
   if (update.stepCompleted) state.batchBoundaryChunkSeq = state.chunkSeq;
+  if (update.tokenDelta) {
+    // Missing/invalid delta evidence remains incomplete even if a later
+    // delta is valid. Explicit zero is still a reported measurement.
+    state.outputTokensComplete =
+      state.outputTokensComplete !== false && isReportedTokenCount(update.tokenDelta.tokens);
+  }
   state.outputTokens += update.tokenDelta?.tokens || 0;
   return cursorInteractionProgress(update);
 }

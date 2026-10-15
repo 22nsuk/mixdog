@@ -80,6 +80,9 @@ export function buildAnthropicTurnResult(parseResult, { provider, useModel, opts
     usage: {
       inputTokens: input,
       outputTokens: output,
+      inputTokensComplete: parseResult.usage?.inputTokensComplete === true,
+      outputTokensComplete: parseResult.usage?.outputTokensComplete === true,
+      promptTokensComplete: parseResult.usage?.promptTokensComplete === true,
       cachedTokens: cacheRead,
       cacheWriteTokens: cacheWrite,
       ...(parseResult.usage?.cacheWrite1hTokens ? { cacheWrite1hTokens: parseResult.usage.cacheWrite1hTokens } : {}),

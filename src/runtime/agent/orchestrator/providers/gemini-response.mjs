@@ -9,6 +9,7 @@
  * and every `usageMetadata` field name (camelCase SDK + snake_case REST
  * aliases) are Gemini's own keys and are read verbatim.
  */
+import { geminiUsageCompleteness } from './lib/usage-completeness.mjs';
 import { traceAgentUsage } from '../agent-trace.mjs';
 import { createProviderReplay } from './lib/provider-replay.mjs';
 import { collectGeminiGroundingSources, parseGeminiTextPartMetadata, parseToolCalls } from './gemini-schema.mjs';
@@ -96,6 +97,7 @@ export function normalizeGeminiUsage(um, opts, cachedContent) {
     (um.candidatesTokenCount || um.candidates_token_count || 0) +
     (um.thoughtsTokenCount || um.thoughts_token_count || 0);
   const resolvedUsage = {
+    ...geminiUsageCompleteness(um, inputTokens, outputTokens, true),
     inputTokens,
     outputTokens,
     cachedTokens,
