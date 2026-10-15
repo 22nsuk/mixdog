@@ -135,6 +135,7 @@ export function ComposerFooter({
       />
       <ModelSelector
         {...modelProps}
+        onDraftSelection={modelProps.onDraftModelSelection}
         // Model writes are queued by the session API. A preceding write must
         // not disable the next selection while its acknowledgement travels.
         modelDisabled={transitioning}

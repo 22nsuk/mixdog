@@ -14,7 +14,7 @@ const conversation = () => [
 
 /** A session surface over a fake runtime: the route API and the compaction
  *  command share one bag, as in the composed session. */
-function harness({ items = conversation(), busy = false, commandBusy = false, onModelChange, compact } = {}) {
+function harness({ items = conversation(), busy = false, commandBusy = false, onModelChange, compact, validate } = {}) {
   const calls = [];
   const validations = [];
   const statuses = [];
@@ -32,6 +32,7 @@ function harness({ items = conversation(), busy = false, commandBusy = false, on
     setRoute: async (next, options) => {
       if (options.validateOnly) {
         validations.push(next);
+        if (validate) await validate(next);
         if (next.model === 'bogus') throw new Error('Invalid model selector "bogus"');
         return { ...next };
       }
@@ -70,7 +71,7 @@ function harness({ items = conversation(), busy = false, commandBusy = false, on
   };
   createSessionCommandsApi(bag);
   const api = { ...createSessionSettingsApi(bag), ...createSessionRouteApi(bag) };
-  return { api, calls, validations, statuses, runtime, state: () => state };
+  return { api, calls, validations, statuses, runtime, set: bag.set, state: () => state };
 }
 
 const rows = (h) => h.state().items.slice(3).map((item) => [item.status || item.label, item.modelId ?? null]);
@@ -237,4 +238,47 @@ test('/model and preset selections (setModel) take the same in-place path', asyn
   const locked = harness({ commandBusy: true });
   assert.equal(await locked.api.setModel('opus'), false);
   assert.deepEqual(locked.calls, []);
+});
+
+for (const changedSession of [false, true]) {
+  test(`destination validation rechecks ${changedSession ? 'the session address' : 'running state'} before compaction`, async () => {
+    const entered = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    const h = harness({ validate: async () => { entered.resolve(); await release.promise; } });
+    const pending = h.api.setRoute(pick);
+    const rejected = assert.rejects(pending, changedSession ? /not the active session/ : /response is running/);
+    await entered.promise;
+    h.set(changedSession
+      ? { sessionId: 's2', provider: 'other', model: 'replacement', commandBusy: false }
+      : { busy: true });
+    release.resolve();
+    await rejected;
+    assert.deepEqual(h.calls, [], 'neither compaction nor route mutation starts');
+    assert.deepEqual(h.statuses, []);
+    if (changedSession) {
+      assert.equal(h.state().model, 'replacement', 'stale rollback must not touch the new session');
+      assert.equal(h.state().commandBusy, false);
+    }
+  });
+}
+
+test('queued choices recompute whether compaction is needed on their actual source model', async () => {
+  const entered = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  let validations = 0;
+  const h = harness({ validate: async () => {
+    if (++validations === 1) { entered.resolve(); await release.promise; }
+  } });
+  const first = h.api.setRoute(pick);
+  await entered.promise;
+  // This looks like same-model tuning while the first choice is pending;
+  // after that choice commits it really switches back to the original model.
+  const second = h.api.setRoute({ ...chatRoute, effort: 'low' });
+  release.resolve();
+  await Promise.all([first, second]);
+  assert.deepEqual(h.calls.map(([name]) => name), ['compact', 'setRoute', 'compact', 'setRoute']);
+  assert.equal(h.calls[0][1], 'gpt-x');
+  assert.equal(h.calls[2][1], 'claude-x');
+  assert.equal(h.runtime.sessionModel, 'gpt-x');
+  assert.equal(h.state().model, 'gpt-x');
 });

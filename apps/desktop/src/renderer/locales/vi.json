@@ -4392,5 +4392,6 @@
   "Zoom options": "Tùy chọn thu phóng",
   "Zoom out": "Thu nhỏ",
   "Zoom Out": "Thu nhỏ",
-  "Zoom to {{value0}}%": "Thu phóng về {{value0}}%"
+  "Zoom to {{value0}}%": "Thu phóng về {{value0}}%",
+  "Available": "Khả dụng"
 }

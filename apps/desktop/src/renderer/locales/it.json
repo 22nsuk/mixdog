@@ -4512,5 +4512,6 @@
   "Zoom options": "Opzioni di zoom",
   "Zoom out": "Riduci",
   "Zoom Out": "Rimpicciolisci",
-  "Zoom to {{value0}}%": "Zoom al {{value0}}%"
+  "Zoom to {{value0}}%": "Zoom al {{value0}}%",
+  "Available": "Disponibile"
 }

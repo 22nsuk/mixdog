@@ -4453,5 +4453,6 @@
   "Zoom options": "Zoom-Optionen",
   "Zoom out": "Verkleinern",
   "Zoom Out": "Herauszoomen",
-  "Zoom to {{value0}}%": "Auf {{value0}}% zoomen"
+  "Zoom to {{value0}}%": "Auf {{value0}}% zoomen",
+  "Available": "Verfügbar"
 }

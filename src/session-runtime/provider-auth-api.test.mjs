@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { setImmediate } from 'node:timers/promises';
 import test, { mock } from 'node:test';
+import { listPresets } from '../runtime/agent/orchestrator/config-presets.mjs';
+import { makeResolveRoute } from '../runtime/agent/orchestrator/runtime-core/config-helpers.mjs';
 
 const calls = [];
 let pendingCallback = null;
@@ -65,7 +67,8 @@ const { createProviderAuthApi } = await import('./provider-auth-api.mjs');
 function fixture(overrides = {}) {
   calls.length = 0;
   const api = createProviderAuthApi({
-    cfgMod: { listPresets: (config) => ['presets', config] },
+    cfgMod: { listPresets },
+    resolveRoute: makeResolveRoute(() => 'fallback'),
     getConfig: () => ({}),
     saveConfigAndAdopt: () => {},
     displayConfig: () => ({ display: true }),
@@ -215,10 +218,69 @@ test('getProviderSetup serves the no-secrets snapshot until the keychain is read
 test('catalog, preset, dashboard and reset-credit surfaces delegate with normalized options', async () => {
   const api = fixture();
   assert.deepEqual(api.listProviders(), ['status', { display: true }]);
-  assert.deepEqual(api.listPresets(), ['presets', { display: true }]);
+  assert.deepEqual(api.listPresets(), []);
   assert.deepEqual(await api.getUsageDashboard({ a: 1 }), ['dashboard', { a: 1 }]);
   assert.deepEqual(await api.listProviderModels({ refresh: true }), ['models', { force: true, quick: false }]);
   assert.deepEqual(await api.consumeCodexRateLimitResetCredit({ b: 2 }), ['reset', { b: 2 }]);
   const missing = fixture({ consumeCodexRateLimitResetCredit: undefined });
   await assert.rejects(() => missing.consumeCodexRateLimitResetCredit(), /Codex reset is unavailable/);
+});
+
+for (const saved of [false, true]) {
+  test(`listPresets publishes only concrete selection fields with ${saved ? 'saved overrides' : 'preset fallbacks'}`, () => {
+    const preset = {
+      id: 'tuned',
+      name: 'Tuned preset',
+      provider: 'openai',
+      model: 'preset-model',
+      effort: 'high',
+      fast: true,
+      autoEffort: false,
+      modelParameters: { serviceTier: 'priority' },
+      contextPercent: 80,
+      contextTokens: 640000,
+      tools: 'readonly',
+      type: 'agent',
+    };
+    const config = {
+      presets: [preset],
+      ...(saved ? {
+        modelSettings: {
+          'openai/preset-model': {
+            effort: 'low', fast: false, autoEffort: true,
+            modelParameters: {}, contextPercent: 40, contextTokens: 320000,
+          },
+        },
+      } : {}),
+    };
+    const before = structuredClone(config);
+    let reads = 0;
+    const api = fixture({
+      displayConfig: () => { reads += 1; return config; },
+      resolveRoute: (source, request) => {
+        assert.equal(source, config);
+        assert.deepEqual(request, { model: 'tuned' });
+        return { ...makeResolveRoute(() => 'fallback')(source, request), privateMetadata: 'not a selection' };
+      },
+    });
+    const selection = {
+      provider: 'openai', model: 'preset-model', effort: saved ? 'low' : 'high',
+      fast: !saved, autoEffort: saved,
+      modelParameters: saved ? {} : { serviceTier: 'priority' },
+      contextPercent: saved ? 40 : 80, contextTokens: saved ? 320000 : 640000,
+    };
+    assert.deepEqual(api.listPresets(), [{ ...preset, selection }]);
+    assert.equal(reads, 1);
+    assert.deepEqual(config, before, 'listing never persists preset fallbacks over saved settings');
+    assert.deepEqual(calls, [], 'listing is read-only');
+  });
+}
+
+test('untuned presets omit null effort and absent context rather than sending invalid IPC fields', () => {
+  const preset = { id: 'plain', name: 'Plain', provider: 'openai', model: 'plain-model', tools: 'full' };
+  const api = fixture({ displayConfig: () => ({ presets: [preset] }) });
+  assert.deepEqual(api.listPresets(), [{
+    ...preset,
+    selection: { provider: 'openai', model: 'plain-model', fast: false, autoEffort: true, modelParameters: {} },
+  }]);
 });

@@ -4392,5 +4392,6 @@
   "Zoom options": "ズームオプション",
   "Zoom out": "縮小",
   "Zoom Out": "ズームアウト",
-  "Zoom to {{value0}}%": "{{value0}}%にする"
+  "Zoom to {{value0}}%": "{{value0}}%にする",
+  "Available": "利用可能"
 }

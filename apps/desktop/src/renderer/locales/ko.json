@@ -4392,5 +4392,6 @@
   "Zoom options": "확대/축소 옵션",
   "Zoom out": "축소",
   "Zoom Out": "축소",
-  "Zoom to {{value0}}%": "{{value0}}%로"
+  "Zoom to {{value0}}%": "{{value0}}%로",
+  "Available": "사용 가능"
 }

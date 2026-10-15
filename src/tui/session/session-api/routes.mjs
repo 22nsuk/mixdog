@@ -108,6 +108,14 @@ export function createSessionRouteApi(bag) {
   const setRoute = async (opts) => {
     if (getState().commandBusy && !routeWrite) return false;
     const routeOpts = opts && typeof opts === 'object' ? opts : {};
+    const requestedSessionId = getState().sessionId || null;
+    const sameSession = () => (getState().sessionId || null) === requestedSessionId;
+    const assertCurrentSelection = () => {
+      if (!sameSession()) throw new Error(`session ${requestedSessionId || ''} is not the active session`);
+      if (switchesSessionModel(runtime, routeOpts) && getState().busy) {
+        throw new Error('The model cannot change while a response is running. Try again when it finishes.');
+      }
+    };
     // Every user model choice on this surface (composer picker, /model,
     // presets, the TUI picker) switches the conversation itself in place.
     const switchesModel = switchesSessionModel(runtime, routeOpts);
@@ -136,10 +144,14 @@ export function createSessionRouteApi(bag) {
         const applyToCurrentSession = routeOpts.applyToCurrentSession === true;
         const keepMainModel = routeOpts.keepMainModel === true;
         const { applyToCurrentSession: _drop, keepMainModel: _keep, ...nextRoute } = routeOpts;
-        if (switchesModel) {
+        // A preceding queued choice may have changed the source model.
+        assertCurrentSelection();
+        if (switchesSessionModel(runtime, routeOpts)) {
           // The destination must be accepted before the history is compacted.
           await runtime.setRoute(nextRoute, { validateOnly: true });
+          assertCurrentSelection();
           await compactBeforeModelSwitch();
+          assertCurrentSelection();
           if (token === routeSequence && preview) {
             set(preview);
             flushEmitImmediate();
@@ -150,6 +162,7 @@ export function createSessionRouteApi(bag) {
           keepMainModel,
           switchEstablished: true,
         });
+        if (!sameSession()) throw new Error(`session ${requestedSessionId || ''} is not the active session`);
         if (token === routeSequence) {
           if (applyToCurrentSession || resolvedRoute?.modelSwitch) syncContextStats({ allowEstimated: true });
           publishRoute();
@@ -157,12 +170,12 @@ export function createSessionRouteApi(bag) {
         publishModelSwitch(bag, resolvedRoute?.modelSwitch);
         return resolvedRoute;
       } catch (error) {
-        if (token === routeSequence && preview) {
+        if (sameSession() && token === routeSequence && preview) {
           set({ ...previousRoute, stats: { ...getState().stats } });
         }
         throw error;
       } finally {
-        if (token === routeSequence) {
+        if (sameSession() && token === routeSequence) {
           set({ commandBusy: false });
           // Publish the resolved route (or rollback) before an RPC reply
           // reads getState(), even while the display-frame clock is busy.

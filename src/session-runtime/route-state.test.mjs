@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { resolveRouteContextState } from './route-state.mjs';
+import { resolveRouteContextState, resolveRouteMetadataState } from './route-state.mjs';
 
 // Default window 500k of a 1M maximum (the default ceiling).
 const meta = { contextWindow: 1_000_000, maxContextWindow: 1_000_000 };
@@ -58,4 +58,21 @@ test('without a valid token window the percent decides as before', () => {
       selectedContextWindow: 700_000,
     });
   }
+});
+
+
+test('synchronous route adoption preserves exact context tokens and the default collapse', () => {
+  const route = { provider: 'openai', model: 'integration-model', effort: 'high', contextPercent: 100 };
+  const resolved = resolveRouteMetadataState({}, { ...route, contextTokens: 640_000 }, meta);
+  assert.equal(resolved.contextTokens, 640_000);
+  assert.equal(resolved.selectedContextWindow, 640_000);
+  assert.equal(resolved.contextPercent, 60);
+  const defaulted = resolveRouteMetadataState({}, { ...route, contextTokens: 500_000 }, meta);
+  assert.equal(Object.hasOwn(defaulted, 'contextTokens'), false);
+  assert.equal(defaulted.selectedContextWindow, 500_000);
+  assert.equal(defaulted.contextPercent, 50);
+  const bounded = resolveRouteMetadataState({}, { ...route, contextTokens: 9_000_000 }, meta);
+  assert.equal(bounded.contextTokens, 1_000_000);
+  const unknown = resolveRouteMetadataState({}, { ...route, contextTokens: 640_000 }, { id: route.model });
+  assert.equal(unknown.contextTokens, 640_000);
 });

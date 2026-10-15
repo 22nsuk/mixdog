@@ -4,6 +4,7 @@
 // under the abort-aware wrapper with the caller's approval hook installed
 // (runAskAgentLoop). Provider-not-available and trim failures throw here so
 // the caller marks the session errored instead of leaving stage='connecting'.
+import { captureRouteDiagnostics } from '../../../../shared/route-diagnostics.mjs';
 import { getProvider } from '../../providers/registry.mjs';
 import { notifySkillsApplied, prepareExplicitSkills, recordAppliedSkills } from '../explicit-skills.mjs';
 import { prepareTurnEffortConfiguration } from '../../providers/effort-configuration.mjs';
@@ -31,7 +32,11 @@ export async function prepareAskTurn({ sessionId, opened, input, cwdOverride, tr
   // reads the session as the turn found it (synchronously, on this call).
   // The first request still carries its decision: it is awaited below,
   // together with the user turn, before the effort configuration is stamped.
-  const autoEffortPending = resolveTurnAutoEffort({ sessionId, session, provider, input });
+  let effortDecision;
+  const autoEffortPending = resolveTurnAutoEffort({
+    sessionId, session, provider, input,
+    onDecision: (decision) => { effortDecision = decision; },
+  });
   autoEffortPending.catch(() => {});
   applyTurnContextMeta(session, provider);
   const effectiveCwd = cwdOverride || session.cwd;
@@ -85,6 +90,17 @@ export async function prepareAskTurn({ sessionId, opened, input, cwdOverride, tr
       ...(runtimeUserContext ? { runtimeUserContext } : {}),
     };
   }
+  // Main prepares the user turn and judges concurrently. Freeze only after
+  // that shared wait, beside the actual effort configuration, not at an old
+  // pre-prefetch boundary or by rereading settings in the inspector later.
+  userTurn.userTurnMessage.meta = {
+    ...userTurn.userTurnMessage.meta,
+    routeDiagnostics: captureRouteDiagnostics(session, {
+      decision: effortDecision,
+      turnEffort: effortConfiguration?.effort ?? turnEffort,
+      at: startedAt,
+    }),
+  };
   const { historyMessages, outgoing } = userTurn;
   turn.userTurnContent = userTurn.userTurnMessage.content;
   turn.outgoing = outgoing;

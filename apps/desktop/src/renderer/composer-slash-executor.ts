@@ -32,8 +32,11 @@ type SlashExecutorDeps = {
   modelParameters?: Record<string, string>;
   /** Whether the current model offers the Ultrafast service tier. */
   ultrafastCapable?: () => boolean;
-  onDraftModelSelection?: (selection: DesktopModelSelection) => void;
-  onRoutePreferenceApplied?: (selection: DesktopModelSelection, options?: { modelChoice?: boolean }) => void;
+  onDraftModelSelection?: (selection: DesktopModelSelection, options?: { replace?: boolean }) => void;
+  onRoutePreferenceApplied?: (
+    selection: DesktopModelSelection,
+    options?: { modelChoice?: boolean; replace?: boolean }
+  ) => void;
   invokeResult: <T>(action: () => T | Promise<T>) => Promise<T | undefined>;
   invokeCapabilityResult: <T>(
     capability: DesktopCapability,
@@ -322,33 +325,45 @@ async function runModel(run: SlashRun, argument: string): Promise<boolean | unde
     return true;
   }
   const preset = await findPreset(run, argument);
+  let selection: DesktopModelSelection;
   if (preset) {
-    await commandCapability(run, 'setModel', [preset.id || preset.name]);
-    return !run.failed;
+    const resolved = asRecord(preset.selection);
+    if (!resolved?.provider || !resolved.model) {
+      // Older hosts cannot supply saved-setting precedence for a preset.
+      // Never send a provider-less selector or guess from raw preset tuning.
+      deps.setAttachmentError('This host cannot resolve model presets. Update the host or select a concrete model.');
+      return false;
+    }
+    selection = resolved as unknown as DesktopModelSelection;
+  } else {
+    const models = (await deps.invokeResult(() => window.mixdogDesktop.listProviderModels({ quick: false }))) || [];
+    const normalized = argument.toLowerCase();
+    const match = models.find(
+      (entry) =>
+        `${entry.provider}:${entry.model}`.toLowerCase() === normalized ||
+        entry.model.toLowerCase() === normalized ||
+        entry.display.toLowerCase() === normalized
+    );
+    if (!match) {
+      deps.setAttachmentError(`Model not found: ${argument}`);
+      return false;
+    }
+    selection = { provider: match.provider, model: match.model };
   }
-  const models = (await deps.invokeResult(() => window.mixdogDesktop.listProviderModels({ quick: false }))) || [];
-  const normalized = argument.toLowerCase();
-  const match = models.find(
-    (entry) =>
-      `${entry.provider}:${entry.model}`.toLowerCase() === normalized ||
-      entry.model.toLowerCase() === normalized ||
-      entry.display.toLowerCase() === normalized
-  );
-  if (!match) {
-    deps.setAttachmentError(`Model not found: ${argument}`);
-    return false;
-  }
-  const selection = { provider: match.provider, model: match.model };
   if (deps.draftMode && deps.onDraftModelSelection) {
-    deps.onDraftModelSelection(selection);
+    deps.onDraftModelSelection(selection, preset ? { replace: true } : undefined);
     return true;
   }
   const sessionId = deps.sessionId;
   if (!sessionId) return false;
   const next = await deps.invokeResult(() => window.mixdogDesktop.setModelRoute(selection, sessionId));
-  if (next === undefined) return false;
+  if (next == null) return false;
   deps.applySnapshot(next);
-  const sameModel = match.provider === deps.provider && match.model === deps.model;
-  deps.onRoutePreferenceApplied?.(selection, sameModel ? undefined : { modelChoice: true });
+  const appliedSelection = { provider: String(next.provider || ''), model: String(next.model || '') };
+  const sameModel = appliedSelection.provider === deps.provider && appliedSelection.model === deps.model;
+  deps.onRoutePreferenceApplied?.(
+    preset ? { ...selection, ...appliedSelection } : appliedSelection,
+    preset ? { replace: true, ...(sameModel ? {} : { modelChoice: true }) } : sameModel ? undefined : { modelChoice: true }
+  );
   return undefined;
 }

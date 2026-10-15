@@ -13,7 +13,7 @@ import {
 } from '../../runtime/agent/orchestrator/runtime-core/config-helpers.mjs';
 import { getModelMetadataSync } from '../../runtime/agent/orchestrator/providers/model-catalog.mjs';
 import { workflowPresetId } from '../../runtime/agent/orchestrator/runtime-core/workflow.mjs';
-import { resolveRouteContextState, selectionFastCapable } from '../route-state.mjs';
+import { resolveRouteContextState, resolveRouteMetadataState, selectionFastCapable } from '../route-state.mjs';
 import { writeStatuslineRoute } from '../statusline-route.mjs';
 import {
   sessionHasRouteHistory,
@@ -163,25 +163,39 @@ function switchSessionInPlace(deps, session) {
   return recorded ? boundary : null;
 }
 
+/** Same-model tuning still applies from the next turn; changing a live
+ * model must remain idle even when discovery yielded after the caller's check. */
+function assertModelSwitchIdle(deps, selectedRoute) {
+  const session = deps.getSession();
+  if (session && (session.provider !== selectedRoute.provider || session.model !== selectedRoute.model)
+    && Number(deps.getActiveTurnCount?.() || 0) > 0) {
+    throw new Error('The model cannot change while a response is running. Try again when it finishes.');
+  }
+}
+
 /** Validate, persist and adopt the requested route as the runtime's route. */
-async function adoptRoute(deps, persist, next, options) {
+function adoptRoute(deps, persist, prepared, options) {
   const {
     getConfig,
     getRoute,
     setRouteState,
     resolveRoute,
-    refreshRouteEffort,
     refreshStatuslineUsageSnapshot,
     scheduleStatuslineUsageRefresh,
   } = deps;
-  const { selectedRoute, fastCapable, modelMeta } = await resolveSelectedRoute(deps, next);
+  const { selectedRoute, fastCapable, modelMeta } = prepared;
   persist.saveRouteModelSettings(selectedRoute, fastCapable);
   // An heir opening on its source's model is not a main-model choice.
   const leadRoute = persist.persistAdoptedModelSettings(selectedRoute, {
     keepMainModel: options?.keepMainModel === true,
   });
-  setRouteState(resolveRoute(getConfig(), leadRoute ? { model: workflowPresetId('lead') } : selectedRoute));
-  await refreshRouteEffort(modelMeta);
+  // Discovery has completed. Normalize and apply without another await so
+  // session validation, settings persistence and live adoption share one tick.
+  setRouteState(resolveRouteMetadataState(
+    getConfig(),
+    resolveRoute(getConfig(), leadRoute ? { model: workflowPresetId('lead') } : selectedRoute),
+    modelMeta
+  ));
   refreshStatuslineUsageSnapshot(getRoute());
   scheduleStatuslineUsageRefresh();
 }
@@ -197,11 +211,17 @@ async function adoptRoute(deps, persist, next, options) {
 export function createContinueSessionInModel(deps, persist) {
   const { getSession, invalidateContextStatusCache } = deps;
   return async function continueSessionInModel(sessionId, next) {
-    const session = getSession();
+    let session = getSession();
     if (!sessionId || !session?.id || session.id !== sessionId) {
       throw new Error(`session ${sessionId || ''} is not the active session`);
     }
-    await adoptRoute(deps, persist, next, {});
+    const prepared = await resolveSelectedRoute(deps, next);
+    session = getSession();
+    if (session?.id !== sessionId) {
+      throw new Error(`session ${sessionId} is not the active session`);
+    }
+    assertModelSwitchIdle(deps, prepared.selectedRoute);
+    adoptRoute(deps, persist, prepared, {});
     const modelSwitch = switchSessionInPlace(deps, session);
     invalidateContextStatusCache();
     return modelSwitch ? { modelSwitch } : true;
@@ -228,7 +248,16 @@ export function createSetRoute(deps, persist) {
     // Lets a caller prove the selection is acceptable before it does
     // irreversible work (compaction) ahead of the switch; changes nothing.
     if (options?.validateOnly === true) return validateSelectedRoute(deps, next);
-    await adoptRoute(deps, persist, next, options);
+    const sessionBound = switchEstablished || Boolean(deps.getAddressedSessionId?.());
+    const requestedSessionId = getSession()?.id || null;
+    const prepared = await resolveSelectedRoute(deps, next);
+    // Discovery can outlive a session switch/close. Reject before touching
+    // configuration, status or either conversation; ids survive object refresh.
+    if (sessionBound && (getSession()?.id || null) !== requestedSessionId) {
+      throw new Error(`session ${requestedSessionId || ''} is not the active session`);
+    }
+    if (switchEstablished) assertModelSwitchIdle(deps, prepared.selectedRoute);
+    adoptRoute(deps, persist, prepared, options);
     const session = getSession();
     // A session the user has already talked in or compacted keeps its route
     // unless the selection was addressed to it. A current session with no

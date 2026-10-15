@@ -51,7 +51,10 @@ function fixture(extra = {}) {
     },
     cfgMod: { loadConfig: () => config },
     resolveRoute: (_config, requested) => ({ ...state.route, ...requested }),
-    lookupModelMeta: async (_provider, model) => ({ id: model, fastCapable: true }),
+    lookupModelMeta: async (_provider, model) => ({
+      id: model, fastCapable: true, reasoningLevels: ['low', 'medium', 'high'],
+      contextWindow: 512_000, maxContextWindow: 512_000,
+    }),
     ensureProvidersReady: async () => {},
     adoptConfig: (value) => {
       config = value;

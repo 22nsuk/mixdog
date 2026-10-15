@@ -113,3 +113,59 @@ test('a request on the wire still fails on its own deadline and probes the conne
   assert.equal(ctx.pending.size, 0);
   assert.deepEqual(probes, ['probe']);
 });
+
+
+test('late route projection keeps the current send and response deadline phases', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const { ctx, release, sent, probes } = harness();
+  let unblock;
+  ctx.peerViewSync = true;
+  ctx.viewSync = { ready: () => new Promise((resolve) => { unblock = resolve; }) };
+  let prepared = false;
+  let projections = 0;
+  let projected;
+  const encrypt = ctx.secureChannel.encryptJson;
+  ctx.secureChannel.encryptJson = (payload) => { projected = payload; return encrypt(payload); };
+  let settled = null;
+  const read = ctx.call('setModelRoute', () => {
+    projections++;
+    assert.equal(prepared, true);
+    return [{ model: 'next', autoEffort: false, contextTokens: 640_000 }, 'session'];
+  }).then(
+    (value) => (settled = { value }),
+    (error) => (settled = { error })
+  );
+  await flush();
+  assert.equal(projections, 0);
+  assert.equal(ctx.pending.size, 0);
+  prepared = true;
+  unblock();
+  await flush();
+  assert.equal(projections, 1);
+  assert.deepEqual(projected.params, [{ model: 'next', autoEffort: false, contextTokens: 640_000 }, 'session']);
+  t.mock.timers.tick(19_000);
+  release();
+  await flush();
+  assert.equal(sent.length, 1);
+  // Visit the original deadline exactly: jumping far past it would exercise
+  // the frozen-page grace and could hide a missing response-deadline rearm.
+  t.mock.timers.tick(1_000);
+  await flush();
+  assert.equal(settled, null, 'the old send deadline must be cancelled');
+  t.mock.timers.tick(18_000);
+  await flush();
+  assert.equal(ctx.pending.size, 1, 'response deadline starts after encryption/send');
+  ctx.pending.get(1).resolve('applied');
+  await read;
+  assert.deepEqual(settled, { value: 'applied' });
+  assert.deepEqual(probes, []);
+});
+
+test('a rejected route projection allocates no pending call or send deadline', async () => {
+  const { ctx, sent } = harness();
+  const failure = new Error('unsupported sending host');
+  await assert.rejects(ctx.invoke('setModelRoute', () => { throw failure; }), (error) => error === failure);
+  assert.equal(ctx.nextId, 1);
+  assert.equal(ctx.pending.size, 0);
+  assert.deepEqual(sent, []);
+});

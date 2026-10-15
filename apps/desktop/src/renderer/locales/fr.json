@@ -4514,5 +4514,6 @@
   "Zoom options": "Options de zoom",
   "Zoom out": "Zoom arrière",
   "Zoom Out": "Zoom arrière",
-  "Zoom to {{value0}}%": "Zoom à {{value0}} %"
+  "Zoom to {{value0}}%": "Zoom à {{value0}} %",
+  "Available": "Disponible"
 }

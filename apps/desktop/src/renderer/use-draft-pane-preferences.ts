@@ -184,28 +184,29 @@ export function useDraftPanePreferences({
     [rememberDraftPanePrefs, setNewTaskProjectPath]
   );
   const stageNewTaskModelSelection = useCallback(
-    (selection: DesktopModelSelection) => {
-      const remembered = routePreferenceStore.remember(selection);
+    (selection: DesktopModelSelection, options?: { replace?: boolean }) => {
+      const remembered = routePreferenceStore.remember(selection, options);
       setNewTaskModelSelection(remembered);
       rememberDraftPanePrefs({ modelSelection: remembered });
     },
     [rememberDraftPanePrefs, setNewTaskModelSelection]
   );
   const rememberSessionRouteForNextTask = useCallback(
-    (selection: DesktopModelSelection, options?: { modelChoice?: boolean }) => {
+    (selection: DesktopModelSelection, options?: { modelChoice?: boolean; replace?: boolean }) => {
       const cachedModel = lastNewTaskPrefs.current?.modelSelection;
       if (
         options?.modelChoice !== true &&
         (!cachedModel || cachedModel.provider !== selection.provider || cachedModel.model !== selection.model)
       ) {
         // Tuning inside an existing conversation never replaces the next-task model.
-        routePreferenceStore.remember(selection);
+        routePreferenceStore.remember(selection, options);
         return;
       }
       // Same rule as staging: a route change may not materialize an inferred
       // project into the cache (on a phone that value is often not loaded yet).
       const cached = lastNewTaskPrefs.current ?? emptyDraftPanePrefs();
-      const modelSelection = mergeRoutePreference(cached.modelSelection, routePreferenceStore.remember(selection));
+      const remembered = routePreferenceStore.remember(selection, options);
+      const modelSelection = options?.replace ? remembered : mergeRoutePreference(cached.modelSelection, remembered);
       lastNewTaskPrefs.current = { ...cached, modelSelection };
       // A successful session route becomes the seed for every draft that has no
       // explicit model of its own; explicitly staged draft panes keep their

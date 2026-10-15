@@ -339,6 +339,7 @@ function providerAuthApiFor(boot) {
   const { rt, cfgMod, reg, ensureProvidersReady } = boot;
   return createProviderAuthApi({
     cfgMod,
+    resolveRoute,
     getConfig: () => rt.config,
     saveConfigAndAdopt: boot.saveConfigAndAdopt,
     displayConfig: boot.displayConfig,
@@ -488,6 +489,7 @@ function modelRouteApiFor(boot) {
       rt.route = v;
     },
     getSession: () => rt.session,
+    getActiveTurnCount: () => rt.activeTurnCount,
     setSession: boot.adoptSession,
     getAddressedSessionId: () => rt.addressedSessionId,
     getConfigHasSecrets: () => rt.configHasSecrets,

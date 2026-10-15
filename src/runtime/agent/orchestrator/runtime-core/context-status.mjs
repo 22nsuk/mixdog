@@ -9,6 +9,7 @@ import {
   summarizeContextMessagesAtRevision,
   toolSchemaSignature,
 } from '../session/context-utils.mjs';
+import { inspectRouteDiagnostics } from './route-diagnostics.mjs';
 import { scopedProviderRequestTools } from './provider-request-tools.mjs';
 import { hasRouteHistoryMessage } from './session-route-policy.mjs';
 import { contextGauge, contextStatusValue, emptyContextStatus, requestTokenBudget } from './context-status-shape.mjs';
@@ -31,6 +32,14 @@ export function createContextStatus({
   function contextStatus(options) {
     const session = getSession();
     const route = getRoute();
+    // Only explicit inspector reads include execution evidence. It is built
+    // outside the token cache, and entry previews retain their old contract.
+    const finish = (status, messages, tools) => {
+      const result = withInspection(status, messages, tools, options, session);
+      return options?.inspect === true && options.entryId === undefined
+        ? { ...result, routeDiagnostics: inspectRouteDiagnostics(session, route) }
+        : result;
+    };
     const committedMessages = Array.isArray(session?.messages) ? session.messages : [];
     // Prefer the in-flight working transcript while a turn is running so the
     // context gauge reflects LIVE growth (user turn + tool calls/results) as
@@ -42,7 +51,7 @@ export function createContextStatus({
     const messages = liveMessages || committedMessages;
     const active = hasRouteHistoryMessage(messages);
     if (!session?.id || !active) {
-      return withInspection(emptyContextStatus(session, route, env()), [], [], options, session);
+      return finish(emptyContextStatus(session, route, env()), [], []);
     }
     const requestProvider = session?.provider || route.provider;
     const messagesRevision = contextMessagesRevision(messages);
@@ -59,7 +68,7 @@ export function createContextStatus({
       requestToolsSignature,
     });
     const cached = cache.lookup(key);
-    if (cached) return withInspection(cached, messages, requestTools, options, session);
+    if (cached) return finish(cached, messages, requestTools);
 
     const messageSummary = summarizeContextMessagesAtRevision(messages, messagesRevision);
     const value = contextStatusValue(session, route, env(), {
@@ -69,7 +78,7 @@ export function createContextStatus({
       hasConversationActivity: active,
     });
     cache.store(key, value);
-    return withInspection(value, messages, requestTools, options, session);
+    return finish(value, messages, requestTools);
   }
 
   return { contextStatus, invalidateContextStatusCache: cache.invalidate };

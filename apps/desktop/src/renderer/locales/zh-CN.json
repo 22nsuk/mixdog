@@ -4392,5 +4392,6 @@
   "Zoom options": "缩放选项",
   "Zoom out": "缩小",
   "Zoom Out": "缩小",
-  "Zoom to {{value0}}%": "缩放到 {{value0}}%"
+  "Zoom to {{value0}}%": "缩放到 {{value0}}%",
+  "Available": "可用"
 }
