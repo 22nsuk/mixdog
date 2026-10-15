@@ -564,9 +564,12 @@ function workspaceApiFor(boot) {
     getReservedSessionId: () => rt.reservedSessionId,
     getCurrentCwd: () => rt.currentCwd,
     getDesktopSession: () => rt.desktopSession,
+    setDesktopSession: (next) => {
+      rt.desktopSession = next;
+    },
     getConfig: () => rt.config,
     createCurrentSession: (reason) => boot.createCurrentSession(reason),
-    applyResolvedCwd: (cwd) => boot.applyResolvedCwd(cwd),
+    applyResolvedCwd: (cwd, options) => boot.applyResolvedCwd(cwd, options),
     persistSession: (session) => saveSession(session, { immediate: true }),
     refreshWorkspaceContext: (session, cwd) =>
       refreshWorkspacePrompt(session, cwd, { loadCoreMemoryContext: boot.loadCoreMemoryContext }),
@@ -596,6 +599,7 @@ function sessionTurnApiFor(boot) {
       rt.mode = v;
     },
     getActiveTurnCount: () => rt.activeTurnCount,
+    takePendingCompact: (sessionId) => rt.pendingCompactSessionIds?.delete(sessionId) === true,
     setActiveTurnCount: (v) => {
       rt.activeTurnCount = v;
     },
@@ -633,7 +637,7 @@ function sessionTurnApiFor(boot) {
     invalidatePreSessionToolSurface: boot.invalidatePreSessionToolSurface,
     refreshEmptySessionToolPolicy: boot.refreshEmptySessionToolPolicy,
     activeToolSurface: boot.activeToolSurface,
-    applyResolvedCwd: boot.applyResolvedCwd,
+    switchProject: boot.workspaceApi.switchProject,
     resolveCwdPath: boot.resolveCwdPath,
     agentStatusState: boot.agentStatusState,
     notificationListeners: boot.notificationListeners,
