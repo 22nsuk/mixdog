@@ -165,9 +165,26 @@ export async function importUsageHistory(ledger, dataDir, { now = Date.now(), re
         session_id: event.sessionId,
       }))
     );
-  const legacy = await optionalFile(join(dataDir, 'usage-rollup.local.json'));
-  if (legacy) ledger.preserveLegacyDays(repriceRestoredDays(JSON.parse(legacy).days));
-  ledger.set('importedThrough', until);
+  // A missing file is absence. An empty or corrupt file is not: parsing must
+  // not fail the query, and importedThrough must stay unset so a later repair
+  // is imported instead of short-circuiting forever.
+  const legacyPath = join(dataDir, 'usage-rollup.local.json');
+  const legacy = await optionalFile(legacyPath);
+  let legacyReady = true;
+  if (legacy !== null) {
+    let days;
+    try {
+      days = JSON.parse(legacy)?.days;
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      legacyReady = false;
+      process.stderr.write(
+        `[usage-ledger] warning: legacy rollup ${legacyPath} is empty or corrupt (${error.message}); skipping its import\n`
+      );
+    }
+    if (legacyReady) ledger.preserveLegacyDays(repriceRestoredDays(days));
+  }
+  if (legacyReady) ledger.set('importedThrough', until);
   ledger.set('importReceipt', JSON.stringify({ ...result, until }));
   return result;
 }

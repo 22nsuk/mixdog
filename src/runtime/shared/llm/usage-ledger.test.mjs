@@ -284,6 +284,103 @@ test('corrupt historical data is an import failure, not a successful empty histo
   assert.equal(ledger.get('importedThrough'), null);
 });
 
+function legacyRollup(turns) {
+  return JSON.stringify({
+    days: {
+      '2026-09-12': {
+        models: {
+          'other/legacy': {
+            provider: 'other',
+            model: 'legacy',
+            turns,
+            input: 20,
+            output: 2,
+            cacheRead: 0,
+            cacheWrite: 0,
+            costUsd: 3,
+          },
+        },
+      },
+    },
+  });
+}
+
+function legacyStatsApi(t, dir) {
+  const ledger = store(t);
+  const warnings = [];
+  t.mock.method(process.stderr, 'write', (chunk) => {
+    warnings.push(String(chunk));
+    return true;
+  });
+  const api = createUsageStatsApi({
+    ledger: () => ledger,
+    importHistory: (opened) => importUsageHistory(opened, dir, { now, readTrace: async () => [] }),
+  });
+  return { ledger, warnings, api };
+}
+
+async function assertUnreadableLegacyRollup(t, contents) {
+  const dir = mkdtempSync(join(tmpdir(), 'mixdog-usage-legacy-bad-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(join(dir, 'usage-rollup.local.json'), contents);
+  const { ledger, warnings, api } = legacyStatsApi(t, dir);
+  const stats = await api.getUsageStats({ days: null });
+  assert.equal(stats.coverage.ledger, true);
+  assert.equal(stats.totals.turns, 0);
+  assert.equal(ledger.get('importedThrough'), null);
+  assert.equal(
+    warnings.some((line) => line.includes('warning') && line.includes('usage-rollup.local.json')),
+    true
+  );
+  return { ledger, dir, api };
+}
+
+test('a corrupt legacy rollup warns, still returns stats, and imports after the file is repaired', async (t) => {
+  const { ledger, dir, api } = await assertUnreadableLegacyRollup(t, '{broken');
+  writeFileSync(join(dir, 'usage-rollup.local.json'), legacyRollup(2));
+  const repaired = await api.getUsageStats({ days: null });
+  assert.equal(repaired.totals.turns, 2);
+  assert.equal(ledger.get('importedThrough'), String(now));
+  assert.equal(ledger.db.prepare('SELECT COUNT(*) AS n FROM legacy_days').get().n, 1);
+});
+
+test('an empty legacy rollup warns and still returns stats without marking the import', async (t) => {
+  await assertUnreadableLegacyRollup(t, '');
+});
+
+test('a valid legacy rollup is imported once and is not counted twice', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'mixdog-usage-legacy-valid-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, 'usage-rollup.local.json');
+  writeFileSync(path, legacyRollup(2));
+  const { ledger, warnings, api } = legacyStatsApi(t, dir);
+  assert.equal((await api.getUsageStats({ days: null })).totals.turns, 2);
+  assert.equal(ledger.get('importedThrough'), String(now));
+  writeFileSync(path, legacyRollup(9));
+  assert.deepEqual(await importUsageHistory(ledger, dir, { now, readTrace: async () => [] }), { skipped: true });
+  assert.equal((await api.getUsageStats({ days: null })).totals.turns, 2);
+  assert.equal(ledger.db.prepare('SELECT COUNT(*) AS n FROM legacy_days').get().n, 1);
+  const stored = JSON.parse(ledger.db.prepare('SELECT document FROM legacy_days').get().document);
+  assert.equal(stored.models['other/legacy'].turns, 2);
+  assert.equal(
+    warnings.some((line) => line.includes('usage-rollup.local.json')),
+    false
+  );
+});
+
+test('a missing legacy rollup is skipped without a warning and still marks the import', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'mixdog-usage-legacy-missing-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const { ledger, warnings, api } = legacyStatsApi(t, dir);
+  assert.equal((await api.getUsageStats({ days: null })).totals.turns, 0);
+  assert.equal(ledger.get('importedThrough'), String(now));
+  assert.equal(
+    warnings.some((line) => line.includes('usage-rollup.local.json')),
+    false
+  );
+  assert.deepEqual(await importUsageHistory(ledger, dir, { now, readTrace: async () => [] }), { skipped: true });
+});
+
 test('import skips blank PG usage fields, deduplicates raw copies, preserves originals and source precedence', async (t) => {
   const ledger = store(t);
   const dir = mkdtempSync(join(tmpdir(), 'mixdog-usage-import-'));
