@@ -16,7 +16,8 @@ const { deleteSession } = await import('../runtime/agent/orchestrator/session/st
 const { _withRegisteredProviderForTestAsync } = await import('../runtime/agent/orchestrator/providers/registry.mjs');
 const { wrapProviderAdmission } = await import('../runtime/agent/orchestrator/providers/admission-scheduler.mjs');
 const { getUsageLedger, closeUsageLedgers } = await import('../runtime/shared/llm/usage-ledger.mjs');
-const { currentTaskRun, withTaskCaller } = await import('../runtime/shared/llm/task-usage-context.mjs');
+const { currentTaskRun, withTaskCaller, withTaskRun } = await import('../runtime/shared/llm/task-usage-context.mjs');
+const { enqueuePendingMessage } = await import('../runtime/agent/orchestrator/session/manager/pending-messages.mjs');
 const { createAgentTurns } = await import('../standalone/session-service/agent-tree/agent-turns.mjs');
 const { createUsageStatsApi } = await import('./usage-stats-api.mjs');
 process.on('exit', () => {
@@ -37,6 +38,55 @@ function sessionFor(provider) {
   session.orchestrationMode = 'balanced';
   return session;
 }
+
+test('busy-worker steering records an allocation gap instead of charging another root for a merged turn', async () => {
+  const providerName = 'task-steering-fixture';
+  const entered = Promise.withResolvers(),
+    release = Promise.withResolvers();
+  let sends = 0;
+  const provider = wrapProviderAdmission(
+    {
+      name: providerName,
+      contextWindow: 128000,
+      async send(messages) {
+        if (++sends === 1) {
+          entered.resolve();
+          await release.promise;
+        } else assert.match(JSON.stringify(messages), /queued task input/);
+        return { content: 'done', toolCalls: [], usage: { inputTokens: 5, outputTokens: 1 } };
+      },
+    },
+    providerName
+  );
+  await _withRegisteredProviderForTestAsync(providerName, provider, async () => {
+    const worker = sessionFor(providerName);
+    const work = askSession(worker.id, 'original task', null, null, root);
+    try {
+      await entered.promise;
+      await withTaskRun(
+        { id: 'steering-root', sessionId: 'steering-owner', source: 'prompt', startedAt: Date.now() },
+        async () => {
+          assert.ok(enqueuePendingMessage(worker.id, 'queued task input') > 0);
+        }
+      );
+    } finally {
+      release.resolve();
+    }
+    try {
+      await work;
+      const source = (await getUsageLedger().taskUsageAsync('steering-owner')).tasks[0];
+      const target = (await getUsageLedger().taskUsageAsync(worker.id)).tasks[0];
+      assert.equal(source.pendingSubmissions, 0);
+      assert.equal(source.unallocatedSubmissions, 1);
+      assert.equal(source.totals.records, 0);
+      assert.equal(target.runs.uncertainInputs, 1);
+      assert.equal(target.totals.input, 10);
+      assert.equal(sends, 2);
+    } finally {
+      deleteSession(worker.id);
+    }
+  });
+});
 
 test('actual ask/read/provider/ledger/API path creates a new root for each reused-session turn and preserves failed spend', async () => {
   const providerName = 'task-runtime-fixture';

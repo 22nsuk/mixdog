@@ -13,6 +13,7 @@ test('older hosts and stale foreign-session snapshots never leak task rows', () 
   assert.equal(render(snapshot(), 'other'), '');
   assert.equal(render({ ...snapshot(), version: 2 }), '');
   assert.match(render(snapshot()), /No recorded task runs/);
+  assert.doesNotThrow(() => render(snapshot([{ id: 'invalid-date', startedAt: 1e100 }])));
 });
 
 test('partial totals expose missing coverage and unsettled work without inventing completion', () => {

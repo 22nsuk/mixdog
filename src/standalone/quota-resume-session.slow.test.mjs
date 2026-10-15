@@ -139,6 +139,7 @@ test('a quota-failed Lead or Goal turn queues its resume and a fire resumes it o
   const { createLocalSessionRuntime } = await import('./local-session-runtime.mjs');
   const store = await import('../runtime/shared/quota-resume-store.mjs');
   const { drainSessionStore } = await import('../runtime/agent/orchestrator/session/store.mjs');
+  const { getUsageLedger, closeUsageLedgers } = await import('../runtime/shared/llm/usage-ledger.mjs');
   store.reloadQuotaResumeStore();
 
   let api = null;
@@ -146,6 +147,11 @@ test('a quota-failed Lead or Goal turn queues its resume and a fire resumes it o
     try {
       await api?.dispose?.().catch?.(() => {});
       drainSessionStore?.();
+      // This fixture removes NODE_TEST_CONTEXT and therefore owns a real
+      // ledger once runtime-turn evidence is captured. Close its SQLite
+      // handles before removing the fixture directory (required on Windows).
+      await getUsageLedger()?.settleWrites();
+      closeUsageLedgers();
     } finally {
       store.reloadQuotaResumeStore();
       for (const key of Object.keys(process.env)) delete process.env[key];

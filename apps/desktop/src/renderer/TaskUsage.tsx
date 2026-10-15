@@ -30,14 +30,12 @@ export function TaskUsage({ value, sessionId }: { value: unknown; sessionId: unk
           Number(runs.uncertainInputs || 0) +
           Number(task.unallocatedSubmissions || 0) +
           Number(task.ambiguousRecords || 0);
+        const started = typeof task.startedAt === 'number' ? new Date(task.startedAt) : null;
         return (
           <article key={String(task.id)}>
             <code title={String(task.id)}>{String(task.id).slice(0, 8)}</code>
-            {typeof task.startedAt === 'number' && Number.isFinite(task.startedAt) && (
-              <time dateTime={new Date(task.startedAt).toISOString()}>
-                {' '}
-                · {new Date(task.startedAt).toLocaleString()}
-              </time>
+            {started && Number.isFinite(started.getTime()) && (
+              <time dateTime={started.toISOString()}> · {started.toLocaleString()}</time>
             )}
             <dl>
               <div>

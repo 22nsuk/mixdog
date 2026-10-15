@@ -166,3 +166,12 @@ does not alter scheduling, resource limits, permissions, caches or routing.
   nested fallback, partial failure, pending settlement and foreign-session reads.
 - Renderer tests cover old hosts, foreign snapshots, missing coverage, unsettled
   work and escaped identities. Release Gate validates the combined branch.
+
+The local Windows/Node 24 zero-network fixture measured 100 calls each at about
+4.8 ms mean without task capture and 14.4 ms with capture (about 9.6 ms extra).
+The extra durable start/end records deliberately preserve in-flight/failed-call
+evidence; they are not free. Twenty worker reads of the latest ten roots among
+500 roots / 10,000 accounting records averaged about 12.4 ms. These are local
+storage overhead measurements, not real-model latency, throughput or delegation
+benefit claims. Capturing writes on the ledger worker keeps SQLite off the
+interactive event loop, but callers still await durability at these boundaries.
