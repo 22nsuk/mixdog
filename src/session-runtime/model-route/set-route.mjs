@@ -173,6 +173,15 @@ function assertModelSwitchIdle(deps, selectedRoute) {
   }
 }
 
+/** Provider discovery may finish after the addressed session was replaced. */
+function assertSessionIdentity(deps, sessionId) {
+  const session = deps.getSession();
+  if ((session?.id || null) !== sessionId) {
+    throw new Error(`session ${sessionId || ''} is not the active session`);
+  }
+  return session;
+}
+
 /** Validate, persist and adopt the requested route as the runtime's route. */
 function adoptRoute(deps, persist, prepared, options) {
   const {
@@ -216,10 +225,7 @@ export function createContinueSessionInModel(deps, persist) {
       throw new Error(`session ${sessionId || ''} is not the active session`);
     }
     const prepared = await resolveSelectedRoute(deps, next);
-    session = getSession();
-    if (session?.id !== sessionId) {
-      throw new Error(`session ${sessionId} is not the active session`);
-    }
+    session = assertSessionIdentity(deps, sessionId);
     assertModelSwitchIdle(deps, prepared.selectedRoute);
     adoptRoute(deps, persist, prepared, {});
     const modelSwitch = switchSessionInPlace(deps, session);
@@ -253,9 +259,7 @@ export function createSetRoute(deps, persist) {
     const prepared = await resolveSelectedRoute(deps, next);
     // Discovery can outlive a session switch/close. Reject before touching
     // configuration, status or either conversation; ids survive object refresh.
-    if (sessionBound && (getSession()?.id || null) !== requestedSessionId) {
-      throw new Error(`session ${requestedSessionId || ''} is not the active session`);
-    }
+    if (sessionBound) assertSessionIdentity(deps, requestedSessionId);
     if (switchEstablished) assertModelSwitchIdle(deps, prepared.selectedRoute);
     adoptRoute(deps, persist, prepared, options);
     const session = getSession();

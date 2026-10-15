@@ -55,6 +55,7 @@ const { prepareAskTurn } = await import('./ask-turn-execute.mjs');
 
 test('turn start overlaps the judgment with buildUserTurn and still stamps the first request with it', async () => {
   const session = {
+    id: 's1',
     provider: 'custom-a',
     model: 'm',
     effort: 'medium',
@@ -83,5 +84,16 @@ test('turn start overlaps the judgment with buildUserTurn and still stamps the f
   assert.equal(prepared.effortConfiguration.effort, 'high');
   const message = prepared.outgoing[0];
   assert.equal(message.meta.effortConfiguration.effort, 'high');
-  assert.deepEqual(Object.keys(message.meta), ['effortConfiguration', 'runtimeUserContext']);
+  assert.deepEqual(Object.keys(message.meta), ['effortConfiguration', 'runtimeUserContext', 'routeDiagnostics']);
+  const receipt = message.meta.routeDiagnostics;
+  assert.equal(receipt.version, 1);
+  assert.equal(receipt.sessionId, session.id);
+  assert.equal(receipt.at, opened.startedAt);
+  assert.equal(receipt.configured.effort, 'medium');
+  assert.equal(receipt.preparedEffort, message.meta.effortConfiguration.effort);
+  // This stub returns a judgment but never emits its diagnostic callback.
+  // Preparation is known; a richer decision trace must not be invented.
+  assert.deepEqual(receipt.auto, {
+    mode: null, source: null, reason: null, judge: null, selectedEffort: null, applied: null,
+  });
 });
