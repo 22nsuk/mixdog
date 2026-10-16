@@ -210,8 +210,8 @@ test('a forced remote model catalog refresh replaces cached PC configuration bef
   const live = new Map();
   const registry = {
     providerCatalogRevision: () => 999,
-    initProviders: async () => {
-      const fresh = await loadModelProxyProviderConfig();
+    initProviders: async (_config, { forceProxyConfig = false } = {}) => {
+      const fresh = await loadModelProxyProviderConfig({ force: forceProxyConfig });
       assert.equal(fresh.gemini?.enabled, true, 'rebuild must use post-invalidation PC availability');
       live.set('gemini', { listModels: async () => [{ id: 'gemini-test' }] });
     },

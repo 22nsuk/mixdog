@@ -39,8 +39,8 @@ export function createCatalogLoader({
    *  blocking boot; a foreground full picker load must join that refresh,
    *  otherwise it can snapshot yesterday's provider cache moments before the
    *  refresh invalidates it, leaving the UI on the stale first-open rows.
-   *  Resolves false when no provider is enabled: a fresh install has nothing
-   *  to load, and the registry refuses an all-disabled init by design. */
+   *  Resolves false when no local provider is enabled: a fresh install has
+   *  nothing to load, and the registry refuses an all-disabled local init. */
   async function prepare({ forceRefresh, loadSecrets }) {
     if (loadSecrets) {
       const secretsStartedAt = performance.now();
@@ -50,15 +50,13 @@ export function createCatalogLoader({
     }
     const providersStartedAt = performance.now();
     try {
-      if (forceRefresh && modelProxyClientMode()) {
-        const { loadModelProxyProviderConfig } = await import(
-          '../../runtime/agent/orchestrator/providers/model-proxy-provider.mjs'
-        );
-        await loadModelProxyProviderConfig({ force: true });
-        // Rebuild even when daemon readiness already settled on the old PC set.
-        await reg().initProviders({});
-      }
       await ensureProvidersReady(config().providers || {});
+      if (forceRefresh && modelProxyClientMode()) {
+        // Rebuild from this forced reply, even if a concurrent setup read
+        // prevents it from being published to the shared proxy config cache.
+        // Run after readiness so a cold init cannot restore the old PC set.
+        await reg().initProviders({}, { forceProxyConfig: true });
+      }
     } catch (error) {
       if (error?.code === NO_ENABLED_PROVIDERS) return false;
       throw error;

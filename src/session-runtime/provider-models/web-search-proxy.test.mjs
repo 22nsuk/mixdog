@@ -13,11 +13,15 @@ import { createQuickModelRows } from '../quick-model-rows.mjs';
 import { providerModelCacheRow } from '../model-recency.mjs';
 import { makeWebSearchCapableFor } from '../../runtime/agent/orchestrator/runtime-core/model-capabilities.mjs';
 import { webSearchProviderFamily } from '../../runtime/agent/orchestrator/runtime-core/workflow.mjs';
+import { providerSetup } from '../services/provider-admin.mjs';
 
 const webSearchCapableFor = makeWebSearchCapableFor(webSearchProviderFamily, () => null);
 
 for (const forceFirstRead of [false, true]) {
   test(`remote web-search uses desktop providers on ${forceFirstRead ? 'forced' : 'cold'} load and after provider/host changes`, async (t) => {
+    // Registry refresh also fetches public pricing overlays. Keep their
+    // network latency out of the controlled proxy reply ordering below.
+    t.mock.method(globalThis, 'fetch', async () => Response.json({}));
     const prior = process.env.MIXDOG_MODEL_PROXY;
     process.env.MIXDOG_MODEL_PROXY = 'client';
     _resetModelProxyProviderConfigForTest();
@@ -30,6 +34,7 @@ for (const forceFirstRead of [false, true]) {
     t.after(installModelProxyChannel(channel));
     let providers = { openai: { enabled: true }, gemini: { enabled: false } };
     const calls = [];
+    const configGates = [];
     const attach = () =>
       channel.attachPublisher((snapshot) => {
         for (const { id } of snapshot.requests) {
@@ -56,9 +61,14 @@ for (const forceFirstRead of [false, true]) {
               ],
             };
           }
-          queueMicrotask(() =>
-            channel.handleOperation(MODEL_PROXY_OPERATIONS.resolve, [id, true, encodeModelProxyWire(value), null])
-          );
+          const gate = payload.method === 'providerConfig' ? configGates.shift() : null;
+          const reply = () => channel.handleOperation(MODEL_PROXY_OPERATIONS.resolve, [
+            id, true, encodeModelProxyWire(gate?.value ?? value), null,
+          ]);
+          if (gate) {
+            gate.received.resolve();
+            void gate.release.promise.then(reply);
+          } else queueMicrotask(reply);
         }
       });
     let detach = attach();
@@ -138,5 +148,90 @@ for (const forceFirstRead of [false, true]) {
     detach = attach();
     assert.deepEqual(ids(await api.collectWebSearchProviderModels({ force: true })), ['anthropic-search']);
     assert.deepEqual(ids(await api.collectWebSearchProviderModels()), ['anthropic-search']);
+
+    for (const firstReply of ['catalog', 'setup']) {
+      await t.test(`concurrent forced setup and catalog reads keep new models when ${firstReply} replies first`, { timeout: 5_000 }, async () => {
+        // Seed the still-valid 15s cache with only Anthropic, then add Gemini.
+        providers = { anthropic: { enabled: true } };
+        await api.collectWebSearchProviderModels({ force: true });
+        providers = { anthropic: { enabled: true }, gemini: { enabled: true } };
+        const catalogGate = { received: Promise.withResolvers(), release: Promise.withResolvers() };
+        const setupGate = { received: Promise.withResolvers(), release: Promise.withResolvers() };
+        configGates.push(catalogGate, setupGate);
+        const catalog = api.collectWebSearchProviderModels({ force: true });
+        await catalogGate.received.promise;
+        const setup = providerSetup({}, { force: true });
+        await setupGate.received.promise;
+        try {
+          if (firstReply === 'catalog') {
+            catalogGate.release.resolve();
+            // The newer setup request is still in flight: the catalog cannot
+            // rely on publishing its snapshot to the shared config cache.
+            assert.deepEqual(ids(await catalog), ['anthropic-search', 'gemini-search']);
+            setupGate.release.resolve();
+          } else {
+            setupGate.release.resolve();
+            await setup;
+            catalogGate.release.resolve();
+            assert.deepEqual(ids(await catalog), ['anthropic-search', 'gemini-search']);
+          }
+          assert.equal((await setup).api.find((row) => row.id === 'gemini').usable, true);
+          assert.deepEqual(ids(await api.collectWebSearchProviderModels()), ['anthropic-search', 'gemini-search']);
+        } finally {
+          catalogGate.release.resolve();
+          setupGate.release.resolve();
+          await Promise.allSettled([catalog, setup]);
+        }
+      });
+    }
+
+    for (const emptyProviders of [{ anthropic: { enabled: false } }, {}]) {
+      await t.test(`removing the last desktop provider keeps ${Object.keys(emptyProviders).length ? 'disabled' : 'empty'} catalogs empty`, async () => {
+        providers = { anthropic: { enabled: true } };
+        assert.deepEqual(ids(await api.collectWebSearchProviderModels({ force: true })), ['anthropic-search']);
+        const revision = registry.providerCatalogRevision();
+        providers = emptyProviders;
+        assert.deepEqual(await api.collectWebSearchProviderModels({ force: true }), []);
+        assert.ok(registry.providerCatalogRevision() > revision, 'all consumers must invalidate the removed provider');
+        const callsAfterRemoval = calls.length;
+        assert.deepEqual(await api.collectWebSearchProviderModels(), [], 'ordinary reads must not resurrect old search rows');
+        assert.deepEqual(await api.collectProviderModels(), [], 'the shared main catalog must also be empty');
+        assert.deepEqual(await api.collectProviderModels({ quick: true }), []);
+        assert.equal(calls.length, callsAfterRemoval, 'the confirmed empty catalog is reusable');
+        assert.deepEqual([...registry.getAllProviders()], [], 'desktop-confirmed removal retires the proxy adapters');
+        providers = { openai: { enabled: true } };
+        assert.deepEqual(ids(await api.collectWebSearchProviderModels({ force: true })), ['openai-search']);
+      });
+    }
+
+    await t.test('an unready empty desktop reply preserves the live registry until a ready reply arrives', { timeout: 5_000 }, async (t) => {
+      providers = { openai: { enabled: true } };
+      assert.deepEqual(ids(await api.collectWebSearchProviderModels({ force: true })), ['openai-search']);
+      // The config retry timer is intentionally unref'ed in production.
+      const keepAlive = setInterval(() => {}, 1_000);
+      t.after(() => clearInterval(keepAlive));
+      const unready = {
+        received: Promise.withResolvers(), release: Promise.withResolvers(),
+        value: { ready: false, providers: {} },
+      };
+      const recovered = { received: Promise.withResolvers(), release: Promise.withResolvers() };
+      configGates.push(unready, recovered);
+      const provider = registry.getProvider('openai');
+      const revision = registry.providerCatalogRevision();
+      const loading = api.collectWebSearchProviderModels({ force: true });
+      try {
+        await unready.received.promise;
+        unready.release.resolve();
+        await recovered.received.promise;
+        assert.equal(registry.getProvider('openai'), provider);
+        assert.equal(registry.providerCatalogRevision(), revision);
+        recovered.release.resolve();
+        assert.deepEqual(ids(await loading), ['openai-search']);
+      } finally {
+        unready.release.resolve();
+        recovered.release.resolve();
+        await Promise.allSettled([loading]);
+      }
+    });
   });
 }

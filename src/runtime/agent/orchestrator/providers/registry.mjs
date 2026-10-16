@@ -218,14 +218,17 @@ async function instantiateProvider(name, Ctor, cfg, proxyChannel = null) {
   return createAccountPoolProvider(name, () => wrapProviderAdmission(new Ctor(cfg), name));
 }
 
-export async function initProviders(config, { signal = null } = {}) {
+export async function initProviders(config, { signal = null, forceProxyConfig = false } = {}) {
   throwIfAborted(signal);
   // Remote mode: provider availability and config are the PC's, never this
   // server's credential probes. No connected client fails here, clearly.
   const proxyChannel = modelProxyClientMode() ? getModelProxyChannel() : null;
   if (proxyChannel) {
     const { loadModelProxyProviderConfig } = await import('./model-proxy-provider.mjs');
-    config = await awaitWithAbort(loadModelProxyProviderConfig({ channel: proxyChannel }), signal);
+    config = await awaitWithAbort(
+      loadModelProxyProviderConfig({ channel: proxyChannel, force: forceProxyConfig }),
+      signal
+    );
   }
   const sig = reuseSignature(config, proxyChannel);
   // Coalesce: an identical config is already mid-init — attach to it.
@@ -272,15 +275,17 @@ export async function initProviders(config, { signal = null } = {}) {
 
 async function _initProvidersUnsynchronized(config, signal = null, proxyChannel = null) {
   throwIfAborted(signal);
-  // Invariant: never wipe the live registry based on an empty / all-disabled
-  // config. Without this guard, a stale `loadAgentConfig()` (e.g. mid-reload
+  // Never wipe the local registry based on an empty / all-disabled config.
+  // Without this guard, a stale `loadAgentConfig()` (e.g. mid-reload
   // or a transient FS hiccup) would land here as `{}` or `{...,enabled:false}`,
   // and the `providers.clear()` at the bottom would erase every previously
   // registered provider. The owner process then stays alive returning
   // `Provider "<name>" not found or not enabled` until restart. Throwing
-  // here preserves whatever was already registered.
+  // here preserves whatever was already registered. A proxy config is
+  // different: loadModelProxyProviderConfig only accepts a ready desktop's
+  // empty reply, so it must retire adapters and advance the catalog revision.
   const entries = Object.entries(config || {});
-  if (entries.length === 0) {
+  if (!proxyChannel && entries.length === 0) {
     throw noEnabledProvidersError('[provider] initProviders called with empty config — refusing to clear registry');
   }
   const next = new Map();
@@ -325,11 +330,11 @@ async function _initProvidersUnsynchronized(config, signal = null, proxyChannel 
     if (result.sig !== null) nextSignatures.set(result.name, result.sig);
   }
   _providerInitErrors = nextInitErrors;
-  // Second guard: every entry was disabled. Same reasoning — keep the
+  // Second local guard: every entry was disabled. Same reasoning — keep the
   // existing registry rather than going dark. Isolation still holds: a live
   // instance of a provider that is now an invalid custom config is removed
   // (the rest of the registry stays), and the recorded reasons are reported.
-  if (next.size === 0) {
+  if (!proxyChannel && next.size === 0) {
     let removed = false;
     for (const name of nextInitErrors.keys()) {
       removed = providers.delete(name) || removed;
