@@ -276,6 +276,8 @@ test('a plain read restores a deleted config once, persists it and later reads h
 
 test('crash recovery restores the latest backup of the same data dir', (t) => {
   const { dir } = sandbox(t);
+  // Pre/post-write snapshots can share a millisecond on fast filesystems.
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
   const a = dir('a');
   use(a);
   write('v1');
@@ -286,4 +288,23 @@ test('crash recovery restores the latest backup of the same data dir', (t) => {
   const stored = JSON.parse(readFileSync(configFile(a), 'utf8'));
   assert.equal(stored.agent.tag, 'v2');
   assert.equal(stored.ui.theme, 'after-restore');
+});
+
+test('sync and async snapshots in the same millisecond retain their contents and order', async (t) => {
+  const { dir } = sandbox(t);
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+  const a = dir('a');
+  writeFileSync(configFile(a), JSON.stringify(complete('v1')));
+  const first = backupUserData(a, 'snapshot');
+  writeFileSync(configFile(a), JSON.stringify(complete('v2')));
+  const second = await backupUserDataAsync(a, 'snapshot');
+  assert.notEqual(first.dir, second.dir);
+  assert.equal(JSON.parse(readFileSync(join(first.dir, 'mixdog-config.json'), 'utf8')).agent.tag, 'v1');
+  assert.equal(loadLatestMixdogConfigFromBackup(a).agent.tag, 'v2');
+  // A fresh writer has no in-memory timestamp and must use the stored order.
+  const freshWriter = await import('./user-data-guard.mjs?fresh-backup-writer');
+  writeFileSync(configFile(a), JSON.stringify(complete('v3')));
+  const third = freshWriter.backupUserData(a, 'snapshot');
+  assert.ok(third.dir > second.dir);
+  assert.equal(freshWriter.loadLatestMixdogConfigFromBackup(a).agent.tag, 'v3');
 });

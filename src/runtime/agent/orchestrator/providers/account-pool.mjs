@@ -376,8 +376,12 @@ function poolSend(providerName, account) {
     // remaining wait budget is waited out; otherwise the send fails as before.
     const waitOrThrow = async (error, ids) => {
       const { rows, now, all } = exhaustion(ids);
-      const wait = all ? null : earliestCooldownMs(rows, now);
-      if (wait == null || waitedMs + wait > waitBoundMs(ids)) throw markExhausted(error, ids);
+      const bound = waitBoundMs(ids);
+      // Persisting a short cooldown can take longer than the cooldown itself.
+      // Release that attempt even when there is no future deadline to await.
+      const lifted = bound > 0 && rows.some((row) => cooled.has(row.id) && !(Number(row.blockedUntil) > now));
+      const wait = all ? null : lifted ? 0 : earliestCooldownMs(rows, now);
+      if (wait == null || waitedMs + wait > bound) throw markExhausted(error, ids);
       options.onStageChange?.('reconnecting', {
         message: `Rate limited — every account is cooling down; retrying in ${Math.ceil(wait / 1000)}s`,
         reason: 'rate_limited',
@@ -386,9 +390,9 @@ function poolSend(providerName, account) {
       });
       await sleepWithAbort(wait, options.signal);
       waitedMs += wait;
-      const lifted = Date.now();
+      const afterWait = Date.now();
       for (const row of readProviderAccountPool(providerName).accounts) {
-        if (cooled.has(row.id) && !(Number(row.blockedUntil) > lifted)) {
+        if (cooled.has(row.id) && !(Number(row.blockedUntil) > afterWait)) {
           cooled.delete(row.id);
           attempted.delete(row.id);
         }

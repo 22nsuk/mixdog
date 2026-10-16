@@ -464,6 +464,28 @@ test('rotateOnRateLimit rotates an advised rate limit and the wait retries the a
   assert.ok(ids.length > 0);
 });
 
+test('a cooldown that expires while persisting its block is retried within the wait policy', async (t) => {
+  await setup({ auto: false });
+  let now = Date.now();
+  t.mock.method(Date, 'now', () => now);
+  let calls = 0;
+  const gateway = createAccountPoolProvider(provider, () => ({
+    get accountCooldownPolicy() {
+      // The refusal captures its deadline before reading the policy. Model
+      // the clock advancing during persistence, without a wall-clock sleep.
+      now += 100;
+      return { rotateOnRateLimit: true, waitForCooldownMs: 10_000 };
+    },
+    async send() {
+      calls += 1;
+      if (calls === 1) throw Object.assign(new Error('slow'), { status: 429, code: 'rate_limit_exceeded', retryAfterMs: 100 });
+      return { content: 'ok' };
+    },
+  }));
+  assert.equal((await gateway.send([], 'm', [], {})).content, 'ok');
+  assert.equal(calls, 2);
+});
+
 const serving = (used, refuse = () => false) =>
   createAccountPoolProvider(provider, () => {
     const id = currentProviderAccountId(provider);

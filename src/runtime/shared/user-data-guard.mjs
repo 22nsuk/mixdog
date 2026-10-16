@@ -58,8 +58,18 @@ function scopeDirFor(dataDir) {
   return join(getBackupRoot(), `${SCOPE_PREFIX}${id}`);
 }
 
-function stamp() {
-  return new Date().toISOString().replace(/[:.]/g, '-');
+let lastBackupTime = 0;
+
+function stamp(scopeDir) {
+  // Names are the restore/prune ordering. Same-millisecond pre/post writes
+  // must neither overwrite each other nor sort by their reason strings.
+  // Read the persisted latest stamp too, so a restarted writer keeps order.
+  const latest = backupDirsNewestFirst(scopeDir).find((name) => /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-/.test(name));
+  const previous = latest
+    ? Date.parse(latest.slice(0, 24).replace(/T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z/, 'T$1:$2:$3.$4Z'))
+    : 0;
+  lastBackupTime = Math.max(Date.now(), lastBackupTime + 1, (Number.isFinite(previous) ? previous : 0) + 1);
+  return new Date(lastBackupTime).toISOString().replace(/[:.]/g, '-');
 }
 
 function safeReason(reason) {
@@ -331,7 +341,7 @@ function skipBackups() {
 
 function backupTarget(dataDir, reason) {
   const scopeDir = scopeDirFor(dataDir);
-  return { scopeDir, backupDir: join(scopeDir, `${stamp()}-${safeReason(reason)}`) };
+  return { scopeDir, backupDir: join(scopeDir, `${stamp(scopeDir)}-${safeReason(reason)}`) };
 }
 
 // Mark first so the manifest carries this incarnation's instanceId; the
