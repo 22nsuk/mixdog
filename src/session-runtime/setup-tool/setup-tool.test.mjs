@@ -585,12 +585,25 @@ test('setup skill documents every tool action and open target', () => {
 test('remote setup-tool statuses retain desktop ownership and never read or mutate server accounts', async () => {
   const forbidden = () => assert.fail('server account roster must stay untouched');
   const executor = createSetupToolExecutor({ getApi: () => ({
-    getProviderSetup: async () => ({ managedByClient: true, oauth: [{ id: 'openai-oauth', authenticated: true }] }),
+    getProviderSetup: async () => ({ managedByClient: true, oauth: [
+      { id: 'openai-oauth', authenticated: true, enabled: true, status: 'Connected' },
+      { id: 'cursor-oauth', authenticated: false, enabled: true, status: 'Checking…' },
+      { id: 'anthropic-oauth', authenticated: false, enabled: false, status: 'Not connected' },
+    ] }),
     getProviderAccounts: forbidden, forgetProviderAuth: forbidden, updateProviderAccounts: forbidden,
   }) });
   const status = await run(executor, { action: 'status', domain: 'providers' });
   assert.equal(status.managedByClient, true);
-  assert.equal(status.oauth[0].accounts, undefined);
+  assert.equal(status.unavailable, false);
+  assert.deepEqual(status.providers, [
+    { id: 'openai-oauth', kind: 'oauth', authenticated: true, status: 'Connected' },
+    { id: 'cursor-oauth', kind: 'oauth', authenticated: false, status: 'Checking…' },
+  ]);
+  assert.equal(status.notConfigured, 1);
+  const detail = await run(executor, { action: 'status', domain: 'providers', detail: true });
+  assert.equal(detail.managedByClient, true);
+  assert.equal(detail.oauth.length, 3);
+  assert.ok(detail.oauth.every((row) => row.accounts === undefined));
   await assert.rejects(run(executor, { action: 'forget_provider_auth', name: 'openai-oauth' }), /local desktop window/);
   await assert.rejects(run(executor, { action: 'set_provider_account', name: 'openai-oauth', providerAccount: { selectedId: 'x' } }), /local desktop window/);
 });

@@ -154,7 +154,7 @@ function configuredProviderRows(rows, accountCount) {
     ['local', rows.local],
   ]) {
     for (const row of list) {
-      if (!row.authenticated && !row.reauthRequired) {
+      if (!row.authenticated && !row.reauthRequired && !(rows.managedByClient && row.enabled)) {
         notConfigured += 1;
         continue;
       }
@@ -164,11 +164,16 @@ function configuredProviderRows(rows, accountCount) {
         authenticated: row.authenticated,
         status: row.status,
         ...(row.reauthRequired ? { reauthRequired: true } : {}),
-        ...(kind === 'oauth' ? { accounts: row.authenticated ? accountCount(row.id) : 0 } : {}),
+        ...(kind === 'oauth' && !rows.managedByClient ? { accounts: row.authenticated ? accountCount(row.id) : 0 } : {}),
       });
     }
   }
-  return { ...(rows.pendingSecrets ? { pendingSecrets: true } : {}), providers, notConfigured };
+  return {
+    ...(rows.managedByClient ? { managedByClient: true, unavailable: rows.unavailable } : {}),
+    ...(rows.pendingSecrets ? { pendingSecrets: true } : {}),
+    providers,
+    notConfigured,
+  };
 }
 
 /** OAuth account roster without usage meters or provider-side identities. */
@@ -332,8 +337,8 @@ const SETUP_STATUS_READERS = {
   shell: (rt) => rt.getSystemShell?.() || {},
   providers: async (rt, { detail }) => {
     const rows = publicProviderRows(await rt.getProviderSetup?.({}));
-    if (rows.managedByClient) return rows;
     if (!detail) return configuredProviderRows(rows, (id) => rt.getProviderAccounts(id).accounts.length);
+    if (rows.managedByClient) return rows;
     rows.oauth = rows.oauth.map((row) =>
       row.authenticated ? { ...row, accounts: publicAccounts(rt.getProviderAccounts(row.id)) } : row
     );
