@@ -399,16 +399,21 @@ test('background work: refused with the setting off, on its own budget with it o
 });
 
 test('a rate-limited send does not use up the grant', async (t) => {
-  const { channel, host, send } = connect(t, usageProvider(), {
-    grantPolicy: policyWith({ grantCalls: 1 }),
+  let now = 0;
+  const { host, send } = connect(t, usageProvider(), {
+    grantPolicy: policyWith({ grantCalls: 2 }),
     rateLimit: { perMinute: 1, burst: 1 },
+    now: () => now,
   });
   host.trust();
-  // The bucket's one token goes to a model list; the send is rate limited.
-  await within(channel.request({ provider: 'openai', method: 'listModels' }));
+  await send();
   await assert.rejects(send(), { code: 'MODEL_PROXY_RATE_LIMITED' });
-  assert.equal(host.grant().calls, 0);
+  assert.equal(host.grant().calls, 1);
+  assert.equal(host.grant().reserved, 0, 'the refused send releases its token reservation');
   assert.equal(host.grant().active, true, 'its one call is still there');
+  now += MINUTE;
+  await send();
+  assert.equal(host.grant().calls, 2);
 });
 
 // ── The connection: trusted actions in, forged server state ignored ──────────

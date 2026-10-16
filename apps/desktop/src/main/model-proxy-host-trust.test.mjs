@@ -248,6 +248,78 @@ test('the per-host rate limit refuses bursts with a clear code, told once', asyn
   assert.deepEqual(limits, ['rate-limited']);
 });
 
+test('provider reads have a bounded budget independent of model sends and never announce a model-call limit', async (t) => {
+  let now = 5_000_000;
+  const limits = [];
+  const sends = [];
+  const reads = [];
+  const provider = {
+    ...okProvider(sends),
+    listModels: async () => {
+      reads.push('listModels');
+      return ['gpt'];
+    },
+    _refreshModelCache: async () => {
+      reads.push('refreshModels');
+      return ['gpt'];
+    },
+    isAvailable: async () => {
+      reads.push('isAvailable');
+      return true;
+    },
+    resolveWireRoute: async () => {
+      reads.push('resolveWireRoute');
+      return null;
+    },
+  };
+  const runtime = {
+    ...fakeRuntime({ 'openai-oauth': provider }),
+    oauthUsage: async () => {
+      reads.push('oauthUsage');
+      return { status: 'unsupported' };
+    },
+  };
+  const { channel } = connect(t, runtime, { now: () => now, onLimited: (limit) => limits.push(limit) });
+  const read = (method) => within(channel.request({ provider: 'openai-oauth', method }));
+  const send = () => within(new ModelProxyProvider('openai-oauth', {}, channel).send([], 'gpt', [], {}));
+
+  // Catalog probes and usage polling exhaust the existing 12-request burst.
+  for (const method of ['listModels', 'refreshModels', 'isAvailable', 'resolveWireRoute']) await read(method);
+  for (let i = 0; i < 8; i++) await read('oauthUsage');
+  await assert.rejects(read('oauthUsage'), {
+    code: 'MODEL_PROXY_READ_RATE_LIMITED', status: 429, retryAfterMs: 1_000,
+  });
+  assert.equal(reads.length, 12, 'the refused query never reaches the provider');
+  assert.equal(sends.length, 0);
+  assert.deepEqual(limits, [], 'read throttling must not claim that model calls were limited');
+
+  // Reads have not spent any of the model-send burst or disabled its protection.
+  for (let i = 0; i < 12; i++) await send();
+  await assert.rejects(send(), { code: 'MODEL_PROXY_RATE_LIMITED', status: 429 });
+  assert.equal(sends.length, 12);
+  assert.deepEqual(limits, ['rate-limited']);
+  await read('providerConfig');
+
+  now += 1_000;
+  assert.deepEqual(await read('oauthUsage'), { status: 'unsupported' });
+  await assert.rejects(read('listModels'), { code: 'MODEL_PROXY_READ_RATE_LIMITED' });
+  assert.deepEqual(await send(), { content: 'ok' });
+});
+
+test('exhausting model sends does not prevent OAuth usage reads', async (t) => {
+  const runtime = {
+    ...fakeRuntime({ 'openai-oauth': okProvider() }),
+    oauthUsage: async () => ({ status: 'unsupported' }),
+  };
+  const { channel } = connect(t, runtime, { rateLimit: { perMinute: 60, burst: 1 }, now: () => 0 });
+  const send = () => within(new ModelProxyProvider('openai-oauth', {}, channel).send([], 'gpt', [], {}));
+  await send();
+  await assert.rejects(send(), { code: 'MODEL_PROXY_RATE_LIMITED' });
+  assert.deepEqual(await within(channel.request({ provider: 'openai-oauth', method: 'oauthUsage' })), {
+    status: 'unsupported',
+  });
+});
+
 test('a call running past the maximum duration is stopped with its own code', async (t) => {
   const limits = [];
   const hanging = {

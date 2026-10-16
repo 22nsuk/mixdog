@@ -78,7 +78,8 @@ export const MODEL_PROXY_MAX_SNAPSHOT_ENTRIES = 64;
 export const MODEL_PROXY_CLAIM_TIMEOUT_MS = 15_000;
 /** Largest event-reply results text decoded (callback return values are tiny). */
 export const MODEL_PROXY_MAX_EVENT_REPLY_CHARS = 1024 * 1024;
-/** Per-host call rate: a token bucket of `burst` refilled at `perMinute`. */
+/** Per-host rate, applied independently to model sends and provider reads:
+ *  each token bucket holds `burst` and refills at `perMinute`. */
 export const MODEL_PROXY_RATE_LIMIT = Object.freeze({ perMinute: 60, burst: 12 });
 /** Longest one proxied call may run on this PC. */
 export const MODEL_PROXY_MAX_CALL_MS = 15 * 60_000;
@@ -99,6 +100,7 @@ export interface ModelProxyHostOptions {
   grantPolicy?: () => ModelProxyGrantPolicy;
   /** Tokens each send holds against its grant or background budget while it runs. */
   tokenReservation?: ModelProxyTokenReservation;
+  /** Each of the independent send and provider-read budgets. */
   rateLimit?: { perMinute: number; burst: number };
   maxCallMs?: number;
   /** A limit refused or stopped a call; `reason` says why permission was missing. */
@@ -1048,6 +1050,7 @@ function admitPayload(
     rateLimit,
     grants,
     takeToken,
+    takeReadToken,
     notices,
   }: {
     maxRequestBytes: number;
@@ -1055,6 +1058,7 @@ function admitPayload(
     rateLimit: { perMinute: number };
     grants: ModelProxyGrants | null;
     takeToken(): boolean;
+    takeReadToken(): boolean;
     notices: ReturnType<typeof createLimitNotices>;
   }
 ): AdmittedCall | Error {
@@ -1088,14 +1092,21 @@ function admitPayload(
   }
   // Admitted: a later missing permission is news again.
   if (admission) notices.permissionRestored();
-  // Reading this PC's own provider list spends nothing; everything else counts.
-  if (method !== 'providerConfig' && !takeToken()) {
+  // Provider/catalog/usage reads must neither spend model-call capacity nor
+  // become unavailable because inference used it. Keep reads bounded too;
+  // only the local provider-config bootstrap retains its existing exemption.
+  const isSend = method === 'send';
+  if (method !== 'providerConfig' && !(isSend ? takeToken() : takeReadToken())) {
     admission?.cancel();
-    notices.tell('rate-limited');
+    // A read refusal belongs to its caller (for example the usage panel), not
+    // the window-wide notice claiming that model calls have been limited.
+    if (isSend) notices.tell('rate-limited');
     return Object.assign(
       refusal(
-        'This server is making model calls faster than this PC allows; try again shortly.',
-        'MODEL_PROXY_RATE_LIMITED',
+        isSend
+          ? 'This server is making model calls faster than this PC allows; try again shortly.'
+          : 'This server is querying provider information faster than this PC allows; try again shortly.',
+        isSend ? 'MODEL_PROXY_RATE_LIMITED' : 'MODEL_PROXY_READ_RATE_LIMITED',
         429
       ),
       { retryAfterMs: Math.ceil(60_000 / Math.max(1, rateLimit.perMinute)) }
@@ -1142,6 +1153,7 @@ export function createModelProxyHost({
   const inflight = { bytes: 0 };
   let disposed = false;
   const takeToken = createRateLimiter(rateLimit, now);
+  const takeReadToken = createRateLimiter(rateLimit, now);
   const grants = grantPolicy
     ? createModelProxyGrants({ policy: grantPolicy, now, reservation: tokenReservation })
     : null;
@@ -1166,6 +1178,7 @@ export function createModelProxyHost({
       rateLimit,
       grants,
       takeToken,
+      takeReadToken,
       notices,
     });
 
