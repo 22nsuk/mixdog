@@ -4,11 +4,7 @@
 // the app shell (which owns the pane docks).
 import { useSyncExternalStore } from 'react';
 
-import type {
-  DesktopVisualizeEvent,
-  VisualizeCommandResult,
-  VisualizeSessionState,
-} from '../shared/visualize';
+import type { DesktopVisualizeEvent, VisualizeCommandResult, VisualizeSessionState } from '../shared/visualize';
 import { requestBrowserPage } from './browser-page-request';
 
 type Listener = () => void;
@@ -27,9 +23,9 @@ let connected = false;
 /** Per-session panel memory, kept in sessionStorage so it survives a renderer
  *  reload (main keeps the tabs; the renderer forgets which panels it showed).
  *  `open`: the panel was on screen and not closed by the user since.
- *  `closed`: the user closed it — agent opens keep updating the tabs but no
- *  longer reveal the panel until the user opens it again, the same policy as
- *  the browser panel's auto-reveal. */
+ *  `closed`: the user closed it — file-change reloads and updates keep
+ *  updating the tabs without revealing the panel, and a renderer reload does
+ *  not bring it back; a new agent `open` (or the user) lifts the mark. */
 const PANEL_MEMORY_KEY = 'mixdog.visualize.panels.v1';
 interface PanelMemory {
   open: Set<string>;
@@ -143,7 +139,12 @@ export function applyVisualizeEvent(event: DesktopVisualizeEvent): void {
   if (!sessionId) return;
   if (event.openUrl) requestBrowserPage(sessionId, event.openUrl, { newTab: true, agent: true });
   if (event.state) setState({ ...event.state, sessionId });
-  if (event.reveal && !panelMemory().closed.has(sessionId)) requestReveal(sessionId);
+  // Only an agent open carries `reveal`: it is a fresh request to show the
+  // panel, so it lifts a user close. Reloads and updates never reveal.
+  if (event.reveal) {
+    allowVisualizeReveal(sessionId);
+    requestReveal(sessionId);
+  }
 }
 
 /** Apply main's tab snapshot after a renderer (re)load (exported for tests):
@@ -295,7 +296,7 @@ export function visualizePanesStacked(bodyWidth: number, paneCount: number): boo
  *  buttons (beside ⋯, expand and close); the other toolbar toggles become
  *  ⋯ items so the tab strip keeps room for the active tab's label. */
 export const VISUALIZE_HEADER_FOLD_WIDTH = 520;
-const VISUALIZE_HEADER_PINNED: ReadonlySet<string> = new Set(['comment', 'tweaks']);
+const VISUALIZE_HEADER_PINNED: ReadonlySet<string> = new Set(['comment', 'tweaks', 'versions']);
 
 interface VisualizeHeaderAction {
   id: string;

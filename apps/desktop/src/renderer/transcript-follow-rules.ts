@@ -1,3 +1,5 @@
+import { logTranscriptScroll } from './transcript-scroll-diagnostics';
+
 export const GESTURE_WINDOW_MS = 250;
 // Keep reader ownership alive between native wheel/touch/scrollbar frames.
 // Unlike virtual-core's isScrolling this excludes the timeline's own writes,
@@ -113,6 +115,23 @@ export function readerScrollShouldReleaseFollow({
   return upwardMove > RELEASE_MOVE_PX;
 }
 
+/** Did the browser clamp the offset to a shrunken extent? A viewport that
+ *  grew (the dock shrank) or content that shrank under an offset past the new
+ *  end moves scrollTop with no reader input: it lands exactly on the new end.
+ *  Native offsets and native extent. */
+export function scrollExtentClamped({
+  previousTop,
+  top,
+  maxScrollTop,
+}: {
+  previousTop: number;
+  top: number;
+  maxScrollTop: number;
+}): boolean {
+  if (!Number.isFinite(previousTop) || !Number.isFinite(top) || !Number.isFinite(maxScrollTop)) return false;
+  return previousTop > maxScrollTop + 0.5 && Math.abs(top - maxScrollTop) < 1;
+}
+
 /** A touch drag toward older history releases follow only when the gesture
  *  reaches the transcript itself. A nested code/tool scroller keeps ownership
  *  until its own leading boundary is reached. */
@@ -197,6 +216,7 @@ export function programmaticWriteMatches({
 }
 
 export function reportRelease(reason: string, metrics: ScrollMetrics, previousTop: number): void {
+  logTranscriptScroll('follow-release', { reason, top: metrics.top, delta: metrics.top - previousTop });
   try {
     window.mixdogDesktop?.perfLog?.(
       `transcript-follow-release reason=${reason}` +

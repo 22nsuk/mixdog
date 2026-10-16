@@ -12,6 +12,7 @@ import { preparePdfTextForProvider } from './media-normalization.mjs';
 import { consumeCompatChatCompletionStream } from './openai-compat-stream.mjs';
 import { retryAfterMsFromError } from './retry-classifier.mjs';
 import { ensureChatToolPairs } from './lib/wire-pairing.mjs';
+import { acceptedWireTools } from './lib/claude-bridge-schema.mjs';
 import { cursorTokenExpiry, exchangeCursorToken, resolveCursorOAuthAccessToken } from './cursor-auth.mjs';
 import {
   canonicalCursorModelId,
@@ -693,10 +694,16 @@ class CursorProviderBase {
     const runtime = await this._runtime();
     let accessToken = await this._accessToken({ signal });
     let cursorSelection = await this._resolveCursorModel(model, sendOpts, runtime, accessToken);
+    // The Cursor run and conversation (checkpoint, pending tool batch) live
+    // under this scope; a forked request keeps its own (transport-scope.mjs).
     const sessionScope = String(
-      sendOpts.sessionId || sendOpts.providerCacheKey || sendOpts.promptCacheKey || `cursor-call:${randomUUID()}`
+      sendOpts.transportScope ||
+        sendOpts.sessionId ||
+        sendOpts.providerCacheKey || sendOpts.promptCacheKey || `cursor-call:${randomUUID()}`
     );
-    const openAiTools = tools?.length ? toOpenAITools(tools) : undefined;
+    const openAiTools = tools?.length
+      ? toOpenAITools(acceptedWireTools(tools, 'openai', sendOpts.onToolExcluded, '[cursor] tool'))
+      : undefined;
     const dispatch = async () => {
       noteRequestServiceTier(cursorSelectionIsFast(cursorSelection) ? 'fast' : '');
       // Every attempt (retries included) prepares right before it lowers.

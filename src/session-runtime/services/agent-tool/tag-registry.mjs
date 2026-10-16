@@ -29,7 +29,7 @@ export function createTagRegistry({ dataDir, cfgMod, mgr }) {
     workerRowFromSession: index.workerRowFromSession,
   });
 
-  const { upsertLeadSession, updateLeadWorkerCwd } = leadIndex;
+  const { upsertLeadSession, updateLeadWorkerCwd, forgetLeadSession } = leadIndex;
 
   function dispose(options) {
     try {
@@ -37,6 +37,17 @@ export function createTagRegistry({ dataDir, cfgMod, mgr }) {
     } finally {
       leadIndex.dispose(options);
     }
+  }
+
+  /** Drain every queued index write (batches included) without disposing. */
+  async function flushIndexWrites() {
+    await Promise.all([index.flushWorkerIndexWrites(), leadIndex.flushLeadWorkerIndexWrites()]);
+  }
+
+  async function disposeAsync(options) {
+    const results = await Promise.allSettled([index.disposeAsync(), leadIndex.disposeAsync(options)]);
+    const failed = results.find((result) => result.status === 'rejected');
+    if (failed) throw failed.reason;
   }
 
   function getLiveSession(sessionId) {
@@ -95,6 +106,8 @@ export function createTagRegistry({ dataDir, cfgMod, mgr }) {
 
   return {
     dispose,
+    disposeAsync,
+    flushIndexWrites,
     readAllTagTombstones: index.readAllTagTombstones,
     readTagTombstones: index.readTagTombstones,
     readWorkerRows,
@@ -104,6 +117,7 @@ export function createTagRegistry({ dataDir, cfgMod, mgr }) {
     upsertWorkerSessionDeferred,
     upsertLeadSession,
     updateLeadWorkerCwd,
+    forgetLeadSession,
     removeWorkerRow,
     refreshTagsFromIndex,
     tags,

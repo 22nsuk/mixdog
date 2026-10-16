@@ -57,8 +57,8 @@ test('the files menu and its Delete history dialog read in Korean', async (t) =>
     invokeCapability: async ({ capability }) => ({
       value:
         capability === 'getSessionReviewDiff'
-          ? { supported: true, authoritative: true, complete: true, patch: '', files, uncommittedFiles: files, historyTurns: 12 }
-          : { supported: true, files: [], patch: '', agents: [] },
+          ? { supported: true, authoritative: true, complete: true, patch: '', files }
+          : { supported: true, authoritative: true, files: [], patch: '', agents: [], historyTurns: 12 },
     }),
   };
   await i18n.changeLanguage('ko');
@@ -72,7 +72,8 @@ test('the files menu and its Delete history dialog read in Korean', async (t) =>
     root.render(
       React.createElement(TurnReviewBar, {
         variant: 'segment',
-        items: [],
+        // Turn activity: the turn review read carries the retained turn count.
+        items: [{ kind: 'turndone', id: 'ko-done' }],
         sessionId: 'ko-files',
         active: true,
         onOpenChanges() {},
@@ -83,9 +84,10 @@ test('the files menu and its Delete history dialog read in Korean', async (t) =>
   const document = dom.window.document;
   await act(async () => document.querySelector('.turn-review-segment').click());
   const items = [...document.querySelectorAll('.turn-review-files-menu [role="menuitem"]')];
+  // The changed files list first, then Delete history and View changes fixed below it.
   assert.deepEqual(
     items.map((item) => item.textContent),
-    ['변경 사항 보기', '기록 삭제']
+    ['a.ts+1', '기록 삭제', '변경 사항 보기']
   );
   await act(async () => items[1].click());
   const dialog = document.querySelector('.settings-confirm-dialog');

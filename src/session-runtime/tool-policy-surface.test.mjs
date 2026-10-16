@@ -4,7 +4,10 @@ import { test } from 'node:test';
 import { join } from 'node:path';
 import { createToolSurface } from './tool-surface.mjs';
 import { createToolPolicyRefresh } from './tool-policy-refresh.mjs';
-import { toSessionWorkflowMeta, workflowDisallowsAgentTool } from '../runtime/agent/orchestrator/runtime-core/workflow.mjs';
+import {
+  toSessionWorkflowMeta,
+  workflowDisallowsAgentTool,
+} from '../runtime/agent/orchestrator/runtime-core/workflow.mjs';
 import { PATCH_TOOL_DEFS } from '../runtime/agent/orchestrator/tools/patch-tool-defs.mjs';
 import { DEFERRED_DEFAULT_LEAD_TOOLS } from '../runtime/agent/orchestrator/runtime-core/tool-catalog-data.mjs';
 import { LEAD_DISALLOWED_TOOLS } from '../runtime/agent/orchestrator/runtime-core/tool-defs.mjs';
@@ -182,7 +185,10 @@ test('shared tool rules keep workflow and shell-boundary anchors', () => {
   assert.match(full, /Tool names are not shell commands/i);
   assert.doesNotMatch(full, /`shell` only runs/i);
   assert.match(full, /Every independent call in the same response, never one per round/i);
-  assert.match(full, /A tool that takes an array \(`read`, `grep`, `glob`, `git`, `code_graph`\) gets\s+one call with the array whenever there are\s+several targets/i);
+  assert.match(
+    full,
+    /A tool that takes an array \(`read`, `grep`, `glob`, `git`, `code_graph`\) gets\s+one call with the array whenever there are\s+several targets/i
+  );
   assert.match(
     full,
     /`shell` only for evidence or artifacts that require execution: computation,\s+data transformation, generated output, unsupported-format decoding/i
@@ -270,7 +276,7 @@ test('shared tool rules keep workflow and shell-boundary anchors', () => {
 test('agent common policy has workers verify their own changes and leaves review to Lead', () => {
   const rules = buildAgentRoleContent({ PLUGIN_ROOT: join(process.cwd(), 'src') });
   assert.match(rules, /^# Agent$/m);
-  assert.match(rules, /the tests and checks you ran for your\s+own changes and their result/i);
+  assert.match(rules, /checks run \(passes in one line,\s+failures with decisive error text\)/i);
   assert.match(rules, /Lead owns the independent review/i);
   assert.match(rules, /Lead's latest brief is your request and overrides\s+any internal rule/i);
   // The retrieval profile shares the same contract plus its read-only line.
@@ -444,7 +450,17 @@ test('headless tool profile keeps task-scoped tools and removes persistent or in
   assert.equal(activeNames.has('office'), false);
   assert.equal(activeNames.has('tidy'), false);
   assert.equal(activeNames.has('git'), true);
-  for (const name of ['goal', 'agent', 'memory', 'recall', 'session', 'Skill', 'browser', 'browser_devtools', 'computer']) {
+  for (const name of [
+    'goal',
+    'agent',
+    'memory',
+    'recall',
+    'session',
+    'Skill',
+    'browser',
+    'browser_devtools',
+    'computer',
+  ]) {
     assert.equal(catalogNames.has(name), false, `${name} should be absent`);
     assert.equal(activeNames.has(name), false, `${name} should not be active`);
   }
@@ -466,9 +482,16 @@ test('Goal stays active while legacy Goal schemas are removed from restored sess
   const surface = surfaceFor({ session, standalone: [read, goal] });
   const result = surface.activateTools(['goal']);
   assert.deepEqual(result.missing, []);
-  const visible = new Set([...session.tools.map((tool) => tool.name), ...(session.deferredCallableTools || [])]);
+  // grok-oauth uses the bridge: goal is callable through call_tool from the
+  // scoped catalog, and the legacy schema is gone from every surface.
+  assert.deepEqual(result.already, ['goal']);
+  const visible = new Set([
+    ...session.tools.map((tool) => tool.name),
+    ...session.deferredToolCatalog.map((tool) => tool.name),
+  ]);
   assert.equal(visible.has('goal'), true);
   assert.equal(visible.has('update_goal'), false);
+  assert.ok(session.tools.some((tool) => tool.name === 'call_tool'));
 });
 
 test('empty session refresh strips denied tools and BP1 routes', async () => {
@@ -518,7 +541,7 @@ test('empty session refresh strips denied tools and BP1 routes', async () => {
   assert.equal(session.workflow.delegatesAgents, false);
   assert.deepEqual(
     session.tools.map((tool) => tool.name),
-    ['read']
+    ['read', 'load_tool', 'call_tool']
   );
   const bp1 = session.messages[0].content;
   assert.equal(bp1.includes('`web_search`'), false);

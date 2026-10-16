@@ -37,6 +37,8 @@ export interface ManagedWorktreeEntry {
 
 /** The worktree manager's registry, the only authority on managed folders. */
 export interface MixdogWorktreesModule {
+  withWorktreeRecoveryStore?<T>(root: string, directory: string,
+    action: 'write' | 'restore' | 'inspect' | 'discard', run: () => Promise<T>): Promise<T>;
   /** The registry entry whose folder is `path`, or null when none is. */
   getWorktreeByPath(path: string): ManagedWorktreeEntry | null | Promise<ManagedWorktreeEntry | null>;
   /** The registry entry whose folder is `path` or contains it (a subfolder
@@ -47,21 +49,27 @@ export interface MixdogWorktreesModule {
   registerRootReleaser?(name: string, releaser: (root: string) => unknown): () => void;
 }
 
+export interface StatuslineShellJobsStatus {
+  count?: number;
+  elapsedLabel?: string;
+  jobs?: DesktopShellJobRow[];
+  /** Per-session buckets (omitted by older runtimes). */
+  sessions?: Record<
+    string,
+    {
+      count?: number;
+      elapsedLabel?: string;
+      jobs?: DesktopShellJobRow[];
+      finished?: DesktopShellJobRow[];
+    }
+  >;
+}
+
 export interface StatuslineSegmentsModule {
-  shellJobsStatus(options?: { clientHostPid?: number; sessionId?: string }): {
-    count?: number;
-    elapsedLabel?: string;
-    jobs?: DesktopShellJobRow[];
-    /** Per-session buckets (omitted by older runtimes). */
-    sessions?: Record<
-      string,
-      {
-        count?: number;
-        elapsedLabel?: string;
-        jobs?: DesktopShellJobRow[];
-      }
-    >;
-  };
+  /** Cache-only: answers from the previous scan and kicks the next one. */
+  shellJobsStatus(options?: { clientHostPid?: number; sessionId?: string }): StatuslineShellJobsStatus;
+  /** Awaited fresh scan (omitted by older runtimes, which fall back to the cache read). */
+  shellJobsStatusFresh?(options?: { clientHostPid?: number }): Promise<StatuslineShellJobsStatus>;
 }
 
 export interface MixdogSessionSearchModule {

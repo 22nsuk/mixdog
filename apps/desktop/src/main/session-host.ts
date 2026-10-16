@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, realpath, stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { canonicalPath } from '../../../../src/runtime/shared/worktrees/paths.mjs';
 
 import type {
   DesktopAbortOptions,
@@ -30,7 +31,7 @@ import {
   readAttachmentBuffer,
 } from '../../../../src/runtime/attachments/store.mjs';
 import { desktopSessionSummaries } from './desktop-state';
-import { sessionFinalAnswer, type SessionFinalAnswer } from './session-final-answer';
+import { sessionFinalAnswer, withSessionMissingCode, type SessionFinalAnswer } from './session-final-answer';
 import type { DesktopService, SerializableDesktopServiceOptions } from './desktop-service-contract';
 import { mixdogDataDirectory } from './computer/shared/common';
 import { SessionHostCatalog, catalogRelevantStoreEntry } from './session-host-catalog';
@@ -136,7 +137,7 @@ export class SessionHost implements DesktopService {
       controlSessionId: () => this.transport.controlSessionId,
       setControlSessionId: (sessionId) => this.transport.setControlSessionId(sessionId),
       visibleSessionIds: () => this.visibleSessionIds,
-      readSession: (sessionId) => this.transport.readSession(sessionId),
+      readSession: (sessionId, forceFull) => this.transport.readSession(sessionId, forceFull),
       snapshotWithShellJobs: (sessionId, snapshot) => this.snapshotWithShellJobs(sessionId, snapshot),
       trackShellJobsEngineState: (snapshot) => this.trackShellJobsEngineState(snapshot),
       onShellPublished: () => this.shellJobsPoller.onEngineEvent(),
@@ -257,6 +258,8 @@ export class SessionHost implements DesktopService {
     });
     host = new SessionHost(options, runtime, sessionClient);
     host.shellJobsPoller.start();
+    // Secure the receipts folder now, off the first submission's path.
+    void host.newTaskRequests.prepare();
     return host;
   }
 
@@ -425,9 +428,10 @@ export class SessionHost implements DesktopService {
     forceFull = false,
     publish = true,
     readTraceId?: string,
-    page = false
+    page = false,
+    signal?: AbortSignal
   ): Promise<SessionSnapshot> {
-    return this.transport.readSession(sessionId, forceFull, publish, readTraceId, page);
+    return this.transport.readSession(sessionId, forceFull, publish, readTraceId, page, signal);
   }
 
   async readAttachmentImage(attachmentRef: string): Promise<string | null> {
@@ -440,9 +444,17 @@ export class SessionHost implements DesktopService {
     }
   }
 
-  async readSessionFinalAnswer(sessionId: string, startedAt: number): Promise<SessionFinalAnswer | null> {
+  async readSessionFinalAnswer(
+    sessionId: string,
+    startedAt: number,
+    signal?: AbortSignal
+  ): Promise<SessionFinalAnswer | null> {
     // Read this session without selecting it or publishing a pane snapshot.
-    return sessionFinalAnswer(await this.readSession(sessionId, false, false), startedAt);
+    try {
+      return sessionFinalAnswer(await this.readSession(sessionId, false, false, undefined, false, signal), startedAt);
+    } catch (error) {
+      throw withSessionMissingCode(error);
+    }
   }
 
   async readSessionTranscript(sessionId: string): Promise<SessionSnapshot> {
@@ -469,6 +481,42 @@ export class SessionHost implements DesktopService {
 
   async addProject(projectPath: string): Promise<void> {
     await this.projects.register(await this.canonicalDirectory(projectPath));
+  }
+
+  async projectRecoveryDirectory(projectPath: string): Promise<string> {
+    try {
+      const known = await this.projects.knownPath(projectPath);
+      try { return await this.canonicalDirectory(known); }
+      catch (cause) {
+        // Live projects must use the same canonical journal key as edits.
+        // Missing registered roots still allow inspection of retained backups.
+        if ((cause as NodeJS.ErrnoException).code === 'ENOENT') return resolve(known);
+        throw cause;
+      }
+    }
+    catch (error) {
+      if (!isAbsolute(projectPath) || !this.runtime.loadWorktrees) throw error;
+      const worktrees = await this.runtime.loadWorktrees();
+      const requested = resolve(projectPath);
+      const entry = await (worktrees.findWorktreeContaining ?? worktrees.getWorktreeByPath)(requested);
+      if (!entry || !['ready', 'deleting', 'recovery'].includes(entry.state ?? 'ready')) throw error;
+      await this.projects.knownPath(entry.projectPath);
+      const key = (path: string) => process.platform === 'win32' ? resolve(path).toLowerCase() : resolve(path);
+      const within = (base: string, path: string) => key(path) === key(base) || key(path).startsWith(key(base) + sep);
+      // Resolve parent aliases/Windows short names even after the checkout is
+      // gone. Do not resolve the checkout itself: it may be a replacement link.
+      const stableRoot = join(canonicalPath(dirname(entry.path)), basename(entry.path));
+      const spelling = [resolve(entry.path), stableRoot].find((base) => within(base, requested));
+      if (!spelling) throw error;
+      const target = join(stableRoot, relative(spelling, requested));
+      let canonical: string;
+      try { canonical = await realpath(target); }
+      catch (cause) {
+        if ((cause as NodeJS.ErrnoException).code === 'ENOENT') return target;
+        throw cause;
+      }
+      return within(stableRoot, canonical) ? canonical : target;
+    }
   }
 
   async projectDirectory(projectPath: string): Promise<string> {

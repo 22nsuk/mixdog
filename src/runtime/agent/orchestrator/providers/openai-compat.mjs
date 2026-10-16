@@ -78,6 +78,9 @@ export class OpenAICompatProvider {
     this.config = config;
     this.baseURL = baseURL;
     this.apiKey = apiKey;
+    // Whether Chat content blocks keep their Anthropic-style `cache_control`
+    // (OpenRouter documents it); a gateway that does not ignores or rejects it.
+    this.chatCacheControl = (config.chatCacheControl ?? preset?.chatCacheControl) === true;
     // Merge caller-supplied headers (config.extraHeaders) over the preset's.
     // Used e.g. by grok-oauth to inject the Grok CLI client headers for the
     // grok-build proxy. Backward-compatible: providers that pass no
@@ -256,7 +259,9 @@ export class OpenAICompatProvider {
     return fetchCompatModelItems(this);
   }
   async listModels() {
-    return listCompatModels(this);
+    // A failed /models request must surface; an empty list would be cached as
+    // a complete catalog by the shared catalog loader.
+    return listCompatModels(this, { throwOnError: true });
   }
   async isAvailable() {
     return isCompatProviderAvailable(this);

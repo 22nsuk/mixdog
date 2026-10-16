@@ -16,6 +16,10 @@ import {
   type ModelProxyMethod,
 } from '../../../../src/runtime/agent/orchestrator/providers/model-proxy-channel.mjs';
 import {
+  disposeTransportScope,
+  forkTransportScope,
+} from '../../../../src/runtime/agent/orchestrator/providers/transport-scope.mjs';
+import {
   createModelProxyGrants,
   usageTokens,
   type ModelProxyAdmission,
@@ -43,6 +47,8 @@ export interface ModelProxyProviderInstance {
   listModels?(): Promise<unknown>;
   _refreshModelCache?(): Promise<unknown>;
   isAvailable?(): Promise<unknown>;
+  resolveWireRoute?(model: string, ctx: { agent: boolean; legacy: boolean }): Promise<unknown> | unknown;
+  releaseTransportScope?(scope: string): void;
   getCachedModelInfo?(model: string): unknown;
 }
 
@@ -136,6 +142,7 @@ interface ProxyCall {
   tools?: unknown;
   toolsFinalized?: unknown;
   nativePrefixCount?: unknown;
+  context?: unknown;
   options?: unknown;
   callbacks?: unknown;
 }
@@ -200,6 +207,7 @@ export const MODEL_PROXY_SEND_OPTION_KEYS: ReadonlySet<string> = new Set([
   'deepseekReasoningEffort',
   'deepseekThinking',
   'disableBetaHeaders',
+  'disableParallelToolUse',
   'disableReasoning',
   'effort',
   'effortConfiguration',
@@ -243,6 +251,7 @@ export const MODEL_PROXY_SEND_OPTION_KEYS: ReadonlySet<string> = new Set([
   'nativeToolSearchProvider',
   'openRouterReasoningEffort',
   'outputTokens',
+  'parallelToolCalls',
   'parentSessionId',
   'perAttemptLabel',
   'perAttemptTimeoutMs',
@@ -268,11 +277,14 @@ export const MODEL_PROXY_SEND_OPTION_KEYS: ReadonlySet<string> = new Set([
   'replaysReasoningContent',
   'requestId',
   'requestKind',
+  'responsesNativeItems',
+  'responsesPromptCacheKey',
   'retry429',
   'retry529',
   'retryJitterMode',
   'retryJitterRatio',
   'role',
+  'safetySettings',
   'selectedContextWindow',
   'serverFallback',
   'service_tier',
@@ -280,6 +292,7 @@ export const MODEL_PROXY_SEND_OPTION_KEYS: ReadonlySet<string> = new Set([
   // Projected to MODEL_PROXY_SESSION_KEYS by serverSendOptions.
   'session',
   'sessionId',
+  'sharedCachePrefixCount',
   'stateKey',
   'statelessConversation',
   'temperature',
@@ -289,6 +302,7 @@ export const MODEL_PROXY_SEND_OPTION_KEYS: ReadonlySet<string> = new Set([
   'thinkingLevel',
   'threadId',
   'toolChoice',
+  'toolChoiceThinkingConflict',
   'top_k',
   'top_p',
   'topK',
@@ -298,6 +312,7 @@ export const MODEL_PROXY_SEND_OPTION_KEYS: ReadonlySet<string> = new Set([
   'usageSessionId',
   'verbosity',
   'windowId',
+  'wireRoute',
   'xaiApiMode',
   'xaiCacheLaneAuto',
   'xaiCacheLaneSeed',
@@ -310,6 +325,7 @@ export const MODEL_PROXY_SEND_OPTION_KEYS: ReadonlySet<string> = new Set([
   'xaiResponsesCacheLaneSlot',
   'xaiResponsesCacheScope',
   'xaiResponsesTransport',
+  'xaiServerToolSearch',
   'xaiTransport',
 ]);
 
@@ -321,8 +337,16 @@ export const MODEL_PROXY_DROPPED_SEND_OPTIONS: ReadonlyMap<string, string> = new
   ['auth', "this PC's credential, never the server's to supply"],
   ['installationId', "this PC's own Codex installation identity"],
   ['codexInstallationId', "this PC's own Codex installation identity"],
+  [
+    'modelMaxOutputTokens',
+    "the gateway's own output ceiling for the model, derived on this PC from its provider config and catalog",
+  ],
   ['responsesTransport', 'a provider config setting of this PC (adapters discard it from send options)'],
   ['signal', 'cancellation is this PC-side controller, driven by the channel'],
+  [
+    'transportScope',
+    "a process-local connection scope; the server's value is never used (execute allocates and disposes this PC's own for a request that carries one)",
+  ],
 ]);
 
 /** `session` subfields adapters read (ids, deferred tool catalogs, owner and
@@ -337,10 +361,12 @@ export const MODEL_PROXY_SESSION_KEYS: ReadonlySet<string> = new Set([
   'deferredToolCatalog',
   'id',
   'owner',
+  'model',
   'parentSessionId',
   'permission',
   'profileId',
   'promptCacheKey',
+  'provider',
   'role',
   'sourceName',
   'sourceType',
@@ -348,6 +374,7 @@ export const MODEL_PROXY_SESSION_KEYS: ReadonlySet<string> = new Set([
   'toolPermission',
   'turnId',
   'windowId',
+  'wireRoute',
 ]);
 
 /** The server's send options reduced to the allowlist. */
@@ -498,6 +525,9 @@ export const MODEL_PROXY_CALLBACKS: ReadonlyMap<string, (args: unknown[]) => unk
   ['onTextReset', ([info]) => [scalarDetail(info) ?? {}]],
   // (call): a tool call the model made — model output, wire-copied.
   ['onToolCall', ([call]) => [call]],
+  // ({ name, index, pointer, reason, message }): a server tool left out for
+  // an invalid schema — about the server's own tool list, text redacted.
+  ['onToolExcluded', ([info]) => [scalarDetail(info) ?? {}]],
 ]);
 
 // ── Attachment references ───────────────────────────────────────────────────
@@ -650,6 +680,17 @@ async function execute(
   if (method === 'isAvailable') {
     return typeof provider.isAvailable === 'function' ? (await provider.isAvailable()) === true : true;
   }
+  if (method === 'resolveWireRoute') {
+    // The wire is this PC's answer (its config and roster); the server only
+    // says whether the session is an agent session and an existing one.
+    if (typeof provider.resolveWireRoute !== 'function') return null;
+    const context = record(call.context);
+    const route = await provider.resolveWireRoute(String(call.model ?? ''), {
+      agent: context.agent === true,
+      legacy: context.legacy === true,
+    });
+    return route ?? null;
+  }
   const options = serverSendOptions(call.options);
   // Whether model output (text, tool calls, stream progress) reached the server.
   let emittedOutput = false;
@@ -669,6 +710,13 @@ async function execute(
   const messages = withoutAttachmentReferences(Array.isArray(call.messages) ? call.messages : []);
   const inputExcludesCache =
     (provider as { constructor?: { inputExcludesCache?: unknown } }).constructor?.inputExcludesCache === true;
+  // A request the server forked from a session (/btw) names a transport scope
+  // of its own. The server's scope string means nothing on this PC, so the
+  // request gets one allocated here and released when it ends.
+  const forkedScope = record(call.options).transportScope
+    ? forkTransportScope(String(options.sessionId || name), 'proxy')
+    : '';
+  if (forkedScope) options.transportScope = forkedScope;
   try {
     const value = await provider.send(messages, model, tools, options);
     settle?.(usageTokens(record(value).usage, inputExcludesCache));
@@ -680,6 +728,8 @@ async function execute(
     const used = usageTokens(record(error).partialUsage, inputExcludesCache);
     settle?.(used ?? (emittedOutput ? undefined : 0));
     throw error;
+  } finally {
+    if (forkedScope) disposeTransportScope(forkedScope, provider);
   }
 }
 

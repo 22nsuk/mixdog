@@ -231,7 +231,11 @@ function developerAdapters(boot) {
         reg.disableProvider?.(provider);
         return;
       }
-      await ensureProvidersReady(config?.providers || {});
+      // Provider init can take long (OAuth/network); the option is already saved
+      // and adopted, so the toggle must not wait on it.
+      void ensureProvidersReady(config?.providers || {}).catch((error) => {
+        console.warn(`[providers] ${provider} init after enabling failed: ${error?.message || error}`);
+      });
     },
   };
 }
@@ -569,8 +573,8 @@ function workspaceApiFor(boot) {
     createCurrentSession: (reason) => boot.createCurrentSession(reason),
     applyResolvedCwd: (cwd, options) => boot.applyResolvedCwd(cwd, options),
     persistSession: (session) => saveSession(session, { immediate: true }),
-    refreshWorkspaceContext: (session, cwd) =>
-      refreshWorkspacePrompt(session, cwd, { loadCoreMemoryContext: boot.loadCoreMemoryContext }),
+    refreshWorkspaceContext: (session, cwd, move) =>
+      refreshWorkspacePrompt(session, cwd, { loadCoreMemoryContext: boot.loadCoreMemoryContext, move }),
     invalidateCaches: () => {
       boot.invalidateContextStatusCache();
       boot.invalidatePreSessionToolSurface();

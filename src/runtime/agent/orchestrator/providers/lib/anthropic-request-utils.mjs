@@ -1,5 +1,5 @@
 import { providerNativeToolPrefixCount } from '../../runtime-core/provider-request-tools.mjs';
-import { actionInputContract } from './action-input-contract.mjs';
+import { actionInputContract, actionInputUnionFor } from './action-input-contract.mjs';
 import { isNativeServerToolBlockType } from './anthropic-native-blocks.mjs';
 import { isAnthropicThinkingBlock, sanitizeAnthropicReplayBlocks } from './anthropic-replay-blocks.mjs';
 import { sanitizeAnthropicContentPairs, foldUserTextIntoToolResultTail } from '../../session/context-utils.mjs';
@@ -7,24 +7,76 @@ import { normalizeContentForAnthropic } from '../media-normalization.mjs';
 import { createProviderReplay, providerReplayItems } from './provider-replay.mjs';
 import { anthropicFallbackProviderMetadata, parseAnthropicFallbackBlock } from '../anthropic-server-fallback.mjs';
 import { mergeFlatSchemaProperty } from './flat-schema-merge.mjs';
+import { reportedCostUsd } from './usage-primitives.mjs';
+import { reportInvalidTool, wireInputSchema } from './claude-bridge-schema.mjs';
+import { normalizeServerToolUse } from './anthropic-server-tool-usage.mjs';
 export const ANTHROPIC_CACHE_TTL_STABLE = { type: 'ephemeral', ttl: '1h' };
 const ANTHROPIC_CACHE_TTL_VOLATILE = { type: 'ephemeral' };
 
-function appendAnthropicCacheControl(content, ttl = ANTHROPIC_CACHE_TTL_VOLATILE) {
-  const withCacheControl = (block) => {
-    if (!block || typeof block !== 'object' || block.cache_control) return block;
-    return { ...block, cache_control: ttl };
-  };
-  if (Array.isArray(content)) {
-    if (content.length === 0) return content;
-    const next = [...content];
-    next[next.length - 1] = withCacheControl(next[next.length - 1]);
-    return next;
+// Anthropic allows at most 4 cache_control breakpoints across the whole
+// serialized request (tools + system + messages).
+export const ANTHROPIC_MAX_CACHE_BREAKPOINTS = 4;
+
+// A block can carry a breakpoint unless it is thinking/redacted_thinking or an
+// empty text block (both are rejected by the API).
+function isCacheEligibleBlock(block) {
+  if (!block || typeof block !== 'object') return false;
+  if (block.type === 'thinking' || block.type === 'redacted_thinking') return false;
+  if (block.type === 'text') return typeof block.text === 'string' && block.text.trim() !== '';
+  return true;
+}
+
+function lastEligibleBlockIndex(content) {
+  if (typeof content === 'string') return content.trim() ? 0 : -1;
+  if (!Array.isArray(content)) return -1;
+  for (let i = content.length - 1; i >= 0; i--) if (isCacheEligibleBlock(content[i])) return i;
+  return -1;
+}
+
+/** Count cache_control markers on a block / block list (incl. tool_result content). */
+export function countAnthropicCacheControls(value) {
+  if (Array.isArray(value)) return value.reduce((sum, item) => sum + countAnthropicCacheControls(item), 0);
+  if (!value || typeof value !== 'object') return 0;
+  return (value.cache_control ? 1 : 0) + (Array.isArray(value.content) ? countAnthropicCacheControls(value.content) : 0);
+}
+
+function stripCacheControl(block, budget) {
+  if (!block || typeof block !== 'object' || budget.n <= 0) return block;
+  let next = block;
+  if (block.cache_control) {
+    budget.n--;
+    const { cache_control: _dropped, ...rest } = block;
+    next = rest;
   }
+  if (Array.isArray(next.content) && budget.n > 0) {
+    const content = next.content.map((child) => stripCacheControl(child, budget));
+    if (content.some((child, i) => child !== next.content[i])) next = { ...next, content };
+  }
+  return next;
+}
+
+// Drop the `excess` oldest message markers (the newest breakpoints are the
+// valuable ones: they cover the longest prefix).
+function stripOldestMessageCacheControls(messages, excess) {
+  const budget = { n: excess };
+  for (const message of messages) {
+    if (budget.n <= 0) break;
+    if (!Array.isArray(message?.content)) continue;
+    const content = message.content.map((block) => stripCacheControl(block, budget));
+    if (content.some((block, i) => block !== message.content[i])) message.content = content;
+  }
+}
+
+function appendAnthropicCacheControl(content, ttl = ANTHROPIC_CACHE_TTL_VOLATILE, blockIndex = null) {
+  const index = blockIndex ?? lastEligibleBlockIndex(content);
   if (typeof content === 'string') {
-    return [withCacheControl({ type: 'text', text: content })];
+    return index < 0 ? content : [{ type: 'text', text: content, cache_control: ttl }];
   }
-  return content;
+  if (!Array.isArray(content) || index < 0 || !isCacheEligibleBlock(content[index])) return content;
+  if (content[index].cache_control) return content;
+  const next = [...content];
+  next[index] = { ...content[index], cache_control: ttl };
+  return next;
 }
 
 export function resolveAnthropicCacheTtls(opts) {
@@ -64,15 +116,41 @@ export function resolveAnthropicCacheTtls(opts) {
 // live tail on every request. ANTHROPIC_MSG_SLOTS=0 disables message caching;
 // any positive value enables that one marker when the system layout leaves a
 // slot. messageTtl === null turns the tail off.
-export function resolveAnthropicMessageCacheSlots(systemBlocks, ttls) {
-  const usedSlots = systemBlocks.filter((b) => b.cache_control).length;
+//
+// The 4-breakpoint limit is request-wide: `tools` (native-tool markers) count
+// next to the system blocks as reserved slots; markers already preserved in
+// message content are enforced by applyAnthropicCacheMarkers via
+// `reservedSlots`.
+export function resolveAnthropicMessageCacheSlots(systemBlocks, ttls, { tools = [] } = {}) {
+  // Tool markers take their slots first; system markers beyond the remainder
+  // are dropped earliest-first (the last system marker covers the longest
+  // prefix). The freshly built system blocks are edited in place.
+  // Tool markers alone are capped first: beyond the request-wide limit the
+  // earliest are dropped (the last covers the longest tool prefix). Tool
+  // objects may be shared with the caller, so the array slot is replaced by a
+  // marker-free copy instead of mutating the object.
+  let toolExcess = countAnthropicCacheControls(tools) - ANTHROPIC_MAX_CACHE_BREAKPOINTS;
+  for (let i = 0; toolExcess > 0 && i < tools.length; i++) {
+    if (!tools[i]?.cache_control) continue;
+    const { cache_control: _dropped, ...rest } = tools[i];
+    tools[i] = rest;
+    toolExcess--;
+  }
+  const toolSlots = countAnthropicCacheControls(tools);
+  let systemExcess = countAnthropicCacheControls(systemBlocks) + toolSlots - ANTHROPIC_MAX_CACHE_BREAKPOINTS;
+  for (const block of systemBlocks) {
+    if (systemExcess <= 0) break;
+    if (block?.cache_control) {
+      delete block.cache_control;
+      systemExcess--;
+    }
+  }
+  const reservedSlots = countAnthropicCacheControls(systemBlocks) + toolSlots;
   const slotsCap = Number.parseInt(process.env.ANTHROPIC_MSG_SLOTS, 10);
-  const hasFreeSlot = usedSlots < 4;
+  const hasFreeSlot = reservedSlots < ANTHROPIC_MAX_CACHE_BREAKPOINTS;
   const capAllowsMessage = Number.isFinite(slotsCap) && slotsCap >= 0 ? slotsCap > 0 : true;
   const messageSlots = ttls.messages && hasFreeSlot && capAllowsMessage ? 1 : 0;
-  // Key order matches the object both call sites built inline: messageTtl
-  // first, then messageSlots.
-  return { messageTtl: messageSlots > 0 ? ttls.messages : null, messageSlots };
+  return { messageTtl: messageSlots > 0 ? ttls.messages : null, messageSlots, reservedSlots };
 }
 
 // Single lowering of orchestrator messages to the Anthropic wire shape. The
@@ -150,7 +228,10 @@ function splitErrorToolResultContent(content) {
 // Native tool_search providers whose stored references this lowering replays.
 const ANTHROPIC_NATIVE_PROVIDERS = new Set(['anthropic', 'anthropic-oauth']);
 
-export function toAnthropicMessages(messages, availableTools) {
+// `provider`: the engine's provider name. A gateway on a native Messages
+// route (wire-route.mjs) also replays the references it tagged itself.
+export function toAnthropicMessages(messages, availableTools, provider = '') {
+  const ownProvider = String(provider || '').toLowerCase();
   const availableNames = anthropicToolNameSet(availableTools);
   const result = [];
   for (let idx = 0; idx < messages.length; idx++) {
@@ -195,7 +276,8 @@ export function toAnthropicMessages(messages, availableTools) {
       const native = m.nativeToolSearch;
       const nativeProvider = String(native?.provider || '').toLowerCase();
       const references =
-        (!nativeProvider || ANTHROPIC_NATIVE_PROVIDERS.has(nativeProvider)) && Array.isArray(native?.toolReferences)
+        (!nativeProvider || ANTHROPIC_NATIVE_PROVIDERS.has(nativeProvider) || nativeProvider === ownProvider) &&
+        Array.isArray(native?.toolReferences)
           ? native.toolReferences.map((name) => String(name || '').trim()).filter(Boolean)
           : [];
       // Keep only references this request can actually back with a
@@ -305,11 +387,15 @@ export function normalizeAnthropicNonStreamingResponse(message, fallbackModel = 
   const input = Number(usage.input_tokens) || 0;
   const cacheRead = Number(usage.cache_read_input_tokens) || 0;
   const cacheWrite = Number(usage.cache_creation_input_tokens) || 0;
+  const costUsd = reportedCostUsd(usage.cost);
+  const serverToolUse = normalizeServerToolUse(usage);
   return {
     content: text,
     model: fallbackEvents.at(-1)?.fallbackModel || message?.model || fallbackModel,
     toolCalls: toolCalls.length ? toolCalls : undefined,
     stopReason: message?.stop_reason || null,
+    ...(message?.stop_details != null ? { stopDetails: message.stop_details } : {}),
+    ...(message?.stop_sequence != null ? { stopSequence: message.stop_sequence } : {}),
     hasThinkingContent: modelEmittedThinking,
     contentBlockTypes: blocks.map((block) => block?.type).filter(Boolean),
     thinkingBlocks: thinkingBlocks.length ? thinkingBlocks : undefined,
@@ -325,6 +411,8 @@ export function normalizeAnthropicNonStreamingResponse(message, fallbackModel = 
         ? { cacheWrite1hTokens: Number(usage.cache_creation.ephemeral_1h_input_tokens) }
         : {}),
       promptTokens: input + cacheRead + cacheWrite,
+      ...(costUsd !== undefined ? { costUsd } : {}),
+      ...(serverToolUse ? { serverToolUse } : {}),
       raw: usage,
     },
   };
@@ -399,16 +487,42 @@ export function sanitizeAnthropicInputSchema(schema, toolName, logTag) {
   };
 }
 
-function toAnthropicTools(tools, logTag) {
-  return tools.map((tool) => {
-    const out = {
-      name: tool.name,
-      description: tool.description,
-      input_schema: sanitizeAnthropicInputSchema(tool.inputSchema, tool.name, logTag),
-    };
-    if (tool.deferLoading === true || tool.defer_loading === true) out.defer_loading = true;
-    return out;
+// The Messages `input_schema` of a tool: the flattened schema, lowered to
+// 2020-12 with an object root when it is not valid as written ({ schema }), or
+// { pointer, reason } when it is broken even then.
+function anthropicInputSchema(tool, logTag) {
+  // First-party Anthropic accepts nested per-action input alternatives;
+  // gateways on the same wire keep the advertised flat schema.
+  const flattened = sanitizeAnthropicInputSchema(
+    ANTHROPIC_NATIVE_PROVIDERS.has(logTag) ? actionInputUnionFor(tool.inputSchema) : tool.inputSchema,
+    tool.name,
+    logTag
+  );
+  return wireInputSchema(flattened, 'anthropic');
+}
+
+/** The `{ name, pointer, reason }` for which the Messages wire leaves `tool`
+ *  out of a request, or null when it is sent. Reports nothing. */
+export function anthropicToolExclusion(tool, logTag = 'anthropic') {
+  const result = anthropicInputSchema(tool, logTag);
+  return result.schema ? null : { name: tool.name, pointer: result.pointer || '/', reason: result.reason };
+}
+
+// A Messages endpoint rejects the whole request for one invalid input_schema,
+// so a tool broken even after lowering is reported and left out.
+function toAnthropicTools(tools, logTag, onToolExcluded) {
+  const out = [];
+  tools.forEach((tool, index) => {
+    const result = anthropicInputSchema(tool, logTag);
+    if (!result.schema) {
+      reportInvalidTool(tool.name, index, result, onToolExcluded, `[${logTag}] tool`);
+      return;
+    }
+    const entry = { name: tool.name, description: tool.description, input_schema: result.schema };
+    if (tool.deferLoading === true || tool.defer_loading === true) entry.defer_loading = true;
+    out.push(entry);
   });
+  return out;
 }
 
 // Map the orchestrator-level opts.toolChoice into Anthropic's tool_choice.
@@ -423,8 +537,43 @@ function toAnthropicTools(tools, logTag) {
 // effort/thinking active on reasoning models — activating it would convert a
 // previously-harmless no-op into a hard 400 on exactly that turn. Attached
 // only when the request actually carries tools.
-export function toAnthropicToolChoice(toolChoice) {
-  return toolChoice === 'none' ? { type: 'none' } : undefined;
+//
+// Mapping: 'auto'→auto, 'required'/'any'→any, {name}|{type:'tool',name}→tool,
+// 'none'→none. Forced any/tool is rejected by the API while extended/adaptive
+// thinking is on: with `thinking` set it falls back to auto (default) or throws
+// (`onThinkingConflict: 'error'`). `disableParallelToolUse` adds
+// disable_parallel_tool_use (not valid with none) unless the endpoint declares
+// `supportsDisableParallelToolUse: false` (gateway capability).
+export function toAnthropicToolChoice(
+  toolChoice,
+  { thinking = false, disableParallelToolUse = false, supportsDisableParallelToolUse = true, onThinkingConflict = 'fallback' } = {}
+) {
+  let choice;
+  if (toolChoice === 'none') choice = { type: 'none' };
+  else if (toolChoice === 'auto') choice = { type: 'auto' };
+  else if (toolChoice === 'required' || toolChoice === 'any') choice = { type: 'any' };
+  else if (toolChoice && typeof toolChoice === 'object') {
+    const name = typeof toolChoice.name === 'string' ? toolChoice.name : toolChoice.function?.name;
+    if (toolChoice.type === 'none') choice = { type: 'none' };
+    else if (toolChoice.type === 'auto') choice = { type: 'auto' };
+    else if (toolChoice.type === 'any') choice = { type: 'any' };
+    else if (typeof name === 'string' && name) choice = { type: 'tool', name };
+  }
+  if (choice && (choice.type === 'any' || choice.type === 'tool') && thinking) {
+    if (onThinkingConflict === 'error') {
+      throw new Error(`Anthropic tool_choice "${choice.type}" is not allowed while extended thinking is enabled`);
+    }
+    choice = undefined;
+  }
+  if (disableParallelToolUse === true && supportsDisableParallelToolUse !== false && choice?.type !== 'none') {
+    choice = { ...(choice || { type: 'auto' }), disable_parallel_tool_use: true };
+  }
+  return choice;
+}
+
+/** True when the request body enables extended/adaptive thinking. */
+export function anthropicThinkingActive(body) {
+  return body?.thinking?.type === 'enabled' || body?.thinking?.type === 'adaptive';
 }
 
 export function deferredAnthropicTools(activeTools, messages, opts, provider) {
@@ -470,14 +619,14 @@ export function requestAnthropicTools(tools, messages, opts, provider) {
     const nativePrefixCount = providerNativeToolPrefixCount(activeTools, opts.providerNativeToolPrefixCount);
     return [
       ...activeTools.slice(0, nativePrefixCount),
-      ...toAnthropicTools(activeTools.slice(nativePrefixCount), provider),
+      ...toAnthropicTools(activeTools.slice(nativePrefixCount), provider, opts.onToolExcluded),
     ];
   }
   const deferredTools = deferredAnthropicTools(activeTools, messages, opts, provider);
   const nativeTools = Array.isArray(opts?.nativeTools)
     ? opts.nativeTools.filter((tool) => tool && typeof tool === 'object')
     : [];
-  return [...nativeTools, ...toAnthropicTools([...activeTools, ...deferredTools], provider)];
+  return [...nativeTools, ...toAnthropicTools([...activeTools, ...deferredTools], provider, opts?.onToolExcluded)];
 }
 
 // Applies cache_control markers to the FINAL, already-sanitized Anthropic
@@ -493,20 +642,75 @@ export function requestAnthropicTools(tools, messages, opts, provider) {
 // messageTtl === null disables the tail. BP3 (tier3) rides a system block,
 // so it is not marked here. ANTHROPIC_MSG_SLOTS=0 is honoured upstream by
 // passing messageTtl = null.
+// `sharedPrefix` (see sharedCachePrefixBoundary) moves the breakpoint off the
+// tail onto a shared prefix's last block, or drops it (`false`).
 export function applyAnthropicCacheMarkers(
   sanitizedMessages,
-  { messageTtl = ANTHROPIC_CACHE_TTL_VOLATILE, messageSlots = 1 } = {}
+  { messageTtl = ANTHROPIC_CACHE_TTL_VOLATILE, messageSlots = 1, reservedSlots = 0 } = {},
+  sharedPrefix = null
 ) {
   if (!Array.isArray(sanitizedMessages) || sanitizedMessages.length === 0) {
     return sanitizedMessages;
   }
-  if (messageTtl !== null && Number(messageSlots) > 0) {
-    // A trailing effort control (empty system message) has no block to mark;
-    // the breakpoint goes on the message before it.
-    let index = sanitizedMessages.length - 1;
-    while (index > 0 && sanitizedMessages[index].role === 'system' && !sanitizedMessages[index].content?.length) index--;
-    const message = sanitizedMessages[index];
-    message.content = appendAnthropicCacheControl(message.content, messageTtl);
+  // Request-wide 4-breakpoint limit: slots held by system/tools are reserved;
+  // markers preserved inside message content may only use what is left.
+  const budget = Math.max(0, ANTHROPIC_MAX_CACHE_BREAKPOINTS - (Number(reservedSlots) || 0));
+  const present = countAnthropicCacheControls(sanitizedMessages);
+  if (present > budget) stripOldestMessageCacheControls(sanitizedMessages, present - budget);
+  const free = budget - Math.min(present, budget);
+  if (messageTtl === null || !(Number(messageSlots) > 0) || sharedPrefix === false || free <= 0) {
+    return sanitizedMessages;
   }
+  if (sharedPrefix) {
+    const message = sanitizedMessages[sharedPrefix.index];
+    if (message && contentBlockKey(message.content, sharedPrefix.blockIndex) === sharedPrefix.blockKey) {
+      message.content = appendAnthropicCacheControl(message.content, messageTtl, sharedPrefix.blockIndex);
+    }
+    return sanitizedMessages;
+  }
+  const index = lastMarkableMessageIndex(sanitizedMessages);
+  if (index < 0) return sanitizedMessages;
+  const message = sanitizedMessages[index];
+  message.content = appendAnthropicCacheControl(message.content, messageTtl);
   return sanitizedMessages;
+}
+
+// The breakpoint goes on the last message that has an eligible block: a
+// trailing effort control (empty system message) or a thinking-only tail has
+// nothing to mark. -1 when no message does.
+function lastMarkableMessageIndex(messages) {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    if (lastEligibleBlockIndex(messages[index].content) >= 0) return index;
+  }
+  return -1;
+}
+
+function contentBlockKey(content, blockIndex) {
+  const block = Array.isArray(content) ? content[blockIndex] : content;
+  return block === undefined ? undefined : JSON.stringify(block);
+}
+
+/**
+ * Where a cache-sharing fork (a /btw side question) keeps its message
+ * breakpoint. The fork re-sends an earlier request's messages unchanged and
+ * appends a short suffix; `opts.sharedCachePrefixCount` is the number of
+ * leading messages that make up that shared prefix (a plain number, so it
+ * survives model-proxy serialization). The breakpoint stays on the block the earlier request
+ * marked (the prefix's own lowered tail), so the fork reads that cache entry
+ * and writes none for its suffix. `lowerPrefix(messages)` lowers a message
+ * list exactly as the request does. Null for an ordinary request (tail
+ * breakpoint); false when the prefix is not part of this request.
+ */
+export function sharedCachePrefixBoundary(messages, opts, lowerPrefix) {
+  const count = opts?.sharedCachePrefixCount;
+  if (!count) return null;
+  if (!Number.isInteger(count) || count < 0 || count > messages.length) return false;
+  const prefix = lowerPrefix(messages.slice(0, count));
+  if (!prefix.length) return false;
+  const index = lastMarkableMessageIndex(prefix);
+  if (index < 0) return false;
+  const content = prefix[index].content;
+  const blockIndex = lastEligibleBlockIndex(content);
+  const blockKey = contentBlockKey(content, blockIndex);
+  return blockKey === undefined ? false : { index, blockIndex, blockKey };
 }

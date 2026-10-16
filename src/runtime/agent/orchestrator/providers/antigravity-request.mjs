@@ -15,6 +15,12 @@ export function isAntigravityClaude(model) {
   return /^claude-/i.test(String(model || ''));
 }
 
+// Claude declarations are validated for the gateway's Anthropic bridge in
+// toGeminiTools (claudeBridge: true); a tool with an invalid schema is left
+// out of the request and reported through `onToolExcluded` / console.warn.
+const claudeRequestTools = (tools, nativeTools, onToolExcluded) =>
+  toGeminiRequestTools(tools, nativeTools, { claudeBridge: true, onToolExcluded });
+
 // Default function-calling mode when the caller sets no toolChoice. VALIDATED
 // (schema-constrained function calls) is what the Antigravity client sends;
 // MIXDOG_ANTIGRAVITY_FC_MODE=AUTO|ANY|VALIDATED overrides it for A/B runs.
@@ -35,14 +41,52 @@ function replayFamilyMatches(message, model) {
   return isAntigravityClaude(recorded) === isAntigravityClaude(model);
 }
 
+// The stream records empty text parts around Claude tool calls; Cloud Code's
+// Claude bridge rejects them on replay ("text.text: Field required").
+const isEmptyPlainTextPart = (part) =>
+  part?.text === '' && part.thought !== true && typeof part.thoughtSignature !== 'string';
+
+// Streamed Claude thinking arrives as many thought deltas with the signature
+// on the closing (often empty) delta; the bridge turns every part into its own
+// thinking block and rejects the unsigned ones ("thinking.signature: Field
+// required"). Rejoin each run into one block that ends at its signature.
+function coalesceClaudeThoughts(parts) {
+  const out = [];
+  let open = null;
+  for (const part of parts) {
+    if (part?.thought !== true) {
+      if (open) out.push(open);
+      open = null;
+      out.push(part);
+      continue;
+    }
+    open = open
+      ? { ...open, ...part, text: `${open.text}${typeof part.text === 'string' ? part.text : ''}` }
+      : { ...part, text: typeof part.text === 'string' ? part.text : '' };
+    if (typeof part.thoughtSignature === 'string') {
+      out.push(open);
+      open = null;
+    }
+  }
+  if (open) out.push(open);
+  return out;
+}
+
 function signatureSafeMessages(messages, model) {
-  return messages.map((message) => {
-    if (message?.role !== 'assistant') return message;
+  const claude = isAntigravityClaude(model);
+  return messages.flatMap((message) => {
+    if (message?.role !== 'assistant') return [message];
     const ownParts = replayFamilyMatches(message, model) ? providerReplayItems(message, 'antigravity') : undefined;
     // Repair tool signatures only after the complete history establishes
     // the active turn, not while normalizing an isolated older message.
-    const parts = ownParts || toGeminiContents([message], model, { repairToolSignatures: false })[0]?.parts;
-    if (!parts?.length) return message;
+    const sourceParts = ownParts || toGeminiContents([message], model, { repairToolSignatures: false })[0]?.parts;
+    const parts =
+      claude && sourceParts
+        ? coalesceClaudeThoughts(sourceParts.filter((part) => !isEmptyPlainTextPart(part)))
+        : sourceParts;
+    // A turn that held only empty parts is omitted, not sent as parts:[].
+    if (sourceParts?.length && !parts.length) return [];
+    if (!parts?.length) return [message];
     for (const part of parts) {
       if (!part || typeof part !== 'object') continue;
       if (part.thought === true || typeof part.thoughtSignature === 'string') {
@@ -52,7 +96,7 @@ function signatureSafeMessages(messages, model) {
         if (!ownParts || !part.thoughtSignature) part.thoughtSignature = THOUGHT_SIGNATURE_SENTINEL;
       }
     }
-    return { ...message, providerReplay: createProviderReplay('antigravity', parts) };
+    return [{ ...message, providerReplay: createProviderReplay('antigravity', parts) }];
   });
 }
 
@@ -121,9 +165,16 @@ export function buildAntigravityRequest(messages, model, tools, opts = {}, proje
   };
   const request = { contents };
   if (systemText) request.systemInstruction = { role: 'user', parts: [{ text: systemText }] };
-  const requestTools = toGeminiRequestTools(tools, opts.nativeTools);
+  const requestTools = claude
+    ? claudeRequestTools(tools, opts.nativeTools, opts.onToolExcluded)
+    : toGeminiRequestTools(tools, opts.nativeTools, {
+        onToolExcluded: opts.onToolExcluded,
+        // Other families (GPT-OSS) keep the plain conversion.
+        validate: isGeminiFamilyModel(model),
+      });
   if (requestTools.length) request.tools = requestTools;
-  if (tools?.length) {
+  // Tool config only accompanies function declarations that were kept.
+  if (requestTools.some((entry) => entry.functionDeclarations?.length)) {
     request.toolConfig = toGeminiToolConfig(opts.toolChoice) || {
       functionCallingConfig: { mode: antigravityFunctionCallingMode() },
     };

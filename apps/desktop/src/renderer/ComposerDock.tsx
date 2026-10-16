@@ -1,16 +1,21 @@
-import { useEffect, useState, type ReactNode, type Ref } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { ComposerQueueTrayContext } from './composer-island-state';
 import { ComposerIsland, type ComposerIslandFlash, type ComposerIslandQuotaResume } from './ComposerIsland';
 import { ComposerQuotaCard, type ComposerQuotaCardModel } from './ComposerQuotaCard';
+import type { DesktopSessionWorkspace } from '../shared/contract';
 import type { TranscriptItem } from './desktop-types';
+import { BranchIslandSegment } from './WorktreeIslandSegment';
 import { SessionGoalHost } from './session-goal-submission';
-import { requestSessionDiffList } from './session-diff-focus';
+import { requestSessionDiffFile, requestSessionDiffList } from './session-diff-focus';
 
 // The changed-files segment only paints for a file-touching turn, so its diff
 // analysis stays out of the first-screen bundle.
 type TurnReviewModule = typeof import('./TurnReview');
 let loadedReviewModule: TurnReviewModule | null = null;
 let reviewModulePromise: Promise<TurnReviewModule> | null = null;
+
+/** Just over the island's own 2.5 s flash, so one showing completes. */
+const WORKTREE_FLASH_MS = 2_600;
 
 /**
  * The chrome stacked ABOVE the prompt input, with the composer itself as the
@@ -20,13 +25,11 @@ let reviewModulePromise: Promise<TurnReviewModule> | null = null;
  * the quota card, then the queued follow-up tray attached to the composer's
  * top edge.
  *
- * The dock overlays the transcript and its measured height is the bottom
- * clearance. The island slot reserves a constant height and every island
- * expansion overlays upward, so only the quota card and the queue tray change
- * the dock height.
+ * The dock is an in-flow sibling below the transcript viewport: every member
+ * takes its real height (an empty island slot none), and the transcript
+ * viewport above gets whatever the dock leaves.
  */
 export function ComposerDock({
-  dockRef,
   sessionId,
   goalIsland,
   goalSubmissionId,
@@ -43,9 +46,11 @@ export function ComposerDock({
   reviewCwd,
   onOpenSessionDiff,
   onOpenAgentSession,
+  workspace,
+  queuedInput = false,
+  onOpenSession,
   children,
 }: {
-  dockRef?: Ref<HTMLDivElement>;
   /** The pane's visible session ('' while hidden or a draft): the island's
    *  background jobs read its lane. */
   sessionId: string;
@@ -71,9 +76,26 @@ export function ComposerDock({
   onOpenSessionDiff?: () => void;
   /** The jobs panel opens an agent's session. */
   onOpenAgentSession?: (sessionId: string, title: string, ownerSessionId: string) => void;
+  /** The session's live workspace: a git checkout adds the island's branch segment. */
+  workspace?: DesktopSessionWorkspace | null;
+  /** Composer input waits in the queue: the branch segment cannot switch. */
+  queuedInput?: boolean;
+  /** Opens the session that holds a branch (the branch menu's In use rows). */
+  onOpenSession?: (sessionId: string) => void;
   children: ReactNode;
 }) {
   const [reviewModule, setReviewModule] = useState(() => loadedReviewModule);
+  // The merge notice belongs to the session that merged (the segment names it
+  // when the merge settles, so a route change mid-merge cannot strand it) and
+  // expires on its own: the dock outlives session switches and the island
+  // remounts per session, so a kept notice would replay on every remount and
+  // other sessions.
+  const [worktreeFlash, setWorktreeFlash] = useState<{ sessionId: string; flash: ComposerIslandFlash } | null>(null);
+  useEffect(() => {
+    if (!worktreeFlash) return undefined;
+    const timer = window.setTimeout(() => setWorktreeFlash(null), WORKTREE_FLASH_MS);
+    return () => window.clearTimeout(timer);
+  }, [worktreeFlash]);
   const [moduleFailure, setModuleFailure] = useState<{ error: unknown } | null>(null);
   const [queueTray, setQueueTray] = useState<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -100,6 +122,12 @@ export function ComposerDock({
         onOpenSessionDiff();
       }
     : undefined;
+  const openChangeFile = onOpenSessionDiff
+    ? (path: string) => {
+        requestSessionDiffFile(reviewSessionId, path);
+        onOpenSessionDiff();
+      }
+    : undefined;
   // Keep the entry gate until the module and its authoritative read
   // are ready, but do not let Suspense's reveal throttle hold an
   // already loaded segment (and the entire transcript) for 300ms.
@@ -112,16 +140,21 @@ export function ComposerDock({
       sessionId={reviewSessionId}
       cwd={reviewCwd}
       onOpenChanges={openChanges}
+      onOpenChangeFile={openChangeFile}
     />
   ) : (
     <span hidden data-entry-pending />
   );
 
+  // The route names a session whose first lane snapshot has not arrived
+  // (a reload, a session opening): no island yet, so it mounts once, whole
+  // (branch segment included), instead of empty and then growing.
+  const awaitingLane = Boolean(reviewSessionId) && !sessionId;
+
   return (
-    <div className="composer-region" ref={dockRef}>
-      {showProjectSelector ? (
-        <div className="composer-context-bar">{contextBar}</div>
-      ) : (
+    <div className="composer-region">
+      {showProjectSelector && <div className="composer-context-bar">{contextBar}</div>}
+      {!showProjectSelector && !awaitingLane && (
         // One island per session: a surviving slot carried the outgoing
         // session's height into the new one and animated toward it (with the
         // 1.5s collapse grace), shifting the end-pinned transcript by the
@@ -133,8 +166,20 @@ export function ComposerDock({
           onOpenAgentSession={onOpenAgentSession}
           goal={<SessionGoalHost submissionId={goalSubmissionId}>{goalIsland}</SessionGoalHost>}
           files={files}
+          workBusy={reviewBusy || queuedInput}
+          branch={(locked) => (
+            <BranchIslandSegment
+              sessionId={sessionId}
+              workspace={workspace}
+              projectPath={reviewCwd}
+              locked={locked}
+              onViewChanges={openChanges}
+              onFlash={(flash, owner) => setWorktreeFlash({ sessionId: owner, flash })}
+              onOpenSession={onOpenSession}
+            />
+          )}
           approval={approval}
-          flash={islandFlash}
+          flash={islandFlash ?? (sessionId && worktreeFlash?.sessionId === sessionId ? worktreeFlash.flash : null)}
           quotaResume={quotaResume}
         />
       )}
