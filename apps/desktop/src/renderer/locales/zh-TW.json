@@ -4541,5 +4541,9 @@
   "Project folder is missing or unavailable. Backups remain; inspect the record before deleting it.": "專案資料夾遺失或無法使用。備份仍保留；刪除記錄前請先檢查。",
   "Missing": "遺失",
   "This server uses providers connected on your desktop. Manage sign-ins and accounts in the local window.": "此伺服器使用桌面端已連線的供應商。請在本機視窗中管理登入和帳號。",
-  "Connect the desktop to view its providers.": "請連線桌面端以查看其供應商。"
+  "Connect the desktop to view its providers.": "請連線桌面端以查看其供應商。",
+  "Desktop OAuth usage is unavailable.": "無法取得電腦上的 OAuth 用量。",
+  "Desktop provider does not report OAuth quota windows.": "電腦上的供應商不提供 OAuth 配額視窗資訊。",
+  "Reconnect or check the account on your PC.": "請重新連線或在電腦上檢查帳戶狀態。",
+  "Token usage is recorded separately.": "權杖用量會另外記錄。"
 }

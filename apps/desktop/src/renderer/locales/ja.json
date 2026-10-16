@@ -4541,5 +4541,9 @@
   "Project folder is missing or unavailable. Backups remain; inspect the record before deleting it.": "プロジェクトフォルダーが見つからないか利用できません。バックアップは残っています。削除前に記録を確認してください。",
   "Missing": "見つかりません",
   "This server uses providers connected on your desktop. Manage sign-ins and accounts in the local window.": "このサーバーはデスクトップで接続済みのプロバイダーを使用します。ログインとアカウントはローカルウィンドウで管理してください。",
-  "Connect the desktop to view its providers.": "プロバイダーを表示するにはデスクトップを接続してください。"
+  "Connect the desktop to view its providers.": "プロバイダーを表示するにはデスクトップを接続してください。",
+  "Desktop OAuth usage is unavailable.": "PC の OAuth 使用量を取得できません。",
+  "Desktop provider does not report OAuth quota windows.": "PC のプロバイダーは OAuth の利用枠情報を提供していません。",
+  "Reconnect or check the account on your PC.": "再接続するか、PC でアカウントの状態を確認してください。",
+  "Token usage is recorded separately.": "トークン使用量は別途記録されます。"
 }

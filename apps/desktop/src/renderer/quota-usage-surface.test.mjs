@@ -10,6 +10,8 @@ import { applyAccountUsageWindows } from './usage-dashboard-store.ts';
 import { t } from './i18n.ts';
 import { usageMoney } from './usage-format.ts';
 import { quotaValue } from './quota-usage-model.ts';
+import { invalidateSharedModelCatalogRequest } from './model-catalog-cache.ts';
+import { cachedQuotaAnswer, readQuotaAnswer } from './quota-usage-cache.ts';
 import { UsageLedger, makeUsageRecord } from '../../../../src/runtime/shared/llm/usage-ledger.mjs';
 import { createUsageStatsApi } from '../../../../src/session-runtime/usage-stats-api.mjs';
 
@@ -139,6 +141,46 @@ function quotaApi(context, { viewedAt = now } = {}) {
 const tab = (label) => [...document.querySelectorAll('[role="tab"]')].find((node) => node.textContent === t(label));
 const button = (label) => [...document.querySelectorAll('button')].find((node) => node.textContent === t(label));
 const texts = (selector) => [...document.querySelectorAll(selector)].map((node) => node.textContent);
+
+test('remote quota failures and unsupported quotas have distinct messages and revalidate after reconnect', async (context) => {
+  const render = harness(context);
+  let status = 'unavailable';
+  let calls = 0;
+  const api = {
+    invokeCapability: async () => {
+      calls++;
+      return { value: { subscriptions: [], selection: null, desktopUsageStatus: status } };
+    },
+  };
+  window.localStorage.setItem('mixdog.desktop.usage-surface-mode.v1', 'quota');
+  await render({ surface: 'stats', open: true, onClose() {}, api });
+  assert.ok(document.querySelector('.quota-empty').textContent.includes(t('Desktop OAuth usage is unavailable.')));
+  const before = calls;
+  status = 'unsupported';
+  await act(async () => invalidateSharedModelCatalogRequest());
+  assert.ok(calls > before);
+  assert.ok(
+    document
+      .querySelector('.quota-empty')
+      .textContent.includes(t('Desktop provider does not report OAuth quota windows.'))
+  );
+  assert.ok(!document.querySelector('.quota-empty').textContent.includes(t('No OAuth usage recorded yet.')));
+});
+
+test('a quota reply from before provider invalidation cannot repopulate the cache', async () => {
+  const gate = Promise.withResolvers();
+  let reads = 0;
+  const api = { invokeCapability: async () => ({ value: ++reads === 1 ? await gate.promise : { fresh: true } }) };
+  const question = { provider: 'openai-oauth' };
+  const old = readQuotaAnswer(api, question);
+  await Promise.resolve();
+  invalidateSharedModelCatalogRequest();
+  await new Promise((resolve) => queueMicrotask(resolve));
+  await readQuotaAnswer(api, question);
+  gate.resolve({ stale: true });
+  await old;
+  assert.deepEqual(cachedQuotaAnswer(api, question), { fresh: true });
+});
 
 test('the usage dialog header switches to subscription usage and opens there next time', async (context) => {
   const render = harness(context);

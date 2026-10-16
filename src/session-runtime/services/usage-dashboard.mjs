@@ -13,6 +13,8 @@ import {
 } from '../../runtime/agent/orchestrator/providers/api-usage.mjs';
 import { num } from '../../runtime/agent/orchestrator/providers/lib/usage-primitives.mjs';
 import { readProviderAccountPool } from '../../runtime/shared/provider-accounts.mjs';
+import { modelProxyClientMode } from '../../runtime/shared/model-proxy-mode.mjs';
+import { readRemoteOAuthUsage } from '../../runtime/agent/orchestrator/providers/model-proxy-usage.mjs';
 import {
   creditsFromSnapshot,
   applyApiUnavailable,
@@ -36,6 +38,16 @@ import {
 const CREDIT_PROVIDERS = new Set(['openai-oauth', 'anthropic-oauth']);
 
 async function oauthSnapshot(providerId, { refresh, getProvider, log }) {
+  if (modelProxyClientMode()) {
+    const answer = await readRemoteOAuthUsage(providerId, { force: refresh });
+    if (answer.status !== 'ready')
+      throw new Error(
+        answer.status === 'unsupported'
+          ? 'Desktop provider does not report OAuth quota windows.'
+          : 'Desktop OAuth usage is unavailable.'
+      );
+    return answer.snapshot;
+  }
   const cached = readCachedOAuthUsageSnapshot({ provider: providerId, model: '' });
   if (!refresh && cached) return cached;
   // A rate-limited or failed forced refresh (Anthropic /oauth/usage 429s
@@ -210,7 +222,8 @@ async function oauthProviderRow(item, { providers, preview, snapshotOptions, row
   row.primary = row.authenticated ? '' : 'not signed in';
   row.detail = row.authenticated ? 'Checking provider usage' : item.detail || 'OAuth credentials missing';
   row.tone = rowTone(row);
-  if (CREDIT_PROVIDERS.has(item.id)) row.useCredits = readProviderAccountPool(item.id).useCredits === true;
+  if (!modelProxyClientMode() && CREDIT_PROVIDERS.has(item.id))
+    row.useCredits = readProviderAccountPool(item.id).useCredits === true;
   rows.push(row);
   emit(true);
 

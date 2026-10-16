@@ -137,12 +137,13 @@ export function recordQuotaSamples(db, samples) {
  * meter moved last comes first — the subscription in use — because every
  * connected one is measured alike, idle or not.
  */
-function listQuotaSeries(db) {
+function listQuotaSeries(db, scopes = null) {
   const series = new Map();
   const rows = db
     .prepare('SELECT provider,account,label,MAX(ts) AS changed FROM quota_samples GROUP BY provider,account,label')
     .all();
   for (const row of rows) {
+    if (scopes && scopes[row.provider] !== row.account) continue;
     const key = `${row.provider}\u0000${row.account}`;
     const entry = series.get(key) || { provider: row.provider, account: row.account, windows: [], changed: 0 };
     entry.windows.push(row.label);
@@ -383,7 +384,9 @@ function legacyAccountOwner(db, provider) {
  */
 function readQuotaEvents(db, { provider, account, label = '', fromMs, toMs }) {
   const owner = legacyAccountOwner(db, provider);
-  const unlabeled = owner === null || owner === account ? '' : account;
+  // Historic server-local/unattributed requests cannot be assigned to the
+  // first desktop that later connects. Remote subjects require exact proof.
+  const unlabeled = account.startsWith('proxy-') ? account : owner === null || owner === account ? '' : account;
   // Anthropic's scoped weekly labels are model-family limits, not the whole
   // subscription. An unrecognized scope must never borrow every model's cost.
   const scope =
@@ -856,6 +859,7 @@ export function readQuotaHistory(
     account = '',
     label = '',
     inUse = {},
+    scopes = null,
     view = 'window',
     anchor = null,
     fromMs = null,
@@ -863,7 +867,7 @@ export function readQuotaHistory(
     now = Date.now(),
   } = {}
 ) {
-  const subscriptions = listQuotaSeries(db);
+  const subscriptions = listQuotaSeries(db, scopes);
   const selection = pickSelection(subscriptions, { provider, account, label, inUse });
   const base = { generatedAt: now, view, subscriptions, selection };
   if (!selection) return { ...base, period: null };
@@ -1020,9 +1024,9 @@ export function readQuotaHistory(
  */
 export function readQuotaWindows(
   db,
-  { provider = '', account = '', label = '', inUse = {}, page = 0, now = Date.now() } = {}
+  { provider = '', account = '', label = '', inUse = {}, scopes = null, page = 0, now = Date.now() } = {}
 ) {
-  const selection = pickSelection(listQuotaSeries(db), { provider, account, label, inUse });
+  const selection = pickSelection(listQuotaSeries(db, scopes), { provider, account, label, inUse });
   const base = { generatedAt: now, selection, page: 0, pageCount: 0, total: 0, windows: [] };
   if (!selection) return base;
   const chronological = quotaInstances(readQuotaRows(db, selection), selection.label, now).filter(

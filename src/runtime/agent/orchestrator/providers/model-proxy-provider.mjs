@@ -159,6 +159,13 @@ export class ModelProxyProvider {
     return (await this.#call('isAvailable')) === true;
   }
 
+  usageAccountId(result) {
+    const account = result?.modelProxyUsageAccount;
+    // Older desktops and failed sends without a proven account remain
+    // unattributed, never assigned to this server's local default account.
+    return typeof account === 'string' && /^proxy-[a-f0-9]{64}$/.test(account) ? account : 'proxy-unattributed';
+  }
+
   getCachedModelInfo(model) {
     return this.#modelInfo.get(String(model ?? '')) ?? null;
   }

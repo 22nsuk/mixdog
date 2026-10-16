@@ -4541,5 +4541,9 @@
   "Project folder is missing or unavailable. Backups remain; inspect the record before deleting it.": "Thư mục dự án bị thiếu hoặc không khả dụng. Bản sao lưu vẫn được giữ lại; hãy kiểm tra bản ghi trước khi xóa.",
   "Missing": "Không tìm thấy",
   "This server uses providers connected on your desktop. Manage sign-ins and accounts in the local window.": "Máy chủ này sử dụng các nhà cung cấp đã kết nối trên máy tính của bạn. Quản lý đăng nhập và tài khoản trong cửa sổ cục bộ.",
-  "Connect the desktop to view its providers.": "Kết nối máy tính để xem các nhà cung cấp."
+  "Connect the desktop to view its providers.": "Kết nối máy tính để xem các nhà cung cấp.",
+  "Desktop OAuth usage is unavailable.": "Không thể truy vấn mức sử dụng OAuth trên PC.",
+  "Desktop provider does not report OAuth quota windows.": "Nhà cung cấp trên PC không cung cấp thông tin cửa sổ hạn mức OAuth.",
+  "Reconnect or check the account on your PC.": "Kết nối lại hoặc kiểm tra tài khoản trên PC của bạn.",
+  "Token usage is recorded separately.": "Mức sử dụng token được ghi nhận riêng."
 }

@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
+import { modelProxyClientMode } from '../../../shared/model-proxy-mode.mjs';
 import { updateJsonAtomicSync } from '../../../shared/atomic-file.mjs';
 import { resolvePluginData } from '../../../shared/plugin-paths.mjs';
 import { getLlmDispatcher } from '../../../shared/llm/http-agent.mjs';
@@ -197,6 +198,9 @@ function newestProviderSnapshot(entries, provider, ttlMs) {
 }
 
 export function readCachedOAuthUsageSnapshot(routeInfo, options = {}) {
+  // A server's on-disk cache belongs to its own credentials, not the PC
+  // currently attached to its model proxy. Remote reads are asynchronous.
+  if (modelProxyClientMode()) return null;
   const key = routeKey(routeInfo);
   const providerOnlyKey = cacheProviderKey(routeInfo);
   const diskTtlMs = options?.allowStale === true ? STALE_DISK_CACHE_TTL_MS : DISK_CACHE_TTL_MS;
@@ -889,6 +893,14 @@ async function measureUsageWithAuthRetry(provider, providerObj, routeInfo) {
   }
 }
 
+// The desktop proxy owns its own identity-scoped cache and persistence on the
+// requesting daemon. It must not reuse a local roster-slot cache after login
+// replacement, or write remote observations into that local account's ledger.
+export async function measureOAuthUsageSnapshot(routeInfo, providerObj) {
+  const snapshot = await measureUsageWithAuthRetry(providerKey(routeInfo), providerObj, routeInfo);
+  return isContentfulSnapshot(snapshot) ? { ...snapshot, cachedAt: Date.now() } : null;
+}
+
 // The fallback reading after a failed measurement, and the bookkeeping a
 // failure implies. A credential the server refuses even after a forced
 // refresh cannot vouch for the reading it last produced: keeping a 100% meter
@@ -933,6 +945,10 @@ function cacheUsageSnapshot(snapshot, { routeInfo, provider, accountId, provider
 export async function fetchOAuthUsageSnapshot(routeInfo, providerObj, log = () => {}, options = {}) {
   const provider = providerKey(routeInfo);
   if (!provider.includes('oauth') && provider !== 'cursor-api') return null;
+  if (modelProxyClientMode()) {
+    const { readRemoteOAuthUsage } = await import('./model-proxy-usage.mjs');
+    return (await readRemoteOAuthUsage(provider, options)).snapshot ?? null;
+  }
   const accountId = routeInfo.accountId || providerObj?.providerAccountId || currentProviderAccountId(provider);
   routeInfo = { ...routeInfo, accountId };
   if (typeof providerObj?.forAccount === 'function') providerObj = providerObj.forAccount(accountId);

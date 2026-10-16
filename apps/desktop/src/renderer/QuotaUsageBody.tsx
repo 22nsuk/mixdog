@@ -25,6 +25,7 @@ import {
 } from './quota-usage-model';
 import {
   cachedQuotaAnswer,
+  invalidateQuotaAnswers,
   openingQuotaQuestion,
   quotaHistoryQuestion,
   readQuotaAnswer,
@@ -49,6 +50,7 @@ import {
 } from './usage-stats-model';
 import { clearQuotaFocus, writeQuotaSubscription } from './usage-surface-mode';
 import { subscribeAccountSwitches } from './usage-dashboard-store';
+import { subscribeModelCatalogInvalidation } from './model-catalog-cache';
 
 type QuotaView = StatsView | 'window';
 type QuotaQuery = {
@@ -431,6 +433,14 @@ export function QuotaUsageBody({ api }: { api: QuotaApi }) {
   }, [api, query]);
 
   const loaded: Row = data ?? {};
+  useEffect(
+    () =>
+      subscribeModelCatalogInvalidation(() => {
+        setData(null);
+        setQuery((current) => ({ ...current, account: '', anchor: undefined }));
+      }),
+    []
+  );
   const loading = !data;
   const selection = record(loaded.selection);
   const provider = String(selection.provider || query.provider);
@@ -443,6 +453,8 @@ export function QuotaUsageBody({ api }: { api: QuotaApi }) {
     () =>
       subscribeAccountSwitches((switched) => {
         if (switched !== provider) return;
+        invalidateQuotaAnswers(api);
+        setData(null);
         setQuery((current) => ({
           ...current,
           provider,
@@ -451,7 +463,7 @@ export function QuotaUsageBody({ api }: { api: QuotaApi }) {
           ...(current.view === 'window' ? { anchor: undefined } : {}),
         }));
       }),
-    [provider, label]
+    [api, provider, label]
   );
 
   // The window history is read on its own, a page at a time, for the
@@ -502,6 +514,7 @@ export function QuotaUsageBody({ api }: { api: QuotaApi }) {
   const outside = statsNumber(loaded.outside);
   const firstDay = String(record(loaded.range).firstDay || '');
   const empty = !loading && !subscriptions.length;
+  const desktopUnavailable = ['unavailable', 'not-configured'].includes(String(loaded.desktopUsageStatus || ''));
   const ranks = new Map(models.map((row, index) => [String(row.model || ''), index]));
   const seriesInk = (model: string) => quotaSeries(ranks.get(model) ?? -1);
   const change = (next: Partial<QuotaQuery>) => {
@@ -653,10 +666,31 @@ export function QuotaUsageBody({ api }: { api: QuotaApi }) {
           {t('Loading…')}
         </p>
       )}
+      {!empty && loaded.desktopUsageStatus === 'unavailable' && (
+        <p role="status">
+          {t('Desktop OAuth usage is unavailable.')} {t('Reconnect or check the account on your PC.')}
+        </p>
+      )}
       {empty ? (
         <p className="quota-empty">
-          <b>{t('No OAuth usage recorded yet.')}</b>
-          <span>{t('Mixdog records it from now on whenever it checks provider usage.')}</span>
+          <b>
+            {t(
+              desktopUnavailable
+                ? 'Desktop OAuth usage is unavailable.'
+                : loaded.desktopUsageStatus === 'unsupported'
+                  ? 'Desktop provider does not report OAuth quota windows.'
+                  : 'No OAuth usage recorded yet.'
+            )}
+          </b>
+          <span>
+            {t(
+              desktopUnavailable
+                ? 'Reconnect or check the account on your PC.'
+                : loaded.desktopUsageStatus === 'unsupported'
+                  ? 'Token usage is recorded separately.'
+                  : 'Mixdog records it from now on whenever it checks provider usage.'
+            )}
+          </span>
         </p>
       ) : (
         <>

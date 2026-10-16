@@ -128,6 +128,17 @@ export function createProviderUsage({
   }
 
   async function getUsageDashboard(options = {}) {
+    // Remote account ownership may change without touching this daemon's
+    // credentials. Never reuse a session-local dashboard across desktop reads.
+    if (modelProxyClientMode())
+      return buildUsageDashboard(
+        { ...options, quickSetup: false },
+        {
+          refreshUsage: options.refresh === true,
+          forceSetup: false,
+          scope: refreshScopeKey(options),
+        }
+      );
     const refreshUsage = options?.refresh === true;
     const forceSetup = options?.force === true || (refreshUsage && options?.refreshSetup !== false);
     if (!forceSetup && !refreshUsage && caches.usageDashboardCache.dashboard) {

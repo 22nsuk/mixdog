@@ -50,6 +50,68 @@ function fakeRuntime(providers, extra = {}) {
   };
 }
 
+test('OAuth usage RPC is read-only, provider-scoped and subject to the desktop allowlist', async (t) => {
+  const calls = [];
+  const provider = {
+    send() {
+      throw new Error('must not send');
+    },
+  };
+  const runtime = fakeRuntime(
+    { 'openai-oauth': provider, 'cursor-oauth': provider },
+    {
+      oauthUsage: async (name, instance, force) => {
+        calls.push({ name, instance, force });
+        return { status: 'unsupported' };
+      },
+    }
+  );
+  const { channel } = connect(t, runtime, { isProviderAllowed: (name) => name === 'openai-oauth' });
+  assert.deepEqual(
+    await channel.request({
+      method: 'oauthUsage',
+      provider: 'openai-oauth',
+      force: true,
+      accountId: 'other-account',
+      access_token: 'untrusted',
+      reset: true,
+    }),
+    { status: 'unsupported' }
+  );
+  assert.deepEqual(calls, [{ name: 'openai-oauth', instance: provider, force: true }]);
+  await assert.rejects(channel.request({ method: 'oauthUsage', provider: 'cursor-oauth' }), {
+    code: 'MODEL_PROXY_PROVIDER_NOT_ALLOWED',
+  });
+  assert.equal(calls.length, 1);
+});
+
+test('proxied request metering follows the serving account and rejects replaced identities', async (t) => {
+  const a = `proxy-${'a'.repeat(64)}`;
+  const b = `proxy-${'b'.repeat(64)}`;
+  let scopes = { default: a, fallback: b };
+  let replace = false;
+  const provider = {
+    async send() {
+      if (replace) scopes = { default: b, fallback: a };
+      return { usage: { inputTokens: 1 }, providerState: { providerAccountId: 'fallback' } };
+    },
+  };
+  const { channel } = connect(
+    t,
+    fakeRuntime(
+      { 'openai-oauth': provider },
+      {
+        usageAccounts: async () => ({ ...scopes }),
+      }
+    )
+  );
+  const proxy = new ModelProxyProvider('openai-oauth', {}, channel);
+  const first = await proxy.send([], 'model', [], {});
+  assert.equal(proxy.usageAccountId(first), b);
+  replace = true;
+  assert.equal(proxy.usageAccountId(await proxy.send([], 'model', [], {})), 'proxy-unattributed');
+});
+
 test('the PC runs the call with its own provider and streams every callback back in order', async (t) => {
   const calls = [];
   const provider = {

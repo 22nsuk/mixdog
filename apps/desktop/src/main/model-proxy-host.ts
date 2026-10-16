@@ -53,6 +53,8 @@ export interface ModelProxyProviderInstance {
 }
 
 export interface ModelProxyRuntime {
+  oauthUsage?(name: string, provider: ModelProxyProviderInstance, force: boolean): Promise<unknown>;
+  usageAccounts?(name: string): Promise<Record<string, string>>;
   /** The PC's providers — availability, adapter traits — with its registry
    *  loaded on demand first, so a cold PC never answers "nothing enabled".
    *  Reads which credentials exist, never a stored key's value. */
@@ -676,6 +678,11 @@ async function execute(
   if (name && !isProviderAllowed(name)) throw providerNotAllowed(name);
   const provider = name ? await runtime.provider(name) : undefined;
   if (!provider || typeof provider.send !== 'function') throw providerUnavailable(name);
+  if (method === 'oauthUsage') {
+    return name.endsWith('-oauth') && runtime.oauthUsage
+      ? runtime.oauthUsage(name, provider, record(call).force === true)
+      : { status: 'unsupported' };
+  }
   if (method === 'listModels') return catalog(provider, false);
   if (method === 'refreshModels') return catalog(provider, true);
   if (method === 'isAvailable') {
@@ -718,9 +725,21 @@ async function execute(
     ? forkTransportScope(String(options.sessionId || name), 'proxy')
     : '';
   if (forkedScope) options.transportScope = forkedScope;
+  // Capture identities before dispatch. The serving account may differ from
+  // the selected one after pool fallback; a replaced credential must not be
+  // retrospectively attributed to its replacement.
+  const before = name.endsWith('-oauth')
+    ? await runtime.usageAccounts?.(name).catch((): Record<string, string> => ({}))
+    : undefined;
   try {
     const value = await provider.send(messages, model, tools, options);
     settle?.(usageTokens(record(value).usage, inputExcludesCache));
+    if (before) {
+      const after = await runtime.usageAccounts?.(name).catch((): Record<string, string> => ({}));
+      const id = String(record(record(value).providerState).providerAccountId || 'default');
+      const account = before[id];
+      return { ...record(value), modelProxyUsageAccount: account && account === after?.[id] ? account : null };
+    }
     return value;
   } catch (error) {
     // A failure that reported no usage and sent no output is charged nothing
@@ -1367,7 +1386,7 @@ export function modelProxyRuntimeLoader({
     const oauthProbes = oauthProbeModule as unknown as {
       oauthCredentialProbeState(name: string): 'present' | 'absent' | 'unreadable';
     };
-    return createModelProxyRuntime({
+    const runtime = createModelProxyRuntime({
       loadConfig: (options) => config.loadConfig(options),
       initProviders: (providers) => registry.initProviders(providers),
       getProvider: (name) => registry.getProvider(name),
@@ -1381,6 +1400,22 @@ export function modelProxyRuntimeLoader({
       finalizeProviderRequestTools: (tools, nativePrefixCount) =>
         requestTools.finalizeProviderRequestTools(tools, nativePrefixCount),
     });
+    let usage: Promise<{
+      roster(name: string): { scopes: Record<string, string> };
+      snapshot(name: string, provider: ModelProxyProviderInstance, options: { force: boolean }): Promise<unknown>;
+    }> | null = null;
+    const usageOwner = () =>
+      (usage ??= import(
+        /* @vite-ignore */ moduleUrl('runtime', 'agent', 'orchestrator', 'providers', 'model-proxy-usage-host.mjs')
+      )
+        .then((module) => module.createModelProxyUsage())
+        .catch((error) => {
+          usage = null;
+          throw error;
+        }));
+    runtime.oauthUsage = async (name, provider, force) => (await usageOwner()).snapshot(name, provider, { force });
+    runtime.usageAccounts = async (name) => (await usageOwner()).roster(name).scopes;
+    return runtime;
   };
   return () => {
     pending ??= load().catch((error) => {

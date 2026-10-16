@@ -4602,5 +4602,9 @@
   "Project folder is missing or unavailable. Backups remain; inspect the record before deleting it.": "Der Projektordner fehlt oder ist nicht verfügbar. Sicherungen bleiben erhalten; prüfen Sie den Eintrag vor dem Löschen.",
   "Missing": "Fehlt",
   "This server uses providers connected on your desktop. Manage sign-ins and accounts in the local window.": "Dieser Server verwendet die auf deinem Desktop verbundenen Anbieter. Verwalte Anmeldungen und Konten im lokalen Fenster.",
-  "Connect the desktop to view its providers.": "Verbinde den Desktop, um seine Anbieter anzuzeigen."
+  "Connect the desktop to view its providers.": "Verbinde den Desktop, um seine Anbieter anzuzeigen.",
+  "Desktop OAuth usage is unavailable.": "Die OAuth-Nutzung des PCs ist nicht verfügbar.",
+  "Desktop provider does not report OAuth quota windows.": "Der Anbieter auf dem PC meldet keine OAuth-Kontingentfenster.",
+  "Reconnect or check the account on your PC.": "Verbinden Sie sich erneut oder prüfen Sie das Konto auf Ihrem PC.",
+  "Token usage is recorded separately.": "Die Token-Nutzung wird separat aufgezeichnet."
 }

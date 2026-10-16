@@ -4541,5 +4541,9 @@
   "Project folder is missing or unavailable. Backups remain; inspect the record before deleting it.": "프로젝트 폴더가 없거나 사용할 수 없습니다. 백업은 남아 있으므로 기록을 검토한 뒤 삭제하세요.",
   "Missing": "파일 없음",
   "This server uses providers connected on your desktop. Manage sign-ins and accounts in the local window.": "이 서버는 데스크톱에 연결된 프로바이더를 사용합니다. 로그인과 계정은 로컬 창에서 관리하세요.",
-  "Connect the desktop to view its providers.": "프로바이더를 보려면 데스크톱을 연결하세요."
+  "Connect the desktop to view its providers.": "프로바이더를 보려면 데스크톱을 연결하세요.",
+  "Desktop OAuth usage is unavailable.": "PC의 OAuth 사용량을 조회할 수 없습니다.",
+  "Desktop provider does not report OAuth quota windows.": "PC의 프로바이더가 OAuth 한도 정보를 제공하지 않습니다.",
+  "Reconnect or check the account on your PC.": "다시 연결하거나 PC에서 계정 상태를 확인하세요.",
+  "Token usage is recorded separately.": "토큰 사용량은 별도로 기록됩니다."
 }

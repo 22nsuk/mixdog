@@ -4724,5 +4724,9 @@
   "Project folder is missing or unavailable. Backups remain; inspect the record before deleting it.": "Папка проекта отсутствует или недоступна. Резервные копии сохранены; проверьте запись перед удалением.",
   "Missing": "Отсутствует",
   "This server uses providers connected on your desktop. Manage sign-ins and accounts in the local window.": "Этот сервер использует провайдеров, подключённых на вашем компьютере. Управляйте входом и аккаунтами в локальном окне.",
-  "Connect the desktop to view its providers.": "Подключите компьютер, чтобы увидеть его провайдеров."
+  "Connect the desktop to view its providers.": "Подключите компьютер, чтобы увидеть его провайдеров.",
+  "Desktop OAuth usage is unavailable.": "Данные об использовании OAuth на ПК недоступны.",
+  "Desktop provider does not report OAuth quota windows.": "Провайдер на ПК не сообщает интервалы квоты OAuth.",
+  "Reconnect or check the account on your PC.": "Подключитесь повторно или проверьте учётную запись на ПК.",
+  "Token usage is recorded separately.": "Использование токенов учитывается отдельно."
 }

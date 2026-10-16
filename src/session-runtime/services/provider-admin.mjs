@@ -851,6 +851,23 @@ export function listProviderAccounts(provider) {
   };
 }
 
+// Internal desktop metering identity, before the proxy hashes it. Display
+// labels and truncated account-id hints must not identify durable history.
+export function providerUsageAccounts(provider) {
+  requireLocalProviderManagement();
+  const oauth = availableOAuthProvider(provider);
+  if (!oauth) return { selectedId: null, accounts: [] };
+  const pool = readProviderAccountPool(provider);
+  const accounts = pool.accounts.length ? pool.accounts : defaultAccountRows(provider, oauth);
+  return {
+    selectedId: pool.selectedId || accounts[0]?.id || null,
+    accounts: accounts.map(({ id }) => {
+      const auth = withProviderAccount(provider, id, () => oauth.describe?.() || {});
+      return { id, authenticated: auth.authenticated === true, identity: auth.identityId || auth.email || null };
+    }),
+  };
+}
+
 // A provider without a stored pool has one implicit account when it is signed in.
 function defaultAccountRows(provider, oauth) {
   const authenticated = withProviderAccount(provider, 'default', () => oauth.describe?.().authenticated);
