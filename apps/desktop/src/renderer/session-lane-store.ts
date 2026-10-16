@@ -11,11 +11,14 @@ import { SessionLaneCache } from './session-lane-cache';
 import { reportSessionReadFrame } from './session-read-diagnostics';
 import { sharedTranscriptSnapshotDecorator, type TranscriptSnapshotDecorator } from './snapshot-transcript-decoration';
 import { cancelLayoutFrame, scheduleLayoutFrame } from './interaction-frame-scheduler';
+import { noteStreamLaneFrame, noteStreamPublish } from './transcript-stream-metrics';
 
 type SessionLaneSource = (listener: (update: DesktopSessionStateUpdate) => void) => () => void;
 
 interface SessionLaneStore {
   get(sessionId: string): Snapshot | null;
+  /** The authoritative content revision the cached lane was accepted at. */
+  revision(sessionId: string): number | null;
   subscribe(sessionId: string, listener: () => void): () => void;
   /** Wire the preload lane once; returns a stop function. Idempotent — a
    *  second start while wired returns the existing stop. */
@@ -470,6 +473,7 @@ export function createSessionLaneStore({
   const notify = (sessionId: string): void => {
     const bucket = listeners.get(sessionId);
     if (!bucket) return;
+    noteStreamPublish();
     for (const listener of [...bucket]) listener();
   };
   const apply = (update: DesktopSessionStateUpdate): void => {
@@ -541,6 +545,7 @@ export function createSessionLaneStore({
     snapshots.prune();
     const nextSnapshot = snapshots.get(sessionId)?.snapshot ?? null;
     reportSessionReadFrame({ ...update, snapshot: nextSnapshot }, 'applied', performance.now() - readFrameStartedAt);
+    noteStreamLaneFrame(sessionId, nextSnapshot?.streamingTail);
     if ((listeners.get(sessionId)?.size || 0) === 0) {
       const key = notificationKeys.get(sessionId);
       if (key) cancelLayoutFrame(key);
@@ -561,6 +566,9 @@ export function createSessionLaneStore({
       if (!entry) return null;
       snapshots.touch(sessionId);
       return entry.snapshot;
+    },
+    revision(sessionId) {
+      return snapshots.get(sessionId)?.revision ?? null;
     },
     subscribe(sessionId, listener) {
       let bucket = listeners.get(sessionId);
@@ -624,6 +632,20 @@ export function createSessionLaneStore({
 
 /** Shared store for the app renderer; components use the hook below. */
 export const defaultSessionLaneStore = createSessionLaneStore();
+
+/** The lane's authoritative content revision (the publication envelope's,
+ *  not anything inside the snapshot); re-renders only when it moves. */
+export function useSessionLaneRevision(
+  sessionId: string,
+  store: SessionLaneStore = defaultSessionLaneStore,
+  enabled = true
+): number | null {
+  const subscribe = useCallback(
+    (listener: () => void) => (enabled && sessionId ? store.subscribe(sessionId, listener) : () => {}),
+    [enabled, sessionId, store]
+  );
+  return useSyncExternalStore(subscribe, () => (enabled && sessionId ? store.revision(sessionId) : null));
+}
 
 export function useSessionLane(
   sessionId: string,

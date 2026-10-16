@@ -66,6 +66,7 @@ import {
 import { createAgentDispatchBroker } from './agent-dispatch-broker.mjs';
 import { createChannelTransport } from './channel-transport.mjs';
 import { drainDeferral, idleGcEligible } from './daemon-drain-policy.mjs';
+import { createDaemonPgStop } from './daemon-pg-stop.mjs';
 import { createChannelSessionRouter } from '../session-runtime/services/channel-session-router.mjs';
 import { createSessionTransport } from './session-transport.mjs';
 import { createSessionService } from './session-service.mjs';
@@ -75,6 +76,7 @@ import * as quotaResumeStore from '../runtime/shared/quota-resume-store.mjs';
 import { registerWorktreeCacheCleanups } from '../runtime/shared/worktrees/cache-cleanups.mjs';
 import { createInlineSessionRuntimeHost } from './session-runtime-inline-host.mjs';
 import { getStandaloneMemoryRuntime } from '../session-runtime/services/memory-runtime-proxy.mjs';
+import { registerTranscriptPurgeHook } from '../session-runtime/session-transcript-purge.mjs';
 import { createBootPhaseProfiler } from './boot-phase-profiler.mjs';
 import { createDaemonBootCoordinator } from './daemon-boot-coordinator.mjs';
 import { createDaemonLog } from './daemon-log.mjs';
@@ -83,11 +85,13 @@ import {
   installDaemonExitRecorder,
   reconcileLostDaemonCaptures,
 } from '../session-runtime/services/daemon-crash-capture/daemon-exit-record.mjs';
-import { createDaemonTelemetry } from './daemon-telemetry.mjs';
+import { createDaemonTelemetry, createStallDescriber } from './daemon-telemetry.mjs';
+import { slowSpans } from '../runtime/shared/slow-span.mjs';
 import { createLagProfiler } from './daemon-lag-profiler.mjs';
 import { createChannelsRuntimeLoader } from './daemon-channels-loader.mjs';
 import { createDesktopRuntime } from './daemon-desktop-runtime.mjs';
 import { createCanonicalAgentControl } from './daemon-agent-control.mjs';
+import { flushAllIndexWrites } from '../session-runtime/services/agent-tool/index-write-queue.mjs';
 import { registerAutomationAgentTool } from '../session-runtime/automation-agents.mjs';
 import {
   compareRuntimeVersions,
@@ -132,7 +136,9 @@ let sessionTransport = null;
 let sessionService = null;
 let sessionRuntimeHost = null;
 let localSessionBridge = null;
+let canonicalAgentControl = null;
 let memoryRuntime = null;
+let transcriptPurgeUnregister = null;
 let agentDispatchBroker = null;
 let remoteSessionState = { enabled: false, sessionId: null };
 let shuttingDown = false;
@@ -161,6 +167,13 @@ function registerMemoryRuntimeLazy() {
   // real memory call (memory/recall tools, the Memory install) starts the
   // singleton; nothing warms it at boot. The PG cluster itself usually starts
   // earlier: the channels schedules/webhooks stores open it at boot.
+  // Deleting a session removes its transcript file here, and its memory ingest
+  // offsets once the memory runtime exists (none when memory is skipped).
+  if (!transcriptPurgeUnregister) {
+    transcriptPurgeUnregister = registerTranscriptPurgeHook({
+      forgetOffsets: (transcriptPaths) => memoryRuntime?.forgetTranscripts(transcriptPaths),
+    });
+  }
   if (process.env.MIXDOG_DAEMON_SKIP_MEMORY === '1') {
     log('memory runtime skipped (MIXDOG_DAEMON_SKIP_MEMORY=1)');
     return;
@@ -201,6 +214,8 @@ function eventLoopStatus() {
 /** Ceiling for the whole teardown sequence, above the slowest individual stop
  *  (channels/memory) so a healthy shutdown always finishes on its own. */
 const SHUTDOWN_BUDGET_MS = 15_000;
+/** Graceful PostgreSQL stop bound inside that budget (pg_ctl stop -m fast). */
+const PG_STOP_TIMEOUT_MS = 6_000;
 
 async function shutdown(reason, code = 0) {
   if (shuttingDown) return;
@@ -221,6 +236,9 @@ async function shutdown(reason, code = 0) {
     process.exit(code);
   }, SHUTDOWN_BUDGET_MS);
   forcedExit.unref?.();
+  // PostgreSQL stops after its users below (durable writes drained first), or
+  // at the fallback point just before the launcher's kill, whichever is first.
+  const pgStop = createDaemonPgStop({ log, stopTimeoutMs: PG_STOP_TIMEOUT_MS });
   try {
     setChannelNotifySink(null);
   } catch {}
@@ -240,6 +258,15 @@ async function shutdown(reason, code = 0) {
     await sessionRuntimeHost?.close?.(reason);
   } catch (e) {
     log(`session runtime host stop failed: ${e?.message || e}`);
+  }
+  // Every runtime is closed: drain the canonical agent's index writers (and any
+  // other queued index write) before process.exit, whose 'exit' hook cannot
+  // finish async work.
+  try {
+    await canonicalAgentControl?.dispose?.();
+    await flushAllIndexWrites();
+  } catch (e) {
+    log(`agent index drain failed: ${e?.message || e}`);
   }
   // Host-side Computer Use workers and target claims are reaped only on an
   // explicit release; the runtime's deferred timer is unref'd and never fires
@@ -271,6 +298,11 @@ async function shutdown(reason, code = 0) {
   } catch (e) {
     log(`memory.stop failed: ${e?.message || e}`);
   }
+  // PostgreSQL this daemon started through its stores (schedules, webhooks,
+  // session search) after every user of it above is closed. `pg_ctl start`
+  // daemonizes the postmaster outside this process tree, so without this stop
+  // it outlives the daemon. A cluster another live process owns is left to it.
+  await pgStop.finish();
   try {
     agentDispatchBroker?.close?.(reason);
   } catch (e) {
@@ -315,6 +347,9 @@ function inFlightWork() {
 
 // Opt-in CPU profiling of lag windows while DATA_DIR/lag-profile.on exists.
 const lagProfiler = createLagProfiler({ dataDir: DATA_DIR, log });
+// Request spans share the heartbeat's performance.now() clock; `[slow-op]` lines
+// and stall attribution come from the same recorder.
+slowSpans.setLog(log);
 
 daemonTelemetry = createDaemonTelemetry({
   log,
@@ -506,6 +541,7 @@ async function claimDaemonOwnership(bootPhases) {
     tickMs: timings.tickMs,
     stallMs: timings.stallMs,
     log,
+    describeStall: createStallDescriber({ spans: slowSpans, getWork: inFlightWork }),
     onBeat: republishMissingDiscovery,
     onSuperseded: (record) => fenceDaemon(`owner claim superseded by pid=${record?.pid}`),
     onFenced: ({ lastRefreshAt, sinceMs }) =>
@@ -696,6 +732,22 @@ function announceDaemonReady({ port, token, startedAt, bootPhases }) {
   });
 }
 
+/** After ready, off every request path: arm the last-chance PostgreSQL stop on
+ *  exit, then open the schedules/webhooks stores. On an existing cluster that
+ *  starts PostgreSQL here, so the first catalog read (the desktop sidebar's
+ *  channel setup) joins this start instead of being the one that runs it; a
+ *  data dir with no cluster yet starts nothing (channel-admin). Loaded after
+ *  the stderr redirect, so the PG layer's logs reach daemon.log. */
+function startPostgresInBackground() {
+  void import('../runtime/memory/lib/pg/adapter.mjs')
+    .then((pg) => {
+      pg.installOwnedPgExitStop();
+      if (shuttingDown) return null;
+      return import('../session-runtime/services/channel-admin.mjs').then((admin) => admin.hasActiveAutomation());
+    })
+    .catch((error) => log(`postgres background start failed: ${error?.message || error}`));
+}
+
 /** The channels front door: pointer-routed calls over HTTP+SSE. Creating the
  *  transport also wires the channels notification sink (session-bound
  *  notifications reach the session service, the rest fan out to channel
@@ -844,6 +896,7 @@ async function main() {
     getSessionRuntimeHost: () => sessionRuntimeHost,
     cwd: CWD,
   });
+  canonicalAgentControl = agentControl;
   // Schedules and webhooks run headless here; their sessions reach the same
   // canonical agent control through the automation tool scope.
   registerAutomationAgentTool(agentControl.execute);
@@ -938,6 +991,13 @@ async function main() {
   log(`session front door on 127.0.0.1:${sessionEndpoint.port}`);
 
   announceDaemonReady({ port, token, startedAt, bootPhases });
+  // After ready, off the boot path: load the session-runtime module tree so
+  // the first session.create does not block the loop on synchronous module
+  // compilation. Failures fall back to the lazy import inside create.
+  setImmediate(() => {
+    void sessionRuntimeHost?.warmLocalRuntime?.();
+  });
+  startPostgresInBackground();
 
   // Automation may spawn the shared daemon; keep schedules/webhooks live.
   // A TUI-spawned daemon keeps the historical eager start (its channels client

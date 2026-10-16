@@ -15,10 +15,12 @@ import { ACTIVE_LEAD_STATUS, isActiveLeadRow } from './lead-worker-index/lead-ro
 import { createLeadIndexFile } from './lead-worker-index/index-file.mjs';
 import { createRowSettlement } from './lead-worker-index/row-settlement.mjs';
 import { createLeadReapTimers } from './lead-worker-index/reap-timers.mjs';
+import { createForgottenLeads } from './lead-worker-index/forgotten-leads.mjs';
 
 export function createLeadWorkerIndex({ dataDir, cfgMod, workerRowFromSession }) {
   const activeLeadSessions = new Set();
   const index = createLeadIndexFile({ dataDir });
+  const forgotten = createForgottenLeads(dataDir);
   const settlement = createRowSettlement({ dataDir, cfgMod });
   const reaps = createLeadReapTimers({ removeRow: (sessionId, reapAt) => removeLeadWorkerRow(sessionId, reapAt) });
 
@@ -36,8 +38,25 @@ export function createLeadWorkerIndex({ dataDir, cfgMod, workerRowFromSession })
     return true;
   }
 
+  /** A deleted Lead leaves the pool now, running or not, and never returns. A
+   *  turn still unwinding after the delete settles by upserting its idle row —
+   *  possibly through another index instance of this process — so the guard is
+   *  process-wide (forgotten-leads.mjs). */
+  function forgetLeadSession(sessionId) {
+    const id = clean(sessionId);
+    if (!id) return false;
+    forgotten.forget(id);
+    reaps.cancel(id);
+    activeLeadSessions.delete(id);
+    index.write((byKey) => {
+      byKey.delete(id);
+    });
+    return true;
+  }
+
   function upsertLeadSession(session, extra = {}) {
     if (!session?.id || typeof workerRowFromSession !== 'function') return false;
+    if (forgotten.isForgotten(session.id)) return false;
     const owner = clean(session.owner).toLowerCase();
     const agent = clean(session.agent).toLowerCase();
     if (owner === 'agent' || (agent && agent !== 'lead')) return false;
@@ -61,7 +80,15 @@ export function createLeadWorkerIndex({ dataDir, cfgMod, workerRowFromSession })
       runtimePid: process.pid,
       reapAt: reapMs == null ? null : new Date(now + reapMs).toISOString(),
     };
-    index.write((byKey) => byKey.set(session.id, normalized));
+    // Re-run against the locked fresh document at persist time: a delete that
+    // lands (here or in another instance) between this call and the write must
+    // still win over the queued row.
+    index.write(
+      (byKey) => {
+        if (!forgotten.isForgotten(session.id)) byKey.set(session.id, normalized);
+      },
+      { rerun: true }
+    );
     if (ACTIVE_LEAD_STATUS.test(status) || ACTIVE_LEAD_STATUS.test(stage)) {
       activeLeadSessions.add(session.id);
       reaps.cancel(session.id);
@@ -95,6 +122,7 @@ export function createLeadWorkerIndex({ dataDir, cfgMod, workerRowFromSession })
     const now = Date.now();
     index.write((byKey) => {
       for (const id of ids) {
+        if (forgotten.isForgotten(id)) continue;
         const current = byKey.get(id);
         if (!current || !isActiveLeadRow(current)) continue;
         byKey.set(id, settlement.idleLeadRow(current, now, true));
@@ -133,29 +161,66 @@ export function createLeadWorkerIndex({ dataDir, cfgMod, workerRowFromSession })
   recoverStaleLeadRows();
   function flushLeadIndexOnExit() {
     flushActiveLeadRows();
-    // Writes are persisted by an async queue; the loop is gone at exit.
+    // Writes are persisted by an async queue; the loop is gone at exit. This
+    // is the best-effort last resort: a persist still running is left alone
+    // (the graceful shutdown path drains before exit).
     index.flushSync();
   }
   const unregisterExitFlush = registerExitFlush(flushLeadIndexOnExit);
   let disposed = false;
+  let disposePromise = null;
+
+  function teardown() {
+    reaps.cancelAll();
+    unregisterExitFlush();
+  }
+
+  async function drainThenTeardown() {
+    await index.flush();
+    teardown();
+  }
 
   /** Persist queued rows, drop owned reap timers, unregister. `settle` (a real
    *  teardown) also idles this runtime's own active Lead rows; a dispose that
-   *  keeps background work (idle eviction) leaves them for the next owner. */
+   *  keeps background work (idle eviction) leaves them for the next owner.
+   *  If the sync flush cannot run (our async writer holds the lock), the exit
+   *  hook stays until the async drain settles. */
   function dispose({ settle = false } = {}) {
     if (disposed) return;
     disposed = true;
+    let flushed = false;
     try {
       if (settle) flushActiveLeadRows();
-      index.flushSync();
-    } finally {
-      reaps.cancelAll();
-      unregisterExitFlush();
+      flushed = index.flushSync();
+    } catch {}
+    if (flushed) {
+      teardown();
+      return;
     }
+    disposePromise = drainThenTeardown().catch(reopenAfterFailedDrain);
+  }
+
+  /** A failed drain tears nothing down; allow a later dispose to retry it. */
+  function reopenAfterFailedDrain() {
+    disposed = false;
+    disposePromise = null;
+  }
+
+  function disposeAsync({ settle = false } = {}) {
+    if (!disposePromise) {
+      disposed = true;
+      if (settle) flushActiveLeadRows();
+      disposePromise = drainThenTeardown().catch((error) => {
+        reopenAfterFailedDrain();
+        throw error;
+      });
+    }
+    return disposePromise;
   }
 
   return {
     dispose,
+    disposeAsync,
     leadWorkerIndexPath: index.path,
     readLeadWorkerRows: index.read,
     /** Resolves once every queued Lead index write is on disk. */
@@ -163,6 +228,7 @@ export function createLeadWorkerIndex({ dataDir, cfgMod, workerRowFromSession })
     upsertLeadSession,
     updateLeadWorkerCwd,
     removeLeadWorkerRow,
+    forgetLeadSession,
     flushActiveLeadRows,
     recoverStaleLeadRows,
   };

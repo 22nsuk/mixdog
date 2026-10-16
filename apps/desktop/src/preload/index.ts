@@ -313,6 +313,7 @@ const api: DesktopApi = {
     ),
   searchWorkspaceText: (projectPath, options) =>
     ipcRenderer.invoke(DESKTOP_IPC.searchWorkspaceText, projectPath, options),
+  projectRecovery: (projectPath, request) => ipcRenderer.invoke(DESKTOP_IPC.projectRecovery, projectPath, request),
   replaceWorkspaceText: (projectPath, options, replacement, relPaths) =>
     ipcRenderer.invoke(DESKTOP_IPC.replaceWorkspaceText, projectPath, options, replacement, relPaths),
   getSnapshot: () => ipcRenderer.invoke(DESKTOP_IPC.getSnapshot),
@@ -535,8 +536,10 @@ const api: DesktopApi = {
   gitCherryPickCommit: (cwd, hash) => ipcRenderer.invoke(DESKTOP_IPC.gitCherryPickCommit, cwd, hash),
   gitCreateTag: (cwd, tag, hash) => ipcRenderer.invoke(DESKTOP_IPC.gitCreateTag, cwd, tag, hash),
   gitDeleteTag: (cwd, tag) => ipcRenderer.invoke(DESKTOP_IPC.gitDeleteTag, cwd, tag),
-  gitReview: (cwd) => ipcRenderer.invoke(DESKTOP_IPC.gitReview, cwd),
-  gitReviewDiff: (cwd, path, untracked) => ipcRenderer.invoke(DESKTOP_IPC.gitReviewDiff, cwd, path, untracked === true),
+  gitReview: (cwd, source) => ipcRenderer.invoke(DESKTOP_IPC.gitReview, cwd, source),
+  gitReviewDiff: (cwd, path, untracked, source) =>
+    ipcRenderer.invoke(DESKTOP_IPC.gitReviewDiff, cwd, path, untracked === true, source),
+  gitReviewDiffs: (cwd, files, source) => ipcRenderer.invoke(DESKTOP_IPC.gitReviewDiffs, cwd, files, source),
   revealFile: (cwd, path, accessToken) => ipcRenderer.invoke(DESKTOP_IPC.revealFile, cwd, path, accessToken),
   openFilePath: (cwd, path, accessToken, confirmedPath) =>
     ipcRenderer.invoke(DESKTOP_IPC.openFilePath, cwd, path, accessToken, confirmedPath),
@@ -618,6 +621,8 @@ const api: DesktopApi = {
   onZoomFactorChanged: (listener) => subscribeIpc(DESKTOP_IPC.zoomFactorChanged, listener),
   onNotificationOpenSession: (listener) => subscribeIpc(DESKTOP_IPC.notificationOpenSession, listener),
   onBrowserOpenRequested: (listener) => subscribeIpc(DESKTOP_IPC.browserOpenRequested, listener),
+  onTerminalRunRequested: (listener) => subscribeIpc(DESKTOP_IPC.terminalRunRequested, listener),
+  claimTerminalRun: (requestId) => ipcRenderer.invoke(DESKTOP_IPC.terminalRunClaim, requestId),
   onVisualizeChanged: (listener) => subscribeIpc(DESKTOP_IPC.visualizeChanged, listener),
   visualizeState: () => ipcRenderer.invoke(DESKTOP_IPC.visualizeState),
   visualizeCommand: (command) => ipcRenderer.invoke(DESKTOP_IPC.visualizeCommand, command),

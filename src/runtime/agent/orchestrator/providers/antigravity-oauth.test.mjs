@@ -716,7 +716,7 @@ test('each send rewarms the daily host', async () => {
   assert.deepEqual(requested, [CONTENT_ENDPOINT, CONTENT_ENDPOINT]);
 });
 
-test('native calls dispatch before EOF with stable IDs, signatures and no final redispatch', async () => {
+test('native calls dispatch once after the clean finish, with stable IDs and signatures', async () => {
   const firstProgress = Promise.withResolvers();
   const secondProgress = Promise.withResolvers();
   const encoder = new TextEncoder();
@@ -756,8 +756,8 @@ test('native calls dispatch before EOF with stable IDs, signatures and no final 
   push([], 'STOP');
   controller.close();
   const result = await pending;
-  assert.equal(afterFirstChunk, 1);
-  assert.equal(beforeEof, 2);
+  assert.equal(afterFirstChunk, 0);
+  assert.equal(beforeEof, 0);
   assert.equal(calls.length, 2);
   assert.deepEqual(result.toolCalls, calls);
   assert.notEqual(calls[0].id, calls[1].id);
@@ -834,6 +834,36 @@ for (const finishReason of ['SAFETY', 'MAX_TOKENS', 'MALFORMED_FUNCTION_CALL', '
   });
 }
 
+test('a MAX_TOKENS finish carrying whole native calls is a tool-use turn', async () => {
+  const provider = providerWith(async () =>
+    sseResponse([
+      candidateChunk([
+        { text: 'checking' },
+        { functionCall: { id: 'whole', name: 'read', args: { path: 'a.txt' } } },
+      ]),
+      candidateChunk([], 'MAX_TOKENS'),
+    ])
+  );
+  const calls = [];
+  const result = await provider.send([{ role: 'user', content: 'Read.' }], 'gemini-3.8-flash', STREAM_PARITY_TOOLS, {
+    effort: 'low',
+    onToolCall: (call) => calls.push(call),
+  });
+  assert.deepEqual(
+    result.toolCalls.map((call) => call.id),
+    ['whole']
+  );
+  assert.deepEqual(calls, result.toolCalls);
+});
+
+test('a MAX_TOKENS finish without any native call still fails the turn', async () => {
+  const provider = providerWith(async () => sseResponse([candidateChunk([{ text: 'cut' }], 'MAX_TOKENS')]));
+  await assert.rejects(
+    provider.send([{ role: 'user', content: 'Hi.' }], 'gemini-3.8-flash', STREAM_PARITY_TOOLS, { effort: 'low' }),
+    (error) => error.providerIncomplete === true && error.finishReason === 'MAX_TOKENS'
+  );
+});
+
 test('prompt blocking suppresses calls even without a candidate finish reason', async () => {
   const chunk = candidateChunk([{ functionCall: { id: 'blocked', name: 'read', args: { path: 'a.txt' } } }]);
   chunk.response.promptFeedback = { blockReason: 'SAFETY' };
@@ -870,7 +900,62 @@ test('an in-band error envelope after STOP fails the turn before any success', a
   );
 });
 
-test('a later failed finish retains earlier eager calls without dispatching the rejected call', async () => {
+test('a call followed by a SAFETY finish is never dispatched and keeps the ratings', async () => {
+  const provider = providerWith(async () =>
+    sseResponse([
+      candidateChunk([{ functionCall: { id: 'earlier', name: 'read', args: { path: 'a.txt' } } }]),
+      {
+        response: {
+          candidates: [
+            {
+              content: { role: 'model', parts: [] },
+              finishReason: 'SAFETY',
+              finishMessage: 'blocked by policy',
+              safetyRatings: [{ category: 'HARM_CATEGORY_HARASSMENT', probability: 'HIGH', blocked: true }],
+            },
+          ],
+        },
+      },
+    ])
+  );
+  const calls = [];
+  await assert.rejects(
+    provider.send([{ role: 'user', content: 'Read.' }], 'gemini-3.8-flash', STREAM_PARITY_TOOLS, {
+      effort: 'low',
+      onToolCall: (call) => calls.push(call),
+    }),
+    (error) => {
+      assert.equal(error.code, 'safety');
+      assert.equal(error.finishMessage, 'blocked by policy');
+      assert.deepEqual(error.safetyRatings, [
+        { category: 'HARM_CATEGORY_HARASSMENT', probability: 'HIGH', blocked: true },
+      ]);
+      assert.equal(error.emittedToolCall, undefined);
+      return true;
+    }
+  );
+  assert.deepEqual(calls, []);
+});
+
+test('a text-recovered call followed by a SAFETY finish is never dispatched', async () => {
+  const provider = providerWith(async () =>
+    sseResponse([
+      candidateChunk([{ text: '<invoke name="read"><parameter name="path">a.txt</parameter></invoke>' }]),
+      candidateChunk([], 'SAFETY'),
+    ])
+  );
+  const calls = [];
+  await assert.rejects(
+    provider.send([{ role: 'user', content: 'Read.' }], 'gemini-3.8-flash', STREAM_PARITY_TOOLS, {
+      effort: 'low',
+      onToolCall: (call) => calls.push(call),
+    }),
+    (error) => error.code === 'safety'
+  );
+  assert.deepEqual(calls, []);
+});
+
+test('a later failed finish dispatches none of the turn calls', async () => {
   const provider = providerWith(async () =>
     sseResponse([
       candidateChunk([{ functionCall: { id: 'accepted', name: 'read', args: { path: 'a.txt' } } }]),
@@ -885,19 +970,18 @@ test('a later failed finish retains earlier eager calls without dispatching the 
     }),
     (error) => {
       assert.equal(error.code, 'safety');
-      assert.equal(error.emittedToolCall, true);
-      assert.equal(error.unsafeToRetry, true);
-      assert.deepEqual(error.partialToolCalls, calls);
+      assert.equal(error.emittedToolCall, undefined);
+      assert.deepEqual(
+        error.partialToolCalls.map((call) => call.id),
+        ['accepted', 'blocked']
+      );
       return true;
     }
   );
-  assert.deepEqual(
-    calls.map((call) => call.id),
-    ['accepted']
-  );
+  assert.deepEqual(calls, []);
 });
 
-test('truncation after an eager native call cannot retry or fail over and retains signed replay', async () => {
+test('truncation after a native call dispatches nothing', async () => {
   const part = {
     functionCall: { id: 'already-ran', name: 'read', args: { path: 'a.txt' } },
     thoughtSignature: 'signed-call',
@@ -915,16 +999,12 @@ test('truncation after an eager native call cannot retry or fail over and retain
     }),
     (error) => {
       assert.equal(error.code, 'TRUNCATED_STREAM');
-      assert.equal(error.emittedToolCall, true);
-      assert.equal(error.unsafeToRetry, true);
-      assert.deepEqual(error.partialToolCalls, calls);
-      assert.deepEqual(error.partialProviderReplay.items, [part]);
-      assert.deepEqual(error.partialProviderReplay.requestContext, { model: 'gemini-3.8-flash-low' });
+      assert.equal(error.emittedToolCall, undefined);
       return true;
     }
   );
-  assert.equal(calls.length, 1);
-  assert.equal(requests, 1);
+  assert.deepEqual(calls, []);
+  assert.ok(requests >= 1);
 });
 
 // ── Retry policy (capacity backoff, RPM quick retry) ──
@@ -1000,12 +1080,20 @@ function adviceResponse(status, retryDelay, reason) {
   });
 }
 
-test('capacity ignores long server advice on 429, 503 and 529', async () => {
+test('capacity honors advised RetryInfo within the budget on 429, 503 and 529', async () => {
+  for (const status of [429, 503, 529]) {
+    const h = retryHarness([() => adviceResponse(status, '20s', status === 429 ? 'MODEL_CAPACITY_EXHAUSTED' : undefined), ok]);
+    assert.equal((await h.send()).content, 'recovered', `status ${status}`);
+    assert.deepEqual(h.sleeps, [20_000], `status ${status}`);
+  }
+});
+
+test('capacity advice beyond the retry budget surfaces with its reset time instead of retrying', async () => {
   for (const status of [429, 503, 529]) {
     const h = retryHarness([() => adviceResponse(status, '600s', status === 429 ? 'MODEL_CAPACITY_EXHAUSTED' : undefined), ok]);
-    assert.equal((await h.send()).content, 'recovered', `status ${status}`);
-    assert.equal(h.sleeps.length, 1);
-    assert.ok(near(h.sleeps[0], 1000, 0.1), `status ${status}: ${h.sleeps[0]}`);
+    await assert.rejects(h.send(), (error) => error.status === status && error.retryAfterMs === 600_000 && error.resetAt > Date.now());
+    assert.equal(h.calls, 1, `status ${status}`);
+    assert.deepEqual(h.sleeps, []);
   }
 });
 

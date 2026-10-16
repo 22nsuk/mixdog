@@ -26,8 +26,9 @@
  * -d` forgets it).
  */
 import { existsSync } from 'node:fs';
+import { assertRecoveryStoresClear, recoveryScopes, retainedRecoveryScopes, validateRecoveryScope } from './file-recovery.mjs';
 import { lstat, mkdir, readdir, readFile, rm, rmdir } from 'node:fs/promises';
-import { dirname, join, relative, sep } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import {
   managedWorktreePath,
   managedWorktreeRoot,
@@ -37,6 +38,13 @@ import {
   worktreeBranchName,
   worktreeError,
 } from './contract.mjs';
+import {
+  assertCarryable,
+  carryUncommittedChanges,
+  dropRecoveryRef,
+  restoreFromRecoveryRef,
+  uncommittedChanges,
+} from './carry.mjs';
 import { freeBytesAt, requiredBytes, trackedCheckoutBytes } from './disk.mjs';
 import {
   branchCommit,
@@ -64,7 +72,7 @@ import { withRepoLock as withRepoMutationLock } from './lock.mjs';
 import { mergeBranchIntoCheckout } from './merge.mjs';
 import { readOwnerLease, removeOwnerLease, sameOwner, writeOwnerLease } from './owner.mjs';
 import { canonicalPath, checkoutFolder, isWithin, pathKey, projectSubdirOf, samePath } from './paths.mjs';
-import { deleteRecord, entryView, getRecord, insertRecord, putRecord, readRegistry } from './registry.mjs';
+import { deleteRecord, entryView, getRecord, insertRecord, putRecord, readRegistry, registryPath } from './registry.mjs';
 import { normalizeWorktreeSettings } from './settings.mjs';
 import { slugFromHint, uniqueSlug } from './slug.mjs';
 
@@ -74,6 +82,8 @@ const REMOVE_RETRY_DELAY_MS = 150;
 // The session copies the project identity into each managed worktree; it is
 // Mixdog metadata, not user data, so it alone never makes a worktree dirty.
 const SESSION_PROJECT_ID_PATH = '.mixdog/project.id';
+// Changed paths WORKTREE_DIRTY_CHOICE lists for the dialog's preview (the count is exact).
+const DIRTY_CHOICE_PREVIEW = 50;
 
 export { registerRootReleaser } from './contract.mjs';
 
@@ -327,6 +337,7 @@ async function deleteBranchIfFree(record) {
  * still present (empty when everything is gone).
  */
 async function removeCheckout(record) {
+  await assertRecoveryStoresClear(record);
   await assertManagedCheckoutPath(record);
   const remaining = [];
   for (const path of await removeIncludeLinks(record.resources?.includes)) remaining.push({ kind: 'link', path });
@@ -437,6 +448,7 @@ async function rollbackCreation(record, cause) {
  * and retried with the deletion; it never keeps the checkout.
  */
 async function finishDeletion(record) {
+  await assertRecoveryStoresClear(record);
   const remaining = [];
   try {
     await removeOwnerLease(record);
@@ -514,6 +526,46 @@ export async function findWorktreeContaining(path) {
   if (typeof path !== 'string' || !path.trim()) return null;
   const record = Object.values((await readRegistry()).entries).find((item) => isWithin(item.path, path));
   return record ? entryView(record) : null;
+}
+
+/** File-host seam, not a user capability. Persist the host-owned scope before
+ * preparing a byte journal, and hold the same repository lock as every removal
+ * through the operation. The descriptor survives daemon exit/startup reconcile.
+ * @template T
+ * @param {string} root
+ * @param {string} directory
+ * @param {'write'|'restore'|'inspect'|'discard'} action
+ * @param {() => Promise<T>} run
+ * @returns {Promise<T>}
+ */
+export async function withWorktreeRecoveryStore(root, directory, action, run) {
+  const entry = await findWorktreeContaining(root);
+  if (!entry) {
+    // A managed checkout can disappear between host authorization and this
+    // lookup. Its reserved namespace must never become an ordinary project.
+    // Retain a lexical check as well, so a replacement link cannot escape it.
+    const store = dirname(registryPath());
+    const lexicalKey = (path) => process.platform === 'win32' ? resolve(path).toLowerCase() : resolve(path);
+    const requested = lexicalKey(root);
+    if (isWithin(store, root) || [store, canonicalPath(store)].some((path) =>
+      requested === lexicalKey(path) || requested.startsWith(lexicalKey(path) + sep)))
+      throw worktreeError('WORKTREE_MISSING', undefined, { path: root });
+    return run();
+  }
+  return withRepoLock(entry.repoCommonDir, async () => {
+    const record = await getRecord(entry.id);
+    if (!record || ((action === 'write' || action === 'restore') && record.state !== 'ready'))
+      throw worktreeError('WORKTREE_MISSING', undefined, { entryId: entry.id });
+    const scope = validateRecoveryScope(record, { root, directory });
+    let scopes = recoveryScopes(record);
+    if (!scopes.some((item) => item.root === root && item.directory === directory)) {
+      if (scopes.length >= 64) scopes = await retainedRecoveryScopes(record);
+      if (scopes.length >= 64) throw worktreeError('WORKTREE_FILE_RECOVERY');
+      record.editorRecoveryStores = [...scopes, scope];
+      await putRecord(record);
+    }
+    return run();
+  });
 }
 
 /** Mark an entry disposable: startup reconcile may remove it once clean and merged. */
@@ -600,8 +652,20 @@ async function diskFullFailure(error, { needed, root }) {
 }
 
 /**
+ * `carryChanges` decides the project folder's uncommitted changes (tracked
+ * and untracked, ignored excluded), judged under the repository lock:
+ * omitted/null leaves them unexamined; `ask` refuses with
+ * WORKTREE_DIRTY_CHOICE (`details: { count, paths }`, paths capped) while
+ * there are any; `leave` keeps them in the project folder; `carry` moves
+ * them into the new worktree (carry.mjs: whole checkout, ignored files stay)
+ * — refused (WORKTREE_DIRTY) during a merge, rebase or cherry-pick, with
+ * unmerged entries, dirty submodules, filtered (LFS) paths or oversized
+ * untracked files. The result's `changes` (`{ mode: 'carried'|'left',
+ * count, recoveryRef? }`) reports what happened to them; a carried move's
+ * `recoveryRef` stays until dropCarryRecoveryRef / restoreCarriedChanges.
  * @param {{ projectPath: string, sessionId: string, runtimeToken: string, baseBranch?: string|null,
- *   nameHint?: string, confirmLarge?: boolean, txId: string, signal?: AbortSignal }} input
+ *   nameHint?: string, confirmLarge?: boolean, txId: string, signal?: AbortSignal,
+ *   carryChanges?: 'ask'|'leave'|'carry'|null }} input
  */
 export async function createManagedWorktree({
   projectPath,
@@ -612,9 +676,13 @@ export async function createManagedWorktree({
   confirmLarge = false,
   txId,
   signal,
+  carryChanges = null,
 } = {}) {
   requireText(projectPath, 'projectPath');
   requireText(txId, 'txId');
+  if (![null, 'ask', 'leave', 'carry'].includes(carryChanges)) {
+    throw new TypeError('carryChanges must be ask, leave or carry.');
+  }
   const owner = normalizeWorktreeOwner({ sessionId, runtimeToken, pid: process.pid });
   throwIfAborted(signal);
   const repo = await inspectRepo(projectPath, { signal });
@@ -622,6 +690,18 @@ export async function createManagedWorktree({
     const existing = await settleSessionAttempts({ txId, owner, repoCommonDir: repo.repoCommonDir });
     if (existing) return existing;
     throwIfAborted(signal);
+
+    const projectSubdir = projectSubdirOf(repo.topLevel, repo.projectPath);
+    // A carry is judged by the same status read that counts the changes.
+    let pendingChanges = [];
+    if (carryChanges === 'carry') pendingChanges = await assertCarryable(repo.topLevel, projectSubdir);
+    else if (carryChanges) pendingChanges = await uncommittedChanges(repo.topLevel, projectSubdir);
+    if (pendingChanges.length && carryChanges === 'ask') {
+      throw worktreeError('WORKTREE_DIRTY_CHOICE', undefined, {
+        count: pendingChanges.length,
+        paths: pendingChanges.slice(0, DIRTY_CHOICE_PREVIEW),
+      });
+    }
 
     const settings = await currentWorktreeSettings();
     let baseCommit = repo.headCommit;
@@ -675,6 +755,7 @@ export async function createManagedWorktree({
         timeoutMs: WORKTREE_ADD_TIMEOUT_MS,
       });
     let record = await reserve();
+    let carried = null;
 
     try {
       await mkdir(root, { recursive: true });
@@ -708,16 +789,46 @@ export async function createManagedWorktree({
       await setResource(record, 'owner', 'pending');
       await writeOwnerLease(record, owner);
       await setResource(record, 'owner', 'created');
+      // Carried before the include entries are copied, so an include never
+      // stands in the way of a carried file; the status is read again here,
+      // right before acting.
+      let changes = pendingChanges.length ? { mode: 'left', count: pendingChanges.length } : null;
+      if (carryChanges === 'carry') {
+        carried = await carryUncommittedChanges({
+          topLevel: repo.topLevel,
+          projectSubdir,
+          worktreePath: record.path,
+          baseCommit,
+          label: record.id,
+        });
+        // The recovery ref stays until the caller has committed the move
+        // (dropCarryRecoveryRef) or put the changes back (restoreCarriedChanges).
+        changes = carried.count ? { mode: 'carried', count: carried.count, recoveryRef: carried.recoveryRef } : null;
+      }
       const applied = await applyIncludes(includePlan, record.path, (ledger) => recordInclude(record, ledger));
       throwIfAborted(signal);
       record.warnings = [...record.warnings, ...applied.warnings];
       record.state = 'ready';
       await putRecord(record);
-      return entryView(record);
+      return { ...entryView(record), ...(changes ? { changes } : {}) };
     } catch (error) {
+      // Carried already: the changes go back to the project folder before the
+      // worktree that holds them is rolled back (the recovery ref keeps them
+      // either way).
+      let carryRestore = null;
+      if (carried?.recoveryRef) {
+        carryRestore = await restoreFromRecoveryRef(repo.topLevel, projectSubdir, carried.recoveryRef)
+          .then(() => ({ restored: true, recoveryRef: carried.recoveryRef }))
+          .catch((restoreError) => ({
+            restored: false,
+            recoveryRef: carried.recoveryRef,
+            error: String(restoreError?.message || restoreError),
+          }));
+      }
       const rollback = await rollbackCreation(record, error);
       const failure = isDiskFullError(error) ? await diskFullFailure(error, { needed, root }) : error;
       if (!rollback.complete) failure.rollback = rollback;
+      if (carryRestore) failure.carryRestore = carryRestore;
       throw failure;
     }
 
@@ -756,6 +867,30 @@ export async function createManagedWorktree({
       return (await insertRecord(candidate)) ? candidate : null;
     }
   });
+}
+
+/**
+ * After a carry whose session move failed: put the changes kept at
+ * `recoveryRef` back into the project folder (refused, ref kept, when the
+ * folder changed meanwhile). The ref stays; drop it with dropCarryRecoveryRef.
+ * @param {{ projectPath: string, recoveryRef: string }} input
+ */
+export async function restoreCarriedChanges({ projectPath, recoveryRef } = {}) {
+  requireText(projectPath, 'projectPath');
+  const repo = await inspectRepo(projectPath);
+  return withRepoLock(repo.repoCommonDir, () =>
+    restoreFromRecoveryRef(repo.topLevel, projectSubdirOf(repo.topLevel, repo.projectPath), recoveryRef)
+  );
+}
+
+/**
+ * Forget a carry's recovery ref once the session move it protected is committed.
+ * @param {{ projectPath: string, recoveryRef: string }} input
+ */
+export async function dropCarryRecoveryRef({ projectPath, recoveryRef } = {}) {
+  requireText(projectPath, 'projectPath');
+  const repo = await inspectRepo(projectPath);
+  return withRepoLock(repo.repoCommonDir, () => dropRecoveryRef(repo.topLevel, recoveryRef));
 }
 
 /**
@@ -1054,12 +1189,14 @@ async function assertRemovable(record) {
 /**
  * The refusal removeManagedWorktree would raise, checked before anything
  * moves (a session leaves its worktree only for a removal that can proceed).
- * Unknown entries are WORKTREE_MISSING; `force` and non-ready entries pass.
+ * Unknown entries are WORKTREE_MISSING. Recovery records block even `force`
+ * and non-ready entries; ordinary dirty/unmerged checks apply only to ready ones.
  * @param {{ entryId: string, force?: boolean }} input
  */
 export async function assertWorktreeRemovable({ entryId, force = false } = {}) {
   const record = await getRecord(entryId);
   if (!record) throw worktreeError('WORKTREE_MISSING', undefined, { entryId });
+  await assertRecoveryStoresClear(record);
   if (record.state !== 'ready') return;
   await assertManagedCheckoutPath(record);
   if (!force) await assertRemovable(record);
@@ -1067,7 +1204,8 @@ export async function assertWorktreeRemovable({ entryId, force = false } = {}) {
 
 /**
  * Remove a managed worktree. Refuses dirty (incl. untracked and modified
- * include copies) or unmerged worktrees unless `force`.
+ * include copies) or unmerged worktrees unless `force`. Retained file recovery
+ * data blocks removal regardless of force.
  * @param {{ entryId: string, force?: boolean }} input
  * @returns {Promise<{ removed: boolean, retryable?: boolean, remaining?: object[], branchDeleted?: boolean }>}
  */
@@ -1082,6 +1220,7 @@ export async function removeManagedWorktree({ entryId, force = false } = {}) {
       return rollback.complete ? { removed: true } : { removed: false, retryable: true, remaining: rollback.remaining };
     }
     if (current.state === 'ready') {
+      await assertRecoveryStoresClear(current);
       await assertManagedCheckoutPath(current);
       if (!force) await assertRemovable(current);
       current.state = 'deleting';
@@ -1101,7 +1240,7 @@ function leaseProcessAlive(lease) {
  * Every managed worktree with who keeps it: `retained` (its session is in
  * `retainedSessionIds`, i.e. still in the session store), `ownerLive` (a
  * live session or a running lease holder), and `removable` (what a prune
- * would remove: neither, or disposable and not live).
+ * would remove: neither, or disposable and not live, with no retained recovery data).
  * @param {{ liveSessionIds?: string[], retainedSessionIds?: string[] }} input
  */
 export async function listManagedWorktrees({ liveSessionIds = [], retainedSessionIds = [] } = {}) {
@@ -1112,12 +1251,20 @@ export async function listManagedWorktrees({ liveSessionIds = [], retainedSessio
     const ownerLive =
       (!!record.ownerSessionId && live.has(record.ownerSessionId)) || leaseProcessAlive(await readOwnerLease(record));
     const isRetained = !!record.ownerSessionId && retained.has(record.ownerSessionId);
+    let removable = record.state !== 'ready' || (!ownerLive && (record.disposable === true || !isRetained));
+    if (removable) {
+      try { await assertRecoveryStoresClear(record); }
+      catch (error) {
+        if (error?.code !== 'WORKTREE_FILE_RECOVERY') throw error;
+        removable = false;
+      }
+    }
     rows.push({
       ...entryView(record),
       projectPath: record.projectPath,
       retained: isRetained,
       ownerLive,
-      removable: record.state !== 'ready' || (!ownerLive && (record.disposable === true || !isRetained)),
+      removable,
     });
   }
   return rows;
@@ -1194,6 +1341,7 @@ export async function reconcileManagedWorktrees({
                 report.kept.push({ id: record.id, reason: dirty.length ? 'dirty' : 'unmerged' });
                 continue;
               }
+              await assertRecoveryStoresClear(record);
               record.state = 'deleting';
               record.deleting = { force: false, startedAt: Date.now(), remaining: [] };
               await putRecord(record);

@@ -105,16 +105,24 @@ export function turnReviewHead({
  *  history. */
 export function turnReviewSegment({
   fileCount,
+  files,
   headlineStats,
   onOpenChanges,
+  onOpenChangeFile,
   setExpanded,
   sessionId,
   historyTurns,
   busy,
+  label,
 }: {
+  /** The Changes source's name (the segment's accessible label). */
+  label: string;
   fileCount: number;
+  /** Every changed file, listed in the menu. */
+  files: ReadonlyMap<string, TurnReviewFileEntry>;
   headlineStats: HeadlineStats;
   onOpenChanges: (() => void) | undefined;
+  onOpenChangeFile: ((path: string) => void) | undefined;
   setExpanded: Dispatch<SetStateAction<boolean>>;
   sessionId: string | undefined;
   historyTurns: number;
@@ -125,9 +133,11 @@ export function turnReviewSegment({
       sessionId={sessionId}
       historyTurns={historyTurns}
       busy={busy}
-      label={t('Files changed this session')}
+      label={label}
       title={t('Files {{count}}', { count: fileCount })}
+      files={files}
       onViewChanges={onOpenChanges ?? (() => setExpanded(true))}
+      onOpenFile={onOpenChangeFile ?? (() => setExpanded(true))}
     >
       <IslandSegLabel text={t('Island: {{count}} files', { count: fileCount })} count={fileCount} icon="file-diff" />
       {headlineStats.hasLineStats && (
@@ -220,6 +230,7 @@ function turnReviewRevertControl({
             .then(async () => {
               setReverted((current) => [...current, name]);
               setRevertedBoundary(turnBoundaryKey);
+              window.dispatchEvent(new Event('mixdog:git-changed'));
               await refreshAgentReviews();
             })
             .catch((reason: unknown) => setRevertError(errorMessageText(reason)));
@@ -342,11 +353,10 @@ export function turnReviewFileItems({
   return sources.flatMap((source) => {
     const sourceHeader = (
       <li key={`${source.key}:source`} className="turn-review-source">
-        {/* Turn/Lead are catalog keys; agent tags are user data, never keys. */}
+        {/* Turn/Lead are catalog keys; the session label arrives translated;
+            agent tags are user data, never keys. */}
         <strong>
-          {source.key === 'turn' || source.key === 'lead' || source.key === 'session'
-            ? t(source.label)
-            : source.label || t('Agent')}
+          {source.key === 'turn' || source.key === 'lead' ? t(source.label) : source.label || t('Agent')}
         </strong>
         <span className="diff-stats" aria-hidden={!source.summary.hasLineStats}>
           <i>{source.summary.additions > 0 ? `+${source.summary.additions}` : ''}</i>

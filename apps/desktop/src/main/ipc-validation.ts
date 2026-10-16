@@ -42,7 +42,7 @@ import {
   VISUALIZE_INLINE_KINDS,
   type VisualizeInlineContent,
 } from '../shared/visualize';
-import { requiredSessionId } from './desktop-state';
+import { requiredSessionId, requiredSessionIds } from './desktop-state';
 import { hasControlCharacter } from './ipc-control-chars';
 import { isWorktreeCapability, validateWorktreeCapabilityArgs, WORKTREE_CAPABILITY_ARITY } from './worktree-validation';
 import { IMPORT_CAPABILITY_ARITY, isImportCapability, validateImportCapabilityArgs } from './import-validation';
@@ -374,6 +374,8 @@ const CAPABILITY_ARITY = {
   recall: [1, 2],
   runDoctor: [0, 0],
   compact: [0, 0],
+  askSide: [1, 1],
+  cancelSide: [0, 0],
   listPresets: [0, 0],
   setModel: [1, 1],
   getWebSearchRoute: [0, 0],
@@ -406,10 +408,12 @@ const CAPABILITY_ARITY = {
   getUsageDashboard: [0, 1],
   getUsageStats: [0, 1],
   getQuotaHistory: [0, 1],
-  getSessionUsage: [0, 0],
+  getSessionUsage: [0, 1],
   consumeCodexRateLimitResetCredit: [1, 1],
   getSessionReviewDiff: [0, 0],
+  getSessionReviewFilePatch: [1, 2],
   getTurnReviewDiff: [0, 1],
+  getTurnReviewFilePatch: [1, 1],
   revertTurnReview: [0, 1],
   revertTurnReviewFile: [1, 2],
   getTurnChanges: [1, 1],
@@ -511,8 +515,12 @@ const CUSTOM_PROVIDER_KEYS = new Set([
   'auth',
   'discovery',
   'modelOverrides',
+  'wires',
+  'modelWires',
   'type',
 ]);
+// Wires a custom OpenAI-compatible endpoint can serve (custom-provider-config.mjs).
+const CUSTOM_WIRES = new Set(['chat', 'responses', 'messages']);
 const CUSTOM_MODEL_KEYS = new Set(['id', 'name', 'contextWindow', 'maxOutputTokens']);
 const CUSTOM_PROTOCOLS = new Set(['openai-chat', 'openai-responses', 'anthropic']);
 const CUSTOM_DISCOVERY_KEYS = new Set(['newModelsHidden']);
@@ -589,8 +597,37 @@ export function requiredCustomProviderInput(value: unknown, modelsOptional = fal
   if (input.type !== undefined && input.type !== 'custom') {
     throw new TypeError('custom provider type is invalid.');
   }
-  if ((input.discovery !== undefined || input.modelOverrides !== undefined) && input.schemaVersion !== 2) {
+  if (
+    (input.discovery !== undefined ||
+      input.modelOverrides !== undefined ||
+      input.wires !== undefined ||
+      input.modelWires !== undefined) &&
+    input.schemaVersion !== 2
+  ) {
     throw new TypeError('custom provider schemaVersion is invalid.');
+  }
+  // Shape only; the runtime ties them to the protocol and to each other.
+  if (input.wires !== undefined) {
+    if (
+      !Array.isArray(input.wires) ||
+      input.wires.length === 0 ||
+      input.wires.length > CUSTOM_WIRES.size ||
+      input.wires.some((wire) => typeof wire !== 'string' || !CUSTOM_WIRES.has(wire))
+    ) {
+      throw new TypeError('custom provider wires are invalid.');
+    }
+  }
+  if (input.modelWires !== undefined) {
+    const modelWires = plainRecord(input.modelWires, 'custom provider modelWires');
+    const ids = Object.keys(modelWires);
+    if (ids.length > CUSTOM_MAX_OVERRIDES) throw new TypeError('custom provider modelWires are too large.');
+    for (const modelId of ids) {
+      requireSafeModelId(modelId);
+      const wire = modelWires[modelId];
+      if (typeof wire !== 'string' || !CUSTOM_WIRES.has(wire)) {
+        throw new TypeError('custom provider modelWires are invalid.');
+      }
+    }
   }
   // v2 states models as modelOverrides; a legacy `models` list is unversioned only.
   if (input.schemaVersion === 2 && input.models !== undefined) {
@@ -1022,6 +1059,7 @@ export function requiredDesktopCapabilityRequest(value: unknown): DesktopCapabil
   if (isWorktreeCapability(capability)) validateWorktreeCapabilityArgs(capability, args);
   if (isImportCapability(capability)) validateImportCapabilityArgs(capability, args);
   if (capability === 'contextStatus' && args.length) validateContextStatusArgs(args[0]);
+  if (capability === 'getSessionUsage' && args.length) validateSessionUsageArgs(args[0]);
   validateSettingCapabilityArgs(capability, args);
   validateLocalProviderCapabilityArgs(capability, args);
   validateCredentialCapabilityArgs(capability, args);
@@ -1070,6 +1108,15 @@ function validateContextStatusArgs(options: unknown): void {
   } else if (inspection.revision !== undefined) {
     throw new TypeError('context revision requires an entry id.');
   }
+}
+
+/** The agent sessions whose ledger totals the composer island reads beside its own. */
+const MAX_SESSION_USAGE_IDS = 64;
+function validateSessionUsageArgs(options: unknown): void {
+  const request = optionalPlainRecord(options);
+  if (!request) throw new TypeError('session usage options must be an object.');
+  requireAllowedKeys(request, new Set(['sessionIds']), 'session usage options');
+  if (request.sessionIds !== undefined) requiredSessionIds(request.sessionIds, MAX_SESSION_USAGE_IDS);
 }
 
 function validateSettingCapabilityArgs(capability: DesktopCapability, args: readonly unknown[]): void {
@@ -1157,6 +1204,8 @@ function validateCredentialCapabilityArgs(capability: DesktopCapability, args: r
 }
 
 function validateTurnCapabilityArgs(capability: DesktopCapability, args: readonly unknown[]): void {
+  // A /btw side question: one non-empty question text.
+  if (capability === 'askSide') requiredString(args[0], 'side question', MAX_PROMPT_LENGTH);
   if (capability === 'getTurnReviewDiff' && args[0] !== undefined) {
     // The turn review bar asks for `{ refresh, known, summary, poll }`: whether
     // to re-read the worktree before diffing, the tag of the review it already
@@ -1174,6 +1223,11 @@ function validateTurnCapabilityArgs(capability: DesktopCapability, args: readonl
     ) {
       throw new TypeError('turn review options are invalid.');
     }
+  }
+  if (capability === 'getSessionReviewFilePatch' || capability === 'getTurnReviewFilePatch') {
+    // `[file, oldPath?]`: one listed file (and a rename's source) of a review.
+    requiredString(args[0], 'file', 4_096);
+    if (args[1] !== undefined) requiredString(args[1], 'oldPath', 4_096);
   }
   if (capability === 'getTurnChanges') {
     // `{ checkpointId, patch?, file? }`: one turn's recorded changes.
@@ -1327,6 +1381,15 @@ export function requiredGitPaths(value: unknown): string[] {
     throw new TypeError('git paths are invalid.');
   }
   return value.map(requiredGitPath);
+}
+
+export function requiredReviewDiffFiles(value: unknown): { path: string; untracked: boolean }[] {
+  if (!Array.isArray(value) || value.length > 512) throw new TypeError('git review files are invalid.');
+  return value.map((entry) => {
+    if (typeof entry !== 'object' || entry === null) throw new TypeError('git review file is invalid.');
+    const { path, untracked } = entry as { path?: unknown; untracked?: unknown };
+    return { path: requiredGitPath(path), untracked: untracked === true };
+  });
 }
 
 export function requiredGitPath(value: unknown): string {

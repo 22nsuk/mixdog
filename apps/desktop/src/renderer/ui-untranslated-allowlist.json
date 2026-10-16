@@ -6,6 +6,7 @@
     "MY_API_KEY": "environment variable name placeholder",
     "daily-briefing": "example skill identifier",
     "my-project": "example project identifier",
+    "btw": "slash command name (/btw) shown as the side-question tag",
     "gh": "CLI binary name",
     "figma": "MCP server identifier",
     "office": "MCP server identifier",
@@ -220,8 +221,8 @@
     },
     "fr": {
       "Ports": "same spelling for network ports in French UI",
-    "Conversations": "same spelling in French",
-    "{{count}} conversations": "same spelling in French",
+      "Conversations": "same spelling in French",
+      "{{count}} conversations": "same spelling in French",
       "Port {{port}}": "same spelling for a network port in French UI",
       "Sessions": "same spelling in French",
       "Workflow": "established software term in French UI",
@@ -307,7 +308,9 @@
       "Types": "same spelling in French",
       "Version": "same spelling in French",
       "Audio": "same spelling in French",
-      "Web": "same spelling in French"
+      "Web": "same spelling in French",
+      "Options": "same word in French UI",
+      "Question": "same word in French UI"
     },
     "it": {
       "Workflow": "established software term in Italian UI",

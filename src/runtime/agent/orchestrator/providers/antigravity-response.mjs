@@ -8,13 +8,20 @@
  */
 import { traceAgentUsage } from '../agent-trace.mjs';
 import { createProviderReplay } from './lib/provider-replay.mjs';
-import { parseToolCalls, collectGeminiGroundingSources, parseGeminiTextPartMetadata } from './gemini-schema.mjs';
-import { geminiPolicyFinishCode } from './gemini-error-contract.mjs';
+import {
+  parseToolCalls,
+  emitGeminiToolCalls,
+  collectGeminiGroundingSources,
+  parseGeminiTextPartMetadata,
+} from './gemini-schema.mjs';
+import { geminiFinishErrorFields, geminiPolicyFinishCode } from './gemini-error-contract.mjs';
 
 // Pure usageMetadata normalization shared by the success path and a failed
 // stream's partialUsage.
 export function normalizeAntigravityUsage(um) {
-  const inputTokens = um.promptTokenCount || um.prompt_token_count || 0;
+  const inputTokens =
+    (um.promptTokenCount || um.prompt_token_count || 0) +
+    (um.toolUsePromptTokenCount || um.tool_use_prompt_token_count || 0);
   const cachedTokens = um.cachedContentTokenCount || um.cached_content_token_count || 0;
   const outputTokens =
     (um.candidatesTokenCount || um.candidates_token_count || 0) +
@@ -28,7 +35,7 @@ export function normalizeAntigravityUsage(um) {
  * @param {ReturnType<import('./antigravity-stream.mjs').createAntigravityStreamCollector>} deps.collector
  * @param {string} deps.useModel  wire model id
  * @param {object} deps.opts  send options (session/iteration/providerState)
- * @param {Function|null} deps.onToolCall  set when calls were streamed live
+ * @param {Function|null} deps.onToolCall  receives the turn's calls after a clean finish
  */
 export function finalizeAntigravityTurn({ response, collector, useModel, opts, onToolCall }) {
   const textLeakGuard = collector.leakGuard;
@@ -46,10 +53,8 @@ export function finalizeAntigravityTurn({ response, collector, useModel, opts, o
   // Thought signatures are only valid for the model family that minted
   // them; the request builder consults this when the route changes.
   if (providerReplay) providerReplay.requestContext = { model: useModel };
-  let nativeToolCalls;
-  if (!onToolCall) nativeToolCalls = parseToolCalls(responseParts);
-  else if (collector.streamedNativeToolCalls.length) nativeToolCalls = collector.streamedNativeToolCalls;
-  if (!onToolCall && textLeakGuard?.enabled) nativeToolCalls = textLeakGuard.filterNativeToolCalls(nativeToolCalls);
+  let nativeToolCalls = parseToolCalls(responseParts);
+  if (textLeakGuard?.enabled) nativeToolCalls = textLeakGuard.filterNativeToolCalls(nativeToolCalls);
   let toolCalls = nativeToolCalls;
   if (leakedToolCalls.length) {
     toolCalls = toolCalls?.length ? [...toolCalls, ...leakedToolCalls] : leakedToolCalls;
@@ -80,7 +85,17 @@ export function finalizeAntigravityTurn({ response, collector, useModel, opts, o
     });
   }
 
-  if (finishReason && normalizedFinish !== 'STOP') {
+  // A MAX_TOKENS cut that still delivered whole native functionCall parts is
+  // a tool-use turn: the calls arrived intact, only trailing output was cut.
+  // Every other non-STOP finish fails the turn, and so does a cut whose text
+  // also leaked a call (that call may be as truncated as the text around it).
+  const completeNativeCalls =
+    normalizedFinish === 'MAX_TOKENS' &&
+    String(candidate?.finishReason || '').replace(/^FINISH_REASON_/, '') === 'MAX_TOKENS' &&
+    !leakedToolCalls.length &&
+    !!nativeToolCalls?.length &&
+    nativeToolCalls.every((call) => typeof call?.name === 'string' && call.name !== '');
+  if (finishReason && normalizedFinish !== 'STOP' && !completeNativeCalls) {
     throw Object.assign(new Error(`Antigravity response incomplete: finishReason=${finishReason}`), {
       name: 'ProviderIncompleteError',
       code: geminiPolicyFinishCode(finishReason) || 'PROVIDER_INCOMPLETE',
@@ -93,9 +108,13 @@ export function finalizeAntigravityTurn({ response, collector, useModel, opts, o
       model: useModel,
       rawUsage: response.usageMetadata || null,
       ...(usage ? { partialUsage: usage, partialModel: useModel } : {}),
-      ...(collector.emittedToolCount ? { emittedToolCall: true, unsafeToRetry: true } : {}),
+      ...geminiFinishErrorFields(response),
     });
   }
+
+  // Terminal status first: a failed turn never runs its tool calls.
+  textLeakGuard?.releaseDeferredToolCalls();
+  emitGeminiToolCalls(nativeToolCalls, onToolCall);
 
   return {
     content,

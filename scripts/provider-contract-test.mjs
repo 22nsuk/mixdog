@@ -21,7 +21,6 @@ import {
 } from '../src/runtime/agent/orchestrator/providers/openai-compat-stream.mjs';
 import { useXaiResponsesWebSocket } from '../src/runtime/agent/orchestrator/providers/openai-compat-xai.mjs';
 import {
-  deepseekReplaysReasoningContent,
   toOpenAIMessages,
   toOpenAITools,
 } from '../src/runtime/agent/orchestrator/providers/openai-compat-wire.mjs';
@@ -29,6 +28,11 @@ import { toOpenAIResponsesTool } from '../src/runtime/agent/orchestrator/provide
 import { requestAnthropicTools } from '../src/runtime/agent/orchestrator/providers/lib/anthropic-request-utils.mjs';
 import { toGeminiTools } from '../src/runtime/agent/orchestrator/providers/gemini-schema.mjs';
 import { TOOL_DEFS as COMPUTER_TOOL_DEFS } from '../src/runtime/computer-bridge/tool-defs.mjs';
+import { COMPUTER_ACTION_CONTRACTS } from '../src/runtime/computer-bridge/action-schema.mjs';
+import { actionInputContract } from '../src/runtime/agent/orchestrator/providers/lib/action-input-contract.mjs';
+import { mergeFlatSchemaProperty } from '../src/runtime/agent/orchestrator/providers/lib/flat-schema-merge.mjs';
+import { prepareCursorToolDefinition } from '../src/runtime/agent/orchestrator/providers/cursor-wire-guards.mjs';
+import { normalizeGrokToolSchemas } from '../src/runtime/agent/orchestrator/providers/lib/grok-tool-schema.mjs';
 import { classifyError } from '../src/runtime/agent/orchestrator/providers/retry-classifier.mjs';
 import { GrokOAuthProvider } from '../src/runtime/agent/orchestrator/providers/grok-oauth.mjs';
 import { GROK_MODEL_CACHE_SCHEMA_VERSION } from '../src/runtime/agent/orchestrator/providers/grok-oauth-tokens.mjs';
@@ -77,7 +81,8 @@ test('Computer Use stays one shared custom-tool contract across providers', () =
       },
       'anthropic'
     )[0].input_schema,
-    toGeminiTools([tool]).functionDeclarations[0].parameters,
+    // Gemini carries the schema as JSON Schema (`parametersJsonSchema`).
+    toGeminiTools([tool]).functionDeclarations[0].parametersJsonSchema,
   ];
   for (const schema of schemas) {
     assert.deepEqual(schema.properties.action.enum, [
@@ -98,7 +103,7 @@ test('Computer Use stays one shared custom-tool contract across providers', () =
     assert.equal(JSON.stringify(schema).includes('computer_use_preview'), false);
     assert.equal(JSON.stringify(schema).includes('computer_20250124'), false);
   }
-  const anthropicInput = schemas[2].properties.input;
+  const anthropicInput = schemas[2].properties.input.anyOf.find((alternative) => alternative.title === 'act');
   assert.ok(anthropicInput.properties.actions);
   assert.deepEqual(anthropicInput.properties.actions.items.properties.type.enum, [
     'click',
@@ -117,6 +122,38 @@ test('Computer Use stays one shared custom-tool contract across providers', () =
     'wait',
   ]);
   assert.deepEqual(schemas[2].required, ['action']);
+});
+
+test('Computer Use bytes on unverified provider paths equal the pre-change flat form', () => {
+  const tool = COMPUTER_TOOL_DEFS[0];
+  // The flat `input` exactly as the advertised schema built it before the
+  // nested per-action form existed: every contract's input merged in order,
+  // then the per-action field listing.
+  const flatInput = {
+    ...COMPUTER_ACTION_CONTRACTS.map((contract) => contract.properties.input).reduce((merged, shape) =>
+      mergeFlatSchemaProperty(merged, shape)
+    ),
+    description: `Fields for the selected action. ${actionInputContract({ oneOf: COMPUTER_ACTION_CONTRACTS })}`,
+  };
+  const preChange = {
+    ...tool,
+    inputSchema: { ...tool.inputSchema, properties: { action: tool.inputSchema.properties.action, input: flatInput } },
+  };
+  const bytes = (value) => JSON.stringify(value);
+  const openAI = (t) => toOpenAITools([t])[0];
+  // OpenAI Chat Completions / OpenAI-compatible.
+  assert.equal(bytes(openAI(tool)), bytes(openAI(preChange)));
+  assert.equal(bytes(openAI(tool).function.parameters), bytes(preChange.inputSchema));
+  // OpenAI Responses (API, OAuth, WebSocket).
+  assert.equal(bytes(toOpenAIResponsesTool(tool)), bytes(toOpenAIResponsesTool(preChange)));
+  // Cursor builds its definition from the OpenAI tool.
+  assert.equal(bytes(prepareCursorToolDefinition(openAI(tool))), bytes(prepareCursorToolDefinition(openAI(preChange))));
+  // Grok, Gemini and an Anthropic-wire gateway also stay on the flat form.
+  assert.equal(bytes(normalizeGrokToolSchemas([tool])), bytes(normalizeGrokToolSchemas([preChange])));
+  assert.equal(bytes(toGeminiTools([tool])), bytes(toGeminiTools([preChange])));
+  const gatewayAnthropic = (t) =>
+    requestAnthropicTools([t], [], { providerToolSnapshotAuthoritative: true, providerNativeToolPrefixCount: 0 }, 'opencode-go');
+  assert.equal(bytes(gatewayAnthropic(tool)), bytes(gatewayAnthropic(preChange)));
 });
 
 test('OpenRouter model sanitizer applies hosted filters with a nine-month default cutoff', () => {
@@ -878,11 +915,16 @@ test('current vendor preset defaults and OpenCode Go protocol routes are pinned'
     assert.equal(isAnthropicGoModel(model), false, model);
   }
   assert.deepEqual(resolveOpenCodeGoBaseURLs(), {
-    openai: 'https://opencode.ai/zen/go/v1',
-    anthropic: 'https://opencode.ai/zen/go',
+    openai: 'https://opencode.ai/inference/go/v1',
+    anthropic: 'https://opencode.ai/inference/go',
   });
-  assert.equal(openCodeGoEndpointForModel('minimax-m3'), 'https://opencode.ai/zen/go/v1/messages');
-  assert.equal(openCodeGoEndpointForModel('glm-5.2'), 'https://opencode.ai/zen/go/v1/chat/completions');
+  // A user-configured base URL is kept as given.
+  assert.deepEqual(resolveOpenCodeGoBaseURLs('https://proxy.example/go/v1/'), {
+    openai: 'https://proxy.example/go/v1',
+    anthropic: 'https://proxy.example/go',
+  });
+  assert.equal(openCodeGoEndpointForModel('minimax-m3'), 'https://opencode.ai/inference/go/v1/messages');
+  assert.equal(openCodeGoEndpointForModel('glm-5.2'), 'https://opencode.ai/inference/go/v1/chat/completions');
 });
 
 test('provider-specific thinking fields do not leak across compat contracts', () => {
@@ -961,13 +1003,8 @@ test('xai ships reasoning_effort only for the model families that accept it', ()
   });
 });
 
-test('deepseek reasoning_content replay follows the model, not the provider', () => {
-  // deepseek-reasoner rejects reasoning_content in the input messages (400);
-  // thinking-mode models require it back once tools are in play.
-  assert.equal(deepseekReplaysReasoningContent('deepseek-reasoner'), false);
-  assert.equal(deepseekReplaysReasoningContent('deepseek-chat'), true);
-  assert.equal(deepseekReplaysReasoningContent('deepseek-v4'), true);
-
+test('deepseek reasoning_content is replayed when the caller asks for it', () => {
+  // DeepSeek docs: reasoning_content must be sent back when tools are present.
   const history = [
     { role: 'user', content: 'hi' },
     {
@@ -978,8 +1015,6 @@ test('deepseek reasoning_content replay follows the model, not the provider', ()
     },
     { role: 'tool', toolCallId: 'c1', content: 'ok' },
   ];
-  const reasonerWire = toOpenAIMessages(history, 'deepseek');
-  assert.equal(reasonerWire.find((m) => m.role === 'assistant').reasoning_content, undefined);
   const thinkingWire = toOpenAIMessages(history, 'deepseek', { replaysReasoningContent: true });
   assert.equal(thinkingWire.find((m) => m.role === 'assistant').reasoning_content, 'inner thought');
   // xAI keeps replaying by provider: omitting it is the top cache-miss cause.
@@ -1286,6 +1321,13 @@ test('OpenCode Go Anthropic delegation traces additive inner usage before inclus
     cachedTokens: 35,
     cacheWriteTokens: 5,
     promptTokens: 100,
+    // The inner Anthropic turn keeps the provider's raw usage object.
+    raw: {
+      input_tokens: 60,
+      cache_read_input_tokens: 35,
+      cache_creation_input_tokens: 5,
+      output_tokens: 5,
+    },
   });
   const traceRows = readFileSync(tracePath, 'utf8')
     .trim()

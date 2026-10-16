@@ -15,10 +15,7 @@ import { preserveGoalStateAfterTurn } from './goal-turn-state.mjs';
 export { preserveGoalStateAfterTurn } from './goal-turn-state.mjs';
 export { transcriptToolCallDisplayMode } from './turn-tool-cards.mjs';
 import { isRejected429, safeErrorDetails } from '../../runtime/shared/error-presentation.mjs';
-import {
-  QUOTA_KINDS,
-  providerErrorKind,
-} from '../../runtime/agent/orchestrator/providers/provider-error-kind.mjs';
+import { QUOTA_KINDS, providerErrorKind } from '../../runtime/agent/orchestrator/providers/provider-error-kind.mjs';
 import { registerTaskWaitSteeringCheck } from '../../runtime/agent/orchestrator/session/task-wait-control.mjs';
 import { promptDisplayText, STEERING_SUPPRESSED_DISPLAY } from './queue-helpers.mjs';
 import { yieldToRenderer } from './render-timing.mjs';
@@ -394,7 +391,15 @@ export function streamHandlers(ctx) {
   const { isCurrentTurn, stream } = ctx;
   return {
     onStageChange: async (stage, detail = null) => {
-      if (isCurrentTurn()) await applyStageChange(stream, stage, detail);
+      if (!isCurrentTurn()) return;
+      // A runtime notice (e.g. a tool the provider left out of the request)
+      // becomes a transcript notice the TUI and desktop render.
+      if (stage === 'notice') {
+        flushStreamBatch(stream);
+        ctx.pushNotice(detail?.message, detail?.tone === 'warn' ? 'warn' : 'info', { transcript: true });
+        return;
+      }
+      await applyStageChange(stream, stage, detail);
     },
     onTextDelta: (chunk) => {
       const textChunk = String(chunk ?? '');
@@ -649,6 +654,8 @@ export function createRunTurn(bag) {
     set({
       busy: true,
       lastTurn: null,
+      // A turn that unwound stale never cleared its desktop partial line.
+      ...(getState().streamingPartial ? { streamingPartial: null } : {}),
       spinner: {
         active: true,
         verb: pickVerb(turn.index),

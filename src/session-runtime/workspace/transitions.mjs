@@ -12,7 +12,9 @@
  * (runtime/shared/worktrees/manager.mjs), loaded on first use.
  */
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import {
+  WORKTREE_CARRY_CHOICES,
   branchMenuEntries,
   isWorktreeBound,
   isWorktreeError,
@@ -24,6 +26,7 @@ import { normalizeWorktreeSettings } from '../../runtime/shared/worktrees/settin
 import * as maintenance from '../../runtime/shared/worktrees/maintenance.mjs';
 import { inspectRepo, throwIfAborted } from '../../runtime/shared/worktrees/git.mjs';
 import { isWithin, samePath } from '../../runtime/shared/worktrees/paths.mjs';
+import { readGitHead } from '../../runtime/shared/worktrees/git-head.mjs';
 import { sessionHasConversationMessages } from '../../runtime/agent/orchestrator/runtime-core/session-text.mjs';
 import { buildWorkspacePromptContext } from '../../runtime/agent/orchestrator/session/manager/session-prompt-composition.mjs';
 import {
@@ -66,9 +69,11 @@ async function defaultRegisteredProject(path) {
  * Re-root one session's prompt at `cwd`: environment facts and instruction
  * files for every session, project memory for the Lead only (workers never
  * carried it). A session with a conversation keeps its system prompt (cache
- * intact) and gets a tail notice instead (refreshSessionWorkspaceContext).
+ * intact) and gets a tail notice instead (refreshSessionWorkspaceContext);
+ * `move` ({ from, changes }: the session left the project folder `from` for
+ * a worktree) adds the uncommitted-changes and path lines to that notice.
  */
-export async function refreshWorkspacePrompt(session, cwd, { loadCoreMemoryContext } = {}) {
+export async function refreshWorkspacePrompt(session, cwd, { loadCoreMemoryContext, move = null } = {}) {
   const { environmentContext, instructionFilesContext } = buildWorkspacePromptContext(session, cwd);
   const coreMemoryContext =
     session?.owner === AGENT_OWNER || typeof loadCoreMemoryContext !== 'function'
@@ -79,6 +84,7 @@ export async function refreshWorkspacePrompt(session, cwd, { loadCoreMemoryConte
     environmentContext,
     coreMemoryContext,
     instructionFilesContext,
+    ...(move ? { move } : {}),
   });
 }
 
@@ -144,7 +150,7 @@ const TRANSITION_STATE = { worktree: 'provisioning', branch: 'switching', 'remov
  * @param {(cwd: string, options?: { persistProjectSelection?: boolean }) => unknown} deps.applyResolvedCwd Retargets rt cwd, session.cwd and the cwd override (and, persisting, the Project selection).
  * @param {(desktopSession: any) => unknown} [deps.setDesktopSession] Restores the runtime's desktop metadata on a rollback.
  * @param {(session: any) => unknown} deps.persistSession
- * @param {(session: any, cwd: string) => Promise<unknown>} deps.refreshWorkspaceContext
+ * @param {(session: any, cwd: string, move?: { from: string, changes: 'carried'|'left'|null }|null) => Promise<unknown>} deps.refreshWorkspaceContext
  * @param {() => number} deps.getActiveTurnCount
  * @param {() => { agentWorkers?: any[], agentJobs?: any[] }} deps.agentStatusState
  * @param {(sessionId: string, cwd: string) => unknown} [deps.updateLeadWorkerCwd] Moves the Lead's pool row (lead-workers.json).
@@ -211,6 +217,37 @@ export function createWorkspaceTransitions({
     if (stored) return stored;
     const projectPath = projectPathOf(session);
     return normalizeSessionWorkspace({ projectPath, cwd: getCurrentCwd() || projectPath, revision: 0 });
+  }
+
+  let liveWorkspace = null;
+
+  /**
+   * The workspace the session publishes: a worktree-bound record as stored; a
+   * project-folder session (never moved, back from a worktree, or carrying a
+   * transition stub) with the folder's checked-out branch / detached commit and
+   * repoCommonDir read straight from HEAD — no git process. Null outside a git
+   * repository for a session without a record. Identity-stable while equal.
+   */
+  function getLiveWorkspace() {
+    const session = getSession();
+    const stored = readSessionWorkspace(session);
+    if (isWorktreeBound(stored)) return session.workspace;
+    let base;
+    try {
+      base = stored ?? currentWorkspace(session);
+    } catch {
+      return session?.workspace ?? null;
+    }
+    const head = readGitHead(base.cwd);
+    if (!head) return session?.workspace ?? null;
+    const next = {
+      ...base,
+      repoCommonDir: head.repoCommonDir,
+      branch: head.branch,
+      baseCommit: head.branch ? base.baseCommit : head.commit,
+    };
+    if (!liveWorkspace || !isDeepStrictEqual(liveWorkspace, next)) liveWorkspace = next;
+    return liveWorkspace;
   }
 
   function isSessionActive(session) {
@@ -294,7 +331,38 @@ export function createWorkspaceTransitions({
     }
   }
 
+  /**
+   * Before a carry clears the shared checkout `folder` (held by the caller,
+   * so no new turn starts there): WORKTREE_BUSY_JOBS while any other session
+   * working in it — idle or not, this Lead's workers included — owns a
+   * running background shell (holdProjectFolder already refused running
+   * turns and agents there, assertLeadIdle this Lead's own). Processes
+   * outside Mixdog (editors, watchers) cannot be excluded.
+   */
+  async function assertCheckoutQuiet(session, folder) {
+    const sharing = listLiveSessions()
+      .filter(
+        (candidate) =>
+          candidate?.id &&
+          candidate.id !== session.id &&
+          candidate.closed !== true &&
+          typeof candidate.cwd === 'string' &&
+          isWithin(folder, candidate.cwd)
+      )
+      .map((candidate) => candidate.id);
+    if (!sharing.length) return;
+    const shellJobs = await countOwnShellJobs(sharing);
+    if (shellJobs > 0) {
+      throw worktreeError(
+        'WORKTREE_BUSY_JOBS',
+        'Background shells of other sessions are running in the project folder; carrying the changes needs it quiet.',
+        { reason: 'folder-shell-jobs', shellJobs }
+      );
+    }
+  }
+
   const steps = createTransitionSteps({
+    assertCheckoutQuiet,
     backend,
     inspectProject,
     runtimeToken,
@@ -343,6 +411,7 @@ export function createWorkspaceTransitions({
           name: target.name,
           nameHint: options.nameHint,
           confirmLarge: options.confirmLarge,
+          changes: options.changes,
         });
       }
       if (target.kind === 'branch') {
@@ -454,9 +523,22 @@ export function createWorkspaceTransitions({
     });
     // A session in the project folder (never moved, or back from a worktree)
     // is on whatever that folder has checked out now.
-    const checkedOut = menu.occupancy.find((row) => row.kind === 'current')?.branch ?? null;
+    // Its repository is the project's (a never-moved session has no stored
+    // record), and a detached checkout shows branch null with the commit in
+    // baseCommit — never mistaken for "not a repository".
+    let view = workspace;
+    if (!isWorktreeBound(workspace)) {
+      const project = await inspectProject(workspace.projectPath);
+      const checkedOut = project.currentBranch ?? null;
+      view = {
+        ...workspace,
+        repoCommonDir: project.repoCommonDir ?? workspace.repoCommonDir,
+        branch: checkedOut,
+        baseCommit: checkedOut ? workspace.baseCommit : (project.headCommit ?? null),
+      };
+    }
     return {
-      workspace: isWorktreeBound(workspace) || !checkedOut ? workspace : { ...workspace, branch: checkedOut },
+      workspace: view,
       pendingWorktree: pendingIntent ? { name: pendingIntent.name } : null,
       branches: branchMenuEntries(menu.branches, menu.occupancy),
       occupancy: menu.occupancy,
@@ -522,17 +604,28 @@ export function createWorkspaceTransitions({
    * reuse it. Typed failures (large repository, disk, busy) therefore reach
    * the sender while its draft is still unsent, and the turn that follows
    * finds the session already bound.
+   *
+   * A provisioning that creates a new worktree decides the project folder's
+   * uncommitted changes (tracked and untracked): none → it proceeds; without
+   * `carryChanges` it refuses with WORKTREE_DIRTY_CHOICE (`details.count`);
+   * `leave` starts the worktree at HEAD and leaves them; `carry` moves them
+   * into it (the result's `changes` reports which). Re-entering a retained
+   * worktree never touches them.
    */
   async function requestWorktree({
     name = null,
     confirmLarge = false,
     provision = false,
+    carryChanges,
     prompt = '',
     txId = '',
     expectedRevision,
   } = {}) {
     const nameHint = validName(name);
     const expected = validRevision(expectedRevision);
+    if (carryChanges !== undefined && carryChanges !== null && !WORKTREE_CARRY_CHOICES.includes(carryChanges)) {
+      throw new TypeError(`carryChanges must be one of ${WORKTREE_CARRY_CHOICES.join(', ')}.`);
+    }
     const session = provision === true ? await ensureSession() : getSession();
     // No session yet: the menu it was read from had revision 0.
     const current = session?.id ? currentWorkspace(session) : null;
@@ -548,6 +641,7 @@ export function createWorkspaceTransitions({
         return { ...entered, pending: false };
       }
     }
+    const priorIntent = pendingIntent;
     pendingIntent = {
       name: nameHint ?? pendingIntent?.name ?? null,
       confirmLarge: confirmLarge === true || pendingIntent?.confirmLarge === true,
@@ -556,10 +650,21 @@ export function createWorkspaceTransitions({
       txId: pendingIntent?.txId ?? null,
     };
     if (provision === true) {
-      return {
-        ...(await provisionIntent(session, pendingIntent, txId, prompt, { expectedRevision: expected })),
-        pending: false,
-      };
+      const intent = pendingIntent;
+      try {
+        return {
+          ...(await provisionIntent(session, intent, txId, prompt, {
+            expectedRevision: expected,
+            changes: carryChanges ?? 'ask',
+          })),
+          pending: false,
+        };
+      } catch (error) {
+        // A refused move (uncommitted changes to decide, busy, …) is never
+        // re-armed for the next turn, where nobody could answer it.
+        if (pendingIntent === intent) pendingIntent = priorIntent;
+        throw error;
+      }
     }
     const workspace = session?.id ? currentWorkspace(session) : null;
     return { revision: workspace?.revision ?? 0, workspace, pending: true };
@@ -582,15 +687,35 @@ export function createWorkspaceTransitions({
     if (cleanup !== true || merged.merged !== true) return merged;
     // "Merge and clean up": with autoCleanup on, the merged worktree goes now
     // (a dirty one stays, reported); off, nothing is removed automatically.
+    // The merge is committed: a failed or refused cleanup (dirty, retained
+    // file recovery data, ...) is a cleanup notice, never a merge failure.
     if (worktreeSettings().autoCleanup !== true) {
-      return { ...merged, cleanup: { removed: false, reason: 'auto-cleanup-off' } };
+      return {
+        ...merged,
+        cleanup: { removed: false, reason: 'auto-cleanup-off', message: 'Auto cleanup is off; the worktree is kept.' },
+      };
     }
     try {
       const removed = await removeWorktree({ force: false }, { ownTurn });
       return { ...merged, cleanup: removed.removed, revision: removed.revision, workspace: removed.workspace };
     } catch (error) {
-      if (!isWorktreeError(error, 'WORKTREE_DIRTY') && !isWorktreeError(error, 'WORKTREE_UNMERGED')) throw error;
-      return { ...merged, cleanup: { removed: false, reason: error.code } };
+      // The merge stands: a refused or incomplete cleanup (dirty, unmerged,
+      // retained file recovery data, partly removed, …) is reported, never
+      // thrown, with the workspace as it is now (an incomplete removal already
+      // returned to the project folder).
+      const workspace = currentWorkspace(session);
+      const code = typeof error?.code === 'string' ? error.code : '';
+      return {
+        ...merged,
+        cleanup: {
+          removed: false,
+          reason: code || 'WORKTREE_CLEANUP_FAILED',
+          ...(code ? { code } : {}),
+          message: String(error?.message || error),
+        },
+        revision: workspace.revision,
+        workspace,
+      };
     }
   }
 
@@ -683,6 +808,8 @@ export function createWorkspaceTransitions({
     admitTurnWorkspace,
     /** The durable workspace record of the hosted session (null: project folder, never moved). */
     getWorkspace: () => getSession()?.workspace ?? null,
+    /** What the session snapshot publishes (see getLiveWorkspace). */
+    getLiveWorkspace,
     getBranchMenu,
     getProjectBranchMenu: projectBranches.getProjectBranchMenu,
     selectBranch,
