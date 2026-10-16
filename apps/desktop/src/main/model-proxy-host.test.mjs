@@ -2,6 +2,15 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { createModelProxyHost, createModelProxyRuntime } from './model-proxy-host.ts';
+import { createAccountPoolProvider } from '../../../../src/runtime/agent/orchestrator/providers/account-pool.mjs';
+import { createAnthropicSseTurn } from '../../../../src/runtime/agent/orchestrator/providers/anthropic-sse-turn.mjs';
+import {
+  changeProviderAccounts,
+  newProviderAccountId,
+  registerProviderAccount,
+  removeProviderAccount,
+} from '../../../../src/runtime/shared/provider-accounts.mjs';
+import { currentProviderAccountId } from '../../../../src/runtime/shared/provider-auth-binding.mjs';
 import {
   MODEL_PROXY_REQUEST_EVENT,
   MODEL_PROXY_OPERATIONS,
@@ -85,32 +94,98 @@ test('OAuth usage RPC is read-only, provider-scoped and subject to the desktop a
   assert.equal(calls.length, 1);
 });
 
-test('proxied request metering follows the serving account and rejects replaced identities', async (t) => {
-  const a = `proxy-${'a'.repeat(64)}`;
-  const b = `proxy-${'b'.repeat(64)}`;
-  let scopes = { default: a, fallback: b };
-  let replace = false;
-  const provider = {
-    async send() {
-      if (replace) scopes = { default: b, fallback: a };
-      return { usage: { inputTokens: 1 }, providerState: { providerAccountId: 'fallback' } };
-    },
-  };
-  const { channel } = connect(
-    t,
-    fakeRuntime(
-      { 'openai-oauth': provider },
-      {
-        usageAccounts: async () => ({ ...scopes }),
-      }
-    )
-  );
-  const proxy = new ModelProxyProvider('openai-oauth', {}, channel);
-  const first = await proxy.send([], 'model', [], {});
-  assert.equal(proxy.usageAccountId(first), b);
-  replace = true;
-  assert.equal(proxy.usageAccountId(await proxy.send([], 'model', [], {})), 'proxy-unattributed');
-});
+for (const source of ['providerState', 'accountRouting']) {
+  test(`proxied request metering follows ${source} and rejects replaced identities`, async (t) => {
+    const a = `proxy-${'a'.repeat(64)}`;
+    const b = `proxy-${'b'.repeat(64)}`;
+    let scopes = { default: a, fallback: b };
+    let replace = false;
+    const provider = {
+      async send() {
+        if (replace) scopes = { default: b, fallback: a };
+        return {
+          usage: { inputTokens: 1 },
+          ...(source === 'providerState'
+            ? { providerState: { providerAccountId: 'fallback' } }
+            : { providerMetadata: { accountRouting: { provider: 'openai-oauth', accountId: 'fallback' } } }),
+        };
+      },
+    };
+    const { channel } = connect(
+      t,
+      fakeRuntime(
+        { 'openai-oauth': provider },
+        {
+          usageAccounts: async () => ({ ...scopes }),
+        }
+      )
+    );
+    const proxy = new ModelProxyProvider('openai-oauth', {}, channel);
+    const first = await proxy.send([], 'model', [], {});
+    assert.equal(proxy.usageAccountId(first), b);
+    replace = true;
+    assert.equal(proxy.usageAccountId(await proxy.send([], 'model', [], {})), 'proxy-unattributed');
+  });
+}
+
+for (const scenario of ['selected', 'auth fallback', 'quota fallback', 'selected without default']) {
+  test(`Anthropic OAuth ${scenario} meters the actual non-default account through the proxy`, async (t) => {
+    const name = 'anthropic-oauth';
+    const other = newProviderAccountId();
+    const includeDefault = scenario !== 'selected without default';
+    const fallback = scenario.endsWith('fallback');
+    await registerProviderAccount(name, other, { includeDefault });
+    t.after(async () => {
+      await removeProviderAccount(name, other);
+      if (includeDefault) await removeProviderAccount(name, 'default');
+    });
+    await changeProviderAccounts(name, {
+      selectedId: fallback ? 'default' : other,
+      policy: fallback ? 'limit' : 'manual',
+    });
+    const attempts = [];
+    const provider = createAccountPoolProvider(name, () => ({
+      async send(_messages, model, _tools, options) {
+        const account = currentProviderAccountId(name);
+        attempts.push(account);
+        if (account === 'default') {
+          if (scenario === 'quota fallback') {
+            throw Object.assign(new Error('Quota exhausted'), { code: 'usage_limit_reached', status: 429 });
+          }
+          throw Object.assign(new Error('Sign-in expired'), { reauthRequired: true });
+        }
+        // Use Anthropic's actual SSE result builder: it has account routing
+        // after the real pool wraps it, but no transport providerState.
+        const turn = createAnthropicSseTurn({ state: {}, onTextDelta: options.onTextDelta });
+        turn.onMessageStart({ model, usage: { input_tokens: 7 } });
+        turn.onContentBlockStart(0, { type: 'text', text: '' });
+        turn.onContentBlockDelta(0, { type: 'text_delta', text: 'ok' });
+        turn.onContentBlockStop(0);
+        turn.onMessageDelta({ delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 2 } });
+        turn.onMessageStop();
+        turn.flushLeak();
+        return turn.result();
+      },
+    }));
+    const a = `proxy-${'a'.repeat(64)}`;
+    const b = `proxy-${'b'.repeat(64)}`;
+    const scopes = { ...(includeDefault ? { default: a } : {}), [other]: b };
+    const { channel } = connect(
+      t,
+      fakeRuntime({ [name]: provider }, { usageAccounts: async () => ({ ...scopes }) })
+    );
+    const proxy = new ModelProxyProvider(name, {}, channel);
+    const result = await proxy.send([], 'claude-test', [], {});
+    assert.deepEqual(attempts, fallback ? ['default', other] : [other]);
+    assert.equal(result.content, 'ok');
+    assert.equal(result.providerState, undefined);
+    assert.equal(result.providerMetadata.accountRouting.provider, name);
+    assert.equal(result.providerMetadata.accountRouting.accountId, other);
+    assert.equal(proxy.usageAccountId(result), b);
+    assert.equal(result.usage.inputTokens, 7);
+    assert.equal(result.usage.outputTokens, 2);
+  });
+}
 
 test('the PC runs the call with its own provider and streams every callback back in order', async (t) => {
   const calls = [];

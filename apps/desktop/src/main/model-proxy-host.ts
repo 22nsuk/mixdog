@@ -738,7 +738,14 @@ async function execute(
     settle?.(usageTokens(record(value).usage, inputExcludesCache));
     if (before) {
       const after = await runtime.usageAccounts?.(name).catch((): Record<string, string> => ({}));
-      const id = String(record(record(value).providerState).providerAccountId || 'default');
+      // Account pools always stamp routing metadata, even when a provider
+      // (such as Anthropic SSE) returns no transport providerState.
+      const routing = record(record(record(value).providerMetadata).accountRouting);
+      const id = String(
+        record(record(value).providerState).providerAccountId ||
+        (routing.provider === name && routing.accountId) ||
+        'default'
+      );
       const account = before[id];
       return { ...record(value), modelProxyUsageAccount: account && account === after?.[id] ? account : null };
     }
