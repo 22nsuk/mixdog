@@ -1,6 +1,5 @@
 export const ASK_USER_MAX_QUESTIONS = 4;
 export const ASK_USER_MAX_TEXT = 4000;
-export const ASK_USER_MAX_LABEL = 80;
 
 export const ASK_USER_TOOL_DEFS = Object.freeze([
   {
