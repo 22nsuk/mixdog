@@ -478,6 +478,8 @@ function customProviderRow(id, entry, checkSecrets = true) {
   row.auth = keyless ? 'none' : 'key';
   row.discovery = structuredClone(config?.discovery ?? entry.discovery ?? { newModelsHidden: false });
   row.modelOverrides = structuredClone(config?.modelOverrides ?? entry.modelOverrides ?? {});
+  if (config?.wires) row.wires = [...config.wires];
+  if (config?.modelWires) row.modelWires = { ...config.modelWires };
   // A stored config that does not normalize cannot run (the registry skips
   // it): say so explicitly instead of listing it as connected.
   // Every readiness flag consumers read says "not ready" (`stored` stays the
@@ -914,6 +916,12 @@ function withStoredSettings(input, entry) {
   if (out.schemaVersion === stored.schemaVersion) {
     if (out.discovery === undefined) out.discovery = stored.discovery;
     if (out.modelOverrides === undefined) out.modelOverrides = stored.modelOverrides;
+    // Served wires and per-model wires have no setup field yet: an edit on
+    // the same protocol keeps them (another protocol serves other wires).
+    if ((out.protocol ?? stored.protocol) === stored.protocol) {
+      if (out.wires === undefined && stored.wires) out.wires = stored.wires;
+      if (out.modelWires === undefined && stored.modelWires) out.modelWires = stored.modelWires;
+    }
   }
   return out;
 }
@@ -1049,13 +1057,37 @@ export async function updateCustomProviderModel(cfgMod, rawId, rawModelId, patch
   return customProviderRow(id, saved);
 }
 
+// Drops every stored model setting and route that names the provider.
+function withoutProviderReferences(config, id) {
+  const next = { ...config };
+  const names = (route) => route?.provider === id;
+  if (next.modelSettings) {
+    next.modelSettings = Object.fromEntries(
+      Object.entries(next.modelSettings).filter(([key]) => !key.startsWith(`${id}/`))
+    );
+  }
+  if (next.agents) {
+    next.agents = Object.fromEntries(Object.entries(next.agents).filter(([, route]) => !names(route)));
+  }
+  if (names(next.webSearchRoute)) delete next.webSearchRoute;
+  if (Array.isArray(next.presets)) {
+    const dropped = new Set(next.presets.filter(names).map((preset) => preset.id));
+    next.presets = next.presets.filter((preset) => !names(preset));
+    if (dropped.has(next.default)) delete next.default;
+  }
+  return next;
+}
+
 export async function removeCustomProvider(cfgMod, rawId) {
   const id = String(rawId || '').trim();
   existingCustomEntry(cfgMod, id);
+  // Secret first: a real keychain failure (locked, permission) leaves the
+  // provider registered so the removal can be retried. A missing secret
+  // (keyless provider) is not an error.
+  await deleteSecretAsync(SECRET_ACCOUNTS.agentApiKey(id));
   const current = cfgMod.loadConfig();
   const { [id]: _removed, ...providers } = current.providers || {};
-  cfgMod.saveConfig({ ...current, providers }, { baseConfig: current });
-  await deleteSecretAsync(SECRET_ACCOUNTS.agentApiKey(id));
+  cfgMod.saveConfig(withoutProviderReferences({ ...current, providers }, id), { baseConfig: current });
   return { provider: id, type: 'custom', removed: true };
 }
 

@@ -16,6 +16,7 @@ export const TurnReviewBar = memo(function TurnReviewBar({
   onOpenFile,
   variant = 'bar',
   onOpenChanges,
+  onOpenChangeFile,
 }: {
   items: TranscriptItem[];
   cwd?: string;
@@ -28,6 +29,8 @@ export const TurnReviewBar = memo(function TurnReviewBar({
    *  dock) it is an island tab that expands into this file list. */
   variant?: 'bar' | 'segment';
   onOpenChanges?: () => void;
+  /** The segment's file list: opens the session diff on one file. */
+  onOpenChangeFile?: (path: string) => void;
 }) {
   const islandTab = variant === 'segment' && !onOpenChanges;
   const disclosure = useTurnReviewDisclosure(islandTab);
@@ -63,19 +66,15 @@ export const TurnReviewBar = memo(function TurnReviewBar({
   const turn = useTurnReviewSummaries({ items, reviewScope, reviewState, revertedBoundary, turnBoundaryKey });
   const { authoritativeWorktreeSnapshot, transcriptSummary, agentSources, agentSummary } = turn;
   const sessionScoped = variant === 'segment';
-  const { shownSummary, headlineStats, sources, islandSummary, historyTurns } = useShownTurnReview({
+  const { shownSummary, headlineStats, sources, segmentLabel } = useShownTurnReview({
     sessionScoped,
     sessionId,
     active,
-    busy,
-    turnBoundaryKey,
-    items,
     cwd,
     turn,
   });
-  // The island shows (and counts) only its own set: a Git project's
-  // uncommitted session files, else the session's.
-  const reviewVisible = !entryPending && (sessionScoped ? islandSummary : shownSummary).files.size > 0;
+  // The island shows (and counts) its Changes source; it hides at zero files.
+  const reviewVisible = !entryPending && shownSummary.files.size > 0;
   // An island tab whose files went away closes with them.
   const closeEmptyTab = islandTab && expanded && !reviewVisible;
   // biome-ignore lint/correctness/useExhaustiveDependencies: closeEmptyTab is the trigger; setExpanded is rebuilt each render
@@ -96,12 +95,15 @@ export const TurnReviewBar = memo(function TurnReviewBar({
   if (!reviewVisible) return entryPending ? <span hidden data-entry-pending /> : null;
   if (variant === 'segment' && !expanded) {
     return turnReviewSegment({
-      fileCount: islandSummary.files.size,
-      headlineStats: islandSummary,
+      label: segmentLabel,
+      fileCount: shownSummary.files.size,
+      files: shownSummary.files,
+      headlineStats,
       onOpenChanges,
+      onOpenChangeFile,
       setExpanded,
       sessionId,
-      historyTurns,
+      historyTurns: reviewState.historyTurns,
       busy,
     });
   }
@@ -109,7 +111,7 @@ export const TurnReviewBar = memo(function TurnReviewBar({
     <section
       ref={barElement}
       className="turn-review-bar"
-      aria-label={sessionScoped ? t('Files changed this session') : t('Files changed this turn')}
+      aria-label={sessionScoped ? segmentLabel : t('Files changed this turn')}
       data-expanded={expanded ? 'true' : 'false'}
     >
       {turnReviewHead({

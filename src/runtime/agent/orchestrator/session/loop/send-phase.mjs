@@ -17,6 +17,13 @@ import { stripInlineImages } from '../image-strip-recovery.mjs';
 import { runWithProviderRequestToolsScope } from '../../runtime-core/provider-request-tools.mjs';
 import { REPEAT_FAIL_LIMIT } from './loop-state.mjs';
 import { createToolCallIdResolver } from './tool-call-ids.mjs';
+import { captureSideQuestionRequest } from '../side-question-store.mjs';
+import {
+  beginProviderToolExclusions,
+  dropSessionTool,
+  recordProviderToolExclusion,
+  withoutDroppedTools,
+} from './provider-tool-exclusions.mjs';
 
 /**
  * Open an iteration: refresh the live cwd, drain queued steering after a
@@ -73,6 +80,8 @@ export async function beginIteration(state) {
     loopUsageMetricsTurnId: state.usageMetricsTurnId,
     loopUsageMetricsEpoch: state.usageMetricsEpoch,
   });
+  // A tool the provider rejected with a schema 400 stays out of the session.
+  Object.assign(boundary, withoutDroppedTools(sessionRef, boundary));
   state.iterations = boundary.iterations;
   state.lastUsage = boundary.lastUsage;
   state.firstTurnUsage = boundary.firstTurnUsage;
@@ -92,6 +101,10 @@ export async function beginIteration(state) {
   // callers omit the flag and retain legacy live deferred resolution.
   opts.providerToolSnapshotAuthoritative = true;
   opts.providerNativeToolPrefixCount = boundary.requestToolScope.nativePrefixCount;
+  // A tool the provider leaves out of this request (a schema it cannot
+  // accept) is noticed once per session and refused if the model calls it.
+  beginProviderToolExclusions(sessionRef);
+  opts.onToolExcluded = (exclusion) => recordProviderToolExclusion(sessionRef, exclusion, opts.onStageChange);
   state.lastSendTools = boundary.sendTools;
   // Eager-dispatch queue (see ../eager-dispatch.mjs): read-only tools start
   // the instant the provider streams a tool-call event; writes and unknown
@@ -156,26 +169,46 @@ export async function sendProviderRequest(state, round) {
   try {
     opts.onProviderSendStarted?.();
   } catch {}
-  const result = await runWithProviderRequestToolsScope(round.requestToolScope, () =>
-    sendWithRecovery({
-      provider,
-      messages: providerMessages,
-      recoveryMessages: messageSource,
-      model,
-      sendTools: round.sendTools,
-      tools: round.sendTools,
-      opts,
-      sessionId,
-      sessionRef,
-      nextIteration: round.nextIteration,
-      contextOverflowRetryUsed: state.contextOverflowRetryUsed,
-      transportRetriesUsed: state.transportRetriesUsed,
-      transportRetryMax: state.transportRetryMax,
-      imageStripUsed: state.imageStripUsed,
-      thinkingReplayRepairUsed: state.thinkingReplayRepairUsed,
-      signal: state.signal,
-    })
-  );
+  // The request a /btw side question forks: kept while it is in flight, with
+  // its reply once it proceeds, and dropped again if it fails.
+  const sideQuestion = captureSideQuestionRequest({
+    sessionId,
+    sessionRef,
+    provider,
+    model,
+    messages: providerMessages,
+    tools: round.sendTools,
+    opts,
+  });
+  let result;
+  try {
+    result = await runWithProviderRequestToolsScope(round.requestToolScope, () =>
+      sendWithRecovery({
+        provider,
+        messages: providerMessages,
+        recoveryMessages: messageSource,
+        model,
+        sendTools: round.sendTools,
+        tools: round.sendTools,
+        opts,
+        sessionId,
+        sessionRef,
+        nextIteration: round.nextIteration,
+        contextOverflowRetryUsed: state.contextOverflowRetryUsed,
+        transportRetriesUsed: state.transportRetriesUsed,
+        transportRetryMax: state.transportRetryMax,
+        imageStripUsed: state.imageStripUsed,
+        thinkingReplayRepairUsed: state.thinkingReplayRepairUsed,
+        toolSchemaDropUsed: state.toolSchemaDropUsed,
+        signal: state.signal,
+      })
+    );
+  } catch (error) {
+    sideQuestion?.discard();
+    throw error;
+  }
+  if (result.action === 'proceed') sideQuestion?.settle(result.response);
+  else sideQuestion?.discard();
   return {
     result,
     providerMessages,
@@ -216,6 +249,16 @@ export function applyRetryAction(state, result) {
       // is rebuilt from repaired history and the session keeps the fix. No
       // transport budget is consumed: nothing was generated.
       state.thinkingReplayRepairUsed = true;
+      return true;
+    case 'retry_tool_schema_drop':
+      // The provider named a tool whose schema it rejects: the session drops
+      // it (with the notice) and the turn is rebuilt without it, once. The
+      // frozen tool surface and provider state are rebuilt around the change.
+      state.toolSchemaDropUsed = true;
+      dropSessionTool(state.sessionRef, result.exclusion, state.opts.onStageChange);
+      state.fixedProviderToolSurface = null;
+      state.providerState = undefined;
+      state.providerStateUpdated = true;
       return true;
     case 'retry_image_strip':
       state.transportRetriesUsed += 1;

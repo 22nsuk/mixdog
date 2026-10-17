@@ -1,6 +1,6 @@
 {
   "name": "mixdog",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "private": false,
   "type": "module",
   "description": "Open-source coding agent that matches Codex on Terminal-Bench 2.1 with 63% fewer tokens.",
@@ -161,6 +161,7 @@
     "@mozilla/readability": "^0.6.0",
     "@napi-rs/canvas": "^1.0.8",
     "@pdf-lib/fontkit": "^1.1.1",
+    "ajv": "^8.20.0",
     "chalk": "^5.6.2",
     "cli-highlight": "^2.1.11",
     "diff": "^9.0.0",

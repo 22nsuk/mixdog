@@ -7,6 +7,10 @@ import {
   ModelProxyChannel,
 } from '../../../../src/runtime/agent/orchestrator/providers/model-proxy-channel.mjs';
 import {
+  pinSessionWireRoute,
+  resolveWireRoute,
+} from '../../../../src/runtime/agent/orchestrator/providers/wire-route.mjs';
+import {
   ModelProxyProvider,
   _resetModelProxyProviderConfigForTest,
   loadModelProxyProviderConfig,
@@ -97,6 +101,23 @@ test('the PC runs the call with its own provider and streams every callback back
   // The daemon settles on the PC's resolve; the PC retires the call right after.
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(host.running, 0);
+});
+
+test('the provider send result reaches the daemon unchanged, wireReroute included', async (t) => {
+  const wireReroute = { from: { provider: 'a', model: 'm1' }, to: { provider: 'b', model: 'm2' }, reason: 'x' };
+  const provider = {
+    async send() {
+      return { content: 'ok', usage: { inputTokens: 1, outputTokens: 1 }, wireReroute };
+    },
+  };
+  const { channel } = connect(t, fakeRuntime({ 'anthropic-oauth': provider }));
+  const result = await new ModelProxyProvider('anthropic-oauth', {}, channel).send(
+    [{ role: 'user', content: 'hi' }],
+    'claude-test',
+    [],
+    { sessionId: 'pc-session' }
+  );
+  assert.deepEqual(result.wireReroute, wireReroute);
 });
 
 test('the PC serves only the named provider and the allowed methods', async (t) => {
@@ -354,6 +375,69 @@ test('server send options are reduced to the allowlist', async (t) => {
   assert.ok(seen.signal instanceof AbortSignal);
 });
 
+test('a proxied side request gets its own transport scope on the PC, disposed when the request ends', async (t) => {
+  const closed = [];
+  const previousHook = globalThis.__mixdogCloseProviderConnectionsForSession;
+  globalThis.__mixdogCloseProviderConnectionsForSession = (scope) => closed.push(scope);
+  t.after(() => {
+    globalThis.__mixdogCloseProviderConnectionsForSession = previousHook;
+  });
+  const sends = [];
+  const released = [];
+  const hung = Promise.withResolvers();
+  const provider = {
+    releaseTransportScope: (scope) => released.push(scope),
+    async send(_messages, _model, _tools, options) {
+      sends.push(options);
+      if (options.sessionId === 'fail') throw new Error('provider down');
+      if (options.sessionId === 'hang') {
+        hung.resolve();
+        return new Promise((_resolve, reject) => {
+          options.signal.addEventListener('abort', () => reject(options.signal.reason));
+        });
+      }
+      return { content: 'ok' };
+    },
+  };
+  const { channel } = connect(t, fakeRuntime({ openai: provider }));
+  const proxied = new ModelProxyProvider('openai', {}, channel);
+  const mainScope = 'main-session#side:server-scope';
+  const side = (sessionId, signal) => proxied.send([], 'gpt', undefined, { sessionId, transportScope: mainScope, signal });
+
+  // Success: the PC's own scope, never the server's, released afterwards.
+  await side('ok');
+  const [ok] = sends;
+  assert.equal(typeof ok.transportScope, 'string');
+  assert.notEqual(ok.transportScope, mainScope);
+  assert.ok(ok.transportScope.startsWith('ok#'));
+  assert.deepEqual(closed, [ok.transportScope]);
+  assert.deepEqual(released, [ok.transportScope]);
+
+  // Error.
+  await assert.rejects(side('fail'), /provider down/);
+  assert.equal(sends[1].transportScope, closed[1]);
+  assert.notEqual(sends[1].transportScope, ok.transportScope);
+  assert.deepEqual(released, closed);
+
+  // Cancel.
+  const controller = new AbortController();
+  const hanging = side('hang', controller.signal);
+  await hung.promise;
+  assert.equal(closed.length, 2, 'still held while the request runs');
+  controller.abort(new Error('user stop'));
+  await assert.rejects(hanging, /user stop/);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(closed.length, 3);
+  assert.equal(closed[2], sends[2].transportScope);
+  assert.deepEqual(released, closed);
+  assert.equal(new Set(closed).size, 3, 'every request got a scope of its own');
+
+  // A request that names no scope is left on its session's own state.
+  await proxied.send([], 'gpt', undefined, { sessionId: 'main' });
+  assert.equal(Object.hasOwn(sends[3], 'transportScope'), false);
+  assert.equal(closed.length, 3);
+});
+
 test('PC errors reach the server with only the recovery fields, credentials redacted', async (t) => {
   const provider = {
     async send() {
@@ -419,6 +503,58 @@ test('providerConfig tells a server availability and traits only; disallowed pro
     code: 'MODEL_PROXY_PROVIDER_NOT_ALLOWED',
   });
   assert.deepEqual(await new ModelProxyProvider('openai', {}, channel).send([], 'm', undefined, {}), { content: 'x' });
+});
+
+test('a remote session pins its wire through the PC adapter and the pin reaches the PC send', async (t) => {
+  const resolved = [];
+  const sent = [];
+  const provider = {
+    resolveWireRoute: async (model, ctx) => {
+      resolved.push({ model, ctx });
+      return resolveWireRoute('openrouter', model, { ...ctx, override: null });
+    },
+    send: async (messages, model, tools, options) => {
+      sent.push({ route: options.wireRoute, sessionRoute: options.session?.wireRoute });
+      return { content: 'ok' };
+    },
+  };
+  const { channel } = connect(t, fakeRuntime({ openrouter: provider }));
+  const proxy = new ModelProxyProvider('openrouter', {}, channel);
+  // An existing session that already talked to its model keeps Chat (legacy).
+  const model = 'anthropic/claude-opus-4.8';
+  const session = {
+    id: 's1',
+    provider: 'openrouter',
+    model,
+    messages: [
+      { role: 'user', content: 'hi' },
+      { role: 'assistant', content: 'hello' },
+    ],
+  };
+  const route = await pinSessionWireRoute(session, proxy);
+  assert.equal(route?.wire, 'chat');
+  assert.equal(route.source, 'legacy');
+  assert.deepEqual(resolved, [{ model, ctx: { agent: true, legacy: true } }]);
+  await proxy.send(session.messages, model, undefined, { wireRoute: session.wireRoute, session });
+  assert.deepEqual(sent, [{ route: session.wireRoute, sessionRoute: session.wireRoute }]);
+  // A single-wire PC adapter pins nothing, and is asked once per model.
+  let asked = 0;
+  const { channel: soloChannel } = connect(
+    t,
+    fakeRuntime({
+      openai: {
+        send: async () => ({ content: 'x' }),
+        resolveWireRoute: async () => {
+          asked += 1;
+          return null;
+        },
+      },
+    })
+  );
+  const solo = new ModelProxyProvider('openai', {}, soloChannel);
+  assert.equal(await solo.resolveWireRoute('gpt-x', { agent: true }), null);
+  assert.equal(await solo.resolveWireRoute('gpt-x', { agent: true }), null);
+  assert.equal(asked, 1);
 });
 
 test('at the concurrency cap nothing more is claimed; a freed slot takes up the next call', async (t) => {

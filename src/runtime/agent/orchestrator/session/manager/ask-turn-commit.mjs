@@ -120,22 +120,44 @@ function recordAgentRuntimeCall(session, result) {
 export async function recordAskUsage({ session, result, askStartedAt, turnSignal }) {
   const prefixHashForLog = recordAgentRuntimeCall(session, result);
   if (!result.usage) return;
-  const inputTokens = result.usage.inputTokens || 0;
-  const outputTokens = result.usage.outputTokens || 0;
-  const cacheReadTokens = result.usage.cachedTokens || 0;
-  const cacheWriteTokens = result.usage.cacheWriteTokens || 0;
+  await logSessionLlmUsage({
+    session,
+    usage: result.usage,
+    startedAt: askStartedAt,
+    signal: turnSignal,
+    prefixHash: prefixHashForLog,
+    transportTiming: result.transportTiming || null,
+  });
+  recordStandaloneStatusTelemetry(session, result, Date.now() - askStartedAt);
+}
+
+/** The usage-ledger row of one provider call billed to `session`. `mode`
+ *  labels a call made outside the turn loop (a /btw side question). */
+export async function logSessionLlmUsage({
+  session,
+  usage,
+  startedAt,
+  signal = null,
+  prefixHash = null,
+  transportTiming = null,
+  mode = null,
+}) {
+  const inputTokens = usage.inputTokens || 0;
+  const outputTokens = usage.outputTokens || 0;
+  const cacheReadTokens = usage.cachedTokens || 0;
+  const cacheWriteTokens = usage.cacheWriteTokens || 0;
   // Unified total-prompt field. Anthropic = input+cache_read+cache_write
   // (additive); OpenAI OAuth/API/Gemini = input_tokens already includes the
   // cached portion (inclusive), so the fallback must not double-count.
   const { isInclusiveProvider, computeCostUsd } = await runAbortable(
-    turnSignal,
+    signal,
     () => import('../../../../shared/llm/cost.mjs')
   );
   const inclusive = isInclusiveProvider(session.provider);
   let promptTokens = inputTokens + cacheReadTokens + cacheWriteTokens;
-  if (typeof result.usage.promptTokens === 'number') promptTokens = result.usage.promptTokens;
+  if (typeof usage.promptTokens === 'number') promptTokens = usage.promptTokens;
   else if (inclusive) promptTokens = Math.max(inputTokens, cacheReadTokens + cacheWriteTokens);
-  let costUsd = result.usage.costUsd || 0;
+  let costUsd = usage.costUsd || 0;
   if (!costUsd) {
     try {
       costUsd = computeCostUsd({
@@ -145,7 +167,7 @@ export async function recordAskUsage({ session, result, askStartedAt, turnSignal
         outputTokens,
         cacheReadTokens,
         cacheWriteTokens,
-        cacheWrite1hTokens: result.usage.cacheWrite1hTokens || 0,
+        cacheWrite1hTokens: usage.cacheWrite1hTokens || 0,
       });
     } catch {
       /* best-effort */
@@ -158,7 +180,8 @@ export async function recordAskUsage({ session, result, askStartedAt, turnSignal
     preset: session.presetName || null,
     model: session.model,
     provider: session.provider,
-    duration: Date.now() - askStartedAt,
+    ...(mode ? { mode } : {}),
+    duration: Date.now() - startedAt,
     profileId: session.profileId || null,
     sessionId: session.id,
     inputTokens,
@@ -166,11 +189,10 @@ export async function recordAskUsage({ session, result, askStartedAt, turnSignal
     cacheReadTokens,
     cacheWriteTokens,
     promptTokens,
-    prefixHash: prefixHashForLog,
+    prefixHash,
     costUsd,
-    transportTiming: result.transportTiming || null,
+    transportTiming,
   });
-  recordStandaloneStatusTelemetry(session, result, Date.now() - askStartedAt);
 }
 
 /** Persist opaque providerState for stateful providers. The update bit

@@ -22,6 +22,7 @@ import {
   toXaiResponsesInput,
   xaiSystemInstructions,
 } from './openai-compat-wire.mjs';
+import { nativeDeferredFamilyForRoute } from './wire-route.mjs';
 import { preparePdfTextForProvider } from './media-normalization.mjs';
 import { normalizeOpencodeGoReasoningEffort } from './openai-compat-xai.mjs';
 import { isCustomProviderName, resolveCustomReasoning } from './custom-reasoning.mjs';
@@ -65,6 +66,7 @@ function resolveReasoning(provider, useModel, opts) {
 function customEffortProjection(provider, useModel, messages, opts) {
   if (!isCustomProviderName(provider.name)) return null;
   const projection = projectEffortConfiguration(messages, provider.name, useModel, {
+    ...provider.config,
     ...opts,
     protocol: 'openai-responses',
   });
@@ -87,19 +89,72 @@ function customEffortProjection(provider, useModel, messages, opts) {
   return { ...projection, initialEffort, effort: current, updates };
 }
 
+// Whether the endpoint takes `prompt_cache_key`. An explicit
+// `opts.responsesPromptCacheKey` / `config.responsesPromptCacheKey` boolean
+// decides; otherwise only custom routes (which always had it) send it.
+function supportsPromptCacheKey(provider, opts) {
+  const declared = opts.responsesPromptCacheKey ?? provider.config?.responsesPromptCacheKey;
+  return typeof declared === 'boolean' ? declared : isCustomProviderName(provider.name);
+}
+
+// Native Responses items (tool_search_call/output, custom_tool_call/output) in
+// replayed history are strictly opt-in: only a route that declares
+// `responsesNativeItems: true` (opts or config) gets the first-party lowering.
+// Every other route keeps the function-only lowering byte for byte.
+function supportsNativeResponsesItems(provider, opts) {
+  return (
+    (opts.responsesNativeItems ?? provider.config?.responsesNativeItems) === true ||
+    hasNativeDeferredTools(provider, opts)
+  );
+}
+
+// A session whose pinned route verified native deferred tools on the Responses
+// wire (flag off in every PROFILES entry today): tool_search is declared
+// natively and loaded tools replay as tool_search_output.
+function hasNativeDeferredTools(provider, opts) {
+  return nativeDeferredFamilyForRoute(provider.name, opts.wireRoute ?? opts.session?.wireRoute) === 'openai';
+}
+
 /**
- * A custom route's session identity: its prompt_cache_key and session
+ * A route's session identity: its prompt_cache_key and (custom routes) session
  * headers, '' without a session. The session wins over the provider-scoped
  * cache key, so parallel sessions never evict each other; a one-shot role
  * ('shared' scope, a fresh session per call) keys on the provider key instead.
  * Never the effort, so an effort change keeps the cache routing.
  */
 function customSessionCacheKey(provider, opts) {
-  if (!isCustomProviderName(provider.name)) return '';
+  if (!supportsPromptCacheKey(provider, opts)) return '';
   const explicit = opts.promptCacheKey || opts.providerCacheKey || opts.session?.promptCacheKey;
   return normalizeCacheKey(
     opts.promptCacheScope === 'shared' ? explicit || opts.sessionId : opts.sessionId || explicit
   );
+}
+
+// HTTP header names are case-insensitive. Do not shadow explicit SDK
+// defaults, combine differently-cased identities, or stringify null deletions.
+function customSessionHeaders(provider, sessionCacheKey, requestHeaders) {
+  if (!sessionCacheKey) return requestHeaders;
+  const headers = { 'session-id': sessionCacheKey, 'x-client-request-id': sessionCacheKey };
+  const clientOptions = provider.config?.clientOptions || {};
+  const configured = Object.hasOwn(clientOptions, 'defaultHeaders')
+    ? clientOptions.defaultHeaders
+    : provider.defaultHeaders;
+  const entries = (source) =>
+    source instanceof Headers || Array.isArray(source) ? source : Object.entries(source || {});
+  const hasValue = (value) => (Array.isArray(value) ? value.some((item) => item !== undefined) : value !== undefined);
+  for (const source of [configured, requestHeaders]) {
+    for (const [name, value] of entries(source)) {
+      if (hasValue(value)) delete headers[name.toLowerCase()];
+    }
+  }
+  if (requestHeaders instanceof Headers) {
+    const merged = new Headers(requestHeaders);
+    for (const [name, value] of Object.entries(headers)) merged.set(name, value);
+    return merged;
+  }
+  if (Array.isArray(requestHeaders)) return [...Object.entries(headers), ...requestHeaders];
+  const supplied = Object.fromEntries(Object.entries(requestHeaders || {}).filter(([, value]) => hasValue(value)));
+  return { ...headers, ...supplied };
 }
 
 /** The request body: lowered transcript plus the per-turn knobs (output cap,
@@ -126,7 +181,11 @@ function buildCompatResponsesParams({
   const maxOutputTokens = resolveCompatMaxOutputTokens(opts);
   if (maxOutputTokens) params.max_output_tokens = maxOutputTokens;
   if (tools?.length) {
-    params.tools = toResponsesTools(tools, { provider: provider.name });
+    params.tools = toResponsesTools(tools, {
+      provider: provider.name,
+      onToolExcluded: opts.onToolExcluded,
+      ...(hasNativeDeferredTools(provider, opts) ? { nativeDeferredTools: true } : {}),
+    });
     params.parallel_tool_calls = true;
   }
   applyCompatToolChoice(params, opts);
@@ -207,6 +266,22 @@ async function streamCompatResponses({ provider, params, label, signal, opts, he
   }
 }
 
+// OpenRouter's Responses endpoint is stateless: it does not store responses or
+// resolve `previous_response_id`. Imported server-side continuation state (a
+// previous id, or a stored response) is rejected up front rather than sent.
+function assertOpenRouterStateless(provider, opts) {
+  if (provider.name !== 'openrouter') return;
+  const imported = opts.providerState?.[COMPAT_RESPONSES_STATE_KEY];
+  const previous = typeof imported?.previousResponseId === 'string' && imported.previousResponseId !== '';
+  if (!previous && imported?.store !== true) return;
+  throw Object.assign(
+    new Error(
+      'openrouter Responses is stateless: imported previous_response_id / store:true continuation state is not supported'
+    ),
+    { code: 'OPENROUTER_RESPONSES_STATELESS_ONLY', provider: provider.name }
+  );
+}
+
 /**
  * Send one turn over `POST {baseURL}/responses` (streaming) using the
  * provider's existing OpenAI SDK client. Returns the same result shape as
@@ -229,6 +304,7 @@ async function sendCompatResponsesOnce(provider, messages, useModel, tools, opts
   }
   const label = `${provider.name}:responses`;
   messages = await preparePdfTextForProvider(messages, provider);
+  assertOpenRouterStateless(provider, opts);
   const effortProjection = customEffortProjection(provider, useModel, messages, opts);
   const sessionCacheKey = customSessionCacheKey(provider, opts);
   const { input, previousResponseId, continuationResetReason } = toXaiResponsesInput(messages, opts.providerState, {
@@ -237,6 +313,7 @@ async function sendCompatResponsesOnce(provider, messages, useModel, tools, opts
     stateKey: COMPAT_RESPONSES_STATE_KEY,
     replayProvider,
     providerName: provider.name,
+    nativeLowering: supportsNativeResponsesItems(provider, opts),
     nativePdf: provider.nativePdf,
     // Opt-in: system prompts travel as top-level `instructions`, not input items.
     includeSystem: provider.config?.responsesSystemAsInstructions !== true,
@@ -253,9 +330,9 @@ async function sendCompatResponsesOnce(provider, messages, useModel, tools, opts
     effortProjection,
     sessionCacheKey,
   });
-  // The session identity also travels as headers; caller headers win.
-  const headers = sessionCacheKey
-    ? { 'session-id': sessionCacheKey, 'x-client-request-id': sessionCacheKey, ...opts.requestHeaders }
+  // Custom routes also carry the session identity as headers; caller headers win.
+  const headers = isCustomProviderName(provider.name)
+    ? customSessionHeaders(provider, sessionCacheKey, opts.requestHeaders)
     : opts.requestHeaders;
 
   try {
@@ -287,7 +364,7 @@ async function sendCompatResponsesOnce(provider, messages, useModel, tools, opts
   const messageIndex = Array.isArray(messages) ? messages.length : 0;
   const encryptedReasoningHistory = [
     ...(Array.isArray(priorState?.encryptedReasoningHistory) ? priorState.encryptedReasoningHistory : []),
-    ...(reasoningItems.length ? [{ messageIndex, items: reasoningItems }] : []),
+    ...(reasoningItems.length ? [{ messageIndex, items: reasoningItems, owner: replayProvider }] : []),
   ];
   const searchSources = collectCompatResponseSearchSources(response);
   const usageSummary = usage ? responsesUsage(usage) : undefined;
@@ -296,6 +373,7 @@ async function sendCompatResponsesOnce(provider, messages, useModel, tools, opts
     model: response?.model || useModel,
     toolCalls: streamed.toolCalls,
     stopReason: streamed.stopReason || null,
+    ...(streamed.refusal ? { refusal: streamed.refusal } : {}),
     ...(streamed.stopReason === 'length' && (streamed.content || '').length > 0 ? { truncated: true } : {}),
     citations: searchSources.citations.length ? searchSources.citations : undefined,
     webSearchCalls: searchSources.webSearchCalls.length ? searchSources.webSearchCalls : undefined,
@@ -306,6 +384,7 @@ async function sendCompatResponsesOnce(provider, messages, useModel, tools, opts
         previousResponseId: null,
         responseId: response?.id || null,
         store: false,
+        owner: replayProvider,
         encryptedReasoningItems: reasoningItems,
         encryptedReasoningHistory,
         seenMessageCount: messageIndex,

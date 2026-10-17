@@ -31,7 +31,7 @@ import {
   readAttachmentBuffer,
 } from '../../../../src/runtime/attachments/store.mjs';
 import { desktopSessionSummaries } from './desktop-state';
-import { sessionFinalAnswer, type SessionFinalAnswer } from './session-final-answer';
+import { sessionFinalAnswer, withSessionMissingCode, type SessionFinalAnswer } from './session-final-answer';
 import type { DesktopService, SerializableDesktopServiceOptions } from './desktop-service-contract';
 import { mixdogDataDirectory } from './computer/shared/common';
 import { SessionHostCatalog, catalogRelevantStoreEntry } from './session-host-catalog';
@@ -137,7 +137,7 @@ export class SessionHost implements DesktopService {
       controlSessionId: () => this.transport.controlSessionId,
       setControlSessionId: (sessionId) => this.transport.setControlSessionId(sessionId),
       visibleSessionIds: () => this.visibleSessionIds,
-      readSession: (sessionId) => this.transport.readSession(sessionId),
+      readSession: (sessionId, forceFull) => this.transport.readSession(sessionId, forceFull),
       snapshotWithShellJobs: (sessionId, snapshot) => this.snapshotWithShellJobs(sessionId, snapshot),
       trackShellJobsEngineState: (snapshot) => this.trackShellJobsEngineState(snapshot),
       onShellPublished: () => this.shellJobsPoller.onEngineEvent(),
@@ -258,6 +258,8 @@ export class SessionHost implements DesktopService {
     });
     host = new SessionHost(options, runtime, sessionClient);
     host.shellJobsPoller.start();
+    // Secure the receipts folder now, off the first submission's path.
+    void host.newTaskRequests.prepare();
     return host;
   }
 
@@ -426,9 +428,10 @@ export class SessionHost implements DesktopService {
     forceFull = false,
     publish = true,
     readTraceId?: string,
-    page = false
+    page = false,
+    signal?: AbortSignal
   ): Promise<SessionSnapshot> {
-    return this.transport.readSession(sessionId, forceFull, publish, readTraceId, page);
+    return this.transport.readSession(sessionId, forceFull, publish, readTraceId, page, signal);
   }
 
   async readAttachmentImage(attachmentRef: string): Promise<string | null> {
@@ -441,9 +444,17 @@ export class SessionHost implements DesktopService {
     }
   }
 
-  async readSessionFinalAnswer(sessionId: string, startedAt: number): Promise<SessionFinalAnswer | null> {
+  async readSessionFinalAnswer(
+    sessionId: string,
+    startedAt: number,
+    signal?: AbortSignal
+  ): Promise<SessionFinalAnswer | null> {
     // Read this session without selecting it or publishing a pane snapshot.
-    return sessionFinalAnswer(await this.readSession(sessionId, false, false), startedAt);
+    try {
+      return sessionFinalAnswer(await this.readSession(sessionId, false, false, undefined, false, signal), startedAt);
+    } catch (error) {
+      throw withSessionMissingCode(error);
+    }
   }
 
   async readSessionTranscript(sessionId: string): Promise<SessionSnapshot> {

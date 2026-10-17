@@ -417,6 +417,33 @@
   font-weight: var(--mx-weight-regular);
   line-height: var(--mx-line-ui);
 }
+/* In-place session rename: the field covers the label cell (same inline-input
+   look as the sidebar row editor); the label and X hide while it is open. */
+.workspace-tab-title-input {
+  position: absolute;
+  top: 50%;
+  left: 6px;
+  z-index: 1;
+  transform: translateY(-50%);
+  /* The field stays inside its own tab; a long name scrolls within it. */
+  width: calc(100% - 12px);
+  height: 24px;
+  padding: 0 6px;
+  box-sizing: border-box;
+  border: 0;
+  border-radius: var(--mx-radius-sm);
+  outline: 1px solid var(--mx-focus);
+  outline-offset: 0;
+  color: var(--mx-text);
+  background: var(--mx-bg-layer-1);
+  font-size: var(--mx-font-item);
+  font-weight: var(--mx-weight-regular);
+  line-height: var(--mx-line-ui);
+}
+.workspace-tab.editing .workspace-tab-main,
+.workspace-tab.editing .workspace-tab-close {
+  visibility: hidden;
+}
 .workspace-tab.active .workspace-tab-main span {
   font-weight: var(--mx-weight-medium);
 }

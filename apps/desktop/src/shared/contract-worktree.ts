@@ -79,6 +79,12 @@ export interface DesktopRequestWorktreeInput {
   expectedRevision?: number;
   /** Acknowledges WORKTREE_LARGE_REPO_CONFIRM (resend after the user agreed). */
   confirmLarge?: boolean;
+  /** Create and enter the worktree now instead of at the next send. */
+  provision?: boolean;
+  /** Answers WORKTREE_DIRTY_CHOICE: `leave` keeps the project folder's
+   *  uncommitted changes where they are (the worktree starts at the current
+   *  commit); `carry` moves them into the worktree. */
+  carryChanges?: 'leave' | 'carry';
 }
 
 /** A New Task's "Worktree" choice, sent with its first prompt: the host
@@ -97,7 +103,9 @@ export interface DesktopMergeWorkspaceInput {
   target: string;
   expectedRevision?: number;
   /** Merge and clean up: with autoCleanup on, the merged worktree is removed
-   *  right after (a dirty one is kept and reported in `cleanup`). */
+   *  right after. A cleanup that is refused or fails (dirty, retained file
+   *  recovery data, ...) keeps the worktree and is reported in `cleanup`;
+   *  the merge itself still succeeded. */
   cleanup?: boolean;
 }
 
@@ -114,10 +122,21 @@ export interface DesktopWorkspaceTransitionResult {
   warnings?: string[];
 }
 
-export interface DesktopMergeWorkspaceResult extends DesktopWorkspaceTransitionResult {
+/** mergeWorkspace's answer: a conflicting preflight changes nothing and
+ *  returns `merged: false` with the files; a cleanup that ran adds the new
+ *  workspace (the session is back in the project folder). */
+export interface DesktopMergeWorkspaceResult {
+  merged: boolean;
   target: string;
-  /** The merge commit created on `target`. */
-  commit: string;
+  /** The merge commit created on `target` (its HEAD when already up to date). */
+  commit: string | null;
+  upToDate?: boolean;
+  conflicts?: string[];
+  revision?: number;
+  workspace?: DesktopSessionWorkspace;
+  /** The cleanup after a successful merge: `removed: false` keeps the
+   *  worktree (a refusal such as WORKTREE_DIRTY in `code`); the merge stands. */
+  cleanup?: { removed: boolean; code?: string; message?: string };
 }
 
 export const DESKTOP_WORKTREE_NEW_TASK_DEFAULTS = ['branch', 'worktree'] as const;
@@ -140,6 +159,9 @@ export const DESKTOP_WORKTREE_ERROR_CODES = [
   'WORKTREE_DISK_INSUFFICIENT',
   'WORKTREE_LARGE_REPO_CONFIRM',
   'WORKTREE_DIRTY',
+  /** requestWorktree with `provision` found uncommitted project-folder files
+   *  (`details.count`): resend with `carryChanges`. */
+  'WORKTREE_DIRTY_CHOICE',
   'WORKTREE_FILE_RECOVERY',
   'WORKTREE_UNMERGED',
   'WORKTREE_MISSING',

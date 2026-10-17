@@ -93,6 +93,7 @@ export function inlineModelProxyAttachments(messages, { maxBytes = MODEL_PROXY_I
 export class ModelProxyProvider {
   #channel;
   #modelInfo = new Map();
+  #noWireRoute = new Set();
 
   constructor(name, config = {}, channel = getModelProxyChannel()) {
     this.name = name;
@@ -109,7 +110,7 @@ export class ModelProxyProvider {
   async send(messages, model, tools, sendOpts) {
     const { options, callbacks } = splitModelProxySendOptions(sendOpts);
     const finalized = isFinalizedProviderRequestTools(tools);
-    return this.#call(
+    const result = await this.#call(
       'send',
       {
         model: model ?? null,
@@ -121,6 +122,22 @@ export class ModelProxyProvider {
       },
       { signal: sendOpts?.signal || null, callbacks }
     );
+    // The PC rerouted the wire (a clear "unsupported" refusal) and reports the
+    // route it used: the daemon's own session adopts it, so the next proxied
+    // turn starts on the new wire instead of repeating the refusal.
+    const rerouted = result?.wireReroute;
+    const session = sendOpts?.session;
+    if (
+      rerouted?.source === 'reroute' &&
+      session?.wireRoute &&
+      session.wireRoute.provider === this.name &&
+      session.wireRoute.model === (model ?? null) &&
+      rerouted.provider === this.name &&
+      rerouted.model === session.wireRoute.model
+    ) {
+      session.wireRoute = rerouted;
+    }
+    return result;
   }
 
   #adoptCatalog(catalog) {
@@ -144,6 +161,21 @@ export class ModelProxyProvider {
 
   getCachedModelInfo(model) {
     return this.#modelInfo.get(String(model ?? '')) ?? null;
+  }
+
+  /** The PC adapter's wire route for `model` (its config and roster decide);
+   *  null for a single-wire adapter, which is remembered so every later turn
+   *  skips the round trip. */
+  async resolveWireRoute(model, ctx = {}) {
+    const key = String(model ?? '');
+    if (this.#noWireRoute.has(key)) return null;
+    const route = await this.#call('resolveWireRoute', {
+      model: model ?? null,
+      context: { agent: ctx.agent === true, legacy: ctx.legacy === true },
+    });
+    if (route && typeof route === 'object') return route;
+    this.#noWireRoute.add(key);
+    return null;
   }
 }
 
