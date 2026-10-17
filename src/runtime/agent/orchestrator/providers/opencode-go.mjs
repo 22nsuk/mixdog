@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { AnthropicProvider } from './anthropic.mjs';
 import { OpenAICompatProvider, OPENAI_COMPAT_PRESETS } from './openai-compat.mjs';
 import { getModelMetadataSync, getModelsDevRowSync } from './model-catalog.mjs';
-import { toInclusiveUsage, withInclusiveUsage } from './lib/inclusive-usage.mjs';
+import { withInclusiveUsage } from './lib/inclusive-usage.mjs';
 import { providerOffersWire, resolveWireRoute, sendOnRoute } from './wire-route.mjs';
 import { gatewayMessagesOpts } from './wire-gateway.mjs';
 
@@ -66,9 +66,6 @@ export function openCodeGoEndpointForModel(model, configuredBaseURL) {
   if (wire === 'responses') return `${bases.openai}/responses`;
   return `${bases.openai}/chat/completions`;
 }
-
-// The Messages route reports usage in the provider's inclusive convention.
-export const toInclusiveOpenCodeGoUsage = toInclusiveUsage;
 
 function opencodeGoContextWindow(modelId, current = 0) {
   const native = Number(current);
