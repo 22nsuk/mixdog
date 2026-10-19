@@ -209,15 +209,16 @@ function isStructurallyCompleteMixdogConfigBackup(parsed) {
   return true;
 }
 
-/** Backup directory names in `dir`, newest first; empty when unreadable. */
-function backupDirsNewestFirst(dir) {
+/** Missing directories are empty; restore scans must surface other I/O errors. */
+function backupDirsNewestFirst(dir, { ignoreErrors = true } = {}) {
   try {
     return readdirSync(dir, { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
       .map((entry) => entry.name)
       .sort()
       .reverse();
-  } catch {
+  } catch (error) {
+    if (!ignoreErrors && error?.code !== 'ENOENT') throw error;
     return [];
   }
 }
@@ -242,12 +243,12 @@ function readRestorableConfig(backupDir, dataDirKey, instanceId) {
 function findRestorableConfig(dataDir, instanceId) {
   const key = normalizeDataDir(dataDir);
   const scopeDir = scopeDirFor(dataDir);
-  for (const name of backupDirsNewestFirst(scopeDir)) {
+  for (const name of backupDirsNewestFirst(scopeDir, { ignoreErrors: false })) {
     const parsed = readRestorableConfig(join(scopeDir, name), key, instanceId);
     if (parsed) return parsed;
   }
   const root = getBackupRoot();
-  for (const name of backupDirsNewestFirst(root)) {
+  for (const name of backupDirsNewestFirst(root, { ignoreErrors: false })) {
     if (name.startsWith(SCOPE_PREFIX)) continue;
     const parsed = readRestorableConfig(join(root, name), key, instanceId);
     if (parsed) return parsed;
@@ -272,6 +273,9 @@ export function loadLatestMixdogConfigFromBackup(dataDir, options) {
   const root = getBackupRoot();
   let hit = restoreLookupCache.get(key);
   if (options?.fresh || !hit || hit.root !== root || hit.instanceId !== instanceId) {
+    // A failed scan must leave neither a stale hit nor a cached miss: the
+    // next plain read needs to retry the disk lookup after I/O recovers.
+    restoreLookupCache.delete(key);
     hit = { root, instanceId, config: findRestorableConfig(dataDir, instanceId) };
     restoreLookupCache.set(key, hit);
   }

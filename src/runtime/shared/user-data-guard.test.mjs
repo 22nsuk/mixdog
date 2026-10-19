@@ -275,6 +275,82 @@ for (const [kind, update] of [['sync', updateSection], ['async', updateSectionAs
     assert.equal(stored.agent.tag, 'v2');
     assert.equal(stored.ui.theme, 'after-restore');
   });
+
+  test(`${kind} RMW scan EIO leaves the next plain read able to restore the latest backup`, async (t) => {
+    const { dir } = sandbox(t);
+    const a = dir('a');
+    use(a);
+    const writer = await import(`./user-data-guard.mjs?external-${kind}-rmw-eio`);
+    writeFileSync(configFile(a), JSON.stringify(complete('v1')));
+    const first = writer.backupUserData(a, 'v1');
+    rmSync(configFile(a));
+    withFileLockSync(`${configFile(a)}.lock`, () => {
+      assert.deepEqual(readConfig(), complete('v1'));
+      assert.equal(existsSync(configFile(a)), false);
+    });
+
+    // A failed refresh must invalidate the old hit as well as avoid caching
+    // a miss: the next plain read must see the other writer's newer backup.
+    writeFileSync(configFile(a), JSON.stringify(complete('v2')));
+    writer.backupUserData(a, 'v2');
+    rmSync(configFile(a));
+    const original = fs.readdirSync;
+    const failure = Object.assign(new Error('scope read failed'), { code: 'EIO' });
+    fs.readdirSync = (path, ...args) => {
+      if (path === dirname(first.dir)) throw failure;
+      return original(path, ...args);
+    };
+    syncBuiltinESMExports();
+    let caught;
+    try {
+      await update('ui', { theme: 'must-not-save' });
+    } catch (error) {
+      caught = error;
+    } finally {
+      fs.readdirSync = original;
+      syncBuiltinESMExports();
+    }
+    assert.equal(existsSync(configFile(a)), false);
+    assert.deepEqual(readConfig(), complete('v2'));
+    assert.deepEqual(JSON.parse(readFileSync(configFile(a), 'utf8')), complete('v2'));
+    assert.equal(caught, failure);
+  });
+}
+
+for (const location of ['scope', 'root']) {
+  test(`fresh restore ${location} EIO invalidates a cached miss for the next plain lookup`, async (t) => {
+    const { dir, backupRoot } = sandbox(t);
+    const a = dir('a');
+    const instanceId = markUserDataInitialized(a);
+    assert.equal(loadLatestMixdogConfigFromBackup(a), null);
+    let scanDir = backupRoot;
+    if (location === 'scope') {
+      const writer = await import('./user-data-guard.mjs?external-miss-eio');
+      writeFileSync(configFile(a), JSON.stringify(complete('v2')));
+      scanDir = dirname(writer.backupUserData(a, 'v2').dir);
+      rmSync(configFile(a));
+    } else {
+      writeLegacyBackup(backupRoot, '2020-01-01T00-00-00-000Z-match', complete('v2'), { dataDir: a, instanceId });
+    }
+    const original = fs.readdirSync;
+    const failure = Object.assign(new Error(`${location} read failed`), { code: 'EIO' });
+    fs.readdirSync = (path, ...args) => {
+      if (path === scanDir) throw failure;
+      return original(path, ...args);
+    };
+    syncBuiltinESMExports();
+    let caught;
+    try {
+      loadLatestMixdogConfigFromBackup(a, { fresh: true });
+    } catch (error) {
+      caught = error;
+    } finally {
+      fs.readdirSync = original;
+      syncBuiltinESMExports();
+    }
+    assert.deepEqual(loadLatestMixdogConfigFromBackup(a), complete('v2'));
+    assert.equal(caught, failure);
+  });
 }
 
 test('a fresh restore refreshes a cached miss and retains cache ownership and root isolation', async (t) => {
