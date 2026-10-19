@@ -159,18 +159,25 @@ pub(super) struct ParsedArgs {
 pub(super) struct PathFilter {
     pub(super) globs: Override,
     pub(super) types: Option<Types>,
+    exact_file: Option<PathBuf>,
 }
 
 impl PathFilter {
-    pub(super) fn new(root: &Path, parsed: &ParsedArgs) -> Result<Self, String> {
+    pub(super) fn new(
+        requested: &Path,
+        canonical: &Path,
+        parsed: &ParsedArgs,
+    ) -> Result<Self, String> {
         // `OverrideBuilder` requires a directory root. When rg's positional
         // operand is an exact file, using that file as the root makes its
         // relative path empty, so ordinary filters such as `*.mjs` reject the
-        // file. Match ripgrep by evaluating file operands from their parent.
-        let filter_root = if root.is_file() {
-            root.parent().unwrap_or(root)
+        // file. Exact-file aliases retain their requested name for both glob
+        // and type filters, even though the inventory opens the canonical file.
+        let exact_file = canonical.is_file().then(|| requested.to_path_buf());
+        let filter_root = if let Some(file) = &exact_file {
+            file.parent().unwrap_or(file)
         } else {
-            root
+            canonical
         };
         let mut globs = OverrideBuilder::new(filter_root);
         for glob in &parsed.globs {
@@ -193,10 +200,15 @@ impl PathFilter {
             }
             Some(builder.build().map_err(|error| format!("type: {error}"))?)
         };
-        Ok(Self { globs, types })
+        Ok(Self {
+            globs,
+            types,
+            exact_file,
+        })
     }
 
     pub(super) fn allows(&self, path: &Path) -> bool {
+        let path = self.exact_file.as_deref().unwrap_or(path);
         !self.globs.matched(path, false).is_ignore()
             && !self
                 .types
@@ -205,14 +217,14 @@ impl PathFilter {
     }
 }
 
-/// One operand of a request: the spelling the argv used, the path it
-/// resolves to, and the post-walk filter that decides which files under it
+/// One operand of a request: the spelling the argv used, its canonical
+/// inventory key, and the post-walk filter that decides which files under it
 /// are in scope. The three always travel together — a file is reported only
 /// once `filter` accepted it, and it is labelled by `display_path(operand,
-/// operand_path, file)`.
+/// key.operand, file)`.
 pub(super) struct OperandScope<'a> {
     pub(super) operand: &'a str,
-    pub(super) operand_path: &'a Path,
+    pub(super) key: &'a WalkKey,
     pub(super) filter: &'a PathFilter,
 }
 

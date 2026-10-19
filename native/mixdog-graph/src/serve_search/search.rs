@@ -12,13 +12,12 @@ where
 
 pub(super) fn complete_operand_files(
     store: &Arc<FileListStore>,
-    operand_path: &Path,
-    parsed: &ParsedArgs,
+    key: &WalkKey,
     cancelled: &AtomicBool,
     deadline_at: Option<Instant>,
     keep_warm: bool,
 ) -> Result<(Arc<Vec<PathBuf>>, bool, usize, Vec<String>, bool), String> {
-    let watched = store.watch_root(operand_path);
+    let watched = store.watch_root(&key.operand);
     // A walk abandoned by cache invalidation restarts from scratch. Under
     // continuous writes under the root that can repeat until the request
     // deadline, so cap it: after one restart the partial snapshot is served
@@ -26,12 +25,10 @@ pub(super) fn complete_operand_files(
     const MAX_WALK_RESTARTS: usize = 1;
     let mut restarts = 0usize;
     loop {
-        let key = walk_key(operand_path, parsed);
-        if let Some(hit) = store.take_ready(&key) {
+        if let Some(hit) = store.take_ready(key) {
             return Ok((hit, true, 0, Vec::new(), watched));
         }
-        let (live, _waiter) =
-            store.join_live_walk(key, operand_path, parsed, keep_warm, 0, watched);
+        let (live, _waiter) = store.join_live_walk(key.clone(), keep_warm, 0, watched);
         // What the walk published so far, served as an incomplete and
         // uncacheable answer.
         let partial_snapshot = || {
@@ -176,17 +173,16 @@ pub(super) fn scan_operand(
     ctx: &ScanCtx<'_>,
     out: &mut ScanOutput<'_>,
 ) -> Result<(bool, bool, bool, Vec<String>), String> {
-    let operand_path = scope.operand_path;
+    let key = scope.key;
     let parsed = ctx.parsed;
     let cancelled = ctx.cancelled;
     let deadline_at = ctx.deadline_at;
-    let watched = store.watch_root(operand_path);
+    let watched = store.watch_root(&key.operand);
     let trust = TrustSnapshot::capture();
     if deadline_expired(deadline_at) {
         return Ok((false, true, watched, Vec::new()));
     }
-    let key = walk_key(operand_path, parsed);
-    if let Some(files) = store.take_ready(&key) {
+    if let Some(files) = store.take_ready(key) {
         let reached_limit = append_scanned_matches_ordered(
             &files,
             &HashMap::new(),
@@ -199,7 +195,7 @@ pub(super) fn scan_operand(
         let timed_out = deadline_expired(deadline_at);
         return Ok((reached_limit, timed_out, watched, Vec::new()));
     }
-    let (live, _waiter) = store.join_live_walk(key, operand_path, parsed, keep_warm, 0, watched);
+    let (live, _waiter) = store.join_live_walk(key.clone(), keep_warm, 0, watched);
     let mut cursor = 0usize;
     let wanted = out.collect_until.saturating_sub(out.all_lines.len());
     let match_limit = (out.collect_until != usize::MAX).then_some(wanted);
@@ -289,7 +285,6 @@ pub(super) fn handle(
 /// deadline every bounded loop checks, and the hard stop for the window.
 struct InventoryCtx<'a> {
     store: &'a Arc<FileListStore>,
-    parsed: &'a ParsedArgs,
     cancelled: &'a AtomicBool,
     deadline_at: Option<Instant>,
     keep_warm: bool,
@@ -320,7 +315,6 @@ fn handle_inventory(
     let cwd = Path::new(&req.cwd);
     let ctx = InventoryCtx {
         store,
-        parsed,
         cancelled,
         deadline_at,
         keep_warm: req.keep_warm,
@@ -343,12 +337,13 @@ fn handle_inventory(
         }
         // Path::join replaces the base when the operand is absolute.
         let operand_path = cwd.join(operand);
-        let watched = store.watch_root(&operand_path);
+        let key = walk_key(&operand_path, parsed);
+        let watched = store.watch_root(&key.operand);
         out.cache_safe &= watched;
-        let filter = PathFilter::new(&operand_path, parsed)?;
+        let filter = PathFilter::new(&operand_path, &key.operand, parsed)?;
         let scope = OperandScope {
             operand,
-            operand_path: &operand_path,
+            key: &key,
             filter: &filter,
         };
         if collect_until == usize::MAX {
@@ -388,8 +383,7 @@ fn collect_whole_inventory(
 ) -> Result<(), String> {
     let (files, complete, walk_errors, details, operand_cache_safe) = complete_operand_files(
         ctx.store,
-        scope.operand_path,
-        ctx.parsed,
+        scope.key,
         ctx.cancelled,
         ctx.deadline_at,
         ctx.keep_warm,
@@ -399,7 +393,7 @@ fn collect_whole_inventory(
     append_walk_error_details(&mut out.walk_error_details, details);
     for file in files.iter().filter(|file| scope.filter.allows(file)) {
         out.lines
-            .push(display_path(scope.operand, scope.operand_path, file));
+            .push(display_path(scope.operand, &scope.key.operand, file));
     }
     if !complete {
         out.timed_out = true;
@@ -416,25 +410,20 @@ fn collect_bounded_inventory(
     watched: bool,
     out: &mut InventoryAccum,
 ) -> Result<(), String> {
-    let key = walk_key(scope.operand_path, ctx.parsed);
-    if let Some(files) = ctx.store.take_ready(&key) {
+    let key = scope.key;
+    if let Some(files) = ctx.store.take_ready(key) {
         for file in files.iter().filter(|file| scope.filter.allows(file)) {
             out.lines
-                .push(display_path(scope.operand, scope.operand_path, file));
+                .push(display_path(scope.operand, &key.operand, file));
             if out.lines.len() >= ctx.collect_until {
                 break;
             }
         }
         return Ok(());
     }
-    let (live, _waiter) = ctx.store.join_live_walk(
-        key,
-        scope.operand_path,
-        ctx.parsed,
-        ctx.keep_warm,
-        0,
-        watched,
-    );
+    let (live, _waiter) = ctx
+        .store
+        .join_live_walk(key.clone(), ctx.keep_warm, 0, watched);
     let mut cursor = 0usize;
     'inventory: loop {
         let batch = match next_live_batch(&live, &mut cursor, ctx.cancelled, ctx.deadline_at)? {
@@ -447,7 +436,7 @@ fn collect_bounded_inventory(
         };
         for file in batch.iter().filter(|file| scope.filter.allows(file)) {
             out.lines
-                .push(display_path(scope.operand, scope.operand_path, file));
+                .push(display_path(scope.operand, &key.operand, file));
             if out.lines.len() >= ctx.collect_until {
                 break 'inventory;
             }
@@ -539,14 +528,15 @@ fn handle_content_search(
         }
         // Path::join replaces the base when the operand is absolute.
         let operand_path = cwd.join(operand);
+        let key = walk_key(&operand_path, parsed);
         let use_prefix = parsed.with_filename
             || parsed.files_with_matches
             || multi_target
-            || operand_path.is_dir();
-        let filter = PathFilter::new(&operand_path, parsed)?;
+            || key.operand.is_dir();
+        let filter = PathFilter::new(&operand_path, &key.operand, parsed)?;
         let scope = OperandScope {
             operand,
-            operand_path: &operand_path,
+            key: &key,
             filter: &filter,
         };
         let (reached_limit, operand_timed_out, operand_cache_safe, details) = {

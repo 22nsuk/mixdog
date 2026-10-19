@@ -113,8 +113,6 @@ struct FuzzyScope<'a> {
     query: &'a str,
     limit: usize,
     inventory_lease_ms: u64,
-    parsed: ParsedArgs,
-    root: &'a Path,
     key: FuzzyKey,
     filter: PathFilter,
 }
@@ -148,13 +146,11 @@ fn fuzzy_scope(req: &ServeRequest) -> Result<FuzzyScope<'_>, String> {
     };
     let root = Path::new(&req.cwd);
     let key = fuzzy_key(root, &parsed);
-    let filter = PathFilter::new(root, &parsed)?;
+    let filter = PathFilter::new(root, &key.walk.operand, &parsed)?;
     Ok(FuzzyScope {
         query,
         limit,
         inventory_lease_ms,
-        parsed,
-        root,
         key,
         filter,
     })
@@ -273,7 +269,7 @@ fn rank_live_walk(
     cancelled: &AtomicBool,
     deadline_at: Option<Instant>,
 ) -> Result<FuzzyWalkOutcome, String> {
-    let root = scope.root;
+    let root = &scope.key.walk.operand;
     let mut timed_out = false;
     let mut walk_complete = false;
     let mut rank_ms = 0.0;
@@ -282,8 +278,6 @@ fn rank_live_walk(
     let walk_key = scope.key.walk.clone();
     let (live, _waiter) = store.join_live_walk(
         walk_key,
-        root,
-        &scope.parsed,
         keep_warm,
         scope.inventory_lease_ms,
         watched,
@@ -366,7 +360,9 @@ pub(super) fn handle_fuzzy(
     let cached_corpus = store.take_fuzzy_corpus(&scope.key).or_else(|| {
         store
             .take_ready(&scope.key.walk)
-            .map(|files| store.fuzzy_corpus(&scope.key, &files, scope.root, &scope.filter))
+            .map(|files| {
+                store.fuzzy_corpus(&scope.key, &files, &scope.key.walk.operand, &scope.filter)
+            })
     });
     let FuzzyWalkOutcome {
         timed_out,

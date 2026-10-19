@@ -252,18 +252,12 @@ pub(super) fn scan_inventory_anchors(
     // Start at the original root so ignore rules and hidden-directory rules
     // are identical to a full walk. Only descend into changed branches.
     let branches = anchors.to_vec();
-    let mut walk = WalkBuilder::new(&key.operand);
-    walk.hidden(!key.hidden)
-        .threads(inventory_walk_threads(&key.operand));
+    let mut walk = configure_inventory_walk(key);
     walk.filter_entry(move |entry| {
         branches
             .iter()
             .any(|anchor| FileListStore::paths_overlap(entry.path(), anchor))
     });
-    apply_ignore_rules(&mut walk, key.no_ignore, key.no_require_git, key.max_depth);
-    if let Some(overrides) = prune_overrides(&key.operand, &key.prune, &key.iglobs) {
-        walk.overrides(overrides);
-    }
     let mut files = Vec::new();
     for entry in walk.build() {
         let entry = entry.map_err(|error| error.to_string())?;
@@ -392,21 +386,20 @@ fn apply_ignore_rules(
 
 /// One request's walk options as a configured walker: ignore rules, worker
 /// count, depth bound and the directories this operand prunes.
-fn configure_inventory_walk(operand: &Path, parsed: &ParsedArgs) -> WalkBuilder {
-    let mut walk = WalkBuilder::new(operand);
-    walk.hidden(!parsed.hidden)
-        .threads(inventory_walk_threads(operand));
+fn configure_inventory_walk(key: &WalkKey) -> WalkBuilder {
+    let mut walk = WalkBuilder::new(&key.operand);
+    walk.hidden(!key.hidden)
+        .threads(inventory_walk_threads(&key.operand));
     apply_ignore_rules(
         &mut walk,
-        parsed.no_ignore,
-        parsed.no_require_git,
-        parsed.max_depth,
+        key.no_ignore,
+        key.no_require_git,
+        key.max_depth,
     );
     // Prune excluded directories while walking. Without this the
     // inventory descends into .git/node_modules on every request and
     // only discards them later, at scan time.
-    let prune = prune_globs(operand, parsed);
-    if let Some(overrides) = prune_overrides(operand, &prune, &parsed.iglobs) {
+    if let Some(overrides) = prune_overrides(&key.operand, &key.prune, &key.iglobs) {
         walk.overrides(overrides);
     }
     walk
@@ -435,11 +428,13 @@ pub(super) fn start_live_walk(
     store: Arc<FileListStore>,
     key: WalkKey,
     live: Arc<LiveWalk>,
-    operand: PathBuf,
-    parsed: ParsedArgs,
 ) {
     inventory_pool().spawn(move || {
         let result = contain_search_panic("native inventory worker", || {
+            // Initial publication and later repair must use the same root
+            // spelling. Canonicalize the root in the key, not individual
+            // entries: distinct symlink leaves remain distinct inventory paths.
+            let operand = &key.operand;
             if let Some(files) = reuse_failed_inventory(&store, &key, &live) {
                 publish_complete_inventory(&live, &files);
                 return Ok(files);
@@ -448,20 +443,19 @@ pub(super) fn start_live_walk(
                 return Err(CANCELLED.to_string());
             }
             if operand.is_file() {
-                let files = vec![operand];
+                let files = vec![operand.clone()];
                 publish_complete_inventory(&live, &files);
                 return Ok(Arc::new(files));
             }
             if !operand.is_dir() {
                 return Err(format!("no such path {}", operand.display()));
             }
-            let walk = configure_inventory_walk(&operand, &parsed);
+            let walk = configure_inventory_walk(&key);
             // Publish the first candidate immediately, then amortize locking
             // with size/time-bounded batches for every query shape.
             let publish_batch = inventory_publish_batch();
             walk.build_parallel().run(|| {
                 let live = &live;
-                let operand = &operand;
                 let mut batch = WorkerWalkBatch::new(live, publish_batch);
                 Box::new(move |entry| {
                     batch.flush_due();
@@ -481,7 +475,7 @@ pub(super) fn start_live_walk(
                         return ignore::WalkState::Continue;
                     };
                     if !is_file
-                        && !(parsed.directories
+                        && !(key.directories
                             && ((is_dir && entry.path() != operand.as_path()) || is_symlink))
                     {
                         return ignore::WalkState::Continue;

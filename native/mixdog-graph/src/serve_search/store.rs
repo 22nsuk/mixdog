@@ -579,8 +579,6 @@ impl FileListStore {
     pub(super) fn join_live_walk<'a>(
         self: &'a Arc<Self>,
         key: WalkKey,
-        operand_path: &Path,
-        parsed: &ParsedArgs,
         keep_warm: bool,
         inventory_lease_ms: u64,
         watched: bool,
@@ -592,13 +590,7 @@ impl FileListStore {
         }
         let waiter = self.waiter_guard(key.clone(), Arc::clone(&live));
         if owner {
-            start_live_walk(
-                Arc::clone(self),
-                key,
-                Arc::clone(&live),
-                operand_path.to_path_buf(),
-                parsed.clone(),
-            );
+            start_live_walk(Arc::clone(self), key, Arc::clone(&live));
         }
         (live, waiter)
     }

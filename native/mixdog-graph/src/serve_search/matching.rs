@@ -390,7 +390,7 @@ fn scan_window_file(
         return None;
     }
     let prefix = if use_prefix {
-        display_path(scope.operand, scope.operand_path, file)
+        display_path(scope.operand, &scope.key.operand, file)
     } else {
         String::new()
     };

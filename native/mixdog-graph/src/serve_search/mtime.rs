@@ -77,7 +77,7 @@ pub(super) fn collect_mtime_candidates(
             .enumerate()
             .filter(|(_, file)| scope.filter.allows(file))
             .map(|(index, file)| {
-                let path = display_path(scope.operand, scope.operand_path, file);
+                let path = display_path(scope.operand, &scope.key.operand, file);
                 let mtime_ms = file_mtime_ms(file, trust);
                 (base_index + chunk_index * 256 + index, path, mtime_ms)
             })
@@ -135,16 +135,16 @@ pub(super) fn handle_mtime_inventory(
         }
         // Path::join replaces the base when the operand is absolute.
         let operand_path = cwd.join(operand);
-        let filter = PathFilter::new(&operand_path, parsed)?;
+        let walk_key = walk_key(&operand_path, parsed);
+        let filter = PathFilter::new(&operand_path, &walk_key.operand, parsed)?;
         let scope = OperandScope {
             operand,
-            operand_path: &operand_path,
+            key: &walk_key,
             filter: &filter,
         };
-        let watched = store.watch_root(&operand_path);
+        let watched = store.watch_root(&walk_key.operand);
         let trust = TrustSnapshot::capture();
         cache_safe &= watched;
-        let walk_key = walk_key(&operand_path, parsed);
         if let Some(files) = store.take_ready(&walk_key) {
             let (candidates, expired) =
                 collect_mtime_candidates(&files, 0, &scope, &trust, cancelled, deadline_at)?;
@@ -160,7 +160,7 @@ pub(super) fn handle_mtime_inventory(
         }
 
         let (live, _waiter) =
-            store.join_live_walk(walk_key, &operand_path, parsed, req.keep_warm, 0, watched);
+            store.join_live_walk(walk_key.clone(), req.keep_warm, 0, watched);
         let mut cursor = 0usize;
         let mut operand_complete = false;
         loop {

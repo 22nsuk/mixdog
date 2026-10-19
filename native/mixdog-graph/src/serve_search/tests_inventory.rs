@@ -633,3 +633,203 @@ fn incremental_inventory_repair_splices_changed_paths() {
     assert_eq!(repaired.as_ref(), &vec![added, keep]);
     std::fs::remove_dir_all(root).ok();
 }
+
+fn with_inventory_aliases(check: impl Fn(&Path, &Path)) {
+    static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let fixture = std::env::temp_dir().join(format!(
+        "mixdog-inventory-alias-{}-{nonce}-{}",
+        std::process::id(),
+        NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed),
+    ));
+    std::fs::create_dir(&fixture).expect("unique fixture");
+    let real = fixture.join("real");
+    let detour = fixture.join("detour");
+    std::fs::create_dir(&real).unwrap();
+    std::fs::create_dir(&detour).unwrap();
+    check(&real, &detour.join("..").join("real"));
+
+    #[cfg(unix)]
+    {
+        let real = fixture.join("linked-real");
+        let alias = fixture.join("linked-root");
+        std::fs::create_dir(&real).unwrap();
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+        check(&real, &alias);
+    }
+    std::fs::remove_dir_all(fixture).expect("remove fixture");
+}
+
+#[test]
+fn aliased_inventory_repairs_match_a_fresh_walk_without_duplicate_paths() {
+    with_inventory_aliases(|real, alias| {
+        std::fs::create_dir(real.join("d")).unwrap();
+        for name in ["config-12-a.txt", "plain.txt", "v-2-x.mjs"] {
+            std::fs::write(real.join("d").join(name), "LIMIT=45\n").unwrap();
+        }
+        let parsed =
+            parse_args(&request(&["--files", alias.to_str().unwrap()], 0).args).unwrap();
+        let key = walk_key(alias, &parsed);
+        let store = Arc::new(FileListStore::new());
+        let (initial, complete, errors, _, _) = complete_operand_files(
+            &store,
+            &key,
+            &AtomicBool::new(false),
+            None,
+            false,
+        )
+        .unwrap();
+        assert!(complete);
+        assert_eq!(errors, 0);
+        drop(store);
+
+        let canonical = normalized_operand(real);
+        let expected = ["config-12-a.txt", "plain.txt", "v-2-x.mjs"]
+            .map(|name| canonical.join("d").join(name))
+            .to_vec();
+        // A canonical watcher path must replace the same entries that the
+        // initial alias-root walk published, not add a second spelling.
+        let repaired = repair_inventory(&key, &initial, &[canonical.join("d")]).unwrap();
+        assert_eq!(repaired.as_ref(), &expected);
+        let whole_root = repair_inventory(&key, &repaired, &[canonical.clone()]).unwrap();
+        let fresh = scan_inventory_subtree(&key, &canonical).unwrap();
+        assert_eq!(whole_root.as_ref(), &fresh);
+        assert_eq!(fresh, expected);
+    });
+}
+
+#[test]
+fn aliased_search_roots_preserve_relative_output_filters_and_paging() {
+    with_inventory_aliases(|real, alias| {
+        std::fs::create_dir(real.join("d")).unwrap();
+        std::fs::write(real.join("d/config-12-a.txt"), "MODE=a\nLIMIT=45\n").unwrap();
+        std::fs::write(real.join("d/plain.txt"), "LIMIT=9\n").unwrap();
+        std::fs::write(real.join("d/v-2-x.mjs"), "LIMIT=7\n").unwrap();
+        let store = Arc::new(FileListStore::new());
+        let cancelled = AtomicBool::new(false);
+
+        for (args, expected) in [
+            (
+                vec!["--files", "--glob", "/d/*.txt", "."],
+                vec!["./d/config-12-a.txt", "./d/plain.txt"],
+            ),
+            (
+                vec!["-n", "--glob", "/d/*.txt", "-e", "LIMIT=\\d+", "."],
+                vec!["./d/config-12-a.txt:2:LIMIT=45", "./d/plain.txt:1:LIMIT=9"],
+            ),
+        ] {
+            let mut req = request(&args, 0);
+            req.cwd = alias.to_string_lossy().into_owned();
+            let full = handle(&req, &cancelled, &store, None).unwrap();
+            assert_eq!(full["complete"], true, "{full}");
+            let lines = |response: &serde_json::Value| {
+                response["lines"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|line| line.as_str().unwrap().replace('\\', "/"))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(lines(&full), expected);
+            req.limit = 1;
+            req.offset = 1;
+            let page = handle(&req, &cancelled, &store, None).unwrap();
+            assert_eq!(lines(&page), expected[1..]);
+        }
+
+        let mut req = request(&["--files", "--glob", "/d/config-12-a.txt", "."], 1);
+        req.cwd = alias.to_string_lossy().into_owned();
+        req.mtime_top_k = true;
+        let newest = handle(&req, &cancelled, &store, None).unwrap();
+        assert_eq!(newest["complete"], true, "{newest}");
+        assert_eq!(
+            newest["lines"][0].as_str().unwrap().replace('\\', "/"),
+            "./d/config-12-a.txt"
+        );
+        assert_eq!(newest["lines"].as_array().unwrap().len(), 1);
+
+        req.fuzzy = Some("config-12-a".to_string());
+        req.mtime_top_k = false;
+        for _ in 0..2 {
+            let fuzzy = handle_fuzzy(&req, &cancelled, &store, None).unwrap();
+            assert_eq!(fuzzy["complete"], true, "{fuzzy}");
+            assert_eq!(fuzzy["matches"], serde_json::json!(["d/config-12-a.txt"]));
+        }
+        drop(store);
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn exact_file_aliases_keep_requested_names_and_filters() {
+    with_inventory_aliases(|real, alias| {
+        let target = real.join("target.txt");
+        std::fs::write(&target, "LIMIT=45\n").unwrap();
+        std::os::unix::fs::symlink(&target, real.join("linked.js")).unwrap();
+        let store = Arc::new(FileListStore::new());
+        let cancelled = AtomicBool::new(false);
+        let mut req = request(
+            &[
+                "-n", "-H", "--glob", "*.js", "-t", "js", "-e", "LIMIT", "linked.js",
+            ],
+            0,
+        );
+        req.cwd = alias.to_string_lossy().into_owned();
+        for _ in 0..2 {
+            let response = handle(&req, &cancelled, &store, None).unwrap();
+            assert_eq!(response["complete"], true, "{response}");
+            assert_eq!(
+                response["lines"],
+                serde_json::json!(["linked.js:1:LIMIT=45"])
+            );
+        }
+        // The target shares the canonical inventory, not the alias's filter.
+        for args in [
+            vec!["-n", "-H", "-t", "js", "-e", "LIMIT", "target.txt"],
+            vec!["-n", "-H", "--glob", "*.txt", "-e", "LIMIT", "linked.js"],
+            vec!["-n", "-H", "--glob", "!linked.js", "-e", "LIMIT", "linked.js"],
+        ] {
+            let mut rejected = request(&args, 0);
+            rejected.cwd = req.cwd.clone();
+            let response = handle(&rejected, &cancelled, &store, None).unwrap();
+            assert_eq!(response["complete"], true, "{response}");
+            assert_eq!(response["lines"], serde_json::json!([]));
+        }
+        drop(store);
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn aliased_git_roots_keep_requested_pruning_rules_during_walk_and_repair() {
+    with_inventory_aliases(|real, alias| {
+        let target = real.join("git-target");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::create_dir(target.join(".git")).unwrap();
+        std::fs::write(target.join(".git/kept.txt"), "visible\n").unwrap();
+        std::os::unix::fs::symlink(&target, real.join(".git")).unwrap();
+        let requested = alias.join(".git");
+        let parsed = parse_args(
+            &request(
+                &["--files", "--hidden", "--no-ignore", requested.to_str().unwrap()],
+                0,
+            )
+            .args,
+        )
+        .unwrap();
+        let key = walk_key(&requested, &parsed);
+        let store = Arc::new(FileListStore::new());
+        let (initial, complete, errors, _, _) =
+            complete_operand_files(&store, &key, &AtomicBool::new(false), None, false).unwrap();
+        assert!(complete);
+        assert_eq!(errors, 0);
+        let expected = vec![normalized_operand(&target).join(".git/kept.txt")];
+        assert_eq!(initial.as_ref(), &expected);
+        let repaired = repair_inventory(&key, &initial, &[key.operand.clone()]).unwrap();
+        assert_eq!(repaired.as_ref(), &expected);
+        drop(store);
+    });
+}

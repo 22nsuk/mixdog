@@ -165,18 +165,7 @@ impl FileListStore {
             std::thread::sleep(Duration::from_millis(250));
             let cancelled = AtomicBool::new(false);
             for key in keys {
-                let parsed = ParsedArgs {
-                    targets: vec![key.operand.to_string_lossy().into_owned()],
-                    hidden: key.hidden,
-                    no_ignore: key.no_ignore,
-                    no_require_git: key.no_require_git,
-                    max_depth: key.max_depth,
-                    files_list: true,
-                    directories: key.directories,
-                    ..ParsedArgs::default()
-                };
-                let _ =
-                    complete_operand_files(&store, &key.operand, &parsed, &cancelled, None, true);
+                let _ = complete_operand_files(&store, &key, &cancelled, None, true);
             }
         });
     }
