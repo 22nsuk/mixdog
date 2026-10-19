@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { mock } from 'node:test';
+import { setImmediate as nextTurn } from 'node:timers/promises';
 
 // Exercise the real service, normalizer and locked config patch writer. Only
 // the OS keychain is replaced; every config read/write uses this test's disk.
@@ -38,8 +39,12 @@ const keychain = {
   hasSecret: (account) => secrets.has(account),
   setSecret: (account, value) => secrets.set(account, value),
   setSecretAsync: async (account, value) => {
-    if (keyWriteBarrier?.account === account) {
+    if (
+      keyWriteBarrier?.account === account &&
+      (keyWriteBarrier.value === undefined || keyWriteBarrier.value === value)
+    ) {
       const barrier = keyWriteBarrier;
+      keyWriteBarrier = null;
       barrier.entered.resolve();
       await barrier.released.promise;
     }
@@ -60,6 +65,7 @@ const baseURL = 'http://localhost:1234/v1';
 const initialOverride = { manual: true, hidden: false, name: 'M', contextWindow: 8000 };
 const initialKey = 'provider-save-fixture-original';
 const replacementKey = 'provider-save-fixture-replacement';
+const peerKey = 'provider-save-fixture-peer';
 const envName = 'MIXDOG_TEST_CUSTOM_PROVIDER_SAVE_KEY';
 const stored = () => JSON.parse(readFileSync(join(root, 'data', 'mixdog-config.json'), 'utf8')).agent;
 
@@ -79,12 +85,12 @@ function edit(id, extra = {}) {
   return { id, schemaVersion: 2, name: 'After', protocol: 'openai-chat', baseURL, ...extra };
 }
 
-async function saveDuringKeyWrite(id, input, change) {
+async function saveDuringKeyWrite(id, input, change, { config = cfgMod, value } = {}) {
   const entered = Promise.withResolvers();
   const released = Promise.withResolvers();
   assert.equal(keyWriteBarrier, null);
-  keyWriteBarrier = { account: `agent.${id}.apiKey`, entered, released };
-  const saving = admin.saveCustomProvider(cfgMod, input);
+  keyWriteBarrier = { account: `agent.${id}.apiKey`, value, entered, released };
+  const saving = admin.saveCustomProvider(config, input);
   let result;
   try {
     await Promise.race([
@@ -207,6 +213,93 @@ test('a final validation failure preserves the peer config and restores the prev
   );
   assert.deepEqual(stored().providers[id], peerEntry);
   assert.equal(secrets.get(`agent.${id}.apiKey`), initialKey);
+});
+
+test('a failed overlapping save cannot roll back a peer API key replacement', { timeout: 10_000 }, async () => {
+  const { id } = await register({ auth: 'key', apiKey: initialKey });
+  const peerSettings = { name: 'Peer', wires: ['chat', 'responses'], modelWires: { m: 'responses' } };
+  let peerSaving;
+  await assert.rejects(
+    saveDuringKeyWrite(id, edit(id, { apiKey: replacementKey, wires: ['chat'] }), async () => {
+      peerSaving = admin.saveCustomProvider(cfgMod, edit(id, { ...peerSettings, apiKey: peerKey }));
+      // Let the peer reach its key write (or wait for the pending transaction).
+      await nextTurn();
+      // Settings-only edits remain independent of the key transaction and make
+      // the first save's final normalization fail under either implementation.
+      await admin.saveCustomProvider(cfgMod, edit(id, peerSettings));
+    }),
+    /modelWires/
+  );
+  const peer = await peerSaving;
+  const entry = stored().providers[id];
+  assert.equal(entry.name, 'Peer');
+  assert.deepEqual(entry.modelWires, { m: 'responses' });
+  assert.deepEqual(peer.modelWires, entry.modelWires);
+  assert.equal(secrets.get(`agent.${id}.apiKey`), peerKey);
+  assert.equal(JSON.stringify([stored(), peer]).includes(peerKey), false);
+});
+
+test('a peer API key replacement survives an already pending rollback', { timeout: 10_000 }, async () => {
+  const { id } = await register({ auth: 'key', apiKey: initialKey });
+  const failingConfig = {
+    ...cfgMod,
+    saveConfig() {
+      throw new Error('fixture config save failed');
+    },
+  };
+  let peerSaving;
+  await assert.rejects(
+    saveDuringKeyWrite(
+      id,
+      edit(id, { apiKey: replacementKey }),
+      async () => {
+        // The replacement was written, but restoring the old key is pending.
+        assert.equal(secrets.get(`agent.${id}.apiKey`), replacementKey);
+        peerSaving = admin.saveCustomProvider(cfgMod, edit(id, { name: 'Peer', apiKey: peerKey }));
+        await nextTurn();
+      },
+      { config: failingConfig, value: initialKey }
+    ),
+    /fixture config save failed/
+  );
+  const peer = await peerSaving;
+  assert.equal(stored().providers[id].name, 'Peer');
+  assert.equal(peer.name, 'Peer');
+  assert.equal(secrets.get(`agent.${id}.apiKey`), peerKey);
+});
+
+test('a queued failure restores the key from the preceding successful save', { timeout: 10_000 }, async () => {
+  const { id } = await register({ auth: 'key', apiKey: initialKey });
+  const failingConfig = {
+    ...cfgMod,
+    saveConfig() {
+      throw new Error('fixture queued config save failed');
+    },
+  };
+  let peerFailed;
+  await saveDuringKeyWrite(id, edit(id, { apiKey: replacementKey }), async () => {
+    peerFailed = assert.rejects(
+      admin.saveCustomProvider(failingConfig, edit(id, { name: 'Peer', apiKey: peerKey })),
+      /fixture queued config save failed/
+    );
+    await nextTurn();
+  });
+  await peerFailed;
+  assert.equal(stored().providers[id].name, 'After');
+  assert.equal(secrets.get(`agent.${id}.apiKey`), replacementKey);
+});
+
+test('a pending key save does not block another provider', { timeout: 10_000 }, async () => {
+  const { id } = await register({ auth: 'key', apiKey: initialKey });
+  let peer;
+  await saveDuringKeyWrite(id, edit(id, { apiKey: replacementKey }), async () => {
+    peer = await register({ name: 'Other provider', auth: 'key', apiKey: peerKey });
+    assert.equal(stored().providers[peer.id].name, 'Other provider');
+    assert.equal(secrets.get(`agent.${peer.id}.apiKey`), peerKey);
+  });
+  assert.equal(stored().providers[id].name, 'After');
+  assert.equal(secrets.get(`agent.${id}.apiKey`), replacementKey);
+  assert.equal(secrets.get(`agent.${peer.id}.apiKey`), peerKey);
 });
 
 for (const authSettings of [{ auth: 'none' }, { auth: 'key', apiKeyEnv: envName }]) {

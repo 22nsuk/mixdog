@@ -1039,10 +1039,32 @@ async function resolveCustomInput(cfgMod, rawInput, options) {
   return { id, config, typed: keyless || envName ? '' : typed, apiKey };
 }
 
+const customProviderKeySaves = new Map();
+
+// Own a provider's key from reading the rollback value through config commit
+// or rollback completion. Settings-only saves can still proceed independently.
+async function withCustomProviderKeySave(id, save) {
+  const previous = customProviderKeySaves.get(id);
+  const done = Promise.withResolvers();
+  customProviderKeySaves.set(id, done.promise);
+  try {
+    if (previous) await previous;
+    return await save();
+  } finally {
+    done.resolve();
+    if (customProviderKeySaves.get(id) === done.promise) customProviderKeySaves.delete(id);
+  }
+}
+
 export async function saveCustomProvider(cfgMod, rawInput) {
   requireLocalProviderManagement();
   const { id: existingId, config, typed } = await resolveCustomInput(cfgMod, rawInput, { requireModels: false });
   const id = existingId || `custom-${randomUUID()}`;
+  const save = () => commitCustomProviderSave(cfgMod, rawInput, { id, existingId, config, typed });
+  return typed ? withCustomProviderKeySave(id, save) : save();
+}
+
+async function commitCustomProviderSave(cfgMod, rawInput, { id, existingId, config, typed }) {
   const account = SECRET_ACCOUNTS.agentApiKey(id);
   const previousKey = typed && existingId ? getAgentApiKey(id) : null;
   if (typed) await saveSecretAsync(account, typed);
