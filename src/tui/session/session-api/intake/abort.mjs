@@ -58,12 +58,6 @@ export function createAbortAction(bag) {
   // put its unsent requeue entries at the front of the queue.
   const reclaimInFlightPrompt = (restoreState, { restoreText, requeueEntries, handoff = false }) => {
     restoreState.reclaimed = true;
-    // Only an accepted abort that actually returns the prompt relinquishes
-    // its durable queue copy. Requeued notifications still own their input.
-    if (restoreText) {
-      restoreState.onReclaimed?.();
-      restoreState.onReclaimed = null;
-    }
     const idSet = new Set((restoreState.submittedIds || []).filter((id) => id != null));
     const patch = { spinner: null, thinking: null, lastTurn: null };
     // Another device cancelled this turn: the prompt travels to the device that
@@ -156,6 +150,13 @@ export function createAbortAction(bag) {
         : [];
     const aborted = abortGoalTurn(runtime, flags, hasPendingSteering, reason);
     if (restoreState) {
+      // A user Stop consumes this input even when no draft is requested.
+      // Explicit draft reclamation also releases it; automatic interruptions
+      // such as the watchdog must retain input that has not been committed.
+      if (aborted !== false && !restoreState.committed && (reason === 'user-cancel' || restoreText)) {
+        restoreState.onAborted?.();
+        restoreState.onAborted = null;
+      }
       if (aborted !== false && Array.isArray(restoreState.discardExecutionPendingResumeKeys)) {
         discardExecutionPendingResume?.(restoreState.discardExecutionPendingResumeKeys);
       }

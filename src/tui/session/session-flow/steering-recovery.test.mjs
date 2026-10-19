@@ -160,14 +160,17 @@ test('legacy counter IDs recover as distinct reviewable rows despite colliding r
   assert.deepEqual(diskRows(id), []);
 });
 
-for (const [crossDevice, abortAccepted] of [
-  [false, true],
-  [true, true],
-  [false, false],
+for (const [crossDevice, abortAccepted, restorePrompt, reason = 'user-cancel'] of [
+  [false, true, true],
+  [true, true, true],
+  [false, false, true],
+  [false, true, false],
+  [false, false, false],
+  [false, true, false, 'agent-watchdog'],
 ]) {
-  const scenario = `handoff=${crossDevice}, accepted=${abortAccepted}`;
-  test(`recovered input releases its disk row only on draft reclamation (${scenario})`, async (t) => {
-    const id = `abort_recovered_${crossDevice}_${abortAccepted}`;
+  const scenario = `handoff=${crossDevice}, accepted=${abortAccepted}, restore=${restorePrompt}, reason=${reason}`;
+  test(`recovered input is consumed by accepted user cancellation (${scenario})`, async (t) => {
+    const id = `abort_recovered_${crossDevice}_${abortAccepted}_${restorePrompt}_${reason}`;
     const text = 'return this input to its author';
     await appendTuiSteeringPersist(id, {
       id: 'cancel_me',
@@ -227,7 +230,7 @@ for (const [crossDevice, abortAccepted] of [
     t.after(() => finishProvider?.('user-cancel'));
     f.set({ busy: false });
     await started.promise;
-    const restored = abort({ device: crossDevice ? 'Phone' : 'Desktop' });
+    const restored = abort({ device: crossDevice ? 'Phone' : 'Desktop', restorePrompt, reason });
     if (!abortAccepted) {
       assert.equal(restored.aborted, false);
       await flushTuiSteeringPersist();
@@ -238,7 +241,11 @@ for (const [crossDevice, abortAccepted] of [
       return;
     }
     assert.equal(restored.aborted, true);
-    if (crossDevice) {
+    if (!restorePrompt) {
+      assert.equal(restored.restoreText, '');
+      assert.deepEqual(restored.restoredSubmissionIds, []);
+      assert.equal(f.getState().promptRestore, undefined);
+    } else if (crossDevice) {
       assert.equal(restored.restoreText, '');
       assert.equal(f.getState().promptRestore.text, text);
       assert.deepEqual(f.getState().promptRestore.ids, ['cancel_me']);
@@ -248,14 +255,20 @@ for (const [crossDevice, abortAccepted] of [
     }
     await settled.promise;
     await flushTuiSteeringPersist();
-    assert.equal(committed, 0, 'reclaiming is not a successful delivery callback');
+    assert.equal(committed, 0, 'cancellation is not a successful delivery callback');
+    if (reason === 'agent-watchdog') {
+      assert.equal(diskRows(id).length, 2, 'automatic interruption does not discard accepted input');
+      assert.equal(f.runtime.session.messages[0].content, text, 'non-user interruption preserves the receipt');
+      return;
+    }
     assert.deepEqual(f.runtime.session.messages, [], 'the real interruption path removed the provisional receipt');
-    assert.deepEqual(diskRows(id).map((row) => row.text), ['unrelated legacy input']);
+    const remainingDiskText = diskRows(id).map((row) => row.text);
     const restarted = flowFixture(t, id, { messages: f.runtime.session.messages, busy: false });
     await restarted.flow.restoreLeadSteeringFromDisk();
     await restarted.flow.drain();
+    assert.deepEqual(restarted.turns, [], 'the cancelled input cannot auto-run after another restart');
+    assert.deepEqual(remainingDiskText, ['unrelated legacy input']);
     assert.deepEqual(restarted.pending.map((entry) => entry.text), ['unrelated legacy input']);
-    assert.deepEqual(restarted.turns, [], 'the reclaimed input cannot auto-run after another restart');
   });
 }
 
