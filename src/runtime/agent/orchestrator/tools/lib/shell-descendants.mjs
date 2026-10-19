@@ -137,9 +137,9 @@ export function createProcessTreeTracker({ pid, members = [], exitObserved = fal
     /** Pre-termination snapshot; call while the root still runs. */
     async capture({ rootExited = false } = {}) {
       if (rootPid <= 0) return false;
-      let table = await readProcessTable({ shared: true });
-      // A shared read may have begun before this root was spawned.
-      if (!table.tokenOf.has(rootPid)) table = await readProcessTable();
+      // A running read can contain the root yet predate its latest children.
+      // Start after this request, coalescing with other queued fresh reads.
+      const table = await readProcessTable();
       absorb(table, rootIsAlive(table, rootExited));
       return complete;
     },
@@ -195,7 +195,8 @@ function sweepLiveIdentities(tracker) {
  *
  *  `sweep` (a killed tree): a pass that finds captured identities alive
  *  terminates them and observes again in the same pass, so a cancellation
- *  ends with the tree gone instead of a held folder over live processes. */
+ *  ends with the tree gone instead of a held folder over live processes. It
+ *  may be a predicate when cancellation can arrive after root exit. */
 export function watchTermination({
   tracker,
   rootExited = () => true,
@@ -227,7 +228,7 @@ export function watchTermination({
         observation.catch(() => {});
         // A pass that has not answered by the next cadence tick is unknown.
         state = await withinBound(observation, intervalMs, 'unknown');
-        if (state === 'running' && sweep && !stopped) {
+        if (state === 'running' && (typeof sweep === 'function' ? sweep() : sweep) && !stopped) {
           await withinBound(
             sweepLiveIdentities(tracker).catch(() => {}),
             intervalMs,
@@ -344,8 +345,9 @@ const trackerFor = (handle) =>
 /** Resolve once every observed survivor (by identity) has exited, or false
  *  once `signal` aborts. These processes are not our children any more, so
  *  there is no exit event to subscribe to; the shared observation loop
- *  re-checks them at the termination cadence. */
-export function waitForShellDescendants(handle, { signal = null } = {}) {
+ *  re-checks them at the termination cadence. A synchronous `onTerminated`
+ *  cleanup runs before resolving; a failure stays with that loop to retry. */
+export function waitForShellDescendants(handle, { signal = null, onTerminated = null } = {}) {
   if (!handle) return Promise.resolve(true);
   return new Promise((resolve) => {
     if (signal?.aborted) {
@@ -359,6 +361,7 @@ export function waitForShellDescendants(handle, { signal = null } = {}) {
     const stop = watchTermination({
       tracker: trackerFor(handle),
       onTerminated: () => {
+        onTerminated?.();
         signal?.removeEventListener('abort', onAbort);
         resolve(true);
       },

@@ -11,6 +11,7 @@ import {
   cleanupBackgroundTasks,
   completeBackgroundTask,
   getBackgroundTask,
+  hasActiveBackgroundTasks,
   reconcileBackgroundTask,
   registerBackgroundTask,
   renderBackgroundTask,
@@ -28,7 +29,7 @@ import {
   settlePendingMessageWrites,
 } from '../agent/orchestrator/session/manager/pending-messages.mjs';
 import { _clearDeliveredCompletions } from '../agent/orchestrator/session/manager/delivered-completions.mjs';
-import { parseTaskNotification } from './task-notification-envelope.mjs';
+import { parseTaskNotification, renderShellCompletionEnvelope } from './task-notification-envelope.mjs';
 
 test('task output reports each error once while preserving metadata and verbatim results', () => {
   const body = '  stdout\r\nstderr\n\n';
@@ -383,6 +384,169 @@ test('shell task cancellation keeps its notification behavior', async () => {
     cleanupBackgroundTasks({ force: true });
   }
 });
+
+test('an owner-confirmed cancellation stays active until settlement, retaining output and one final notice', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const notifications = [];
+  const attempts = [];
+  const task = registerBackgroundTask({
+    surface: 'shell',
+    cancelOwnsCompletion: true,
+    notifyOnCancel: true,
+    context: { callerSessionId: CANCEL_OWNER, notifyFn: (text) => notifications.push(text) },
+    cancel: () => attempts.push({ requested: task.cancelRequested, status: task.status }),
+  });
+  try {
+    assert.deepEqual(
+      cancelBackgroundTasks({ callerSessionId: CANCEL_OWNER, reason: 'owner stopped', notify: true }),
+      { cancelled: 1 }
+    );
+    assert.equal(task.status, 'running', 'request delivery is not owner-confirmed termination');
+    assert.equal(task.finishedAt, null);
+    assert.equal(hasActiveBackgroundTasks({ callerSessionId: CANCEL_OWNER }), true);
+    assert.deepEqual(attempts, [{ requested: true, status: 'running' }], 'intent precedes a reentrant owner hook');
+    t.mock.timers.tick(30_000);
+    assert.deepEqual(notifications, [], 'the legacy cancellation-notice grace cannot complete this task');
+    cancelBackgroundTask(task.taskId, 'retry cancellation', { notify: true });
+    assert.equal(attempts.length, 2, 'a still-running owner can retry its cancellation');
+    assert.equal(task.cancelRequestedReason, 'owner stopped');
+    const output = '  output before the command stopped\r\n';
+    const result = { exit_code: 0, stdout: output };
+    const resultText = renderShellCompletionEnvelope({
+      jobId: task.taskId,
+      status: 'completed',
+      exitCode: 0,
+      result: output,
+    });
+    completeBackgroundTask(task.taskId, { status: 'completed', result, resultText });
+    assert.equal(task.status, 'cancelled', 'a requested cancellation wins a racing successful owner result');
+    assert.equal(task.error, 'owner stopped');
+    assert.equal(task.result, result);
+    assert.equal(task.resultText, resultText, 'the owner result remains available verbatim');
+    assert.equal(hasActiveBackgroundTasks({ callerSessionId: CANCEL_OWNER }), false);
+    assert.equal(notifications.length, 1);
+    const notice = parseTaskNotification(notifications[0]);
+    assert.equal(notice.status, 'cancelled');
+    assert.equal(notice.result, output);
+    completeBackgroundTask(task.taskId, { status: 'failed', error: 'late error' });
+    reconcileBackgroundTask(task.taskId, { status: 'completed', result: 'late output' });
+    assert.equal(notifications.length, 1);
+    assert.equal(task.result, result);
+    assert.equal(task.error, 'owner stopped');
+  } finally {
+    t.mock.timers.reset();
+    cleanupBackgroundTasks({ force: true });
+  }
+});
+
+test('an owner can settle synchronously inside cancel after the requested status and notification policy are recorded', () => {
+  try {
+    for (const notify of [true, false]) {
+      const notifications = [];
+      const task = registerBackgroundTask({
+        surface: 'shell',
+        cancelOwnsCompletion: true,
+        context: { notifyFn: (text) => notifications.push(text) },
+        cancel: () => completeBackgroundTask(task.taskId, { result: { stdout: 'already stopped' } }),
+      });
+      cancelBackgroundTask(task.taskId, 'synchronous stop', { notify });
+      assert.equal(task.status, 'cancelled');
+      assert.equal(task.error, 'synchronous stop');
+      assert.equal(notifications.length, notify ? 1 : 0);
+      if (notify) assert.equal(parseTaskNotification(notifications[0]).status, 'cancelled');
+    }
+  } finally {
+    cleanupBackgroundTasks({ force: true });
+  }
+});
+
+test('owner settlement can explicitly suppress a requested cancellation notice', () => {
+  const notifications = [];
+  const task = registerBackgroundTask({
+    surface: 'shell',
+    cancelOwnsCompletion: true,
+    context: { notifyFn: (text) => notifications.push(text) },
+  });
+  try {
+    cancelBackgroundTask(task.taskId, 'requested stop', { notify: true });
+    assert.equal(task.status, 'running');
+    completeBackgroundTask(task.taskId, { result: { stdout: 'owner handled the result' }, notify: false });
+    assert.equal(task.status, 'cancelled');
+    assert.deepEqual(task.result, { stdout: 'owner handled the result' });
+    assert.deepEqual(notifications, []);
+  } finally {
+    cleanupBackgroundTasks({ force: true });
+  }
+});
+
+test('explicit silence dominates repeated owner-confirmed cancellation and later completion retries', () => {
+  try {
+    for (const firstNotify of [true, false]) {
+      const notifications = [];
+      const task = registerBackgroundTask({
+        surface: 'shell',
+        cancelOwnsCompletion: true,
+        context: { callerSessionId: CANCEL_OWNER, notifyFn: (text) => notifications.push(text) },
+      });
+      cancelBackgroundTask(task.taskId, 'initial cancellation', { notify: firstNotify });
+      cancelBackgroundTasks({ callerSessionId: CANCEL_OWNER, reason: 'session deleted', notify: false });
+      cancelBackgroundTask(task.taskId, 'late retry', { notify: true });
+      assert.equal(task.status, 'running');
+      assert.equal(task.cancelNotify, 'silent');
+      assert.equal(task.cancelRequestedReason, 'initial cancellation');
+      completeBackgroundTask(task.taskId, {
+        status: 'failed',
+        error: new Error('owner cleanup failed'),
+        result: { stdout: 'partial output' },
+      });
+      assert.equal(task.status, 'cancelled');
+      assert.match(task.error, /owner cleanup failed/, 'the owner failure is not replaced by the cancellation reason');
+      assert.deepEqual(task.result, { stdout: 'partial output' });
+      reconcileBackgroundTask(task.taskId, { status: 'completed', result: 'late result' });
+      assert.deepEqual(notifications, [], 'teardown silence also blocks a later reconciliation notice');
+    }
+  } finally {
+    cleanupBackgroundTasks({ force: true });
+  }
+});
+
+for (const outcome of ['resolve', 'reject']) {
+  test(`an owner-confirmed task whose run ${outcome}s after cancellation settles once as cancelled`, async () => {
+    const notifications = [];
+    const run = controlledRun();
+    const task = startBackgroundTask({
+      surface: 'shell',
+      cancelOwnsCompletion: true,
+      context: { notifyFn: (text) => notifications.push(text) },
+      run: () => run.promise,
+    });
+    const result = { stdout: 'partial result' };
+    try {
+      cancelBackgroundTask(task.taskId, 'requested stop', { notify: true });
+      assert.equal(task.status, 'running');
+      assert.equal(task.finishedAt, null);
+      assert.deepEqual(notifications, []);
+      if (outcome === 'resolve') run.resolve(result);
+      else run.reject(new Error('run stopped with an error'));
+      await task.promise;
+      assert.equal(task.status, 'cancelled');
+      if (outcome === 'resolve') {
+        assert.equal(task.result, result);
+        assert.equal(task.error, 'requested stop');
+      } else {
+        assert.match(task.error, /run stopped with an error/);
+      }
+      assert.equal(notifications.length, 1);
+      assert.equal(parseTaskNotification(notifications[0]).status, 'cancelled');
+      reconcileBackgroundTask(task.taskId, { status: 'completed' });
+      assert.equal(notifications.length, 1);
+    } finally {
+      run.resolve();
+      await task.promise;
+      cleanupBackgroundTasks({ force: true });
+    }
+  });
+}
 
 test('a delivered result object is released (text and metadata kept) except for shell/agent readers', () => {
   const sent = [];

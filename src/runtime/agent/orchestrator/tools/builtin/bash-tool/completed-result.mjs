@@ -35,21 +35,19 @@ function trackSurvivingDescendants(handle, { command, cwd, options, startedAtMs 
       input: { command, cwd },
       meta: { task_id: handle.taskId, stdout: null, stderr: null, cwd, timeoutMs: 0 },
       resultType: 'shell_task_result',
+      cancelOwnsCompletion: true,
       run: async () => {
-        await waitForShellDescendants(handle);
-        // The folder reservation the finished command handed to its
-        // survivors ends with the last of them.
-        releaseShellJobWorkspace(handle.taskId);
+        await waitForShellDescendants(handle, {
+          // Keep a failed release with the observer that can retry it.
+          onTerminated: () => releaseShellJobWorkspace(handle.taskId),
+        });
         return {
           task_id: handle.taskId,
-          status: 'completed',
+          status: task.cancelRequested ? 'cancelled' : 'completed',
           detail: 'every process the command left running has exited',
         };
       },
-      // The kill's own re-observation is what `task cancel` reports.
-      cancel: () => {
-        task.cancelOutcome = killShellDescendants(handle);
-      },
+      cancel: () => killShellDescendants(handle),
     });
     // The command already returned its result; these processes are a side
     // effect it left running, not work the agent is waiting on.

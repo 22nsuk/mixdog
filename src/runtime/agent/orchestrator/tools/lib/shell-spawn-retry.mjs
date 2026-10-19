@@ -6,7 +6,7 @@ function isPowerShellSpawn(shell, shellArg) {
   return /pwsh|powershell/i.test(String(shell || '')) || shellArg === '-Command';
 }
 
-export async function spawnShellWithRetry({ shell, argv, spawnOptions, shellArg, cwd }) {
+export async function spawnShellWithRetry({ shell, argv, spawnOptions, shellArg, cwd, onSpawned = null }) {
   const delays = [100, 300, 700];
   const isPowerShell = isPowerShellSpawn(shell, shellArg);
   activeShellSpawns++;
@@ -27,7 +27,14 @@ export async function spawnShellWithRetry({ shell, argv, spawnOptions, shellArg,
             const onSpawn = () => {
               clearTimeout(timer);
               native.child.removeListener('error', onError);
-              resolveSpawn();
+              try {
+                // Hand the live child to its owner in the native spawn event,
+                // before awaited wrappers yield to a concurrent session close.
+                onSpawned?.(native);
+                resolveSpawn();
+              } catch (error) {
+                rejectSpawn(error);
+              }
             };
             const onError = (err) => {
               clearTimeout(timer);

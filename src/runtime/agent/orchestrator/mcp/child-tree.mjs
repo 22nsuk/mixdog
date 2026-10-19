@@ -116,17 +116,15 @@ async function enumerate({ strict = false } = {}) {
  *  names and (POSIX) process groups. Rejects instead of returning a partial
  *  table, so callers can tell "nothing found" from "could not look".
  *
- *  `shared: true` (pre-kill captures) joins a read already in flight, so many
- *  jobs promoted together do not each spawn an enumerator; a capture taken
- *  while its root runs is valid whenever that read began. An observation after
- *  a kill or exit must see a table taken AFTER it asked: a read that began
- *  before the kill would report the killed tree alive and defer the
- *  confirmation by a whole re-check. Such a caller starts a read when none
- *  runs, else joins the one queued to begin when the running read settles —
- *  every observer asking meanwhile shares it. At most one enumerator runs at
- *  a time, however many shells settle or watch at once (each one is a
- *  PowerShell process on Windows; one per settle and watch pass compounded
- *  machine load into multi-second daemon stalls). */
+ *  `shared: true` joins a read already in flight. Pre-kill captures and
+ *  post-exit observations use the default: a table taken AFTER they asked.
+ *  An earlier read can miss children born before a kill, or report an exited
+ *  tree alive and defer confirmation by a whole re-check. A fresh caller
+ *  starts a read when none runs, else joins the one queued to begin when the
+ *  running read settles. Every caller asking meanwhile shares that queued
+ *  read. At most one enumerator runs at a time, however many shells settle or
+ *  watch at once (each one is a PowerShell process on Windows; one per settle
+ *  and watch pass compounded machine load into multi-second daemon stalls). */
 let tableInFlight = null;
 let nextTable = null;
 function startTableRead() {

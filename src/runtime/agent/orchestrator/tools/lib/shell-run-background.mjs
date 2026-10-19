@@ -14,6 +14,7 @@
 //   shell-run-background/promote-job.mjs       — registry promotion, lease release, kill fallback
 //   shell-run-background/promotion-results.mjs — the ExecResult of each promotion outcome
 import { clearForegroundRecord, clearForegroundTimers, elapsedSinceStart } from './shell-run-state.mjs';
+import { createProcessTreeTracker } from './shell-descendants.mjs';
 import { readCapturedOutput } from './shell-run-settle.mjs';
 import { handOverLease, killAfterFailedPromotion, promoteWithRetry } from './shell-run-background/promote-job.mjs';
 import {
@@ -68,6 +69,9 @@ export function createAutoBackground({
     // (which checks autoBackgrounded) becomes inert.
     if (run.settled || run.autoBackgrounded || run.killed || run.timedOut) return;
     if (run.child.exitCode != null || run.child.signalCode != null) return;
+    // A cancellation can capture/kill while promotion is awaiting the native
+    // reply. Its identities must follow the command into its new owner.
+    run.terminationTracker = run.terminationTracker || createProcessTreeTracker({ pid: run.child.pid });
     run.autoBackgrounded = true;
     // The foreground capture is over; stop the local watchdogs/timers so
     // they cannot treeKill the now-promoted child.
@@ -120,7 +124,7 @@ export function createAutoBackground({
     // the very transition it was asked to perform. A plain cancellation still
     // reverts promotion and kills.
     if (abortSignal?.aborted && !(reason === 'interrupt' && _abortReasonIsInterrupt(abortSignal))) {
-      resolveCancelledAfterPromotion(run, jobId, capture);
+      await resolveCancelledAfterPromotion(run, jobId, capture);
       return;
     }
     // Completed-during-promotion race: write the exit/done files here as
@@ -139,7 +143,7 @@ export function createAutoBackground({
   return (options) => {
     void _autoBackground(options).catch((error) => {
       if (run.isResolved()) return;
-      resolveCleanupFailure(run, error);
+      return resolveCleanupFailure(run, error);
     });
   };
 }

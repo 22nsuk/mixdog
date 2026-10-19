@@ -2,12 +2,7 @@
 // standby fast path, the spawn-burst gate around process creation, and the
 // delayed live foreground record once the command has reached a shell.
 import { acquire as acquireChildSpawnSlot } from '../../../../shared/child-spawn-gate.mjs';
-import {
-  killShellJob,
-  publishForegroundShellRecord,
-  trackForegroundShellJob,
-  waitForShellJob,
-} from '../builtin/shell-jobs.mjs';
+import { publishForegroundShellRecord, trackForegroundShellJob } from '../builtin/shell-jobs.mjs';
 import {
   nativeSpawnFileCaptureReady,
   nativeSpawnSupportsStdinPipe,
@@ -20,9 +15,8 @@ import { STANDBY_ARGS, takeWarmShellStandby } from './shell-warm-standby.mjs';
 import { SHELL_OUTPUT_DISK_CAP } from '../shell-exec-output.mjs';
 import { admitWorkspaceActivity, tryAdmitWorkspaceActivity } from '../../../../shared/worktrees/activity-gate.mjs';
 import { worktreeError } from '../../../../shared/worktrees/contract.mjs';
-import { capturePreKill, registerForegroundOwnedTree, treeKillForceSettle } from './shell-run-state.mjs';
-import { releaseAdmissionOnConfirmedTermination } from './shell-run-settle.mjs';
-import { killAfterSnapshot } from './shell-descendants.mjs';
+import { registerForegroundOwnedTree, treeKillForceSettle } from './shell-run-state.mjs';
+import { cleanupFailedShellStartup } from './shell-run-settle.mjs';
 
 // Foreground visibility threshold. Every shell readout (CLI statusline,
 // desktop island) scans the on-disk job records, so a foreground command is
@@ -126,6 +120,10 @@ async function gatedSpawn({
       argv,
       shellArg,
       cwd,
+      onSpawned: ({ child }) => {
+        run.child = child;
+        registerForegroundOwnedTree(run, ownerSessionId);
+      },
       spawnOptions: {
         env,
         cwd,
@@ -221,8 +219,15 @@ async function spawnAdmittedShellChild({
       ownerSessionId,
       clientHostPid,
     }));
-  run.child = spawned.child;
-  registerForegroundOwnedTree(run, ownerSessionId);
+  // A fresh native spawn already handed its live tree to this run; a warm
+  // standby reaches ownership here, before its command is fed through stdin.
+  if (run.child !== spawned.child) {
+    run.child = spawned.child;
+    registerForegroundOwnedTree(run, ownerSessionId);
+  }
+  if (run.ownerCancelled) {
+    throw abortSignal?.reason || new Error('Shell owner session closed during startup.');
+  }
   const parentAdmission = run.workspaceAdmission;
   const childAdmission = tryAdmitWorkspaceActivity(ownerSessionId || run.foregroundRecordId, cwd || process.cwd(), {
     pid: Number(run.child.pid) || process.pid,
@@ -277,27 +282,13 @@ export async function spawnShellChild(input) {
     input.abortSignal?.throwIfAborted();
     return await spawnAdmittedShellChild(input);
   } catch (error) {
-    if (!input.run.child) {
-      input.run.workspaceAdmission();
-      input.run.workspaceAdmission = null;
-    } else {
-      try {
-        // Identities first: the kill may break the parent chain.
-        // Bounded: the kill is sent even if the snapshot hangs or fails.
-        await killAfterSnapshot(capturePreKill(input.run), () => killShellJob(input.run.foregroundRecordId));
-        const detail = await waitForShellJob(input.run.foregroundRecordId);
-        if (!detail || !['completed', 'failed', 'cancelled'].includes(detail.nativeStatus)) {
-          throw new Error('The child termination could not be confirmed; workspace admission is retained.');
-        }
-        input.run.workspaceAdmission?.();
-        input.run.workspaceAdmission = null;
-      } catch (cleanupError) {
-        input.run.killUnconfirmed = true;
-        // No settle will ever run for this run; the reservation is released
-        // only once the child has exited and its descendants are gone.
-        releaseAdmissionOnConfirmedTermination(input.run);
-        throw new AggregateError([error, cleanupError], 'Shell startup failed and workspace cleanup remains blocked.');
-      }
+    try {
+      await cleanupFailedShellStartup(input.run);
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [error, cleanupError],
+        `${error?.message || error}; shell startup cleanup failed: ${cleanupError?.message || cleanupError}`
+      );
     }
     throw error;
   }

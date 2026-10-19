@@ -636,8 +636,8 @@ export class ExecResult {
     // the spill files now owned by the shell-jobs registry.
     this.backgrounded = opts.backgrounded === true;
     this.jobId = opts.jobId || null;
-    // A command queued behind a saturated shell lane is no shell job; this
-    // promise settles when the queued run finishes.
+    // Deferred lifecycle completion: a queued task's final result, or the
+    // foreground tree's confirmed termination after an early failure result.
     this.settled = opts.settled || null;
     this.backgroundMessage = opts.backgroundMessage || null;
     // Survivors observed AFTER the shell process exited (process group on

@@ -16,6 +16,8 @@ mock.module('../../mcp/child-tree.mjs', { namedExports: tree.namedExports });
 const records = { published: [], retired: [] };
 mock.module('../builtin/shell-jobs.mjs', {
   namedExports: {
+    killShellJob: () => assert.fail('normal settle must not enter startup cleanup'),
+    waitForShellJob: () => assert.fail('normal settle must not enter startup cleanup'),
     publishForegroundShellRecord: (input) => records.published.push(input),
     retireForegroundShellRecord: (jobId) => records.retired.push(jobId),
   },
@@ -316,6 +318,11 @@ test(
     await capturedBeforeKill(run, [{ pid: ROOT }]);
     await settleAndFlush(run);
     assert.ok(result, 'the result completes now');
+    assert.equal(typeof result.settled?.then, 'function', 'the result carries actual tree completion');
+    let terminated = false;
+    result.settled.then(() => { terminated = true; });
+    await flush();
+    assert.equal(terminated, false);
     assert.deepEqual(records.retired, []);
     assert.equal(records.published.length, 1);
     assert.equal(records.published[0].terminationUnconfirmed, true);
@@ -325,6 +332,7 @@ test(
     tree.state.next = () => processTable([]);
     await tick(5_000);
     assert.deepEqual(records.retired, ['job_unconfirmed_kill']);
+    assert.equal(terminated, true);
   })
 );
 
@@ -360,11 +368,12 @@ test(
 );
 
 test(
-  'an unconfirmed termination can be force-released only by its owner, and the watch ends',
+  'only the owner can release a hold, and release does not complete the live tree',
   withTimers(async () => {
     const repo = makeRepo();
     const child = runningChild();
     const { run } = unconfirmedRun(repo, child);
+    await capturedBeforeKill(run, [{ pid: ROOT }]);
     tree.state.next = () => {
       throw new Error('process enumeration denied');
     };
@@ -382,13 +391,24 @@ test(
     assert.equal(isHeld(repo), false);
     assert.equal(run.workspaceAdmission, null);
     assert.deepEqual(records.retired, ['job_unconfirmed_kill']);
+    let terminated = false;
+    run.terminationSettled.then(() => { terminated = true; });
     const reads = tree.state.reads;
     await tick(30_000);
-    assert.equal(tree.state.reads, reads, 'the observation loop stopped');
+    assert.ok(tree.state.reads > reads, 'release keeps observing the live tree');
+    assert.equal(terminated, false, 'a workspace release is not termination');
     assert.equal(
       (await forceReleaseTerminationHold('job_unconfirmed_kill', { callerSessionId: 'session' })).released,
       false
     );
+    exitChild(child, 137);
+    tree.state.next = () => processTable([]);
+    await tick(5_000);
+    assert.equal(terminated, true);
+    const finalReads = tree.state.reads;
+    await tick(30_000);
+    assert.equal(tree.state.reads, finalReads, 'confirmed termination stops the watch');
+    assert.deepEqual(records.retired, ['job_unconfirmed_kill'], 'the release happens once');
   })
 );
 
@@ -422,6 +442,23 @@ test(
 );
 
 test(
+  'session close captures the foreground owner while promotion is still pending',
+  withTimers(async () => {
+    const run = {
+      settled: false,
+      autoBackgrounded: true,
+      foregroundRecordId: 'job_promoting',
+      child: runningChild(),
+    };
+    registerForegroundOwnedTree(run, 'closing-promotion');
+    tree.state.next = () => processTable([{ pid: ROOT }, { pid: 4300, ppid: ROOT }]);
+    await cancelOwnedShellTrees('closing-promotion');
+    assert.equal(run.ownerCancelled, true);
+    assert.equal(run.terminationTracker?.complete, true, 'the current owner captures before session close kills');
+  })
+);
+
+test(
   'session close sends the kill within the bound even when the snapshot read hangs',
   withTimers(async () => {
     const run = { settled: false, autoBackgrounded: false, foregroundRecordId: 'job_hang', child: runningChild() };
@@ -447,6 +484,7 @@ test(
     const child = runningChild();
     const { run } = unconfirmedRun(repo, child);
     run.foregroundRecordInput.ownerSessionId = 'closing-owner';
+    await capturedBeforeKill(run, [{ pid: ROOT }]);
     tree.state.next = () => {
       throw new Error('process enumeration denied');
     };
@@ -461,30 +499,51 @@ test(
     assert.equal(isHeld(repo), false);
     const reads = tree.state.reads;
     await tick(30_000);
-    assert.equal(tree.state.reads, reads, 'the observation loop stopped');
+    assert.ok(tree.state.reads > reads, 'another session releases only the workspace hold');
+    exitChild(child, 137);
+    tree.state.next = () => processTable([]);
+    await tick(5_000);
+    await run.terminationSettled;
   })
 );
 
 test(
-  'a release requested from another process is honoured at the next observation pass',
+  'a remote release survives a ledger error and keeps observing until termination',
   withTimers(async () => {
     const repo = makeRepo();
     const child = runningChild();
     const { run } = unconfirmedRun(repo, child);
+    await capturedBeforeKill(run, [{ pid: ROOT }]);
     tree.state.next = () => {
       throw new Error('process enumeration denied');
     };
     await settleAndFlush(run);
+    const release = run.workspaceAdmission;
+    let releaseAttempts = 0;
+    run.workspaceAdmission = () => {
+      if (++releaseAttempts === 1) throw new Error('workspace ledger temporarily unwritable');
+      release();
+    };
     const jobsDir = join(process.env.MIXDOG_DATA_DIR, 'shell-jobs');
     mkdirSync(jobsDir, { recursive: true });
     writeFileSync(join(jobsDir, 'job_unconfirmed_kill.release-requested'), '');
     assert.equal(isHeld(repo), true, 'nothing is released before the pass');
     await tick(5_000);
-    assert.equal(isHeld(repo), false);
+    assert.equal(isHeld(repo), true, 'a failed ledger write retains the workspace hold');
     assert.equal(existsSync(join(jobsDir, 'job_unconfirmed_kill.release-requested')), false, 'the request is consumed');
+    await tick(5_000);
+    assert.equal(releaseAttempts, 2, 'the consumed request is retried');
+    assert.equal(isHeld(repo), false);
+    let terminated = false;
+    run.terminationSettled.then(() => { terminated = true; });
     const reads = tree.state.reads;
     await tick(30_000);
-    assert.equal(tree.state.reads, reads, 'the observation loop stopped');
+    assert.ok(tree.state.reads > reads, 'a remote release also keeps observing');
+    assert.equal(terminated, false);
+    exitChild(child, 137);
+    tree.state.next = () => processTable([]);
+    await tick(5_000);
+    assert.equal(terminated, true);
   })
 );
 
@@ -557,7 +616,13 @@ test(
       assert.equal(records.retired.length, retiredBefore + 1, 'the release retires the kept record');
       const reads = tree.state.reads;
       await tick(30_000);
-      assert.equal(tree.state.reads, reads, 'the observation loop stopped');
+      assert.ok(tree.state.reads > reads, 'uncertain descendants are still observed');
+      tree.state.next = () => processTable([]);
+      await tick(5_000);
+      await result.settled;
+      const finalReads = tree.state.reads;
+      await tick(30_000);
+      assert.equal(tree.state.reads, finalReads, 'confirmed termination stops the watch');
     })
   )
 );

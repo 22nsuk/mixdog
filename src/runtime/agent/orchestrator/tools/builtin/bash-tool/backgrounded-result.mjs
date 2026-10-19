@@ -41,6 +41,7 @@ function registerPromotedTask({ result, command, cwd, options, startedAtMs }) {
       },
       resultType: 'shell_task_result',
       cancel: () => killShellJob(result.jobId),
+      cancelOwnsCompletion: true,
     });
   } catch {
     return null;

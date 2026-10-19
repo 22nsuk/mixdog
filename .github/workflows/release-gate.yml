@@ -331,6 +331,13 @@ jobs:
       - name: Build the native spawn test binary
         if: steps.spawn-bin.outputs.cache-hit != 'true'
         run: npm run build:spawn:test
+      - name: Check native shell termination on macOS
+        if: matrix.shard == 1
+        run: >-
+          node scripts/test-direct.mjs
+          src/runtime/agent/orchestrator/tools/lib/shell-run-startup.slow.test.mjs
+          src/runtime/agent/orchestrator/tools/shell-command-queue-termination.slow.test.mjs
+          src/runtime/agent/orchestrator/tools/shell-tree-kill.slow.test.mjs
       - name: Run the default test lane (shard ${{ matrix.shard }}/3)
         run: npm test -- --test-shard=${{ matrix.shard }}/3
 

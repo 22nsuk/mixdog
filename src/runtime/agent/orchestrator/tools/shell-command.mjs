@@ -7,10 +7,15 @@
 // the wiring between those phases.
 import { getBackgroundTask, startBackgroundTask } from '../../../shared/background-tasks.mjs';
 import { resourceAdmission } from '../../../shared/resource-admission.mjs';
-import { buildShellCompletion, killShellJob, peekShellJob, subscribeShellJobSettled } from './builtin/shell-jobs.mjs';
-import { ExecResult, treeKill } from './shell-exec-output.mjs';
 import {
-  clearForegroundTimers,
+  buildShellCompletion,
+  killShellJob,
+  normalizeShellJobDetail,
+  peekShellJob,
+  subscribeShellJobSettled,
+} from './builtin/shell-jobs.mjs';
+import { ExecResult } from './shell-exec-output.mjs';
+import {
   createShellRun,
   detachAbortHandler,
   elapsedSinceStart,
@@ -18,7 +23,12 @@ import {
   treeKillForceSettle,
 } from './lib/shell-run-state.mjs';
 import { spawnShellChild } from './lib/shell-run-spawn.mjs';
-import { createPromotedCaptureRelease, createSettle } from './lib/shell-run-settle.mjs';
+import {
+  cleanupFailedShellStartup,
+  createPromotedCaptureRelease,
+  createSettle,
+  releaseFailedStartupResources,
+} from './lib/shell-run-settle.mjs';
 import { _abortReasonIsInterrupt, createAutoBackground } from './lib/shell-run-background.mjs';
 
 export {
@@ -228,6 +238,7 @@ const failedResult = (run, stderr, failureReason) =>
     taskId: run.taskId,
     failurePhase: 'tool',
     failureReason,
+    settled: run.terminationSettled,
   });
 
 // Admission lease, policy preflight, then the spawn. Resolves the run with a
@@ -251,7 +262,7 @@ async function admitAndSpawn(run, params, { admissionWaitMs, onSaturated }) {
     return true;
   } catch (err) {
     if (err?.admissionSaturated && !abortSignal?.aborted && onSaturated(err)) return false;
-    const cleanupError = await releaseResourceLease(run);
+    const cleanupError = await releaseFailedStartupResources(run);
     const spawnText = String(err?.message || err);
     const cleanupText = cleanupError
       ? `${spawnText}; resource cleanup failed: ${cleanupError?.message || cleanupError}`
@@ -270,10 +281,12 @@ async function admitAndSpawn(run, params, { admissionWaitMs, onSaturated }) {
 // A queued command that outlived its foreground window was promoted under the
 // queued task's id; the task settles with that job.
 async function settleQueuedPromotion(jobId) {
-  await new Promise((resolve) => {
+  const terminal = await new Promise((resolve) => {
     if (!subscribeShellJobSettled(jobId, resolve)) resolve();
   });
-  const completion = buildShellCompletion(jobId, peekShellJob(jobId));
+  // The native cache and the finished tracker may both be retired by now.
+  // The owner event still carries the final output and exit status.
+  const completion = buildShellCompletion(jobId, peekShellJob(jobId) || normalizeShellJobDetail(terminal));
   if (completion.taskStatus !== 'completed') {
     throw new Error(completion.error || `shell task ${completion.taskStatus}`);
   }
@@ -288,6 +301,7 @@ async function settleQueuedPromotion(jobId) {
 function queueSaturatedAsTask(run, saturation, spec) {
   const queuedAbort = new AbortController();
   const taskId = run.foregroundRecordId;
+  let promotedJobId = null;
   let task;
   try {
     task = startBackgroundTask({
@@ -301,11 +315,12 @@ function queueSaturatedAsTask(run, saturation, spec) {
       input: { command: spec.command, cwd: spec.cwd },
       meta: { task_id: taskId, stdout: null, stderr: null, cwd: spec.cwd, timeoutMs: spec.backgroundDeadlineMs || 0 },
       resultType: 'shell_task_result',
+      cancelOwnsCompletion: true,
       cancel: () => {
+        // Foreground abort owns its pre-kill snapshot. Killing the raw native
+        // job here too would sever its parent links before that read finishes.
         queuedAbort.abort();
-        try {
-          killShellJob(taskId);
-        } catch {}
+        if (promotedJobId) killShellJob(promotedJobId);
       },
       run: async () => {
         const result = await execShellCommand({
@@ -319,7 +334,14 @@ function queueSaturatedAsTask(run, saturation, spec) {
           onProgress: null,
           onOutputTail: null,
         });
-        if (result.backgrounded && result.jobId) return settleQueuedPromotion(result.jobId);
+        if (result.backgrounded && result.jobId) {
+          promotedJobId = result.jobId;
+          // Promotion detached the foreground abort handler. A cancellation
+          // at that handoff still belongs to the background tree owner.
+          if (queuedAbort.signal.aborted) killShellJob(promotedJobId);
+          return settleQueuedPromotion(promotedJobId);
+        }
+        if (result.settled) await result.settled;
         const output = [result.stdout, result.stderr].filter(Boolean).join('\n');
         if (result.exitCode !== 0) {
           throw new Error(`exit code ${result.exitCode ?? result.signal ?? 'unknown'}${output ? `\n${output}` : ''}`);
@@ -354,14 +376,22 @@ function queueSaturatedAsTask(run, saturation, spec) {
 // no phase of its own to report it: nothing is armed yet, so no timer, exit
 // handler or settle() can ever resolve the run. Tear the half-built run down
 // by hand and report the same tool-phase failure the spawn path reports.
-function settleSetupFailure(run, err) {
-  detachAbortHandler(run);
-  clearForegroundTimers(run);
+async function settleSetupFailure(run, err) {
+  const errors = [err];
   try {
-    treeKill(run.child);
-  } catch {}
-  void releaseResourceLease(run);
-  run.resolveResult(failedResult(run, String(err?.message || err), 'spawn failed'));
+    await cleanupFailedShellStartup(run);
+  } catch (cleanupError) {
+    errors.push(cleanupError);
+  }
+  try {
+    const cleanupError = await releaseFailedStartupResources(run);
+    if (cleanupError) errors.push(cleanupError);
+  } catch (cleanupError) {
+    errors.push(cleanupError);
+  }
+  run.resolveResult(
+    failedResult(run, errors.map((error) => String(error?.message || error)).join('; startup cleanup failed: '), 'spawn failed')
+  );
 }
 
 // Binary bytes are sanitized by the capture layer and the run CONTINUES.
@@ -631,7 +661,7 @@ export function execShellCommand(options) {
       armInputWake(run, wakeSignal, fireAutoBackground);
       armProgressTimers(run, { onProgress, onOutputTail });
     } catch (err) {
-      settleSetupFailure(run, err);
+      await settleSetupFailure(run, err);
     }
   });
 }

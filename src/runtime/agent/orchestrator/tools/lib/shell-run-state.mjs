@@ -26,7 +26,9 @@ export function registerForegroundOwnedTree(run, ownerSessionId) {
   run.ownedTree = {
     ownerSessionId,
     prepareKill: () => {
-      if (run.settled || run.autoBackgrounded || !run.child?.pid) return true;
+      // Promotion replaces this registry entry only when its owner commits.
+      // Until then the foreground owner still supplies the pre-kill snapshot.
+      if (run.settled || !run.child?.pid) return true;
       run.killed = true;
       run.ownerCancelled = true;
       run.killCause = run.killCause || 'session-close';
@@ -122,6 +124,9 @@ export function createShellRun({ abortSignal, resolve, jobId = null }) {
     // observation loop that holds the workspace until they are gone.
     terminationTracker: null,
     stopTerminationWatch: null,
+    // Resolves only after actual tree termination, including after an
+    // explicit workspace hold release. Queued tasks await this boundary.
+    terminationSettled: null,
   };
 }
 

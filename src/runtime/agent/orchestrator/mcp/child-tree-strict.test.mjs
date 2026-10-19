@@ -6,6 +6,10 @@ import test, { mock } from 'node:test';
 // kills it at the deadline it was given (ETIMEDOUT, as run-child.mjs does).
 const spawned = [];
 let behavior = 'deny';
+const processRow = ({ pid, ppid = 1, pgid = pid }) =>
+  process.platform === 'win32'
+    ? `${pid} ${ppid} node.exe 2026-10-18T00:00:00`
+    : `${pid} ${ppid} ${pgid} S node Sun Oct 18 00:00:00 2026`;
 mock.module('../../../shared/process-runner.mjs', {
   namedExports: {
     runProcessOffThread: (command, args, { timeoutMs }) => {
@@ -14,13 +18,10 @@ mock.module('../../../shared/process-runner.mjs', {
       return new Promise((resolve, reject) => {
         if (behavior === 'manual') {
           // Answers when the test says so, with a table naming this process.
-          child.answer = () => {
+          child.answer = (rows = []) => {
             child.alive = false;
-            const row =
-              process.platform === 'win32'
-                ? `${process.pid} 1 node.exe 2026-10-18T00:00:00`
-                : `${process.pid} 1 ${process.pid} S node Sun Oct 18 00:00:00 2026`;
-            resolve({ code: 0, stdout: `${row}\n`, stderr: '' });
+            const stdout = [{ pid: process.pid }, ...rows].map(processRow).join('\n');
+            resolve({ code: 0, stdout: `${stdout}\n`, stderr: '' });
           };
           return;
         }
@@ -88,14 +89,14 @@ test('concurrent observers share one enumerator at a time, each served by a read
   spawned.length = 0;
   try {
     const first = readProcessTable();
-    // A pre-kill capture may join the running read.
-    const capture = readProcessTable({ shared: true });
+    // An explicitly shared read may join the running read.
+    const shared = readProcessTable({ shared: true });
     // Observers asking while it runs must not get it: they share the next one.
     const observers = Array.from({ length: 8 }, () => readProcessTable());
     assert.equal(spawned.length, 1, 'no enumerator is started beside the running one');
     spawned[0].answer();
     const firstTable = await first;
-    assert.equal(await capture, firstTable);
+    assert.equal(await shared, firstTable);
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(spawned.length, 2, 'one more read, begun after the first settled, serves every observer');
     spawned[1].answer();
@@ -108,6 +109,46 @@ test('concurrent observers share one enumerator at a time, each served by a read
     spawned[2].answer();
     await alone;
   } finally {
+    behavior = 'deny';
+  }
+});
+
+test('a pre-kill capture waits for a fresh table even when an older read contains its root', async () => {
+  const { createProcessTreeTracker } = await import('../tools/lib/shell-descendants.mjs');
+  behavior = 'manual';
+  spawned.length = 0;
+  try {
+    const root = 5100;
+    const intermediate = 5101;
+    const grandchild = 5102;
+    const olderRead = readProcessTable();
+    const tracker = createProcessTreeTracker({ pid: root });
+    let captured = false;
+    const capture = tracker.capture().then((complete) => {
+      captured = true;
+      return complete;
+    });
+    // This read began before the command started a separate-process-group
+    // grandchild. Having the root in it cannot make it a fresh kill snapshot.
+    spawned[0].answer([{ pid: root }]);
+    await olderRead;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(captured, false, 'the earlier table must not complete the pre-kill capture');
+    assert.equal(spawned.length, 2, 'the capture starts one read after the older enumerator settles');
+    spawned[1].answer([
+      { pid: root },
+      { pid: intermediate, ppid: root, pgid: root },
+      { pid: grandchild, ppid: intermediate },
+    ]);
+    assert.equal(await capture, true);
+    // Killing the root and intermediate breaks the parent chain, and the
+    // grandchild's own group is outside the native runner's group kill.
+    const observation = tracker.observe({ rootExited: true });
+    spawned[2].answer([{ pid: grandchild }]);
+    assert.equal(await observation, 'running');
+    assert.deepEqual(tracker.live.map((entry) => entry.pid), [grandchild]);
+  } finally {
+    for (const child of spawned) if (child.alive) child.answer();
     behavior = 'deny';
   }
 });

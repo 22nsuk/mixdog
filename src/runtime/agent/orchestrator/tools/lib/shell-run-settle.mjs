@@ -3,8 +3,9 @@
 // lease cleanup that a promoted or unconfirmed-kill child defers to its own
 // real exit.
 import { ExecResult, SHELL_OUTPUT_INLINE_CAP } from '../shell-exec-output.mjs';
-import { createProcessTreeTracker, probeShellDescendants, watchTermination } from './shell-descendants.mjs';
+import { createProcessTreeTracker, killAfterSnapshot, probeShellDescendants, watchTermination } from './shell-descendants.mjs';
 import { unregisterOwnedShellTree } from './owned-shell-trees.mjs';
+import { killShellJob, waitForShellJob } from '../builtin/shell-jobs.mjs';
 import {
   adoptShellWorkspaceAdmission,
   clearTerminationHold,
@@ -14,6 +15,7 @@ import {
 import {
   clearForegroundRecord,
   clearForegroundTimers,
+  capturePreKill,
   detachAbortHandler,
   keepTerminationUnconfirmedRecord,
   releaseResourceLease,
@@ -40,17 +42,27 @@ export function releaseAdmissionOnConfirmedTermination(run, { markNow = true } =
   // kill is marked at once; an owner-cancelled tree whose root is already
   // gone only once its first observation is not 'gone'.
   if (markNow) keepTerminationUnconfirmedRecord(run);
-  const release = () => {
+  let resolveTermination;
+  run.terminationSettled = new Promise((resolve) => {
+    resolveTermination = resolve;
+  });
+  let workspaceReleased = false;
+  let releasePending = false;
+  const releaseWorkspace = () => {
+    if (workspaceReleased) return;
     run.workspaceAdmission?.();
     run.workspaceAdmission = null;
-    run.stopTerminationWatch?.();
+    workspaceReleased = true;
+    if (run.ownedTree) unregisterOwnedShellTree(run.foregroundRecordId, run.ownedTree);
     clearTerminationHold(run.foregroundRecordId);
     clearForegroundRecord(run);
   };
   registerTerminationHold(run.foregroundRecordId, {
     ownerSessionId: run.foregroundRecordInput?.ownerSessionId || null,
     cwd: run.foregroundRecordInput?.cwd || null,
-    release,
+    // Explicit release only drops the workspace hold. Queued task completion
+    // still waits for the same observation loop to confirm the whole tree.
+    release: releaseWorkspace,
   });
   run.terminationTracker = run.terminationTracker || createProcessTreeTracker({ pid: child.pid });
   run.stopTerminationWatch = watchTermination({
@@ -58,9 +70,26 @@ export function releaseAdmissionOnConfirmedTermination(run, { markNow = true } =
     rootExited: () => child.exitCode != null || child.signalCode != null,
     // A killed run is not over while processes it started still run.
     sweep: run.killed === true,
-    onTerminated: release,
-    onUnconfirmed: markNow ? null : () => keepTerminationUnconfirmedRecord(run),
-    releaseRequested: () => takeReleaseRequest(run.foregroundRecordId),
+    onTerminated: () => {
+      releaseWorkspace();
+      resolveTermination();
+    },
+    onUnconfirmed: markNow ? null : () => {
+      if (!workspaceReleased) keepTerminationUnconfirmedRecord(run);
+    },
+    releaseRequested: () => {
+      if (takeReleaseRequest(run.foregroundRecordId)) releasePending = true;
+      if (releasePending) {
+        try {
+          releaseWorkspace();
+          releasePending = false;
+        } catch {
+          // The marker was consumed; retain its intent if the ledger could
+          // not be written so the next observation pass retries the release.
+        }
+      }
+      return false;
+    },
   });
 }
 
@@ -122,7 +151,57 @@ function deferCleanupToChildExit(run) {
   }
   ceiling = setTimeout(cleanup, UNCONFIRMED_KILL_CLEANUP_CEILING_MS);
   if (ceiling.unref) ceiling.unref();
-  releaseAdmissionOnConfirmedTermination(run);
+}
+
+/** A failed startup can already own a native child and partially installed
+ *  exit handlers. Stop those handlers from settling the call, then use the
+ *  same pre-kill capture and whole-tree workspace watch as a running command.
+ *  Native terminal status confirms the root only, never its descendants. */
+export async function cleanupFailedShellStartup(run) {
+  detachAbortHandler(run);
+  clearForegroundTimers(run);
+  if (run.foregroundRecordTimer) {
+    clearTimeout(run.foregroundRecordTimer);
+    run.foregroundRecordTimer = null;
+  }
+  run.settle = () => {};
+  if (!run.child) {
+    run.settled = true;
+    run.workspaceAdmission?.();
+    run.workspaceAdmission = null;
+    clearForegroundRecord(run);
+    return;
+  }
+  run.killed = true;
+  run.killCause = run.killCause || 'startup-failed';
+  try {
+    await killAfterSnapshot(capturePreKill(run), () => {
+      // Until the snapshot boundary, a concurrent owner cancel must still
+      // prepare this tree rather than treating the failed run as settled.
+      run.settled = true;
+      return killShellJob(run.foregroundRecordId);
+    });
+    const detail = await waitForShellJob(run.foregroundRecordId);
+    if (!detail || !['completed', 'failed', 'cancelled'].includes(detail.nativeStatus)) {
+      throw new Error('The child termination could not be confirmed; workspace admission is retained.');
+    }
+  } catch (error) {
+    run.killUnconfirmed = true;
+    releaseAdmissionOnConfirmedTermination(run);
+    throw error;
+  }
+  releaseAdmissionOnConfirmedTermination(run, { markNow: false });
+}
+
+/** Parent capture descriptors and the shell lane follow root exit (with the
+ *  existing cleanup ceiling). Workspace ownership follows the whole tree. */
+export async function releaseFailedStartupResources(run) {
+  if (run.child && run.child.exitCode == null && run.child.signalCode == null) {
+    deferCleanupToChildExit(run);
+    return null;
+  }
+  run.taskOutput.closeFds();
+  return releaseResourceLease(run);
 }
 
 // getStdout/getStderr can throw on a spilled-file read failure (EBADF after
@@ -202,6 +281,7 @@ export function createSettle(run, releasePromotedCapture) {
       // spilled paths therefore survive and travel with the result below, and
       // the workspace admission stays held until termination is confirmed.
       deferCleanupToChildExit(run);
+      releaseAdmissionOnConfirmedTermination(run);
     } else if (taskOutput.spilled && taskOutput.totalDiskBytes() <= SHELL_OUTPUT_INLINE_CAP) {
       taskOutput.deleteFiles();
       void releaseResourceLease(run);
@@ -260,6 +340,7 @@ export function createSettle(run, releasePromotedCapture) {
         failurePhase: run.failurePhase,
         failureReason: run.failureReason,
         descendants,
+        settled: run.terminationSettled,
       })
     );
   };

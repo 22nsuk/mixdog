@@ -26,6 +26,8 @@ mock.module('../../../../shared/process-runner.mjs', {
 const records = { published: [], retired: [] };
 mock.module('../builtin/shell-jobs.mjs', {
   namedExports: {
+    killShellJob: () => assert.fail('normal settle must not enter startup cleanup'),
+    waitForShellJob: () => assert.fail('normal settle must not enter startup cleanup'),
     publishForegroundShellRecord: (input) => records.published.push(input),
     retireForegroundShellRecord: (jobId) => records.retired.push(jobId),
   },

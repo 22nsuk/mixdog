@@ -1,11 +1,15 @@
 import '../../lib/isolated-test-env.mjs';
 import assert from 'node:assert/strict';
+import { mkdirSync, renameSync, rmdirSync } from 'node:fs';
+import { join } from 'node:path';
 import test, { after, mock } from 'node:test';
 import { holdWorkspaceActivity, tryAdmitWorkspaceActivity } from '../../../../../shared/worktrees/activity-gate.mjs';
 import { cleanupTempDirs, makeRepo } from '../../../../../shared/worktrees/test-support.mjs';
 import { processTable, scriptedChildTree } from '../../lib/process-table-fixture.mjs';
 import {
+  cancelBackgroundTasks,
   completeBackgroundTask,
+  getBackgroundTask,
   hasActiveBackgroundTasks,
   registerBackgroundTask,
 } from '../../../../../shared/background-tasks.mjs';
@@ -125,4 +129,90 @@ test('survivors a finished command left running do not hold the idle agent row w
   await flush();
   await flush();
   assert.equal(hasActiveBackgroundTasks(scope), false, 'the task settled once the survivors were gone');
+});
+
+test('closing an owner waits for its survivors and retries their workspace release before completion', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const repo = makeRepo();
+  const owner = 'sess_survivor_close';
+  const jobId = 'job_survivor_close';
+  const notices = [];
+  adoptShellWorkspaceAdmission(jobId, tryAdmitWorkspaceActivity(owner, repo, { kind: 'command' }));
+  const survivor = { pid: 7501, ppid: 1, token: 'survivor-close' };
+  tree.state.next = () => processTable([survivor]);
+  renderCompletedResult({
+    result: {
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+      descendants: {
+        taskId: jobId,
+        rootPid: 7500,
+        groupPid: null,
+        killPids: [survivor.pid],
+        watchPids: [survivor.pid],
+        watch: [{ pid: survivor.pid, token: survivor.token, name: 'node.exe' }],
+        reachable: true,
+      },
+    },
+    command: 'node server.js',
+    analysisCommand: 'node server.js',
+    cwd: repo,
+    options: {
+      sessionId: owner,
+      notifyFn: (message) => {
+        notices.push(message);
+        return true;
+      },
+    },
+    startedAtMs: Date.now(),
+    stdout: '',
+    stderr: '',
+    timeout: 0,
+  });
+  await flush();
+  const task = getBackgroundTask(jobId);
+  const cancel = () => cancelBackgroundTasks({ executionSessionId: owner, reason: 'owner closed', notify: true });
+  const kills = tree.state.kills.length;
+  assert.deepEqual(cancel(), { cancelled: 1 });
+  await flush();
+  assert.ok(tree.state.kills.length > kills);
+  assert.equal(task.status, 'running');
+  assert.equal(isHeld(repo), true);
+  assert.deepEqual(notices, [], 'a bounded kill result is not a completion');
+
+  const firstKills = tree.state.kills.length;
+  assert.deepEqual(cancel(), { cancelled: 1 });
+  await flush();
+  assert.ok(tree.state.kills.length > firstKills, 'a repeated cancellation retries the survivor kill');
+  assert.equal(task.status, 'running');
+  assert.deepEqual(notices, []);
+
+  const ledger = join(repo, '.git', 'mixdog-workspace-admission.json');
+  const savedLedger = `${ledger}.saved`;
+  renameSync(ledger, savedLedger);
+  mkdirSync(ledger);
+  let unavailable = true;
+  const restoreLedger = () => {
+    if (!unavailable) return;
+    rmdirSync(ledger);
+    renameSync(savedLedger, ledger);
+    unavailable = false;
+  };
+  t.after(restoreLedger);
+  tree.state.next = () => processTable([]);
+  t.mock.timers.tick(5_000);
+  await flush();
+  await flush();
+  assert.equal(task.status, 'running', 'failed admission release retains the completion owner for retry');
+  assert.deepEqual(notices, []);
+
+  restoreLedger();
+  t.mock.timers.tick(5_000);
+  await task.promise;
+  assert.equal(task.status, 'cancelled');
+  assert.equal(task.result.status, 'cancelled');
+  assert.equal(isHeld(repo), false);
+  assert.equal(notices.length, 1);
+  assert.match(notices[0], /cancelled/);
 });

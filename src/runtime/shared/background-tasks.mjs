@@ -11,6 +11,7 @@ import { emitSessionActivityChange } from './session-activity-signal.mjs';
 import {
   parseTaskNotification,
   renderTaskCompletionEnvelope,
+  renderShellCompletionEnvelope,
   renderShellCompletionNotice,
 } from './task-notification-envelope.mjs';
 
@@ -164,6 +165,7 @@ export function registerBackgroundTask({
   renderResult,
   cancel,
   notifyOnCancel = false,
+  cancelOwnsCompletion = false,
 } = {}) {
   pruneTasks();
   const explicitId = clean(taskId);
@@ -203,6 +205,7 @@ export function registerBackgroundTask({
     renderResult: typeof renderResult === 'function' ? renderResult : null,
     cancel: typeof cancel === 'function' ? cancel : null,
     notifyOnCancel: notifyOnCancel === true,
+    cancelOwnsCompletion: cancelOwnsCompletion === true,
   };
   tasks.set(id, task);
   emitSessionActivityChange(task.ownerSessionId || '');
@@ -303,11 +306,26 @@ export function cleanupBackgroundTasks(options = {}) {
   return { removed: before - after, tasks: after };
 }
 
-// `notify`: true notifies immediately, false never notifies (owner teardown).
+// An owner-confirmed cancellation remains running until the owner completes
+// it. Record intent before calling the hook, which may settle synchronously;
+// another request may retry cancellation while that owner is still running.
+// For other tasks, `notify`: true notifies immediately, false never notifies
+// (owner teardown).
 // Left unset, a `notifyOnCancel` task defers its single `cancelled`
 // notification until its run settles (see settleCancelledBackgroundTask); any
 // other task stays silent.
 function cancelRunningTask(task, reason, notify) {
+  if (task.cancelOwnsCompletion === true) {
+    if (task.cancelRequested !== true) {
+      task.cancelRequested = true;
+      task.cancelRequestedReason = reason;
+    }
+    if (notify === false) silenceCancelledNotification(task);
+    try {
+      task.cancel?.();
+    } catch {}
+    return;
+  }
   try {
     task.cancel?.();
   } catch {}
@@ -334,6 +352,7 @@ function resolvePendingCancelNotify(task, next) {
 
 function silenceCancelledNotification(task) {
   resolvePendingCancelNotify(task, 'silent');
+  if (task.cancelOwnsCompletion === true) task.cancelNotify = 'silent';
 }
 
 function deliverCancelledNotification(task) {
@@ -440,13 +459,19 @@ export function completeBackgroundTask(
   if (!task) return null;
   if (TERMINAL_STATUSES.has(task.status)) return task;
   const now = Date.now();
-  task.status = normalizeStatus(status);
+  const ownerStatus = normalizeStatus(status);
+  const cancelWins =
+    task.cancelOwnsCompletion === true && task.cancelRequested === true && TERMINAL_STATUSES.has(ownerStatus);
+  task.status = cancelWins ? 'cancelled' : ownerStatus;
   task.finishedAtMs = now;
   task.finishedAt = new Date(now).toISOString();
   if (terminalReason) task.terminalReason = terminalReason;
   if (result !== undefined) task.result = result;
   if (resultText != null) task.resultText = String(resultText);
   if (error != null) task.error = presentErrorText(error, { surface: task.surface });
+  else if (cancelWins && task.error == null) {
+    task.error = presentErrorText(task.cancelRequestedReason, { surface: task.surface });
+  }
   if (resultType) task.resultType = resultType;
   if (instruction) task.notificationInstruction = compactText(instruction, 1_000);
   emitSessionActivityChange(task.ownerSessionId || '');
@@ -560,8 +585,22 @@ export function renderBackgroundTaskNotification(task) {
   if (task.surface === 'shell') {
     const parsed = parseTaskNotification(result);
     // The completion envelope already carries the result (exit code,
-    // duration, output or its summary): deliver it as is.
-    if (parsed?.result) return result;
+    // duration, output or its summary). If cancellation won a racing owner
+    // result, update its verdict while keeping that result body verbatim.
+    if (parsed?.result) {
+      if (task.cancelOwnsCompletion !== true || task.cancelRequested !== true || parsed.status === task.status) {
+        return result;
+      }
+      return renderShellCompletionEnvelope({
+        jobId: task.taskId,
+        status: task.status,
+        exitCode: parsed.exitCode,
+        command: task.input?.command || task.label,
+        outputFile: parsed.outputFile,
+        error: parsed.error || task.error,
+        result: parsed.result,
+      });
+    }
     return renderShellCompletionNotice({
       jobId: task.taskId,
       status: task.status,

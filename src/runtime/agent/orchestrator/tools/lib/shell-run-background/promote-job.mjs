@@ -31,6 +31,7 @@ export async function promoteWithRetry(
         // …and with the dispatching SESSION, so a pooled host (desktop) can
         // show the job on its own pane only.
         ownerSessionId,
+        terminationTracker: run.terminationTracker,
       });
       if (!promoted) promotionFailure = promotionFailure || 'promotion unavailable';
       return promoted;

@@ -15,8 +15,9 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import { executeBashTool } from './builtin/bash-tool.mjs';
 import { executeTaskTool } from './builtin/task-tool.mjs';
-import { shutdownShellJobs } from './builtin/shell-jobs.mjs';
+import { killShellJob, shutdownShellJobs } from './builtin/shell-jobs.mjs';
 import { cancelOwnedShellTrees } from './lib/owned-shell-trees.mjs';
+import { cancelBackgroundTasks } from '../../../shared/background-tasks.mjs';
 import {
   _resetNativeSpawnClientForTest,
   _setNativeSpawnBinaryForTest,
@@ -113,20 +114,19 @@ function recorded(s) {
   return rows;
 }
 
-// A POSIX zombie (killed, never reaped: an init that does not reap, as in a
-// container without one) runs nothing; it is not a leak.
-function zombie(pid) {
+// A POSIX zombie runs nothing. A process reaped between kill(pid, 0) and ps
+// is gone too; ps exits 1 with no row in that case.
+function exitedOrZombie(pid) {
   if (isWin) return false;
   const ps = spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' });
-  return String(ps.stdout || '')
-    .trim()
-    .startsWith('Z');
+  const state = String(ps.stdout || '').trim();
+  return state.startsWith('Z') || (ps.status === 1 && state === '');
 }
 
 function alive(pid) {
   try {
     process.kill(pid, 0);
-    return !zombie(pid);
+    return !exitedOrZombie(pid);
   } catch (error) {
     return error?.code === 'EPERM';
   }
@@ -241,6 +241,41 @@ test('task cancel kills a detached (setsid on POSIX) grandchild server', opts, a
   await serving(s, ['detached-parent', 'server']);
   await cancelAndCheck(s, taskIdOf(out));
 });
+
+for (const source of ['direct', 'scope-close']) {
+  test(`${source} background cancellation delivers completion only after its detached server stops`, opts, async () => {
+    const s = await scenario(`detached-completion-${source}`);
+    const owner = `sess_tree_kill_notice_${source}`;
+    const notices = [];
+    const out = await executeBashTool({ command: s.run('detached-parent'), background: true }, workDir, {
+      ...ctx(owner),
+      notifyFn: (message) => {
+        // Sample the running processes at delivery, before the observer can do
+        // another sweep. An eventual-gone assertion alone missed early notices.
+        notices.push({
+          message,
+          running: recorded(s).filter((row) => alive(row.pid)),
+          portWasOpen: portOpen(s.port),
+        });
+        return true;
+      },
+    });
+    await serving(s, ['detached-parent', 'server']);
+    const taskId = taskIdOf(String(out?.result ?? out));
+    if (source === 'direct') killShellJob(taskId);
+    else {
+      cancelBackgroundTasks({ executionSessionId: owner, reason: 'session-close', notify: true });
+      await cancelOwnedShellTrees(owner);
+      await shutdownShellJobs('session-close', { scope: { ownerSessionId: owner } });
+    }
+    await until(() => notices.length > 0, 30_000, 'the cancellation completion notice');
+    assert.equal(notices.length, 1);
+    assert.match(notices[0].message, /cancelled/);
+    assert.deepEqual(notices[0].running, [], 'completion must not precede the detached process termination');
+    assert.equal(await notices[0].portWasOpen, false, 'the cancelled server cannot still accept connections');
+    await assertGoneNow(s, 'at completion delivery');
+  });
+}
 
 test('task cancel kills a double-forked server whose intermediate already exited', opts, async () => {
   const s = await scenario('double-fork');

@@ -1,11 +1,18 @@
 import assert from 'node:assert/strict';
-import { readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
-import { executeBashTool } from '../bash-tool.mjs';
+import { cacheGet, cacheSet, invalidateBuiltinResultCache } from '../cache-layers.mjs';
 import { tokenizeDirectArgv } from '../shell-direct-exe.mjs';
 import { planInlineScriptHoist } from '../shell-analysis.mjs';
 import { hoistInlineScript } from './inline-hoist.mjs';
+
+// The shell caller imports the broader tool registry; these tests do not
+// need the unrelated patch engine's background download/prewarm.
+process.env.MIXDOG_PATCH_NATIVE_PREWARM = '0';
+const { executeBashTool } = await import('../bash-tool.mjs');
 
 test('inline scripts hoisted in the same millisecond keep separate files', (t) => {
   t.mock.method(Date, 'now', () => 1_792_183_386_056);
@@ -103,4 +110,77 @@ test('a script that loads a package stays inline, where the working directory re
   );
   t.after(() => builtin.hoistPath && rmSync(builtin.hoistPath, { force: true }));
   assert.ok(builtin.hoistPath, 'Node builtins resolve the same from any directory');
+});
+
+test('a foreground failure retains its hoisted script and refreshes reads when cleanup settles', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'mixdog-hoist-lifecycle-'));
+  const changed = join(root, 'output.txt');
+  writeFileSync(changed, 'before execution');
+  const completion = Promise.withResolvers();
+  let hoistPath = null;
+  t.after(async () => {
+    completion.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
+    if (hoistPath) rmSync(hoistPath, { force: true });
+    rmSync(root, { recursive: true, force: true });
+    invalidateBuiltinResultCache();
+  });
+
+  // No process executes in this caller test. Keep platform snapshot/bootstrap
+  // setup outside its execution seam while still passing the real hoisted file.
+  t.mock.module('./invocation-plan.mjs', {
+    namedExports: {
+      async planShellInvocation({ command, resolvedSpec }) {
+        return { execShell: resolvedSpec.shell, wrappedCommand: command, spawnEnv: process.env };
+      },
+    },
+  });
+  const shellCommand = await import('../../shell-command.mjs');
+  t.mock.module('../../shell-command.mjs', {
+    namedExports: {
+      ...shellCommand,
+      async execShellCommand(input) {
+        hoistPath = input.command.match(/"([^"\n]*mixdog-inline-[^"\n]+\.cjs)"/)?.[1] || null;
+        assert.ok(hoistPath, 'the real inline hoist reached shell execution');
+        assert.ok(existsSync(hoistPath));
+        return {
+          stdout: '',
+          stderr: 'fixture startup wiring failed after the child was created',
+          exitCode: 1,
+          killed: true,
+          failurePhase: 'tool',
+          failureReason: 'spawn failed',
+          backgrounded: false,
+          settled: completion.promise,
+        };
+      },
+    },
+  });
+  // The original import above still serves the real shell cases. Only this
+  // caller instance receives the controlled early-result/late-cleanup seam;
+  // its hoist, artifact removal, effects and read caches remain real.
+  const { executeBashTool: executeDeferredShell } = await import('../bash-tool.mjs?foreground-cleanup-lifecycle');
+  const key = `foreground-hoist-${process.pid}`;
+  invalidateBuiltinResultCache();
+  cacheSet(key, 'before execution', { paths: [changed] });
+  const result = await executeDeferredShell(
+    { command: `node -e "require('node:fs').writeFileSync('output.txt', 'partial')"` },
+    root
+  );
+  assert.match(String(result?.result ?? result), /fixture startup wiring failed/);
+  assert.equal(cacheGet(key), null, 'the early result invalidates pre-command reads');
+
+  // A caller can read partial effects while failed-startup cleanup is still
+  // running. That read must be invalidated again at actual termination.
+  writeFileSync(changed, 'partial');
+  cacheSet(key, readFileSync(changed, 'utf8'), { paths: [changed] });
+  const before = { scriptExists: existsSync(hoistPath), cached: cacheGet(key) };
+  writeFileSync(changed, 'final effects');
+  completion.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+  const after = { scriptExists: existsSync(hoistPath), cached: cacheGet(key) };
+  assert.deepEqual(
+    { before, after },
+    { before: { scriptExists: true, cached: 'partial' }, after: { scriptExists: false, cached: null } }
+  );
 });
