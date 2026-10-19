@@ -1,6 +1,6 @@
 import { GitCommitHorizontal, GitPullRequest, SlidersHorizontal, Upload } from 'lucide-react';
 import { parseIslandGitRequestText } from './island-git-request';
-import { Suspense, createContext, memo, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Suspense, createContext, memo, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { submissionIdentity } from './transcript-rows';
 import {
   fitImageThumbnail,
@@ -30,6 +30,7 @@ import {
   resolveStreamingMarkdownChunks,
 } from './streaming-markdown';
 import StreamingMarkdownBody from './StreamingMarkdownBody';
+import { streamFadeTimeline } from './markdown-stream-fade';
 import { preloadSyncMarkdownParser } from './markdown-worker-client';
 import { imagePreviewCache, imagePreviewKey } from './transcript-metrics';
 import { CopyControl } from './transcript-primitives';
@@ -54,9 +55,26 @@ const StableMarkdownBody = memo(function StableMarkdownBody({ text }: { text: st
   return <MarkdownBody text={text} copyControl={CopyControl} />;
 });
 
-const MarkdownResponse = memo(function MarkdownResponse({ text, streaming }: { text: string; streaming: boolean }) {
+const MarkdownResponse = memo(function MarkdownResponse({
+  text,
+  streaming,
+  fadeKey,
+  fadeMs,
+}: {
+  text: string;
+  streaming: boolean;
+  /** Row identity of the reply's word-fade timeline (markdown-stream-fade). */
+  fadeKey: string;
+  /** How long each newly shown word fades in. */
+  fadeMs: number;
+}) {
   const markdownCache = useRef(createStreamingMarkdownCache());
   const workerPipeline = useRef(streaming);
+  const instanceKey = useId();
+  // Every chunk, frozen ones included, fades on the reply's one timeline: a
+  // paragraph that froze mid-fade keeps animating and the next block's first
+  // words fade too. A settled reply has no timeline: it shows at full ink.
+  const fadeTimeline = streamFadeTimeline(fadeKey || instanceKey, streaming, fadeMs);
   useLayoutEffect(() => {
     if (streaming) noteStreamCommit(text.length);
   }, [streaming, text]);
@@ -70,7 +88,13 @@ const MarkdownResponse = memo(function MarkdownResponse({ text, streaming }: { t
   const renderedChunks = markdownParts.stableChunks.map((chunk, index) => (
     <Suspense fallback={<span hidden data-transcript-pending />} key={markdownParts.stableChunkKeys[index]}>
       {workerPipeline.current ? (
-        <StreamingMarkdownBody text={chunk} sync copyControl={CopyControl} />
+        <StreamingMarkdownBody
+          text={chunk}
+          sync
+          fadeTimeline={fadeTimeline}
+          fadeChunk={markdownParts.stableChunkKeys[index]}
+          copyControl={CopyControl}
+        />
       ) : (
         <StableMarkdownBody text={chunk} />
       )}
@@ -88,6 +112,8 @@ const MarkdownResponse = memo(function MarkdownResponse({ text, streaming }: { t
             parseText={unstableParseText}
             parse={markdownParts.parseUnstable}
             sync
+            fadeTimeline={fadeTimeline}
+            fadeChunk={markdownParts.unstableKey}
             copyControl={CopyControl}
           />
         ) : (
@@ -568,17 +594,20 @@ export const TranscriptRow = memo(
     const sessionScope = useContext(MarkdownSessionContext);
     const assistant = item.kind === 'assistant';
     const articleRef = useRef<HTMLElement>(null);
+    // Commentary (the provider's phase, or a part of unknown phase that has
+    // not turned into a final answer) shows as it arrives; a final answer is
+    // paced. Either fades for as long as its rate allows (fadeMs), and a
+    // completed reply keeps streaming markdown while its backlog drains.
     const paced = usePacedTranscriptText({
       key: assistant ? paceKey : '',
       scope: sessionScope,
       element: articleRef,
       text: assistant ? String(item.text || '') : '',
       streaming: Boolean(item.streaming),
-      pace,
+      pace: Boolean(pace),
+      phase: assistant && typeof item.phase === 'string' ? item.phase : undefined,
     });
-    // A reply stays "streaming" on screen until its paced reveal drained: the
-    // footer, copy control and completion announcement wait for the text.
-    const streaming = Boolean(item.streaming) || paced.draining;
+    const streaming = Boolean(item.streaming);
     const previousStreaming = useRef(streaming);
     const announceSettled = previousStreaming.current && !streaming;
     useEffect(() => {
@@ -687,7 +716,12 @@ export const TranscriptRow = memo(
               {!user && (
                 // Only a settled reply's links can be downloaded by its row id.
                 <MarkdownTranscriptItemContext.Provider value={streaming ? '' : String(item.id ?? '')}>
-                  <MarkdownResponse text={paced.text} streaming={streaming} />
+                  <MarkdownResponse
+                    text={paced.text}
+                    streaming={streaming || paced.draining}
+                    fadeKey={paceKey}
+                    fadeMs={paced.fadeMs}
+                  />
                 </MarkdownTranscriptItemContext.Provider>
               )}
             </div>
@@ -695,12 +729,6 @@ export const TranscriptRow = memo(
           {user && <AppliedSkills names={appliedSkills} />}
           {user && multiDevice && isOtherDevice(item.device, viewerDevice) && (
             <small className="message-device">{t('from {{device}}', { device: item.device })}</small>
-          )}
-          {!user && !item.streaming && completion && paced.draining && (
-            // The live band's slot, same height as the footer: the band row
-            // left in this commit, and the footer takes the slot once the
-            // paced text is whole.
-            <div className="response-footer-band" aria-hidden="true" />
           )}
           {showFooter && completion && (
             // biome-ignore lint/a11y/useSemanticElements: the footer names a group of response details; a <fieldset> would restyle it.

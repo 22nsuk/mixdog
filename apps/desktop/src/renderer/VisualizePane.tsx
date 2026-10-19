@@ -2,14 +2,23 @@
 // session. Main owns the tabs; this view draws the active one and reports the
 // user's tab picks and closes. Capture finds the tab body by its data
 // attributes, so they name the session and tab.
-import { Eye, ListTree, MessageSquarePlus, SlidersHorizontal, X } from 'lucide-react';
+import {
+  ChevronLeft,
+  ChevronRight,
+  Columns3,
+  Eye,
+  ListTree,
+  Maximize2,
+  MessageSquarePlus,
+  SlidersHorizontal,
+  X,
+} from 'lucide-react';
 import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import type { DesktopApi, DesktopDocumentPreviewPages } from '../shared/contract';
 import { type VisualizePaneSource, type VisualizePaneView, visualizeProblemLocation } from '../shared/visualize';
 import { withVisualizeFeedbackScript } from '../shared/visualize-feedback';
-import { visualizePaneMarks, withVisualizeOutlines, withVisualizeOverlay } from '../shared/visualize-annotations';
-import { remotePageGate } from '../shared/visualize-scripts';
+import { visualizePaneMarks, withVisualizeOverlay } from '../shared/visualize-annotations';
 import { t } from './i18n';
 import { visualizeCommentKind } from '../shared/visualize-comment-kinds';
 import { announceVisualizeCommentMode, useVisualizeFeedbackBridge, VisualizeCommentLayer } from './VisualizeFeedback';
@@ -20,7 +29,7 @@ import { loadSandboxedPage } from './sandboxed-page-preview';
 import { servePageFetches, withPageFetchBridge } from './page-fetch-bridge';
 import { serveFrameZoom, withFrameZoomBridge } from './visualize-frame-zoom';
 import { useMediaSessionEpoch } from './remote-file-preview';
-import { useVisualizeRunPages, visualizeRunPagesAction } from './visualize-run-pref';
+import { serveBlockedNetwork, withBlockedNetwork, withBlockedNetworkReporter } from './visualize-blocked-network';
 import { DockHeaderRow } from './pane-dock-chrome';
 import { InlinePaneContent } from './VisualizeInline';
 import { useVisualizePanelExtras } from './VisualizePanelExtras';
@@ -30,18 +39,20 @@ import { remoteInlinePageSource } from './visualize-inline-remote';
 import {
   activateVisualizeTab,
   allowVisualizeReveal,
-  allowVisualizeScripts,
   closeVisualizeTab,
-  useVisualizeScriptsAllowed,
   markVisualizePanelHidden,
   markVisualizePanelShown,
+  reportVisualizeBlockedNetwork,
   reportVisualizeRender,
+  setVisualizePanelOnScreen,
   useVisualizeState,
+  useVisualizeUpdatedTabs,
   visualizeHeaderActions,
   visualizePanesStacked,
   visualizeTabTooltip,
 } from './visualize-store';
 import { VISUALIZE_ZOOM_RANGE, visualizeZoomStyle, useVisualizeZoom } from './visualize-zoom';
+import { setVisualizeSoloPane, useVisualizeSoloPane, visualizeSoloStep } from './visualize-solo-pane';
 import { useZoomBarVisible, zoomBarAction } from './zoom-bar-pref';
 import { ZoomPill } from './ZoomPill';
 import { PREVIEW_ZOOM_PRESETS, stepSnapped } from './zoom-range';
@@ -76,6 +87,30 @@ function PaneContent({ pane }: { pane: VisualizePaneView }) {
 
 const DOCUMENT_PAGE_BATCH = 4;
 type DocumentPages = DesktopDocumentPreviewPages['pages'];
+
+/** The nearest ancestor of `node` that scrolls vertically, if any. */
+function scrollParent(node: HTMLElement): HTMLElement | null {
+  for (let parent = node.parentElement; parent; parent = parent.parentElement) {
+    if (/(auto|scroll|overlay)/.test(getComputedStyle(parent).overflowY)) return parent;
+  }
+  return null;
+}
+
+/** Whether `node` is shown and inside both the window and `scroller`'s box.
+ *  Without a rendering engine (no checkVisibility) it counts as in view. */
+function shownInView(node: HTMLElement, scroller: HTMLElement | null): boolean {
+  if (typeof node.checkVisibility !== 'function') return true;
+  if (!node.checkVisibility()) return false;
+  const rect = node.getBoundingClientRect();
+  let top = 0;
+  let bottom = window.innerHeight;
+  if (scroller) {
+    const box = scroller.getBoundingClientRect();
+    top = Math.max(top, box.top);
+    bottom = Math.min(bottom, box.bottom);
+  }
+  return rect.bottom >= top && rect.top <= bottom;
+}
 
 /** A remote PDF / Office pane as page images (a phone shows no PDF in a
  *  frame): the first page at once, then the next batch as the end scrolls
@@ -135,20 +170,29 @@ function RemoteDocumentPages({
       }
     );
   }, [read, onFail]);
-  // The next batch loads while the end of the list is in view (re-observed
-  // per batch, so a short document keeps loading until it fills the pane).
+  // The next batch loads while the end of the list is in view (re-checked
+  // per batch, so a short document keeps loading until it fills the pane),
+  // on scroll and resize (each at most once per frame). No IntersectionObserver: while
+  // one exists, Chromium runs a main-thread frame on every vsync for as long
+  // as any animation runs in the window.
   // biome-ignore lint/correctness/useExhaustiveDependencies: a new batch is the trigger
   useEffect(() => {
     if (!sentinel) return undefined;
-    if (typeof IntersectionObserver === 'undefined') {
-      load();
-      return undefined;
-    }
-    const observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting)) load();
-    });
-    observer.observe(sentinel);
-    return () => observer.disconnect();
+    const scroller = scrollParent(sentinel);
+    const check = () => {
+      if (shownInView(sentinel, scroller)) load();
+    };
+    check();
+    document.addEventListener('scroll', check, { capture: true, passive: true });
+    window.addEventListener('resize', check);
+    // A hidden pane shown again gives the sentinel a box.
+    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(check) : null;
+    observer?.observe(sentinel);
+    return () => {
+      document.removeEventListener('scroll', check, { capture: true });
+      window.removeEventListener('resize', check);
+      observer?.disconnect();
+    };
   }, [sentinel, load, state.pages.length]);
   const finished = state.count !== null && state.pages.length >= state.count;
   return (
@@ -186,7 +230,7 @@ function RemotePaneContent({
   tabId,
   index,
   load,
-  commenting,
+  networkAllowed,
   marks,
 }: {
   pane: VisualizePaneView;
@@ -194,8 +238,8 @@ function RemotePaneContent({
   tabId: string;
   index: number;
   load: NonNullable<DesktopApi['visualizePaneSource']>;
-  /** Comment mode is on: a page that is not running yet offers Run. */
-  commenting: boolean;
+  /** The desktop user allowed outside network for this tab's pages. */
+  networkAllowed: boolean;
   /** This pane's annotation marks. */
   marks: Array<{ selector: string; label: string }>;
 }) {
@@ -243,34 +287,39 @@ function RemotePaneContent({
   }, [load, sessionId, tabId, index, asPages, mediaEpoch]);
   const [frame, setFrame] = useState<HTMLIFrameElement | null>(null);
   const srcdoc = source?.srcdoc;
-  // A page the agent wrote first renders without scripts; only the user's tap
-  // on "Run" (remembered for this tab on this device) lets them execute -
-  // unless this device runs agent pages immediately (its own setting).
-  const runAllowed = useVisualizeScriptsAllowed(sessionId, tabId);
-  const runPages = useVisualizeRunPages();
-  const gate = srcdoc !== undefined ? remotePageGate(srcdoc, runAllowed || runPages, commenting) : null;
-  const gated = gate !== null && !gate.runScripts;
   // Marks change with the tab state; the page reloads to show the new set.
   const marksKey = JSON.stringify(marks);
+  // Pages run at once, as on the desktop, and under the desktop's network
+  // policy: outside network stays blocked until the desktop user allows it for
+  // the tab (`networkAllowed`, carried in the tab state; a change reloads).
   // The feedback page script (Comment pins, `data-choice` picks) and the
   // annotation overlay ride inside the page: nothing on this client can reach
   // into the opaque frame. The page bridge answers the page's own fetch/XHR
   // of its project files.
   // biome-ignore lint/correctness/useExhaustiveDependencies: marksKey stands for marks
   useEffect(() => {
-    if (!frame || srcdoc === undefined || gated) return undefined;
+    if (!frame || srcdoc === undefined) return undefined;
     const fetcher = source?.fetch;
     let page = withVisualizeOverlay(withVisualizeFeedbackScript(srcdoc), marks);
     if (fetcher && source?.page !== undefined) page = withPageFetchBridge(page, source.page);
-    const unload = loadSandboxedPage(frame, withFrameZoomBridge(page));
+    page = withFrameZoomBridge(page);
+    const unload = loadSandboxedPage(
+      frame,
+      networkAllowed ? withBlockedNetworkReporter(page) : withBlockedNetwork(page)
+    );
     const unserve = fetcher ? servePageFetches(frame, fetcher) : undefined;
     const unzoom = serveFrameZoom(frame);
+    // Reporting stays on either way: the frame's own CSP refuses some requests even when the tab allows network.
+    const unblocked = serveBlockedNetwork(frame, (url, resource) =>
+      reportVisualizeBlockedNetwork(sessionId, tabId, index, url, resource)
+    );
     return () => {
       unload();
       unserve?.();
       unzoom();
+      unblocked();
     };
-  }, [frame, srcdoc, gated, source, marksKey]);
+  }, [frame, srcdoc, source, marksKey, networkAllowed, sessionId, tabId, index]);
   if (asPages) return <RemoteDocumentPages label={pane.label} read={pages} onFail={pagesUnavailable} />;
   if (error && pane.inline) {
     // The interactive page could not be built here: the static render stands in.
@@ -285,43 +334,12 @@ function RemotePaneContent({
   }
   if (error) return <div className="visualize-empty">{error}</div>;
   if (!source) return <div className="visualize-empty">{t('Loading…')}</div>;
-  if (srcdoc !== undefined && gate) {
-    if (gated) {
-      // Fails closed: no `allow-scripts` at all (and no meta refresh to
-      // follow) until the user taps Run, whatever detection found; markup
-      // and styles only, in an opaque origin.
-      return (
-        <div className="visualize-script-pane">
-          {gate.prompt ? (
-            <div className="visualize-script-gate" role="status">
-              <span>
-                {gate.prompt === 'comments' ? t('Comments need this page to run.') : t('This page runs scripts.')}
-              </span>
-              <button type="button" onClick={(event) => allowVisualizeScripts(sessionId, tabId, event.nativeEvent)}>
-                {t('Run')}
-              </button>
-            </div>
-          ) : null}
-          {pane.inline?.kind === 'chart' ? (
-            // A chart page is blank without its script: the static render
-            // (drawn here, no script in the frame) stands in until Run.
-            <InlinePaneContent pane={{ ...pane, kind: 'inline' }} />
-          ) : (
-            <iframe
-              key="static"
-              title={pane.label}
-              sandbox=""
-              srcDoc={withVisualizeOutlines(gate.srcdoc, marks)}
-              referrerPolicy="no-referrer"
-            />
-          )}
-        </div>
-      );
-    }
+  if (srcdoc !== undefined) {
     // Scripts run in an opaque origin: no access to this app, its storage or
-    // its relay socket; outside https loads as on the desktop (the relay
-    // frame's CSP). Forms (their submit handlers; the CSP still refuses any
-    // form navigation) and alert/confirm work as on the desktop.
+    // its relay socket, and no outside network unless the tab allowed it (the
+    // desktop's policy, as a CSP in the page). Forms (their submit handlers;
+    // the CSP still refuses any form navigation) and alert/confirm work as on
+    // the desktop.
     return (
       <iframe
         key="live"
@@ -355,6 +373,11 @@ export function visualizePaneTitle(tab: Pick<VisualizeTab, 'compare' | 'panes'>,
   return [[marker, pane.label].filter(Boolean).join(' · '), pane.target].join('\n');
 }
 
+/** A split pane's hover chip: its file name, behind "vN" for a kept version. */
+export function visualizePaneChipLabel(pane: Pick<VisualizePaneView, 'label' | 'version'>): string {
+  return pane.version === undefined ? pane.label : `v${pane.version} · ${pane.label}`;
+}
+
 export function VisualizePane({ sessionId, active, onClose }: { sessionId: string; active: boolean; onClose(): void }) {
   const state = useVisualizeState(sessionId);
   // Present only on a paired remote client.
@@ -377,7 +400,13 @@ export function VisualizePane({ sessionId, active, onClose }: { sessionId: strin
     if (active) markVisualizePanelShown(sessionId);
     else if (previous.active && previous.sessionId === sessionId) markVisualizePanelHidden(sessionId);
     shown.current = { sessionId, active };
+    // On screen now: the open policy keeps the user's tab pick while it is.
+    if (!active) return undefined;
+    setVisualizePanelOnScreen(sessionId, true);
+    return () => setVisualizePanelOnScreen(sessionId, false);
   }, [sessionId, active]);
+  // Tabs opened or updated behind the user's pick wear a dot until viewed.
+  const updated = useVisualizeUpdatedTabs(sessionId);
 
   // Closing the last tab (the user's × or the agent's close) closes the
   // panel instead of leaving it empty. Unlike the header ×, the next agent
@@ -423,7 +452,12 @@ export function VisualizePane({ sessionId, active, onClose }: { sessionId: strin
     observer.observe(body);
     return () => observer.disconnect();
   }, [body]);
-  const stacked = tab ? visualizePanesStacked(bodyWidth, tab.panes.length) : false;
+  // One pane of a split tab shown alone (visualize-solo-pane): the others stay
+  // mounted (no page reloads), only hidden.
+  const paneCount = tab?.panes.length ?? 0;
+  const solo = useVisualizeSoloPane(sessionId, tabId, paneCount);
+  const showSolo = (index: number | null) => setVisualizeSoloPane(sessionId, tabId, index);
+  const stacked = tab ? visualizePanesStacked(bodyWidth, solo === null ? paneCount : 1) : false;
 
   // Content scale of the active tab; the zoom bar is a shared preference.
   const [panel, setPanel] = useState<HTMLElement | null>(null);
@@ -449,6 +483,24 @@ export function VisualizePane({ sessionId, active, onClose }: { sessionId: strin
     if (commenting) announceVisualizeCommentMode(commentKinds);
   }, [commenting]);
   useVisualizeFeedbackBridge({ sessionId, tab, body, comment: comment && commentable, setComment });
+
+  // While one pane is shown alone: ←/→ step through the panes, Esc returns to
+  // the split (comment mode keeps Esc for itself). Typing never switches.
+  useEffect(() => {
+    if (!active || solo === null || commenting) return undefined;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('input, textarea, select, [contenteditable="true"]')) return;
+      if (event.key === 'Escape') setVisualizeSoloPane(sessionId, tabId, null);
+      else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+        setVisualizeSoloPane(sessionId, tabId, visualizeSoloStep(solo, paneCount, event.key === 'ArrowLeft' ? -1 : 1));
+      } else return;
+      event.preventDefault();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [active, solo, commenting, sessionId, tabId, paneCount]);
   const commentAction = commentable
     ? [
         {
@@ -509,16 +561,17 @@ export function VisualizePane({ sessionId, active, onClose }: { sessionId: strin
 
   // "All visuals", the source toggle and the export menu.
   const extras = useVisualizePanelExtras(sessionId, state, tab, Boolean(remoteSource));
-  // A paired device's own choice to run agent pages without the Run tap.
-  useVisualizeRunPages();
-  const runPagesAction = remoteSource ? [visualizeRunPagesAction()] : [];
 
   const left = state.tabs.length ? (
     <div ref={strip} className="visualize-tabs" role="tablist" aria-label={t('Visualize')}>
       {state.tabs.map((candidate) => {
         const selected = candidate.id === tab?.id;
         return (
-          <div key={candidate.id} className={`browser-tab dock-header-chip${selected ? ' is-active' : ''}`}>
+          <div
+            key={candidate.id}
+            className={`browser-tab dock-header-chip${selected ? ' is-active' : ''}`}
+            data-visualize-tab-id={candidate.id}
+          >
             <button
               type="button"
               role="tab"
@@ -529,6 +582,9 @@ export function VisualizePane({ sessionId, active, onClose }: { sessionId: strin
             >
               <Eye size={14} aria-hidden="true" />
               <span>{candidate.label}</span>
+              {updated.has(candidate.id) && !selected ? (
+                <span className="visualize-tab-updated" role="img" aria-label={t('Updated')} title={t('Updated')} />
+              ) : null}
             </button>
             {candidate.problems?.length ? (
               <button
@@ -570,7 +626,6 @@ export function VisualizePane({ sessionId, active, onClose }: { sessionId: strin
           ...elementsAction,
           ...tweaksAction,
           ...commentAction,
-          ...runPagesAction,
           zoomBarAction(),
         ])}
         onClose={onClose}
@@ -609,7 +664,7 @@ export function VisualizePane({ sessionId, active, onClose }: { sessionId: strin
       {tab ? (
         <div
           ref={setBody}
-          className={`visualize-body${stacked ? ' is-stacked' : ''}${tab.compare && tab.panes.length > 2 && !stacked ? ' is-compare-grid' : ''}`}
+          className={`visualize-body${stacked ? ' is-stacked' : ''}${tab.compare && tab.panes.length > 2 && !stacked && solo === null ? ' is-compare-grid' : ''}${solo === null ? '' : ' is-solo'}`}
           data-visualize-body=""
           data-visualize-session={sessionId}
           data-visualize-tab={tab.id}
@@ -636,22 +691,57 @@ export function VisualizePane({ sessionId, active, onClose }: { sessionId: strin
                   tabId={tab.id}
                   index={index}
                   load={remoteSource}
-                  commenting={comment && commentable}
+                  networkAllowed={tab.networkAllowed === true}
                   marks={visualizePaneMarks(tab.annotations, index)}
                 />
               );
             } else {
               content = <PaneContent pane={pane} />;
             }
+            // In the split, a click on a pane shows it alone — not while
+            // commenting or reading source, and not on media (their controls
+            // take clicks); the hover name chip works for every pane.
+            const split = paneCount > 1 && solo === null;
+            const clickToSolo =
+              split && !(comment && commentable) && !showSource && pane.kind !== 'audio' && pane.kind !== 'video';
             return (
+              // biome-ignore lint/a11y/noStaticElementInteractions lint/a11y/useKeyWithClickEvents: a pointer shortcut; the name chip is the keyboard path
               <div
                 // The revision remounts a pane when its file changed on disk.
                 // biome-ignore lint/suspicious/noArrayIndexKey: panes are positional (pane N is the Nth file), never reordered
                 key={`${tab.id}:${tab.revision}:${index}`}
-                className="visualize-pane-cell"
+                className={`visualize-pane-cell${solo === index ? ' is-solo' : ''}${clickToSolo ? ' is-zoomable' : ''}`}
                 data-visualize-pane={index}
-                title={tab.panes.length > 1 ? visualizePaneTitle(tab, pane) : undefined}
+                title={split ? visualizePaneTitle(tab, pane) : undefined}
+                onClick={clickToSolo ? () => showSolo(index) : undefined}
               >
+                {split ? (
+                  <button
+                    type="button"
+                    className="visualize-pane-chip"
+                    aria-label={`${visualizePaneChipLabel(pane)} — ${t('Show alone')}`}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      showSolo(index);
+                    }}
+                  >
+                    {visualizePaneChipLabel(pane)}
+                  </button>
+                ) : null}
+                {split ? (
+                  // Phone only (CSS): taps go into the page or video, so the cell needs its own always-visible button.
+                  <button
+                    type="button"
+                    className="visualize-pane-enlarge"
+                    aria-label={`${visualizePaneChipLabel(pane)} — ${t('Show alone')}`}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      showSolo(index);
+                    }}
+                  >
+                    <Maximize2 size={16} aria-hidden="true" />
+                  </button>
+                ) : null}
                 <div className="visualize-pane-content">
                   <div className="visualize-zoom-layer" style={visualizeZoomStyle(zoom, pane.kind)}>
                     {content}
@@ -673,8 +763,45 @@ export function VisualizePane({ sessionId, active, onClose }: { sessionId: strin
       ) : (
         <div className="visualize-empty">{t('Results the agent shows will appear here.')}</div>
       )}
-      {zoomable && zoomBarVisible && (
+      {((zoomable && zoomBarVisible) || solo !== null) && (
         <ZoomPill
+          before={
+            solo === null ? undefined : (
+              <>
+                <button
+                  type="button"
+                  className="browser-zoom-step"
+                  aria-label={t('Previous pane')}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => showSolo(visualizeSoloStep(solo, paneCount, -1))}
+                >
+                  <ChevronLeft size={14} aria-hidden="true" />
+                </button>
+                <span className="browser-zoom-position" title={tab ? visualizePaneTitle(tab, tab.panes[solo]) : ''}>
+                  {solo + 1} / {paneCount}
+                </span>
+                <button
+                  type="button"
+                  className="browser-zoom-step"
+                  aria-label={t('Next pane')}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => showSolo(visualizeSoloStep(solo, paneCount, 1))}
+                >
+                  <ChevronRight size={14} aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  className="browser-zoom-step"
+                  aria-label={t('Side by side')}
+                  data-tooltip={t('Side by side (Esc)')}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => showSolo(null)}
+                >
+                  <Columns3 size={14} aria-hidden="true" />
+                </button>
+              </>
+            )
+          }
           level={zoom}
           range={VISUALIZE_ZOOM_RANGE}
           presets={PREVIEW_ZOOM_PRESETS}

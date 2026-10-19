@@ -58,8 +58,26 @@ function scopeDirFor(dataDir) {
   return join(getBackupRoot(), `${SCOPE_PREFIX}${id}`);
 }
 
-function stamp() {
-  return new Date().toISOString().replace(/[:.]/g, '-');
+let lastBackupMs = 0;
+let backupSeq = 0;
+
+// Claims `<iso-ms>-<10-digit seq>-<reason>` with an exclusive mkdir, so names
+// sort by timestamp, then sequence, and an existing backup is never reused
+// (EEXIST retries with the next sequence). The clamp keeps a backwards clock
+// from reordering this process's backups.
+function reserveBackupDir(scopeDir, reason) {
+  mkdirSync(scopeDir, { recursive: true });
+  for (;;) {
+    lastBackupMs = Math.max(Date.now(), lastBackupMs);
+    const time = new Date(lastBackupMs).toISOString().replace(/[:.]/g, '-');
+    const backupDir = join(scopeDir, `${time}-${String(backupSeq++).padStart(10, '0')}-${safeReason(reason)}`);
+    try {
+      mkdirSync(backupDir);
+      return backupDir;
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+    }
+  }
 }
 
 function safeReason(reason) {
@@ -329,11 +347,6 @@ function skipBackups() {
   return process.env.MIXDOG_SKIP_USER_DATA_BACKUP === '1' || process.env.MIXDOG_SKIP_USER_DATA_BACKUP === 'true';
 }
 
-function backupTarget(dataDir, reason) {
-  const scopeDir = scopeDirFor(dataDir);
-  return { scopeDir, backupDir: join(scopeDir, `${stamp()}-${safeReason(reason)}`) };
-}
-
 // Mark first so the manifest carries this incarnation's instanceId; the
 // manifest goes last, so an interrupted copy is never restorable.
 function finishBackup(dataDir, backupDir, reason) {
@@ -354,7 +367,8 @@ function finishBackup(dataDir, backupDir, reason) {
 export function backupUserData(dataDir, reason = 'snapshot') {
   if (skipBackups()) return { dir: null, copied: [] };
   if (!dataDir || !existsSync(dataDir)) return { dir: null, copied: [] };
-  const { scopeDir, backupDir } = backupTarget(dataDir, reason);
+  const scopeDir = scopeDirFor(dataDir);
+  const backupDir = reserveBackupDir(scopeDir, reason);
   const copied = [];
   for (const rel of USER_DATA_FILES) {
     const src = join(dataDir, rel);
@@ -370,6 +384,8 @@ export function backupUserData(dataDir, reason = 'snapshot') {
     if (process.env.MIXDOG_SETUP_QUIET !== '1') {
       process.stderr.write(`[user-data-backup] ${reason}: copied ${copied.length} file(s) to ${backupDir}\n`);
     }
+  } else {
+    rmSync(backupDir, { recursive: true, force: true });
   }
   return { dir: copied.length > 0 ? backupDir : null, copied };
 }
@@ -413,7 +429,8 @@ async function pruneBackupsAsync(scopeDir, keep = 40) {
 export async function backupUserDataAsync(dataDir, reason = 'snapshot') {
   if (skipBackups()) return { dir: null, copied: [] };
   if (!dataDir || !existsSync(dataDir)) return { dir: null, copied: [] };
-  const { scopeDir, backupDir } = backupTarget(dataDir, reason);
+  const scopeDir = scopeDirFor(dataDir);
+  const backupDir = reserveBackupDir(scopeDir, reason);
   const copied = [];
   for (const rel of USER_DATA_FILES) {
     const src = join(dataDir, rel);
@@ -429,6 +446,8 @@ export async function backupUserDataAsync(dataDir, reason = 'snapshot') {
     if (process.env.MIXDOG_SETUP_QUIET !== '1') {
       process.stderr.write(`[user-data-backup] ${reason}: copied ${copied.length} file(s) to ${backupDir}\n`);
     }
+  } else {
+    rmSync(backupDir, { recursive: true, force: true });
   }
   return { dir: copied.length > 0 ? backupDir : null, copied };
 }

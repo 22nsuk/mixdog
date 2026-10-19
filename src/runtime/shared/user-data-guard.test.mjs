@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs, { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
 
@@ -117,6 +117,7 @@ test('a recreated profile at the same path is fresh, never a restore case', (t) 
 
 test('pruning keeps N backups per scope and never evicts another scope or legacy entries', (t) => {
   const { dir, backupRoot } = sandbox(t);
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
   const installed = dir('installed');
   const dev = dir('dev');
   writeFileSync(configFile(installed), JSON.stringify(complete('installed')));
@@ -276,6 +277,8 @@ test('a plain read restores a deleted config once, persists it and later reads h
 
 test('crash recovery restores the latest backup of the same data dir', (t) => {
   const { dir } = sandbox(t);
+  // Pre/post-write snapshots must retain creation order even at one clock tick.
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
   const a = dir('a');
   use(a);
   write('v1');
@@ -287,3 +290,60 @@ test('crash recovery restores the latest backup of the same data dir', (t) => {
   assert.equal(stored.agent.tag, 'v2');
   assert.equal(stored.ui.theme, 'after-restore');
 });
+
+for (const [firstKind, secondKind] of [
+  ['sync', 'sync'],
+  ['sync', 'async'],
+  ['async', 'sync'],
+  ['async', 'async'],
+]) {
+  test(`${firstKind}/${secondKind} snapshots in one millisecond preserve both versions and restore the latest`, async (t) => {
+    const { dir } = sandbox(t);
+    t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+    const a = dir('a');
+    const writers = { sync: backupUserData, async: backupUserDataAsync };
+    writeFileSync(configFile(a), JSON.stringify(complete('v1')));
+    const first = await writers[firstKind](a, 'snapshot');
+    writeFileSync(configFile(a), JSON.stringify(complete('v2')));
+    const second = await writers[secondKind](a, 'snapshot');
+    assert.notEqual(first.dir, second.dir);
+    for (const backup of [first, second]) {
+      assert.match(basename(backup.dir), /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-\d+-snapshot$/);
+    }
+    assert.equal(JSON.parse(readFileSync(join(first.dir, 'mixdog-config.json'), 'utf8')).agent.tag, 'v1');
+    assert.equal(JSON.parse(readFileSync(join(second.dir, 'mixdog-config.json'), 'utf8')).agent.tag, 'v2');
+    assert.equal(loadLatestMixdogConfigFromBackup(a).agent.tag, 'v2');
+  });
+}
+
+for (const kind of ['sync', 'async']) {
+  test(`${kind} snapshots keep their order within a process when the clock moves backwards`, async (t) => {
+    const { dir } = sandbox(t);
+    const now = Date.now();
+    t.mock.timers.enable({ apis: ['Date'], now });
+    const a = dir('a');
+    const writeBackup = kind === 'sync' ? backupUserData : backupUserDataAsync;
+    writeFileSync(configFile(a), JSON.stringify(complete('v1')));
+    await writeBackup(a, 'z-reason');
+    t.mock.timers.setTime(now - 1_000);
+    writeFileSync(configFile(a), JSON.stringify(complete('v2')));
+    await writeBackup(a, 'a-reason');
+    assert.equal(loadLatestMixdogConfigFromBackup(a).agent.tag, 'v2');
+  });
+}
+
+for (const kind of ['sync', 'async']) {
+  test(`overlapping async/${kind} snapshots at one clock tick get distinct backup paths`, async (t) => {
+    const { dir } = sandbox(t);
+    t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
+    const a = dir('a');
+    writeFileSync(configFile(a), JSON.stringify(complete('v1')));
+    const writeBackup = kind === 'sync' ? backupUserData : backupUserDataAsync;
+    const backups = await Promise.all([backupUserDataAsync(a, 'snapshot'), writeBackup(a, 'snapshot')]);
+    assert.notEqual(backups[0].dir, backups[1].dir);
+    for (const backup of backups) {
+      assert.equal(JSON.parse(readFileSync(join(backup.dir, 'mixdog-config.json'), 'utf8')).agent.tag, 'v1');
+    }
+    assert.equal(loadLatestMixdogConfigFromBackup(a).agent.tag, 'v1');
+  });
+}

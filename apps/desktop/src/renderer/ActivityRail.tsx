@@ -3,7 +3,7 @@
 // swap the adjacent panel; creation actions live in the Sessions panel header.
 // Usage and Settings live at the rail foot.
 import type React from 'react';
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { memo, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 
 import { DESKTOP_SIDEBAR_DEFAULT_WIDTH } from '../shared/window-layout';
 import { desktopFeatureEnabled } from './desktop-feature-config';
@@ -49,6 +49,7 @@ function usagePinGlyph(rows: ReturnType<typeof useUsageRailPin>['usagePinRows'],
               className={`rail-usage-pin-brand${tone}`}
               key={entry.key}
               data-usage-pin={entry.key}
+              aria-busy={entry.pending || undefined}
               data-tooltip={entry.tooltip}
             >
               <ProviderIcon provider={entry.provider} />
@@ -57,7 +58,9 @@ function usagePinGlyph(rows: ReturnType<typeof useUsageRailPin>['usagePinRows'],
                   <i style={{ width: `${displayUsagePercent(bar.percent) ?? 0}%` }} />
                 </i>
               ))}
-              <small>{percent}%</small>
+              <small>
+                <span className="rail-usage-pin-value">{entry.pending ? '–' : `${percent}%`}</span>
+              </small>
             </span>
           );
         })}
@@ -68,7 +71,9 @@ function usagePinGlyph(rows: ReturnType<typeof useUsageRailPin>['usagePinRows'],
   return <span className="codicon codicon-pie-chart" aria-hidden="true" />;
 }
 
-export function ActivityRail({
+// Memoised: the rail sits beside every App commit (a session switch is four)
+// and changes only with its destinations, the shown one and Settings.
+export const ActivityRail = memo(function ActivityRail({
   settingsOpen,
   onOpenSettings,
   onOpenProviders,
@@ -170,7 +175,12 @@ export function ActivityRail({
     }
     const dismiss = (event: PointerEvent) => {
       const target = event.target instanceof Element ? event.target : null;
-      if (target?.closest('.rail-usage-popup, .sidebar-usage-toggle, [data-provider-account-overlay], [data-usage-menu-overlay]')) return;
+      if (
+        target?.closest(
+          '.rail-usage-popup, .sidebar-usage-toggle, [data-provider-account-overlay], [data-usage-menu-overlay]'
+        )
+      )
+        return;
       setUsageOpen(false);
     };
     const keydown = (event: KeyboardEvent) => {
@@ -287,4 +297,4 @@ export function ActivityRail({
       )}
     </aside>
   );
-}
+});

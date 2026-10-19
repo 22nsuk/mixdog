@@ -11,61 +11,34 @@
 html[data-mixdog-mobile-tabs] .topbar {
   display: none;
 }
-/* A surface that has not reached its desktop for the disconnect threshold is
-   frozen, not broken: ONE light dim layer blocks input until the leg returns,
-   and a compact card names why (no internet, PC offline, reconnecting,
-   updating) and that it reconnects on its own. The frozen content stays readable
-   behind it. Shorter gaps — every background return costs one — show nothing.
-   Unscoped on purpose: any relay surface must be blocked, not only the phone
-   layout. */
-.remote-connection-overlay {
-  box-sizing: border-box;
+/* A relay surface whose link has been down past the threshold gets one tiny,
+   non-blocking status dot: no text, no card, no dim layer — the shim keeps
+   retrying on its own and everything around the dot stays usable. Shorter
+   gaps — every background return costs one — show nothing. Unscoped on
+   purpose: every relay surface shares it, not only the phone layout. */
+.remote-connection-indicator {
   position: fixed;
-  inset: 0;
+  top: calc(env(safe-area-inset-top, 0px) + 4px);
+  left: 50%;
   z-index: 240;
-  display: flex;
-  flex-direction: column;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 12px;
-  width: 100%;
-  height: 100%;
+  width: 20px;
+  height: 20px;
   margin: 0;
   padding: 0;
   border: 0;
   color: var(--mx-text-soft);
-  background: rgb(0 0 0 / 32%);
-  font: inherit;
+  background: transparent;
+  transform: translateX(-50%);
   cursor: pointer;
 }
-.remote-connection-overlay-card {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  max-width: min(320px, calc(100% - 48px));
-  padding: 16px 20px;
-  border-radius: 14px;
-  color: var(--mx-text);
-  background: var(--mx-bg-base);
-  box-shadow: 0 8px 28px rgb(0 0 0 / 35%);
-  text-align: center;
-}
-.remote-connection-overlay-label {
-  font-size: 15px;
-  font-weight: 600;
-  line-height: 1.3;
-}
-.remote-connection-overlay-hint {
-  font-size: 13px;
-  line-height: 1.3;
-  color: var(--mx-text-soft);
-}
-.remote-connection-overlay-card > svg {
-  width: 40px;
-  height: 40px;
-  flex: 0 0 auto;
-  color: var(--mx-text-soft);
+.remote-connection-indicator-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
   animation: remote-connection-pulse 1.8s ease-in-out infinite;
 }
 @keyframes remote-connection-pulse {
@@ -74,17 +47,13 @@ html[data-mixdog-mobile-tabs] .topbar {
     opacity: 1;
   }
   50% {
-    opacity: 0.55;
+    opacity: 0.35;
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .remote-connection-overlay-card > svg {
+  .remote-connection-indicator-dot {
     animation: none;
   }
-}
-html[data-mixdog-mobile-tabs] .remote-connection-overlay-card > svg {
-  width: 32px;
-  height: 32px;
 }
 /* ── Tab strip ── [brand mark][title pill][+][dock toggles]: the Chrome-dp toolbar keeps its 44dp row, the pill names the active
    tab, and the + and the dock toggles are the desktop's own marks scaled to
@@ -595,18 +564,22 @@ html[data-mixdog-mobile-tabs] .sidebar-drawer-frame::after {
   pointer-events: none;
 }
 /* Remote phone drawer: the PC card spans the full width above the rail and the
-   active side panel; its menu overlays the content below. */
-html[data-mixdog-mobile-tabs] .sidebar-drawer-frame:has(> .remote-pc-card) {
+   active side panel; its menu overlays the content below. The frame carries
+   data-remote-pc (AppSidebarDrawer) instead of a :has(> .remote-pc-card)
+   test: Chromium evaluates :has() before the html ancestor check even on the
+   desktop, so every React update anywhere in the left panel restyled the
+   whole panel (hundreds of elements per transcript message). */
+html[data-mixdog-mobile-tabs] .sidebar-drawer-frame[data-remote-pc="true"] {
   display: grid;
   grid-template-columns: 48px minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
 }
 /* The frame-tall divider would cross the header: draw it on the rail instead,
    which starts below the header's own hairline. */
-html[data-mixdog-mobile-tabs] .sidebar-drawer-frame:has(> .remote-pc-card)::before {
+html[data-mixdog-mobile-tabs] .sidebar-drawer-frame[data-remote-pc="true"]::before {
   display: none;
 }
-html[data-mixdog-mobile-tabs] .sidebar-drawer-frame:has(> .remote-pc-card) > .activity-rail {
+html[data-mixdog-mobile-tabs] .sidebar-drawer-frame[data-remote-pc="true"] > .activity-rail {
   box-sizing: border-box;
   border-right: 1px solid var(--mx-border-muted);
 }
@@ -617,13 +590,13 @@ html[data-mixdog-mobile-tabs] .sidebar-drawer-frame > .remote-pc-card {
   grid-row: 1;
   border-bottom: 1px solid var(--mx-border-muted);
 }
-html[data-mixdog-mobile-tabs] .sidebar-drawer-frame:has(> .remote-pc-card) > :not(.remote-pc-card) {
+html[data-mixdog-mobile-tabs] .sidebar-drawer-frame[data-remote-pc="true"] > :not(.remote-pc-card) {
   grid-row: 2;
 }
 /* The panel's own "100% - 48px" width assumed a flex row; inside the grid cell
    that left it narrower than the drawer. The cell (1fr) sets the width. */
 html[data-mixdog-mobile-tabs]
-  .sidebar-drawer-frame.sidebar-drawer-frame:has(> .remote-pc-card)
+  .sidebar-drawer-frame.sidebar-drawer-frame[data-remote-pc="true"]
   > :is(.workbench-side-panel, .sidebar.session-sidebar) {
   width: auto;
 }
@@ -1115,6 +1088,7 @@ html[data-mixdog-mobile-tabs] .pane-cell {
 /* The jump chip grows to a 36px disc on touch (28px read as too small to hit);
    its hit frame still reaches the 44dp tier. */
 html[data-mixdog-mobile-tabs] .jump-to-latest {
+  bottom: var(--island-stage-gap);
   width: 36px;
   height: 36px;
 }
@@ -1275,7 +1249,6 @@ html[data-mixdog-mobile-tabs] .turn-review-revert {
 }
 html[data-mixdog-mobile-tabs] .message .response-footer,
 html[data-mixdog-mobile-tabs] .message.assistant .response-footer:has(.turn-status),
-html[data-mixdog-mobile-tabs] .response-footer-band,
 html[data-mixdog-mobile-tabs] .live-activity-slot[data-busy="true"],
 html[data-mixdog-mobile-tabs] .markdown-code > header {
   min-height: var(--mx-touch-fixed-main);

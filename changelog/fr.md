@@ -5,6 +5,65 @@ la section Unreleased est vide, et l'estampille avec la version publiée.
 
 ## Unreleased
 
+## v1.2.6 - 2026-10-18
+
+L'application de bureau consomme désormais moins de ressources en veille et change de session plus rapidement, les commandes shell passent en arrière-plan après 60 secondes, et la gestion des modèles ainsi que la connexion à OpenCode Go font leur apparition.
+
+### Nouvelles fonctionnalités
+
+- **Gestion des modèles** — Ajout d'une page dans Paramètres pour ajouter des modèles aux favoris et les masquer, ainsi qu'un menu contextuel dans le sélecteur de modèles.
+- **Connexion à OpenCode Go** — Ajout de la connexion à OpenCode Go avec votre compte OpenCode ; elle remplace l'ancienne clé API.
+
+### Modifications
+
+- Modification de l'application de bureau pour consommer moins de CPU en veille et changer de session plus rapidement.
+- Modification du shell pour faire passer une commande en arrière-plan après 60 secondes ; les notifications de fin incluent désormais le code de sortie et la sortie.
+- Modification des listes de fournisseurs pour afficher la raison de l'échec de chargement des modèles au lieu d'une liste vide, et ajout d'un lien vers la clé API pour les fournisseurs connectés.
+- Modification de l'archivage ou de la suppression d'une session occupée pour demander d'abord une confirmation (#109).
+- Modification des réponses pour une lecture plus concise et un regroupement des résultats, causes et décisions ; les tableaux s'ajustent désormais à la ligne au lieu de défiler horizontalement.
+
+### Corrections de bugs
+
+- Correction du blocage du backend sous une lourde charge d'agents suivi de son redémarrage automatique, ce qui interrompait les agents en cours d'exécution.
+- Correction de l'annulation qui laissait les processus enfants et les serveurs en cours d'exécution (#115).
+- Correction des textes collés difficiles à lire ou à modifier lorsqu'ils étaient longs (#110), et de la saisie d'un simple `/` dans le compositeur (thanks @oh1701).
+- Correction de la boîte de dialogue de confirmation du shell qui repoussait ses boutons hors de l'écran (#114) et des dossiers `.git` vides qui bloquaient les tâches (#108).
+- Correction des totaux d'utilisation des agents qui omettaient les agents fermés (#99, thanks @22nsuk).
+- Correction des pièces jointes perdues pendant le chargement, et d'un agent en échec marquant tout l'onglet de sa session comme ayant échoué.
+- Correction de chaque tour échouant avec "Workspace activity cannot be verified" après qu'un plantage a endommagé le registre de l'espace de travail.
+- Correction des délais d'attente de compte expirés qui n'étaient pas réessayés (#106), des sauvegardes de paramètres perdant les originaux (#105) et de l'historique d'utilisation illisible bloquant les totaux (#103), thanks @22nsuk.
+
+## v1.2.5 - 2026-10-18
+
+Les téléphones se connectent désormais plus rapidement et sans fenêtres contextuelles, l'application de bureau ne ralentit plus après l'exécution de nombreux agents, et les réponses en streaming s'affichent de manière plus fluide.
+
+### Modifications
+
+- Modification des connexions de téléphone pour se reconnecter automatiquement sans pop-up ni compte à rebours ; un petit point n'apparaît que lors d'une interruption prolongée.
+- Modification des réponses en streaming pour s'afficher mot par mot avec un fondu doux, sans sauts dus au Markdown incomplet ; les blocs de code apparaissent avec leur contenu.
+- Modification de l'état de l'agent pour afficher Done jusqu'à l'ouverture du résultat, puis Idle.
+- Modification du menu de branche pour s'ouvrir depuis un bouton `…` ou par un clic droit ; sur les téléphones, appuyez longuement sur une branche.
+- Modification des pages visualize sur les téléphones pour s'ouvrir directement sans invite Run, comme sur le bureau.
+- Ajustement du panneau d'utilisation et du résumé de l'îlot du compositeur pour conserver leur hauteur pendant le chargement des chiffres.
+- Modification du code QR d'installation Android pour télécharger directement l'application.
+
+### Corrections de bugs
+
+- Correction des messages envoyés et des réponses qui n'apparaissaient pas dans la conversation après le redémarrage de l'application tant qu'elle n'était pas rouverte (#113, thanks @oh1701).
+- Correction de l'application de bureau marquant des pauses d'environ une seconde dès qu'il existait plus de 256 sessions d'agents.
+- Correction des requêtes des téléphones bloquées derrière des lectures lentes de Git et d'utilisation sur le bureau.
+- Correction des téléphones déconnectés lorsque le bureau était occupé, et de la première connexion après ouverture de l'application prenant plus de 10 secondes.
+- Correction des téléphones restant indéfiniment sur "Allowed. Connecting…" ou affichant "Request expired" après approbation par le PC.
+- Correction d'un téléphone demandant à nouveau une approbation au lancement après la perte de sa connexion enregistrée.
+- Correction des téléphones apparaissant connectés pendant le redémarrage du PC, chaque message arrivant à expiration.
+- Correction de la déconnexion définitive des téléphones associés lorsque le PC ne parvenait pas à lire son identité de connexion.
+- Correction d'une vérification lente de chemin de fichier qui bloquait toutes les autres requêtes du téléphone.
+- Correction du défilement vers le haut dans les longues conversations qui bloquait pendant le chargement des messages plus anciens (#104).
+- Correction de la conversation ramenée vers le bas lors du défilement vers le haut sur téléphone pendant une réponse en cours.
+- Correction du chevauchement d'icônes sur les cartes de fichiers et des notifications répétées d'échec de téléchargement.
+
+## v1.2.4 - 2026-10-17
+
 Mise à jour comprenant le contrôle des sessions d'agents et l'attribution de modèles de secours, la préparation automatique des worktrees, l'optimisation des sorties du harness et des améliorations générales des performances.
 
 ### 1. Améliorations du harness : réduction de la sortie, styles plus clairs et stabilisation générale

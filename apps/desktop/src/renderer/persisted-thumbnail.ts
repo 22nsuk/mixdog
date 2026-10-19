@@ -5,6 +5,7 @@
 import { useEffect, useState } from 'react';
 
 import type { DesktopApi } from '../shared/contract';
+import { verifyLocalLink } from './local-link-resolver';
 import {
   type ImagePreviewStore,
   makeImageThumbnail,
@@ -127,4 +128,25 @@ export function fileSnapshot(
     },
     () => undefined
   );
+}
+
+/** `fileSnapshot` of a card's first file target while `enabled` (no live or
+ *  saved picture yet). Undefined while pending or when none could be made. */
+export function useFileSnapshot(session: string, project: string, path: string, enabled: boolean): string | undefined {
+  const [result, setResult] = useState<{ id: string; url: string } | null>(null);
+  const id = `${session}\0${project}\0${path}`;
+  useEffect(() => {
+    if (!enabled || !path || !SNAPSHOT_FILE.test(path)) return;
+    let active = true;
+    verifyLocalLink(project, path, session || undefined)
+      .then((target) => (target.directory ? undefined : fileSnapshot(session, target)))
+      .then((url) => {
+        if (active && url) setResult({ id, url });
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [enabled, id, project, path, session]);
+  return enabled && result?.id === id ? result.url : undefined;
 }

@@ -5,6 +5,65 @@ la sección Unreleased esté vacía, y la marca con la versión publicada.
 
 ## Unreleased
 
+## v1.2.6 - 2026-10-18
+
+El escritorio ahora consume menos recursos en reposo y cambia de sesión más rápido, los comandos de shell pasan a segundo plano tras 60 segundos, y la gestión de modelos y el inicio de sesión en OpenCode Go son nuevos.
+
+### Nuevas funciones
+
+- **Gestión de modelos** — Se añadió una página de Configuración para marcar modelos como favoritos y ocultarlos, además de un menú contextual en el selector de modelos.
+- **Inicio de sesión en OpenCode Go** — Se añadió el inicio de sesión en OpenCode Go con su cuenta de OpenCode; reemplaza la antigua clave de API.
+
+### Cambios
+
+- Se cambió el escritorio para usar menos CPU en reposo y cambiar de sesión más rápido.
+- Se cambió la shell para pasar los comandos a segundo plano tras 60 segundos; los avisos de finalización ahora incluyen el código de salida y la salida.
+- Se cambiaron las listas de proveedores para mostrar por qué los modelos no pudieron cargarse en lugar de una lista vacía, y se añadió un enlace a la clave de API en los proveedores conectados.
+- Se cambió el archivado o la eliminación de una sesión ocupada para pedir confirmación primero (#109).
+- Se cambiaron las respuestas para que sean más breves de leer y agrupen resultados, causas y decisiones; las tablas ahora se ajustan en lugar de desplazarse horizontalmente.
+
+### Correcciones de errores
+
+- Se corrigió que el backend se bloqueara bajo una gran carga de agentes y se reiniciara a sí mismo, deteniendo los agentes en ejecución.
+- Se corrigió que la cancelación dejara procesos secundarios y servidores en ejecución (#115).
+- Se corrigió que el texto pegado fuera difícil de leer o editar cuando era largo (#110), y al escribir un `/` simple en el compositor (thanks @oh1701).
+- Se corrigió que el cuadro de diálogo de confirmación de shell empujara sus botones fuera de la pantalla (#114) y que las carpetas `.git` vacías bloquearan las tareas (#108).
+- Se corrigió que los totales de uso de agentes omitieran los agentes cerrados (#99, thanks @22nsuk).
+- Se corrigió la pérdida de archivos adjuntos durante la carga y que un agente fallido marcara toda la pestaña de su sesión como fallida.
+- Se corrigió que cada turno fallara con "Workspace activity cannot be verified" después de que un bloqueo dañara el registro del espacio de trabajo.
+- Se corrigió que los tiempos de espera de cuentas expiradas no se reintentaran (#106), que las copias de seguridad de la configuración perdieran los originales (#105) y que el historial de uso ilegible bloqueara los totales (#103), thanks @22nsuk.
+
+## v1.2.5 - 2026-10-18
+
+Los teléfonos ahora se conectan más rápido y sin ventanas emergentes, el escritorio ya no se ralentiza cuando se han ejecutado muchos agentes y las respuestas en streaming aparecen con mayor fluidez.
+
+### Cambios
+
+- Se cambiaron las conexiones del teléfono para que se reconecten automáticamente sin ventanas emergentes ni cuentas regresivas; solo aparece un pequeño punto durante una interrupción prolongada.
+- Se cambiaron las respuestas en streaming para que aparezcan palabra por palabra con un desvanecimiento suave, sin saltos por Markdown incompleto; los bloques de código aparecen con su contenido.
+- Se cambió el estado del agente para mostrar Done hasta que abras el resultado, y luego Idle.
+- Se cambió el menú de ramas para abrirse desde un botón `…` o con clic derecho; en teléfonos, mantén presionada una rama.
+- Se cambiaron las páginas de visualize en teléfonos para que se abran directamente sin el aviso Run, al igual que en el escritorio.
+- Se ajustaron el panel de uso y el resumen de la isla del compositor para mantener su altura mientras se cargan los datos.
+- Se cambió el código QR de instalación de Android para descargar la aplicación directamente.
+
+### Correcciones de errores
+
+- Se corrigió que los mensajes enviados y las respuestas no aparecieran en la conversación tras reiniciar la aplicación hasta que se volvía a abrir (#113, thanks @oh1701).
+- Se corrigió que el escritorio se pausara alrededor de un segundo a la vez cuando existían más de 256 sesiones de agentes.
+- Se corrigió que las solicitudes del teléfono quedaran esperando detrás de lecturas lentas de Git y de uso en el escritorio.
+- Se corrigió que los teléfonos se desconectaran mientras el escritorio estaba ocupado, y que la primera conexión tras abrir la aplicación tardara más de 10 segundos.
+- Se corrigió que los teléfonos se quedaran indefinidamente en "Allowed. Connecting…" o mostraran "Request expired" después de que la PC hubiera aprobado la conexión.
+- Se corrigió que un teléfono volviera a solicitar aprobación al iniciar tras perder su inicio de sesión guardado.
+- Se corrigió que los teléfonos parecieran conectados mientras la PC se reiniciaba, provocando que todos los mensajes se agotaran por tiempo de espera.
+- Se corrigió que los teléfonos vinculados se desconectaran definitivamente cuando la PC no podía leer su identidad de conexión.
+- Se corrigió que una comprobación lenta de ruta de archivo retuviera todas las demás solicitudes del teléfono.
+- Se corrigió que el desplazamiento hacia arriba en conversaciones largas se detuviera mientras se cargaban los mensajes anteriores (#104).
+- Se corrigió que la conversación volviera hacia abajo al desplazarse hacia arriba en el teléfono durante una respuesta en curso.
+- Se corrigieron los iconos superpuestos en las tarjetas de archivos y los avisos repetidos de error de descarga.
+
+## v1.2.4 - 2026-10-17
+
 Actualización que incluye control de sesiones de agentes y asignación de modelos de respaldo, preparación automática de worktrees, optimización de la salida del harness y mejoras generales de rendimiento.
 
 ### 1. Mejoras en el harness: reducción de salida, estilos más limpios y estabilización general

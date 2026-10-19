@@ -6,6 +6,7 @@ import {
   UNTRACKED_STAT_CONCURRENCY,
   gitCacheKey,
   mapWithConcurrency,
+  sharedRead,
   untrackedStat,
 } from './git-read-utils';
 import { publicGitRemoteUrl, run, streamNulRecords } from './git-runner';
@@ -206,7 +207,8 @@ async function cachedGitDir(cwd: string): Promise<string> {
     if (match) gitDir = resolve(cwd, match[1]);
   } catch {
     try {
-      await access(dotGit);
+      // An empty or stray `.git` folder has no HEAD; let git find the real repository above it.
+      await access(join(dotGit, 'HEAD'));
       gitDir = dotGit;
     } catch {
       gitDir = resolve(cwd, (await run(cwd, ['--no-optional-locks', 'rev-parse', '--absolute-git-dir'])).trim());
@@ -295,7 +297,14 @@ export async function currentGitOperation(cwd: string): Promise<GitOperation> {
   return '';
 }
 
-export async function gitStatus(cwd: string, options: GitStatusOptions = {}): Promise<GitStatusResult> {
+/** Concurrent identical status reads share one scan ({@link sharedRead}). */
+export const gitStatus = sharedRead(
+  (cwd: string, options: GitStatusOptions = {}) =>
+    `${gitCacheKey(cwd)}\0${options.reuseLineStats === true}\0${options.skipLineStats === true}`,
+  readGitStatus
+);
+
+async function readGitStatus(cwd: string, options: GitStatusOptions = {}): Promise<GitStatusResult> {
   const files: GitFileEntry[] = [];
   let branch = '';
   let oid = '';

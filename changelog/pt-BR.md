@@ -4,6 +4,65 @@ Principais mudanças, das mais recentes para as mais antigas. O pipeline de Depl
 
 ## Unreleased
 
+## v1.2.6 - 2026-10-18
+
+O desktop agora consome menos recursos quando ocioso e alterna entre sessões mais rapidamente, comandos de shell passam para o segundo plano após 60 segundos, e o gerenciamento de modelos e o login no OpenCode Go são novidades.
+
+### Novos recursos
+
+- **Gerenciamento de modelos** — Adicionada uma página em Configurações para favoritar e ocultar modelos, além de um menu de clique com o botão direito no seletor de modelos.
+- **Login no OpenCode Go** — Adicionado o login no OpenCode Go com sua conta OpenCode; substitui a antiga chave de API.
+
+### Alterações
+
+- Alterado o desktop para usar menos CPU quando ocioso e alternar entre sessões mais rapidamente.
+- Alterado o shell para mover comandos para o segundo plano após 60 segundos; os avisos de conclusão agora incluem o código de saída e a saída.
+- Alteradas as listas de provedores para mostrar por que os modelos falharam ao carregar em vez de uma lista vazia, e adicionado um link para a chave de API nos provedores conectados.
+- Alterado o arquivamento ou a exclusão de uma sessão ocupada para solicitar confirmação primeiro (#109).
+- Alteradas as respostas para ficarem mais concisas e agruparem resultados, causas e decisões; tabelas agora quebram linhas em vez de rolar horizontalmente.
+
+### Correções de bugs
+
+- Corrigido o backend travando sob alta carga de agentes e reiniciando a si mesmo, o que interrompia os agentes em execução.
+- Corrigido o cancelamento deixando processos filhos e servidores em execução (#115).
+- Corrigido o texto colado sendo difícil de ler ou editar quando longo (#110), e a digitação de uma `/` simples no compositor (thanks @oh1701).
+- Corrigida a caixa de diálogo de confirmação do shell empurrando seus botões para fora da tela (#114) e pastas `.git` vazias bloqueando tarefas (#108).
+- Corrigido o total de uso dos agentes deixando de fora agentes encerrados (#99, thanks @22nsuk).
+- Corrigida a perda de anexos durante o carregamento e um agente com falha marcando toda a aba de sua sessão como com falha.
+- Corrigido cada turno falhando com "Workspace activity cannot be verified" após uma falha danificar o registro do espaço de trabalho.
+- Corrigidos tempos de espera de contas expiradas não tentando novamente (#106), backups de configurações perdendo os originais (#105) e histórico de uso ilegível bloqueando os totais (#103), thanks @22nsuk.
+
+## v1.2.5 - 2026-10-18
+
+Os telefones agora se conectam mais rápido e sem pop-ups, o desktop não fica mais lento quando muitos agentes são executados e as respostas em streaming aparecem com mais suavidade.
+
+### Alterações
+
+- Alteradas as conexões do telefone para reconectar automaticamente sem pop-ups ou contagens regressivas; um ponto pequeno aparece apenas durante uma desconexão longa.
+- Alteradas as respostas em streaming para aparecerem palavra por palavra com um fade suave, sem saltos de Markdown incompleto; blocos de código aparecem com seu conteúdo.
+- Alterado o status do agente para mostrar Done até você abrir o resultado, e depois Idle.
+- Alterado o menu de ramificação para abrir a partir de um botão `…` ou clique com o botão direito; em telefones, pressione e segure uma ramificação.
+- Alteradas as páginas de visualize em telefones para abrirem diretamente sem a solicitação Run, assim como no desktop.
+- Ajustados o painel de uso e o resumo da ilha do compositor para manter sua altura enquanto os valores carregam.
+- Alterado o código QR de instalação do Android para baixar o aplicativo diretamente.
+
+### Correções de bugs
+
+- Corrigidas mensagens enviadas e respostas que não apareciam na conversa após o aplicativo reiniciar até que fosse reaberto (#113, thanks @oh1701).
+- Corrigido o desktop pausando cerca de um segundo por vez quando existiam mais de 256 sessões de agentes.
+- Corrigidas solicitações de telefones aguardando leituras lentas de uso e do Git no desktop.
+- Corrigidos telefones desconectados enquanto o desktop estava ocupado e a primeira conexão após abrir o aplicativo demorando mais de 10 segundos.
+- Corrigidos telefones que permaneciam em "Allowed. Connecting…" indefinidamente ou exibiam "Request expired" após o PC ter aprovado.
+- Corrigido o telefone solicitando aprovação novamente ao iniciar após perder seu login salvo.
+- Corrigidos telefones que pareciam conectados enquanto o PC reiniciava, com todas as mensagens expirando por tempo limite.
+- Corrigidos telefones pareados desconectados em definitivo quando o PC falhava ao ler sua identidade de conexão.
+- Corrigida uma verificação lenta de caminho de arquivo que travava todas as outras solicitações do telefone.
+- Corrigida a rolagem para cima em conversas longas travando enquanto mensagens antigas eram carregadas (#104).
+- Corrigida a conversa sendo puxada de volta para baixo ao rolar para cima no celular durante uma resposta em streaming.
+- Corrigidos ícones sobrepostos em cartões de arquivo e avisos repetidos de falha no download.
+
+## v1.2.4 - 2026-10-17
+
 Atualização com controle de sessões de agentes e atribuição de modelos de fallback, preparação automática de worktrees, otimização de saída do harness e melhorias gerais de desempenho.
 
 ### 1. Melhorias no harness: redução de saída, estilos mais limpos e estabilização geral

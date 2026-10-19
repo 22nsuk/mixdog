@@ -225,6 +225,30 @@ test('a partially arrived closing fence never parses as a code line', () => {
   assert.equal(code(`${body.replaceAll('```', '~~~')}~`), settled);
 });
 
+test('a streaming tail never shows syntax that is about to become something else', () => {
+  const heal = (text) => healStreamingMarkdownTail(text);
+  // Closers go before trailing whitespace, where they can still close.
+  assert.equal(heal('a **compact '), 'a **compact** ');
+  assert.equal(heal('a ~~strike~'), 'a ~~strike~~');
+  // An opener with nothing after it yet is held back.
+  assert.equal(heal('Here is a **'), 'Here is a ');
+  assert.equal(heal('with `'), 'with ');
+  assert.equal(heal('and ~'), 'and ');
+  // A line holding only a block marker: setext underline, lazy digit,
+  // growing heading, half a fence.
+  assert.equal(heal('Keys map to values.\n-'), 'Keys map to values.\n');
+  assert.equal(heal('A line\n= '), 'A line\n');
+  assert.equal(heal('1. One\n2'), '1. One\n');
+  assert.equal(heal('Intro\n\n##'), 'Intro\n\n');
+  assert.equal(heal('Intro\n\n``'), 'Intro\n\n');
+  // The code card waits for its opening line, then streams as code.
+  assert.equal(heal('Intro\n\n```pyt'), 'Intro\n\n');
+  assert.equal(heal('Intro\n\n```python\nx = 1'), 'Intro\n\n```python\nx = 1');
+  // Content after the marker shows at once.
+  assert.equal(heal('Intro\n- F'), 'Intro\n- F');
+  assert.equal(heal('Intro\n2. T'), 'Intro\n2. T');
+});
+
 test('a streaming table appears only once its delimiter row is complete', () => {
   const render = (text) => {
     const markup = renderToStaticMarkup(
@@ -253,8 +277,22 @@ test('a streaming table appears only once its delimiter row is complete', () => 
   assert.equal(render(`${lead}| 항목 | 값 | 비고 |\n|---|---|---|\n| A | 1 |`).table, true);
   // Inside an open fence pipes are code, never held back.
   assert.match(render('```\n| a | b |').text, /\| a \| b \|/);
-  // A pipe inside prose is not a table head.
-  assert.match(render('use a | b here').text, /a \| b/);
+  // A line with a pipe may still head a table while it is the block's last
+  // line; once the next line shows it is prose, it paints.
+  assert.equal(render('use a | b here').text.includes('|'), false);
+  assert.match(render('use a | b here\nand more').text, /a \| b/);
+  // A head directly under a paragraph line, or without a leading pipe, is
+  // held too, with the paragraph above it shown.
+  const caption = 'The surfaces compare like this:\n';
+  for (const partial of ['| A | B', '| A | B |\n', '| A | B |\n|--', 'A | B', 'A | B\n---', 'A | B\n---|']) {
+    const shown = render(caption + partial);
+    assert.equal(shown.table, false, partial);
+    assert.equal(shown.text.includes('|'), false, `raw pipes stay hidden: ${partial}`);
+    assert.match(shown.text, /compare like this/);
+  }
+  assert.equal(render(`${caption}| A | B |\n|---|---|`).table, true);
+  assert.equal(render(`${caption}| A | B |\n|---|---|\n`).table, true, 'a delimiter row ended by its newline');
+  assert.equal(render(`${caption}A | B\n---|---\n1 | 2`).table, true);
 });
 
 test('a block cut from the live tail keeps its last parse until its own parse lands', async () => {

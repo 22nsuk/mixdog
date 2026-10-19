@@ -4,6 +4,65 @@ Các thay đổi đáng chú ý, mới nhất ở trên cùng. Quy trình Deploy
 
 ## Unreleased
 
+## v1.2.6 - 2026-10-18
+
+Ứng dụng máy tính hiện tiêu tốn ít tài nguyên hơn khi nhàn rỗi và chuyển đổi phiên nhanh hơn, các lệnh shell sẽ chuyển sang chạy ngầm sau 60 giây, cùng với tính năng quản lý mô hình và đăng nhập OpenCode Go mới.
+
+### Tính năng mới
+
+- **Quản lý mô hình** — Đã thêm trang Cài đặt để yêu thích và ẩn các mô hình, cùng với menu chuột phải trong bộ chọn mô hình.
+- **Đăng nhập OpenCode Go** — Đã thêm tính năng đăng nhập vào OpenCode Go bằng tài khoản OpenCode; thay thế khóa API cũ.
+
+### Thay đổi
+
+- Đã thay đổi ứng dụng máy tính để sử dụng ít CPU hơn khi nhàn rỗi và chuyển đổi phiên nhanh hơn.
+- Đã thay đổi shell để chuyển lệnh sang chạy ngầm sau 60 giây; thông báo hoàn tất hiện bao gồm mã thoát và đầu ra.
+- Đã thay đổi danh sách nhà cung cấp để hiển thị lý do mô hình không tải được thay vì danh sách trống, và thêm liên kết khóa API cho các nhà cung cấp đã kết nối.
+- Đã thay đổi việc lưu trữ hoặc xóa phiên đang bận để yêu cầu xác nhận trước (#109).
+- Đã thay đổi các câu trả lời để đọc ngắn gọn hơn và nhóm kết quả, nguyên nhân và quyết định; các bảng hiện tự xuống dòng thay vì cuộn ngang.
+
+### Sửa lỗi
+
+- Đã sửa lỗi phần phụ trợ bị treo khi tải tác nhân nặng và tự khởi động lại, làm gián đoạn các tác nhân đang chạy.
+- Đã sửa lỗi thao tác hủy vẫn để các tiến trình con và máy chủ tiếp tục chạy (#115).
+- Đã sửa lỗi văn bản dán dài khó đọc hoặc chỉnh sửa (#110), và lỗi khi nhập ký tự `/` đơn lẻ trong trình soạn thảo (thanks @oh1701).
+- Đã sửa lỗi hộp thoại xác nhận shell đẩy các nút ra ngoài màn hình (#114) và các thư mục `.git` trống chặn tác vụ (#108).
+- Đã sửa lỗi tổng mức sử dụng tác nhân bỏ sót các tác nhân đã đóng (#99, thanks @22nsuk).
+- Đã sửa lỗi mất tệp đính kèm trong khi tải và một tác nhân bị lỗi đánh dấu toàn bộ tab phiên của nó là thất bại.
+- Đã sửa lỗi mọi lượt đều thất bại với "Workspace activity cannot be verified" sau khi sự cố làm hỏng sổ cái không gian làm việc.
+- Đã sửa lỗi thời gian hồi tài khoản đã hết hạn không thử lại (#106), sao lưu cài đặt làm mất bản gốc (#105) và lịch sử sử dụng không thể đọc được chặn tính tổng (#103), thanks @22nsuk.
+
+## v1.2.5 - 2026-10-18
+
+Điện thoại giờ đây kết nối nhanh hơn và không có cửa sổ bật lên, ứng dụng trên máy tính không còn bị chậm khi chạy nhiều tác nhân, và câu trả lời phát trực tuyến hiển thị mượt mà hơn.
+
+### Thay đổi
+
+- Đã thay đổi kết nối điện thoại để tự động kết nối lại mà không cần cửa sổ bật lên hay đếm ngược; một dấu chấm nhỏ chỉ xuất hiện khi mất kết nối trong thời gian dài.
+- Đã thay đổi phản hồi phát trực tuyến để xuất hiện từng từ một với hiệu ứng mờ dần mềm mại, không bị nhảy do Markdown chưa hoàn chỉnh; các khối mã xuất hiện cùng nội dung.
+- Đã thay đổi trạng thái tác nhân để hiển thị Done cho đến khi bạn mở kết quả, sau đó là Idle.
+- Đã thay đổi menu nhánh để mở từ nút `…` hoặc nhấp chuột phải; trên điện thoại, nhấn giữ vào một nhánh.
+- Đã thay đổi các trang visualize trên điện thoại để mở trực tiếp mà không cần lời nhắc Run, giống như trên máy tính.
+- Đã điều chỉnh bảng mức sử dụng và phần tóm tắt trên đảo trình soạn thảo để giữ nguyên chiều cao trong khi tải số liệu.
+- Đã thay đổi mã QR cài đặt Android để tải ứng dụng trực tiếp.
+
+### Sửa lỗi
+
+- Đã sửa lỗi tin nhắn đã gửi và câu trả lời không xuất hiện trong cuộc trò chuyện sau khi ứng dụng khởi động lại cho đến khi được mở lại (#113, thanks @oh1701).
+- Đã sửa lỗi ứng dụng trên máy tính tạm dừng khoảng một giây mỗi lần khi có hơn 256 phiên tác nhân tồn tại.
+- Đã sửa lỗi các yêu cầu từ điện thoại phải chờ sau các thao tác đọc Git và mức sử dụng chậm trên máy tính.
+- Đã sửa lỗi điện thoại bị ngắt kết nối khi máy tính đang bận, và kết nối đầu tiên sau khi mở ứng dụng mất hơn 10 giây.
+- Đã sửa lỗi điện thoại mãi ở trạng thái "Allowed. Connecting…" hoặc hiển thị "Request expired" sau khi máy tính đã phê duyệt.
+- Đã sửa lỗi điện thoại yêu cầu phê duyệt lại khi khởi chạy sau khi thông tin đăng nhập đã lưu bị mất.
+- Đã sửa lỗi điện thoại hiển thị như đã kết nối trong khi máy tính đang khởi động lại, khiến mọi tin nhắn đều bị hết thời gian chờ.
+- Đã sửa lỗi điện thoại đã ghép nối bị ngắt kết nối vĩnh viễn khi máy tính không đọc được danh tính kết nối của mình.
+- Đã sửa lỗi một lần kiểm tra đường dẫn tệp chậm làm nghẽn mọi yêu cầu khác từ điện thoại.
+- Đã sửa lỗi cuộn lên trong các cuộc trò chuyện dài bị gián đoạn trong khi tải tin nhắn cũ hơn (#104).
+- Đã sửa lỗi cuộc trò chuyện bị kéo ngược xuống khi cuộn lên trên điện thoại trong lúc câu trả lời đang được truyền.
+- Đã sửa lỗi các biểu tượng bị chồng chéo trên thẻ tệp và thông báo lỗi tải xuống lặp lại.
+
+## v1.2.4 - 2026-10-17
+
 Bản cập nhật bao gồm kiểm soát phiên tác nhân và gán mô hình dự phòng, tự động chuẩn bị worktree, tối ưu hóa đầu ra harness và cải thiện hiệu năng tổng thể.
 
 ### 1. Cải tiến harness: giảm lượng đầu ra, tinh chỉnh kiểu hiển thị và ổn định chung
