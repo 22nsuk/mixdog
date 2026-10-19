@@ -58,6 +58,12 @@ export function createAbortAction(bag) {
   // put its unsent requeue entries at the front of the queue.
   const reclaimInFlightPrompt = (restoreState, { restoreText, requeueEntries, handoff = false }) => {
     restoreState.reclaimed = true;
+    // Only an accepted abort that actually returns the prompt relinquishes
+    // its durable queue copy. Requeued notifications still own their input.
+    if (restoreText) {
+      restoreState.onReclaimed?.();
+      restoreState.onReclaimed = null;
+    }
     const idSet = new Set((restoreState.submittedIds || []).filter((id) => id != null));
     const patch = { spinner: null, thinking: null, lastTurn: null };
     // Another device cancelled this turn: the prompt travels to the device that

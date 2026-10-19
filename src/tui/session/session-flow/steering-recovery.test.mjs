@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,6 +10,13 @@ process.env.MIXDOG_DATA_DIR = dataDir;
 const { createSessionFlow } = await import('../session-flow.mjs');
 const { createSessionDraftStore } = await import('../draft-store.mjs');
 const { createResumeAction } = await import('../session-api/lifecycle/resume.mjs');
+const { createAbortAction } = await import('../session-api/intake/abort.mjs');
+const { createRunTurn } = await import('../turn.mjs');
+const { createAskCallbacks } = await import('../../../session-runtime/turn/turn-run/ask-callbacks.mjs');
+const { persistedUserTranscriptMetadata } = await import('../../../runtime/shared/transcript-metadata.mjs');
+const { createTurnInterruptionTracker } = await import(
+  '../../../runtime/agent/orchestrator/session/manager/turn-interruption.mjs'
+);
 const { appendTuiSteeringPersist, flushTuiSteeringPersist } = await import('../tui-steering-persist.mjs');
 const { materializePromptSubmission, attachmentsForIntake } = await import('../../../runtime/attachments/store.mjs');
 
@@ -61,6 +69,194 @@ function flowFixture(t, id, { messages = [], busy = true } = {}) {
     await flushTuiSteeringPersist();
   });
   return { ...store, bag, flow, flags, pending, turns, runtime };
+}
+
+function storedUserMessage(content, options) {
+  const { askCallbacks } = createAskCallbacks({
+    transcript: { appendAssistantText() {} },
+    notifyFnForSession: () => null,
+    hooks: { emit() {} },
+  });
+  const callbacks = askCallbacks(
+    { snapshot: {}, timing: {} },
+    {},
+    { ...options, transcriptMeta: { ...options.transcriptMeta } }
+  );
+  return { role: 'user', content, meta: { transcript: persistedUserTranscriptMetadata(callbacks.transcriptMeta) } };
+}
+
+// `session send` supplies no ID. Exercise its actual intake and item ID
+// generator in fresh processes, where the old process-local counter reset.
+function submissionAfterRestart(text) {
+  const source = `
+    import { nextId } from ${JSON.stringify(new URL('../transcript-spill.mjs', import.meta.url).href)};
+    import { createSubmissionIntake } from ${JSON.stringify(new URL('../session-api/intake/submission.mjs', import.meta.url).href)};
+    const intake = createSubmissionIntake({
+      nextId,
+      flags: {},
+      getState: () => ({ busy: true }),
+      enqueue: (content, options) => {
+        console.log(JSON.stringify({ content, options }));
+        return true;
+      },
+    });
+    await intake.submitAsync(${JSON.stringify(text)});
+  `;
+  return JSON.parse(
+    execFileSync(process.execPath, ['--input-type=module', '--eval', source], {
+      encoding: 'utf8',
+      timeout: 10_000,
+      windowsHide: true,
+    })
+  );
+}
+
+test('ID-less submissions from fresh processes survive recovery beside older receipts', async (t) => {
+  const id = 'restart_submission_ids';
+  const previous = submissionAfterRestart('previous completed input');
+  const current = submissionAfterRestart('different unprocessed input');
+  const receipt = storedUserMessage(previous.content, {
+    id: previous.options.id,
+    submittedIds: [previous.options.id],
+  });
+  const writer = flowFixture(t, id);
+  await writer.flow.enqueue(current.content, current.options);
+  const recovered = flowFixture(t, id, { messages: [receipt] });
+  await recovered.flow.restoreLeadSteeringFromDisk();
+  assert.deepEqual(recovered.pending.map((entry) => entry.content), [current.content]);
+  assert.notEqual(current.options.id, previous.options.id, 'server IDs must survive a process restart');
+  assert.equal(recovered.pending[0].recoveryNeedsReview, false);
+  assert.deepEqual(diskRows(id).map((row) => row.submissionId), [current.options.id]);
+  await recovered.flow.enqueue(current.content, current.options);
+  assert.equal(recovered.pending.length, 1, 'retrying that same ID remains idempotent');
+});
+
+test('legacy counter IDs recover as distinct reviewable rows despite colliding receipts', async (t) => {
+  const id = 'legacy_counter_ids';
+  const messages = [storedUserMessage('old completed input', { id: 'it_1', submittedIds: ['it_1'] })];
+  for (const text of ['new first input', 'new second input']) {
+    await appendTuiSteeringPersist(id, { id: 'it_1', text, content: text });
+  }
+  const expectedIds = diskRows(id).map((row) => row.id);
+  const first = flowFixture(t, id, { messages, busy: false });
+  await first.flow.restoreLeadSteeringFromDisk();
+  assert.deepEqual(first.pending.map((entry) => entry.id), expectedIds);
+  assert.ok(first.pending.every((entry) => entry.recoveryNeedsReview));
+  await first.flow.drain();
+  assert.deepEqual(first.turns, [], 'an ambiguous old ID must neither discard nor auto-replay the input');
+  assert.equal(first.flow.pendingTaskWaitWake(), false);
+  assert.deepEqual(first.flow.drainPendingSteering(), []);
+  const second = flowFixture(t, id, { messages, busy: false });
+  await second.flow.restoreLeadSteeringFromDisk();
+  await second.flow.restoreLeadSteeringFromDisk();
+  assert.deepEqual(second.pending.map((entry) => entry.id), expectedIds, 'row identities survive repeated restores');
+  assert.equal(second.flow.restoreQueued('', expectedIds[0]).text, 'new first input');
+  await flushTuiSteeringPersist();
+  assert.deepEqual(diskRows(id).map((row) => row.id), [expectedIds[1]]);
+  assert.equal(second.flow.prioritizeQueued(expectedIds[1]).count, 1);
+  await tick();
+  assert.deepEqual(second.turns.map((turn) => turn.content), ['new second input']);
+  await flushTuiSteeringPersist();
+  assert.deepEqual(diskRows(id), []);
+});
+
+for (const [crossDevice, abortAccepted] of [
+  [false, true],
+  [true, true],
+  [false, false],
+]) {
+  const scenario = `handoff=${crossDevice}, accepted=${abortAccepted}`;
+  test(`recovered input releases its disk row only on draft reclamation (${scenario})`, async (t) => {
+    const id = `abort_recovered_${crossDevice}_${abortAccepted}`;
+    const text = 'return this input to its author';
+    await appendTuiSteeringPersist(id, {
+      id: 'cancel_me',
+      text,
+      content: text,
+      transcriptMeta: { device: 'Desktop' },
+    });
+    await appendTuiSteeringPersist(id, { text: 'unrelated legacy input' });
+    const f = flowFixture(t, id);
+    await f.flow.restoreLeadSteeringFromDisk();
+    let committed = 0;
+    f.pending[0].onCommitted = () => {
+      committed += 1;
+    };
+    const started = Promise.withResolvers();
+    const settled = Promise.withResolvers();
+    let finishProvider;
+    f.runtime.ask = async (prompt, options) => {
+      f.runtime.session.messages.push(storedUserMessage(prompt, options));
+      const tracker = createTurnInterruptionTracker();
+      // Stub runtime.ask at the provider boundary; use the actual receipt
+      // bridge and interruption tracker on either side of the abort.
+      const waiting = new Promise((_, reject) => {
+        finishProvider = (reason) => {
+          f.runtime.session.messages = tracker.finalize({
+            turnOutgoing: f.runtime.session.messages,
+            currentUserContent: prompt,
+            abortReason: reason,
+          }).messages;
+          reject(Object.assign(new Error('cancelled'), { name: 'AbortError' }));
+        };
+      });
+      started.resolve();
+      return waiting;
+    };
+    f.runtime.abort = (reason) => {
+      if (!abortAccepted) return false;
+      finishProvider(reason);
+      return true;
+    };
+    Object.assign(f.bag, f.flow, {
+      itemIndexById: new Map(),
+      replaceItems: (items) => items,
+      pushItem: (item) => f.set({ items: [...f.getState().items, item] }),
+      patchItem() {},
+      syncContextStats() {},
+      flushToolResults() {},
+      denyAllToolApprovals() {},
+      clearActiveToolSummary() {},
+      routeState: () => ({}),
+      agentStatusState: () => ({}),
+      onGoalTurnSettled: () => settled.resolve(),
+    });
+    f.flags.leadTurnEpoch = 0;
+    f.bag.runTurn = createRunTurn(f.bag);
+    const { abort } = createAbortAction(f.bag);
+    t.after(() => finishProvider?.('user-cancel'));
+    f.set({ busy: false });
+    await started.promise;
+    const restored = abort({ device: crossDevice ? 'Phone' : 'Desktop' });
+    if (!abortAccepted) {
+      assert.equal(restored.aborted, false);
+      await flushTuiSteeringPersist();
+      assert.equal(diskRows(id).length, 2, 'a refused abort cannot release the in-flight input');
+      assert.equal(committed, 0);
+      finishProvider('user-cancel');
+      await settled.promise;
+      return;
+    }
+    assert.equal(restored.aborted, true);
+    if (crossDevice) {
+      assert.equal(restored.restoreText, '');
+      assert.equal(f.getState().promptRestore.text, text);
+      assert.deepEqual(f.getState().promptRestore.ids, ['cancel_me']);
+    } else {
+      assert.equal(restored.restoreText, text);
+      assert.deepEqual(restored.restoredSubmissionIds, ['cancel_me']);
+    }
+    await settled.promise;
+    await flushTuiSteeringPersist();
+    assert.equal(committed, 0, 'reclaiming is not a successful delivery callback');
+    assert.deepEqual(f.runtime.session.messages, [], 'the real interruption path removed the provisional receipt');
+    assert.deepEqual(diskRows(id).map((row) => row.text), ['unrelated legacy input']);
+    const restarted = flowFixture(t, id, { messages: f.runtime.session.messages, busy: false });
+    await restarted.flow.restoreLeadSteeringFromDisk();
+    await restarted.flow.drain();
+    assert.deepEqual(restarted.pending.map((entry) => entry.text), ['unrelated legacy input']);
+    assert.deepEqual(restarted.turns, [], 'the reclaimed input cannot auto-run after another restart');
+  });
 }
 
 test('recovery keeps independent identical and substring submissions and removes only exact receipts', async (t) => {

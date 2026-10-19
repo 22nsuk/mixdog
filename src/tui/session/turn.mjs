@@ -165,6 +165,7 @@ function promptRestoreFor(displayText, options, submittedIds, content = null) {
     pastedImages: options.pastedImages && typeof options.pastedImages === 'object' ? options.pastedImages : null,
     pastedTexts: options.pastedTexts && typeof options.pastedTexts === 'object' ? options.pastedTexts : null,
     onCommitted: typeof options.onCommitted === 'function' ? options.onCommitted : null,
+    onReclaimed: typeof options.onReclaimed === 'function' ? options.onReclaimed : null,
     restorable: options.restorable !== false,
     submittedIds,
     // Which device submitted the prompt: only that device may get it back.

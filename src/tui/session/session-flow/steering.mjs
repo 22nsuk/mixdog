@@ -105,12 +105,16 @@ export function createSteeringOps(bag, { queue, submissions }) {
     return isQueuedEntryEditable(entry) && !isSlashQueuedEntry(entry);
   }
 
-  function commitSteeringQueueEntries(entries) {
-    callCommitCallbacks(entries);
+  function releaseSteeringQueueEntries(entries) {
     const mirrored = (Array.isArray(entries) ? entries : []).filter(
       (entry) => shouldMirrorSteeringEntry(entry) && entry.steeringPersistId
     );
-    if (mirrored.length > 0) dropTuiSteeringPersist(leadSessionId(), mirrored);
+    if (mirrored.length > 0) return dropTuiSteeringPersist(leadSessionId(), mirrored);
+  }
+
+  function commitSteeringQueueEntries(entries) {
+    callCommitCallbacks(entries);
+    releaseSteeringQueueEntries(entries);
   }
 
   function canDeliverSteeringEntry(entry) {
@@ -220,9 +224,11 @@ export function createSteeringOps(bag, { queue, submissions }) {
       // Live enqueue already holds this row (id assigned before the async
       // disk write). Replaying it is the classic double-booked queue.
       if (row.steeringPersistId && livePersistIds.has(row.steeringPersistId)) continue;
-      // Legacy rows get a stable recovery identity from their disk row. It
-      // proves only a future explicit delivery, not an earlier submission.
-      const submissionId = row.submissionId || row.steeringPersistId;
+      // Old process-local item counters can name unrelated submissions after
+      // restart. Like idless legacy rows, use their unique disk row identity
+      // and require review; an old it_N receipt cannot prove delivery.
+      const hasStableSubmissionId = row.submissionId && !/^it_\d+$/.test(row.submissionId);
+      const submissionId = hasStableSubmissionId ? row.submissionId : row.steeringPersistId;
       if (delivered.has(submissionId) || liveSubmissionIds.has(submissionId)) {
         consumed.push(row);
         submissions.remember(submissionId);
@@ -232,7 +238,7 @@ export function createSteeringOps(bag, { queue, submissions }) {
         ...row,
         id: submissionId,
         displayText: row.text,
-        recoveryNeedsReview: !row.submissionId || row.content === undefined,
+        recoveryNeedsReview: !hasStableSubmissionId || row.content === undefined,
       });
       pending.push(entry);
       submissions.remember(submissionId);
@@ -254,6 +260,7 @@ export function createSteeringOps(bag, { queue, submissions }) {
   return {
     leadSessionId,
     shouldMirrorSteeringEntry,
+    releaseSteeringQueueEntries,
     commitSteeringQueueEntries,
     settleSteeredSubmissions,
     hasPendingSteering,

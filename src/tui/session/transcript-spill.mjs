@@ -2,6 +2,7 @@
  * Transcript spill storage, history paging, and session item-state mutations.
  */
 import { readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import {
@@ -20,7 +21,10 @@ export const tuiDebug = (msg) => {
 };
 
 let _idSeq = 0;
-export const nextId = () => `it_${++_idSeq}`;
+// These item IDs also identify server-generated submissions and their durable
+// receipts. A counter alone collides with an earlier process after restart.
+const itemIdPrefix = `it_${randomUUID()}`;
+export const nextId = () => `${itemIdPrefix}_${++_idSeq}`;
 
 export const TRANSCRIPT_LIVE_ITEM_CAP = 512;
 export const TRANSCRIPT_SPILL_CHUNK_ITEMS = 128;

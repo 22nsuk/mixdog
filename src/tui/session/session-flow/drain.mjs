@@ -107,6 +107,9 @@ export function turnOptionsForBatch(batch, steering) {
     pastedTexts: mergePastedTexts(batch),
     submittedAt: earliestSubmittedAt(batch),
     onCommitted: () => steering.commitSteeringQueueEntries(batch),
+    // Returning an uncommitted prompt to its author consumes its queue copy,
+    // but must not signal successful delivery or run onCommitted callbacks.
+    onReclaimed: () => steering.releaseSteeringQueueEntries(batch),
     submittedIds: [...new Set(batch.map((e) => e.id))],
     restorable: nonEditable.length === 0,
     requeueOnAbort: nonEditable.filter((entry) => !discardOnAbort.includes(entry)),
