@@ -218,6 +218,22 @@ jobs:
         run: npm run build:spawn:test
       # Every *.test.mjs under src/ and scripts/ runs here by existing
       # (scripts/test.mjs); a suite that guards a contract cannot stay local.
+      - name: Set up Rust for the checked-out graph
+        if: needs.changes.outputs.graph == 'true'
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: "1.95.0"
+      # npm postinstall installs the published graph. Source changes must use
+      # this checkout for both code_graph and the resident search server.
+      - name: Build and select the checked-out graph
+        if: needs.changes.outputs.graph == 'true'
+        shell: bash
+        run: |
+          cargo build --locked --release --manifest-path native/mixdog-graph/Cargo.toml
+          graph="$GITHUB_WORKSPACE/native/mixdog-graph/target/release/mixdog-graph"
+          test -x "$graph"
+          echo "MIXDOG_GRAPH_BIN=$graph" >> "$GITHUB_ENV"
+          echo "MIXDOG_SEARCH_SERVER_BIN=$graph" >> "$GITHUB_ENV"
       - name: Run the default test lane (shard ${{ matrix.shard }}/3)
         run: npm test -- --test-shard=${{ matrix.shard }}/3
       - name: Smoke apply_patch edits
@@ -275,6 +291,20 @@ jobs:
       - name: Build the native spawn test binary
         if: steps.spawn-bin.outputs.cache-hit != 'true'
         run: npm run build:spawn:test
+      - name: Set up Rust for the checked-out graph
+        if: needs.changes.outputs.graph == 'true'
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: "1.95.0"
+      - name: Build and select the checked-out graph
+        if: needs.changes.outputs.graph == 'true'
+        shell: bash
+        run: |
+          cargo build --locked --release --manifest-path native/mixdog-graph/Cargo.toml
+          graph="$GITHUB_WORKSPACE/native/mixdog-graph/target/release/mixdog-graph"
+          test -x "$graph"
+          echo "MIXDOG_GRAPH_BIN=$graph" >> "$GITHUB_ENV"
+          echo "MIXDOG_SEARCH_SERVER_BIN=$graph" >> "$GITHUB_ENV"
       - name: Run the slow test lane (shard ${{ matrix.shard }}/2)
         run: npm run test:slow -- --test-shard=${{ matrix.shard }}/2
 
@@ -331,6 +361,20 @@ jobs:
       - name: Build the native spawn test binary
         if: steps.spawn-bin.outputs.cache-hit != 'true'
         run: npm run build:spawn:test
+      - name: Set up Rust for the checked-out graph
+        if: needs.changes.outputs.graph == 'true'
+        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: "1.95.0"
+      - name: Build and select the checked-out graph
+        if: needs.changes.outputs.graph == 'true'
+        shell: bash
+        run: |
+          cargo build --locked --release --manifest-path native/mixdog-graph/Cargo.toml
+          graph="$GITHUB_WORKSPACE/native/mixdog-graph/target/release/mixdog-graph"
+          test -x "$graph"
+          echo "MIXDOG_GRAPH_BIN=$graph" >> "$GITHUB_ENV"
+          echo "MIXDOG_SEARCH_SERVER_BIN=$graph" >> "$GITHUB_ENV"
       - name: Run the default test lane (shard ${{ matrix.shard }}/3)
         run: npm test -- --test-shard=${{ matrix.shard }}/3
 

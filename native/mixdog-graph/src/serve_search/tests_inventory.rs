@@ -773,7 +773,7 @@ fn exact_file_aliases_keep_requested_names_and_filters() {
         let cancelled = AtomicBool::new(false);
         let mut req = request(
             &[
-                "-n", "-H", "--glob", "*.js", "-t", "js", "-e", "LIMIT", "linked.js",
+                "-n", "-H", "--glob", "*.js", "--type", "js", "-e", "LIMIT", "linked.js",
             ],
             0,
         );
@@ -788,7 +788,7 @@ fn exact_file_aliases_keep_requested_names_and_filters() {
         }
         // The target shares the canonical inventory, not the alias's filter.
         for args in [
-            vec!["-n", "-H", "-t", "js", "-e", "LIMIT", "target.txt"],
+            vec!["-n", "-H", "--type", "js", "-e", "LIMIT", "target.txt"],
             vec!["-n", "-H", "--glob", "*.txt", "-e", "LIMIT", "linked.js"],
             vec!["-n", "-H", "--glob", "!linked.js", "-e", "LIMIT", "linked.js"],
         ] {
