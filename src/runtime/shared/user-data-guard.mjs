@@ -235,8 +235,11 @@ function readRestorableConfig(backupDir, dataDirKey, instanceId) {
     if (manifest.instanceId !== instanceId) return null;
     const parsed = JSON.parse(readFileSync(join(backupDir, 'mixdog-config.json'), 'utf8'));
     return isStructurallyCompleteMixdogConfigBackup(parsed) ? parsed : null;
-  } catch {
-    return null;
+  } catch (error) {
+    // Incomplete or malformed backups can be skipped; an I/O failure is not
+    // evidence of absence and must not become a cached miss or stale restore.
+    if (error instanceof SyntaxError || ['ENOENT', 'ENOTDIR', 'EISDIR'].includes(error?.code)) return null;
+    throw error;
   }
 }
 
