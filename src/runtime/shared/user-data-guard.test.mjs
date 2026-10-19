@@ -2,11 +2,12 @@ import assert from 'node:assert/strict';
 import fs, { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
-import { basename, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
 
-import { readConfig, updateConfig, updateSection } from './config.mjs';
+import { withFileLockSync } from './atomic-file.mjs';
+import { readConfig, updateConfig, updateSection, updateSectionAsync } from './config.mjs';
 import {
   backupUserData,
   backupUserDataAsync,
@@ -108,6 +109,7 @@ test('a recreated profile at the same path is fresh, never a restore case', (t) 
   const b = dir('b');
   use(b);
   write('old-b');
+  assert.equal(loadLatestMixdogConfigFromBackup(b).agent.tag, 'old-b');
   rmSync(b, { recursive: true, force: true });
   mkdirSync(b);
   markUserDataInitialized(b);
@@ -247,6 +249,56 @@ test('readAll reuses one restore lookup until this process writes again', (t) =>
   assert.equal(tag(), 'v2');
 });
 
+for (const [kind, update] of [['sync', updateSection], ['async', updateSectionAsync]]) {
+  test(`${kind} RMW refreshes a restore cached while another writer held the config lock`, async (t) => {
+    const { dir } = sandbox(t);
+    const a = dir('a');
+    use(a);
+    const writer = await import(`./user-data-guard.mjs?external-${kind}-rmw`);
+    writeFileSync(configFile(a), JSON.stringify(complete('v1')));
+    writer.backupUserData(a, 'v1');
+    rmSync(configFile(a));
+
+    // A plain read can cache a restore without persisting it while a writer
+    // owns the real config lock. That cache outlives the other writer's save.
+    withFileLockSync(`${configFile(a)}.lock`, () => {
+      assert.equal(tag(), 'v1');
+      assert.equal(existsSync(configFile(a)), false);
+    });
+    writeFileSync(configFile(a), JSON.stringify(complete('v2')));
+    await writer.backupUserDataAsync(a, 'v2');
+    rmSync(configFile(a));
+    assert.equal(loadLatestMixdogConfigFromBackup(a).agent.tag, 'v1');
+
+    await update('ui', { theme: 'after-restore' });
+    const stored = JSON.parse(readFileSync(configFile(a), 'utf8'));
+    assert.equal(stored.agent.tag, 'v2');
+    assert.equal(stored.ui.theme, 'after-restore');
+  });
+}
+
+test('a fresh restore refreshes a cached miss and retains cache ownership and root isolation', async (t) => {
+  const { dir, backupRoot } = sandbox(t);
+  const a = dir('a');
+  markUserDataInitialized(a);
+  assert.equal(loadLatestMixdogConfigFromBackup(a), null);
+  const writer = await import('./user-data-guard.mjs?external-cached-miss');
+  writeFileSync(configFile(a), JSON.stringify(complete('v2')));
+  writer.backupUserData(a, 'v2');
+  assert.equal(loadLatestMixdogConfigFromBackup(a), null);
+
+  const restored = loadLatestMixdogConfigFromBackup(a, { fresh: true });
+  assert.deepEqual(restored, complete('v2'));
+  restored.agent.tag = 'caller-edit';
+  assert.deepEqual(loadLatestMixdogConfigFromBackup(a), complete('v2'));
+
+  process.env.MIXDOG_USER_DATA_BACKUP_ROOT = dir('other-backups');
+  assert.equal(loadLatestMixdogConfigFromBackup(a), null);
+  assert.equal(loadLatestMixdogConfigFromBackup(a, { fresh: true }), null);
+  process.env.MIXDOG_USER_DATA_BACKUP_ROOT = backupRoot;
+  assert.deepEqual(loadLatestMixdogConfigFromBackup(a), complete('v2'));
+});
+
 test('a plain read restores a deleted config once, persists it and later reads hit the file', (t) => {
   const { dir, backupRoot, scopes } = sandbox(t);
   const a = dir('a');
@@ -329,6 +381,131 @@ for (const kind of ['sync', 'async']) {
     writeFileSync(configFile(a), JSON.stringify(complete('v2')));
     await writeBackup(a, 'a-reason');
     assert.equal(loadLatestMixdogConfigFromBackup(a).agent.tag, 'v2');
+  });
+}
+
+for (const kind of ['sync', 'async']) {
+  const method = kind === 'sync' ? 'backupUserData' : 'backupUserDataAsync';
+  for (const clockShift of [0, -1_000]) {
+    test(`a fresh ${kind} writer restores its latest snapshot with a ${clockShift}ms clock shift`, async (t) => {
+      const { dir } = sandbox(t);
+      const now = Date.now();
+      t.mock.timers.enable({ apis: ['Date'], now });
+      const a = dir('a');
+      const firstWriter = await import(`./user-data-guard.mjs?first-${kind}-${clockShift}`);
+      const freshWriter = await import(`./user-data-guard.mjs?fresh-${kind}-${clockShift}`);
+      writeFileSync(configFile(a), JSON.stringify(complete('v1')));
+      const first = await firstWriter[method](a, 'z-reason');
+      t.mock.timers.setTime(now + clockShift);
+      writeFileSync(configFile(a), JSON.stringify(complete('v2')));
+      const second = await freshWriter[method](a, 'a-reason');
+
+      assert.equal(freshWriter.loadLatestMixdogConfigFromBackup(a).agent.tag, 'v2');
+      assert.ok(basename(second.dir) > basename(first.dir));
+      assert.equal(JSON.parse(readFileSync(join(first.dir, 'mixdog-config.json'), 'utf8')).agent.tag, 'v1');
+    });
+  }
+
+  test(`an existing ${kind} writer follows another writer's persisted order on every snapshot`, async (t) => {
+    const { dir } = sandbox(t);
+    const now = Date.now();
+    t.mock.timers.enable({ apis: ['Date'], now });
+    const a = dir('a');
+    const writer = await import(`./user-data-guard.mjs?existing-${kind}`);
+    const other = await import(`./user-data-guard.mjs?interleaved-${kind}`);
+    writeFileSync(configFile(a), JSON.stringify(complete('v1')));
+    await writer[method](a, 'v1');
+    t.mock.timers.setTime(now + 60_000);
+    writeFileSync(configFile(a), JSON.stringify(complete('v2')));
+    const second = await other[method](a, 'v2');
+    t.mock.timers.setTime(now);
+    writeFileSync(configFile(a), JSON.stringify(complete('v3')));
+    const third = await writer[method](a, 'v3');
+
+    assert.equal(writer.loadLatestMixdogConfigFromBackup(a).agent.tag, 'v3');
+    assert.ok(basename(third.dir) > basename(second.dir));
+    assert.equal(JSON.parse(readFileSync(join(second.dir, 'mixdog-config.json'), 'utf8')).agent.tag, 'v2');
+  });
+
+  test(`a fresh ${kind} writer keeps its new backup when the retention ring is full`, async (t) => {
+    const { dir } = sandbox(t);
+    const now = Date.now();
+    t.mock.timers.enable({ apis: ['Date'], now });
+    const a = dir('a');
+    const writer = await import(`./user-data-guard.mjs?ring-${kind}`);
+    const backups = [];
+    for (let i = 0; i < 40; i += 1) {
+      writeFileSync(configFile(a), JSON.stringify(complete(`v${i}`)));
+      backups.push(await writer[method](a, 'snapshot'));
+    }
+    const freshWriter = await import(`./user-data-guard.mjs?ring-restart-${kind}`);
+    t.mock.timers.setTime(now - 1_000);
+    writeFileSync(configFile(a), JSON.stringify(complete('new')));
+    const newest = await freshWriter[method](a, 'snapshot');
+
+    assert.equal(existsSync(newest.dir), true);
+    assert.equal(existsSync(backups[0].dir), false);
+    assert.equal(existsSync(backups[39].dir), true);
+    assert.equal(readdirSync(dirname(newest.dir)).length, 40);
+    assert.equal(freshWriter.loadLatestMixdogConfigFromBackup(a).agent.tag, 'new');
+  });
+
+  test(`${kind} ordering includes legacy and unfinished directories but ignores invalid dates and files`, async (t) => {
+    const { dir } = sandbox(t);
+    const now = Date.now();
+    t.mock.timers.enable({ apis: ['Date'], now });
+    const a = dir('a');
+    const writer = await import(`./user-data-guard.mjs?occupied-${kind}`);
+    writeFileSync(configFile(a), JSON.stringify(complete('v1')));
+    const first = await writer[method](a, 'snapshot');
+    const scope = dirname(first.dir);
+    const legacyTime = new Date(now + 60_000).toISOString().replace(/[:.]/g, '-');
+    const legacy = writeLegacyBackup(scope, `${legacyTime}-z-reason`, complete('legacy'), {
+      dataDir: a,
+      instanceId: writer.markUserDataInitialized(a),
+    });
+    const unfinishedTime = new Date(now + 60_001).toISOString().replace(/[:.]/g, '-');
+    const unfinished = writeLegacyBackup(scope, `${unfinishedTime}-9999999999-snapshot`, complete('unfinished'));
+    mkdirSync(join(scope, 'unrelated'));
+    mkdirSync(join(scope, '9999-99-99T99-99-99-999Z-invalid'));
+    mkdirSync(join(scope, '9999-02-29T00-00-00-000Z-invalid-calendar'));
+    writeFileSync(join(scope, '9999-12-31T23-59-59-999Z-file'), 'not a directory');
+    assert.equal(writer.loadLatestMixdogConfigFromBackup(a).agent.tag, 'legacy');
+
+    const freshWriter = await import(`./user-data-guard.mjs?occupied-restart-${kind}`);
+    writeFileSync(configFile(a), JSON.stringify(complete('v2')));
+    const second = await freshWriter[method](a, 'snapshot');
+    assert.equal(freshWriter.loadLatestMixdogConfigFromBackup(a).agent.tag, 'v2');
+    assert.ok(basename(second.dir).slice(0, 24) > unfinishedTime);
+    assert.equal(basename(second.dir).slice(0, 10), unfinishedTime.slice(0, 10));
+    assert.equal(JSON.parse(readFileSync(join(legacy, 'mixdog-config.json'), 'utf8')).agent.tag, 'legacy');
+    assert.equal(JSON.parse(readFileSync(join(unfinished, 'mixdog-config.json'), 'utf8')).agent.tag, 'unfinished');
+    assert.equal(existsSync(join(unfinished, 'backup.json')), false);
+  });
+
+  test(`${kind} backups do not allocate an order when the existing scope cannot be read`, async (t) => {
+    const { dir } = sandbox(t);
+    const a = dir('a');
+    writeFileSync(configFile(a), JSON.stringify(complete('v1')));
+    const writer = await import(`./user-data-guard.mjs?unreadable-${kind}`);
+    const first = await writer[method](a, 'snapshot');
+    const scope = dirname(first.dir);
+    const before = readdirSync(scope);
+    const api = kind === 'sync' ? fs : fs.promises;
+    const readDir = kind === 'sync' ? 'readdirSync' : 'readdir';
+    const original = api[readDir];
+    api[readDir] = (path, ...args) => {
+      if (path === scope) throw Object.assign(new Error('scope read failed'), { code: 'EIO' });
+      return original(path, ...args);
+    };
+    syncBuiltinESMExports();
+    try {
+      await assert.rejects(async () => writer[method](a, 'unreadable'), { code: 'EIO' });
+    } finally {
+      api[readDir] = original;
+      syncBuiltinESMExports();
+    }
+    assert.deepEqual(readdirSync(scope), before);
   });
 }
 

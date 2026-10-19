@@ -61,14 +61,26 @@ function scopeDirFor(dataDir) {
 let lastBackupMs = 0;
 let backupSeq = 0;
 
-// Claims `<iso-ms>-<10-digit seq>-<reason>` with an exclusive mkdir, so names
-// sort by timestamp, then sequence, and an existing backup is never reused
-// (EEXIST retries with the next sequence). The clamp keeps a backwards clock
-// from reordering this process's backups.
-function reserveBackupDir(scopeDir, reason) {
-  mkdirSync(scopeDir, { recursive: true });
+// Follow every occupied timestamp, including legacy names and interrupted
+// copies. Names own restore/prune order; advancing past disk and memory keeps
+// serialized writers ordered even after a restart or a backwards clock.
+function reserveBackupDir(scopeDir, reason, entries) {
+  let latestOnDiskMs = 0;
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const match = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z-/.exec(entry.name);
+    if (!match) continue;
+    const iso = `${match[1]}T${match[2]}:${match[3]}:${match[4]}.${match[5]}Z`;
+    const time = Date.parse(iso);
+    // Date.parse normalizes some invalid calendar dates.
+    if (Number.isFinite(time) && new Date(time).toISOString() === iso) {
+      latestOnDiskMs = Math.max(latestOnDiskMs, time);
+    }
+  }
+  // No yield between updating the shared sync/async clock and reserving the
+  // path. Exclusive mkdir still prevents reuse if another writer gets there.
   for (;;) {
-    lastBackupMs = Math.max(Date.now(), lastBackupMs);
+    lastBackupMs = Math.max(Date.now(), lastBackupMs + 1, latestOnDiskMs + 1);
     const time = new Date(lastBackupMs).toISOString().replace(/[:.]/g, '-');
     const backupDir = join(scopeDir, `${time}-${String(backupSeq++).padStart(10, '0')}-${safeReason(reason)}`);
     try {
@@ -243,9 +255,9 @@ function findRestorableConfig(dataDir, instanceId) {
   return null;
 }
 
-// Per-process restore lookup, keyed by data dir. A hit is reused while the
-// backup root and the marker's instanceId are unchanged; this process's own
-// backups invalidate it.
+// Per-process restore lookup for plain reads, keyed by data dir, backup root
+// and instanceId. RMW writes request a fresh scan; this process's own backups
+// also invalidate it.
 const restoreLookupCache = new Map();
 
 /**
@@ -259,7 +271,7 @@ export function loadLatestMixdogConfigFromBackup(dataDir, options) {
   const key = normalizeDataDir(dataDir);
   const root = getBackupRoot();
   let hit = restoreLookupCache.get(key);
-  if (!hit || hit.root !== root || hit.instanceId !== instanceId) {
+  if (options?.fresh || !hit || hit.root !== root || hit.instanceId !== instanceId) {
     hit = { root, instanceId, config: findRestorableConfig(dataDir, instanceId) };
     restoreLookupCache.set(key, hit);
   }
@@ -368,7 +380,8 @@ export function backupUserData(dataDir, reason = 'snapshot') {
   if (skipBackups()) return { dir: null, copied: [] };
   if (!dataDir || !existsSync(dataDir)) return { dir: null, copied: [] };
   const scopeDir = scopeDirFor(dataDir);
-  const backupDir = reserveBackupDir(scopeDir, reason);
+  mkdirSync(scopeDir, { recursive: true });
+  const backupDir = reserveBackupDir(scopeDir, reason, readdirSync(scopeDir, { withFileTypes: true }));
   const copied = [];
   for (const rel of USER_DATA_FILES) {
     const src = join(dataDir, rel);
@@ -391,9 +404,9 @@ export function backupUserData(dataDir, reason = 'snapshot') {
 }
 
 // ── Async backup variant (fs.promises) ──────────────────────────────
-// Byte-for-byte the same policy/skip guards/prune behavior as backupUserData,
-// but every filesystem op yields via fs.promises so a debounced config flush
-// on the UI event loop never blocks on the copy tree or the prune sweep.
+// Same policy/skip guards/prune behavior as backupUserData. Directory reads,
+// copies and pruning use fs.promises; the shared order reservation and
+// manifest commit stay synchronous.
 async function copyTreeAsync(src, dst, copied) {
   const st = await statP(src);
   if (st.isDirectory()) {
@@ -430,7 +443,8 @@ export async function backupUserDataAsync(dataDir, reason = 'snapshot') {
   if (skipBackups()) return { dir: null, copied: [] };
   if (!dataDir || !existsSync(dataDir)) return { dir: null, copied: [] };
   const scopeDir = scopeDirFor(dataDir);
-  const backupDir = reserveBackupDir(scopeDir, reason);
+  await mkdirP(scopeDir, { recursive: true });
+  const backupDir = reserveBackupDir(scopeDir, reason, await readdirP(scopeDir, { withFileTypes: true }));
   const copied = [];
   for (const rel of USER_DATA_FILES) {
     const src = join(dataDir, rel);
