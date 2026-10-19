@@ -3,7 +3,10 @@
 use super::*;
 
 pub(super) const INVENTORY_SNAPSHOT_MAGIC: &[u8; 8] = b"MDINV001";
-pub(super) const INVENTORY_SNAPSHOT_VERSION: u32 = 3;
+// v3 could persist caller-spelled entries under canonical keys. Even a
+// continuous Windows journal cannot establish the new root-spelling invariant;
+// discard those inventories and rebuild them before serving or repairing them.
+pub(super) const INVENTORY_SNAPSHOT_VERSION: u32 = 4;
 pub(super) const INVENTORY_SNAPSHOT_MAX_BYTES: u64 = 256 * 1024 * 1024;
 pub(super) const INVENTORY_SNAPSHOT_MAX_STRING_BYTES: usize = 1024 * 1024;
 
@@ -351,6 +354,43 @@ pub(super) fn schedule_file_list_snapshot(ready: Arc<Mutex<HashMap<WalkKey, Read
 #[cfg(test)]
 mod replace_tests {
     use super::*;
+    use super::super::test_support::{request, with_inventory_aliases};
+
+    #[test]
+    fn old_inventory_snapshots_are_rejected_before_a_canonical_rebuild_and_repair() {
+        let header = |version: u32| {
+            let mut bytes = INVENTORY_SNAPSHOT_MAGIC.to_vec();
+            bytes.extend_from_slice(&version.to_le_bytes());
+            bytes.extend_from_slice(&1u32.to_le_bytes()); // journal checkpoint
+            bytes.extend_from_slice(&1u32.to_le_bytes()); // inventory entry
+            bytes
+        };
+        // The v3 framing is valid, but its entries may still use an alias.
+        // Reject it before restoring checkpoints or exposing any cached paths.
+        let legacy = header(3);
+        let error = read_inventory_header(&mut legacy.as_slice()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(error.to_string(), "inventory header");
+        let current = header(INVENTORY_SNAPSHOT_VERSION);
+        assert_eq!(read_inventory_header(&mut current.as_slice()).unwrap(), (1, 1));
+
+        with_inventory_aliases(|real, alias| {
+            fs::write(real.join("match.txt"), "needle\n").unwrap();
+            let parsed =
+                parse_args(&request(&["--files", alias.to_str().unwrap()], 0).args).unwrap();
+            let key = walk_key(alias, &parsed);
+            let store = Arc::new(FileListStore::new());
+            let (rebuilt, complete, errors, _, _) =
+                complete_operand_files(&store, &key, &AtomicBool::new(false), None, false).unwrap();
+            assert!(complete);
+            assert_eq!(errors, 0);
+            let expected = vec![normalized_operand(real).join("match.txt")];
+            assert_eq!(rebuilt.as_ref(), &expected);
+            let repaired = repair_inventory(&key, &rebuilt, &[key.operand.clone()]).unwrap();
+            assert_eq!(repaired.as_ref(), &expected);
+            drop(store);
+        });
+    }
 
     #[test]
     fn replacing_a_snapshot_keeps_the_previous_one_until_the_new_one_lands() {
