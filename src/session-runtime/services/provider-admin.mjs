@@ -958,8 +958,8 @@ async function withTimeout(run, ms, label) {
   }
 }
 
-function existingCustomEntry(cfgMod, id) {
-  const entry = cfgMod.loadConfig().providers?.[id];
+function existingCustomEntry(config, id) {
+  const entry = config.providers?.[id];
   if (!isCustomProviderId(id) || !isCustomProviderConfig(entry)) throw new Error(`unknown custom provider "${id}"`);
   return entry;
 }
@@ -1027,7 +1027,7 @@ async function resolveCustomInput(cfgMod, rawInput, options) {
   let input = inputObject(rawInput);
   validateCustomTransportFields(input);
   const id = input.id === undefined ? null : input.id;
-  if (id) input = withStoredSettings(input, existingCustomEntry(cfgMod, id));
+  if (id) input = withStoredSettings(input, existingCustomEntry(cfgMod.loadConfig(), id));
   const { normalizeCustomProviderConfig } = await loadCustomProviderModule();
   const config = normalizeCustomProviderConfig(input, options);
   const typed = typeof input.apiKey === 'string' ? input.apiKey.trim() : '';
@@ -1036,27 +1036,28 @@ async function resolveCustomInput(cfgMod, rawInput, options) {
   let apiKey = '';
   if (envName) apiKey = process.env[envName] || '';
   else if (!keyless) apiKey = typed || (id ? getAgentApiKey(id) || '' : '');
-  return { id, config, typed: keyless || envName ? '' : typed, apiKey, keyless, envName };
+  return { id, config, typed: keyless || envName ? '' : typed, apiKey };
 }
 
 export async function saveCustomProvider(cfgMod, rawInput) {
   requireLocalProviderManagement();
-  const {
-    id: existingId,
-    config,
-    typed,
-    apiKey,
-    keyless,
-    envName,
-  } = await resolveCustomInput(cfgMod, rawInput, { requireModels: false });
-  if (!keyless && !envName && !apiKey) throw new Error('API key is required');
+  const { id: existingId, config, typed } = await resolveCustomInput(cfgMod, rawInput, { requireModels: false });
   const id = existingId || `custom-${randomUUID()}`;
-  const entry = { ...config, type: 'custom', enabled: config.enabled !== false };
   const account = SECRET_ACCOUNTS.agentApiKey(id);
   const previousKey = typed && existingId ? getAgentApiKey(id) : null;
   if (typed) await saveSecretAsync(account, typed);
+  let entry;
   try {
     const current = cfgMod.loadConfig();
+    // Omitted settings inherit the entry at commit time, after module/keychain
+    // awaits. Use the same snapshot for the merge and the config patch baseline.
+    const latestConfig = existingId
+      ? normalizeStoredCustomConfig(withStoredSettings(rawInput, existingCustomEntry(current, id)))
+      : config;
+    entry = { ...latestConfig, type: 'custom', enabled: latestConfig.enabled !== false };
+    if (entry.auth !== 'none' && !entry.apiKeyEnv && !typed && !(existingId && getAgentApiKey(id))) {
+      throw new Error('API key is required');
+    }
     cfgMod.saveConfig(
       { ...current, providers: { ...(current.providers || {}), [id]: entry } },
       { baseConfig: current }
@@ -1104,7 +1105,7 @@ export async function updateCustomProviderModel(cfgMod, rawId, rawModelId, patch
   // Everything below is synchronous: the provider is read, patched and saved
   // without yielding, so a concurrent update can never be overwritten by a
   // provider object read before the await above.
-  const entry = existingCustomEntry(cfgMod, id);
+  const entry = existingCustomEntry(cfgMod.loadConfig(), id);
   const current = normalizeCustomProviderConfig(entry, { requireModels: false });
   const overrides = new Map(Object.entries(current.modelOverrides || {}));
   if (patch === null) {
@@ -1241,7 +1242,7 @@ function withoutProviderReferences(config, id) {
 export async function removeCustomProvider(cfgMod, rawId) {
   requireLocalProviderManagement();
   const id = String(rawId || '').trim();
-  existingCustomEntry(cfgMod, id);
+  existingCustomEntry(cfgMod.loadConfig(), id);
   // Secret first: a real keychain failure (locked, permission) leaves the
   // provider registered so the removal can be retried. A missing secret
   // (keyless provider) is not an error.
