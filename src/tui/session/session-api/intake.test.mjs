@@ -309,6 +309,42 @@ test('aborting a live turn restores the in-flight prompt, its history slot and i
   assert.deepEqual(restoreState.requeueEntries, []);
 });
 
+test('a recovered prompt awaiting review does not suppress the interrupted draft or its attachments', () => {
+  const pastedImages = { img1: { id: 'img1', content: 'aW1hZ2U=' } };
+  const pastedTexts = { 1: { id: 1, text: 'original pasted text' } };
+  const h = createHarness({
+    state: {
+      busy: true,
+      items: [{ id: 'u1', kind: 'user', text: 'new prompt' }],
+      promptHistoryList: ['new prompt'],
+    },
+    flags: {
+      leadTurnEpoch: 1,
+      activePromptRestore: {
+        restorable: true,
+        committed: false,
+        text: 'new prompt',
+        submittedIds: ['u1'],
+        pastedImages,
+        pastedTexts,
+      },
+    },
+  });
+  h.pending.push({ id: 'legacy', mode: 'prompt', text: 'review first', recoveryNeedsReview: true });
+  const result = h.api.abort();
+  assert.equal(result.restoreText, 'new prompt');
+  assert.deepEqual(result.pastedImages, pastedImages);
+  assert.deepEqual(result.pastedTexts, pastedTexts);
+  assert.equal(result.discardPastedImages, null);
+  assert.equal(result.discardPastedTexts, null);
+  assert.deepEqual(result.restoredSubmissionIds, ['u1']);
+  assert.deepEqual(h.state.items, []);
+  assert.deepEqual(h.state.promptHistoryList, []);
+  assert.ok(h.calls.some((call) => call[0] === 'runtime.abort' && call[1] === 'user-cancel'));
+  assert.equal(h.flags.goalSteeringAbortEpoch, null);
+  assert.equal(h.pending[0].recoveryNeedsReview, true);
+});
+
 test('a queued steering prompt suppresses the restore and hands pasted attachments back for cleanup', () => {
   const pastedImages = { img1: { id: 'img1' } };
   const restoreState = {
@@ -323,7 +359,10 @@ test('a queued steering prompt suppresses the restore and hands pasted attachmen
     state: { busy: true, items: [{ id: 'u1', kind: 'user', text: 'interrupted' }], promptHistoryList: ['interrupted'] },
     flags: { activePromptRestore: restoreState },
   });
-  h.pending.push({ mode: 'prompt', text: 'steer instead' });
+  h.pending.push(
+    { mode: 'prompt', text: 'review first', recoveryNeedsReview: true },
+    { mode: 'prompt', text: 'steer instead' }
+  );
   const result = h.api.abort();
   assert.deepEqual(h.calls, [
     ['denyAll', 'interrupted by user'],

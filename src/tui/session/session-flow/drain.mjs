@@ -3,10 +3,12 @@
  * enqueue intake and the between-turns drain loop that runs one priority/mode
  * bucket per turn.
  */
+import { normalizeMessageAttachments } from '../../../runtime/shared/transcript-metadata.mjs';
 import {
   isGoalQueuedEntry,
   isQueuedEntryEditable,
   isQueuedEntryVisible,
+  isQueuedEntryAwaitingReview,
   isSlashQueuedEntry,
   mergePromptContents,
   mergePastedImages,
@@ -86,6 +88,12 @@ export function turnOptionsForBatch(batch, steering) {
   const discardOnAbort = nonEditable.filter(
     (entry) => entry?.abortDiscardOnAbort === true || entry?.mode === 'pending-resume'
   );
+  const transcriptMeta = batch[0]?.transcriptMeta || null;
+  // One stored user turn must keep the original attachment links from every
+  // submission in its batch. Other metadata remains owned by the first entry.
+  const attachments = normalizeMessageAttachments(
+    batch.flatMap((entry) => (Array.isArray(entry?.transcriptMeta?.attachments) ? entry.transcriptMeta.attachments : []))
+  );
   return {
     promptSource: batchPromptSource(batch),
     retryFailedTurn: batch[0]?.retryFailedTurn === true,
@@ -105,7 +113,7 @@ export function turnOptionsForBatch(batch, steering) {
     discardExecutionPendingResumeKeys: discardOnAbort.flatMap((entry) =>
       Array.isArray(entry?.resumeCompletionKeys) ? entry.resumeCompletionKeys : []
     ),
-    transcriptMeta: batch[0]?.transcriptMeta || null,
+    transcriptMeta: attachments.length ? { ...transcriptMeta, attachments } : transcriptMeta,
     context:
       batch
         .map((entry) => String(entry.context || '').trim())
@@ -159,7 +167,7 @@ export function createDrainLoop(
   }
 
   function scheduleBlockedDrainRetry(delayMs = BLOCKED_DRAIN_RETRY_MS) {
-    if (pending.length === 0 || flags.disposed) return;
+    if (!hasModelDrainablePending() || flags.disposed) return;
     if (flags.blockedDrainRetryTimer) return;
     const timer = setTimeout(() => {
       flags.blockedDrainRetryTimer = null;
@@ -176,7 +184,7 @@ export function createDrainLoop(
   }
 
   function hasModelDrainablePending() {
-    return pending.some((entry) => !isSlashQueuedEntry(entry));
+    return pending.some((entry) => !isQueuedEntryAwaitingReview(entry) && !isSlashQueuedEntry(entry));
   }
 
   const admission = () => flags.admission || 'open';
@@ -192,7 +200,7 @@ export function createDrainLoop(
     if (entries.length === 0) return;
     queue.removeQueuedEntries(entries);
     const mirrored = entries.filter(
-      (entry) => steering.shouldMirrorSteeringEntry(entry) && !entry.steeringPersistRestored
+      (entry) => steering.shouldMirrorSteeringEntry(entry) && entry.steeringPersistId
     );
     if (mirrored.length > 0) {
       void Promise.resolve(dropTuiSteeringPersist(steering.leadSessionId(), mirrored)).catch(() => {});

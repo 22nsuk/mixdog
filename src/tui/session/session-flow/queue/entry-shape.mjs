@@ -43,7 +43,8 @@ export function makeQueueEntry(text, options = {}, nextId) {
       ? options.resumeCompletionKeys.filter((key) => key != null && String(key).trim())
       : [],
     steeringPersistId: options.steeringPersistId || null,
-    steeringPersistRestored: options.steeringPersistRestored === true,
+    // Older disk rows do not carry enough information to replay unattended.
+    recoveryNeedsReview: options.recoveryNeedsReview === true,
     isMeta: options.isMeta === true,
     goalId: options.goalId || null,
     // Retry of a failed turn: the transcript and the session rewind the

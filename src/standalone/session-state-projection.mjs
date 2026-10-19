@@ -36,6 +36,7 @@ export function projectSessionState(entry, raw) {
         displayText: String(item?.displayText ?? item?.text ?? '').slice(0, 2_000),
         mode: item?.mode || 'prompt',
         priority: item?.priority || 'next',
+        ...(item?.recoveryNeedsReview === true ? { recoveryNeedsReview: true } : {}),
         ...(Array.isArray(item?.images) && item.images.length ? { images: item.images } : {}),
       }));
     } else if (key === 'items' && Array.isArray(value)) {

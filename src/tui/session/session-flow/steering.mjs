@@ -7,21 +7,20 @@ import {
   isGoalQueuedEntry,
   isQueuedEntryEditable,
   isQueuedEntryVisible,
+  isQueuedEntryAwaitingReview,
   isSlashQueuedEntry,
   queuePriorityValue,
   callCommitCallbacks,
   STEERING_SUPPRESSED_DISPLAY,
 } from '../queue-helpers.mjs';
-import { dropTuiSteeringPersist, drainTuiSteeringPersist } from '../tui-steering-persist.mjs';
+import { dropTuiSteeringPersist, readTuiSteeringPersist } from '../tui-steering-persist.mjs';
 import { getBackgroundTask } from '../../../runtime/shared/background-tasks.mjs';
-
-const RESTORE_DEDUP_WINDOW = 80;
 
 // Mid-chain drain converts queued prompt/task notification entries into
 // model-visible "queued_command" style steering only at provider continuation
 // boundaries. Slash commands stay queued for the post-turn command processor.
 function isSteerableEntry(entry) {
-  if (isSlashQueuedEntry(entry)) return false;
+  if (isQueuedEntryAwaitingReview(entry) || isSlashQueuedEntry(entry)) return false;
   const mode = entry?.mode || 'prompt';
   return mode === 'prompt' || mode === 'task-notification' || mode === 'goal-closeout';
 }
@@ -65,27 +64,29 @@ function steeringMessageFromEntry(entry) {
   return String(content ?? '').trim().length > 0 ? { ...meta, text: displayText, content } : null;
 }
 
-// Recent user message bodies define "already delivered" for restore dedup;
-// substring (not equality) because steering delivery may wrap the raw text.
-function recentUserTexts(session, window) {
+// A submission's identity is its receipt, never its text: users can submit
+// the same instruction twice, and steering can wrap or merge the bodies.
+function deliveredSubmissionIds(session) {
   const messages = Array.isArray(session?.messages) ? session.messages : [];
-  const out = [];
-  for (let i = messages.length - 1, seen = 0; i >= 0 && seen < window; i -= 1) {
-    const m = messages[i];
-    if (m?.role !== 'user') continue;
-    seen += 1;
-    let text = '';
-    if (typeof m.content === 'string') text = m.content;
-    else if (Array.isArray(m.content)) {
-      text = m.content.map((part) => (typeof part?.text === 'string' ? part.text : '')).join('\n');
+  const out = new Set();
+  for (const message of messages) {
+    if (message?.role !== 'user') continue;
+    const meta = message.meta || {};
+    const transcript = meta.transcript || {};
+    const ids = [
+      ...(Array.isArray(meta.submissionIds) ? meta.submissionIds : []),
+      ...(Array.isArray(transcript.submissionIds) ? transcript.submissionIds : []),
+      transcript.checkpointId,
+    ];
+    for (const id of ids) {
+      if (typeof id === 'string' && id.trim()) out.add(id.trim());
     }
-    if (text.trim()) out.push(text);
   }
   return out;
 }
 
 export function createSteeringOps(bag, { queue, submissions }) {
-  const { runtime, pending, getState, set } = bag;
+  const { runtime, pending, set } = bag;
   const turnSettlements = new Map();
 
   function settleSteeredSubmissions(epoch, detail) {
@@ -107,7 +108,7 @@ export function createSteeringOps(bag, { queue, submissions }) {
   function commitSteeringQueueEntries(entries) {
     callCommitCallbacks(entries);
     const mirrored = (Array.isArray(entries) ? entries : []).filter(
-      (entry) => shouldMirrorSteeringEntry(entry) && !entry.steeringPersistRestored
+      (entry) => shouldMirrorSteeringEntry(entry) && entry.steeringPersistId
     );
     if (mirrored.length > 0) dropTuiSteeringPersist(leadSessionId(), mirrored);
   }
@@ -134,7 +135,9 @@ export function createSteeringOps(bag, { queue, submissions }) {
   // Queued input the user typed (editable prompts), not runtime notices.
   function hasPendingUserInput() {
     if (!admissionOpen()) return false;
-    return pending.some((entry) => isQueuedEntryEditable(entry) && !isSlashQueuedEntry(entry));
+    return pending.some(
+      (entry) => !isQueuedEntryAwaitingReview(entry) && isQueuedEntryEditable(entry) && !isSlashQueuedEntry(entry)
+    );
   }
 
   // A notification the next boundary will deliver: a task notification (one
@@ -160,7 +163,7 @@ export function createSteeringOps(bag, { queue, submissions }) {
   // input, a deliverable notification, or nothing (slash commands and
   // informational meta prompts run or ride along without ending a wait).
   function taskWaitWakeForEntry(entry) {
-    if (!admissionOpen()) return false;
+    if (!admissionOpen() || isQueuedEntryAwaitingReview(entry)) return false;
     if (isQueuedEntryEditable(entry) && !isSlashQueuedEntry(entry)) return 'user-message';
     return isDeliverableNotification(entry) ? 'notification' : false;
   }
@@ -205,53 +208,47 @@ export function createSteeringOps(bag, { queue, submissions }) {
   async function restoreLeadSteeringFromDisk() {
     // A closed/closing conversation never gets queue work restored into it.
     if (!admissionOpen()) return;
-    const rows = await drainTuiSteeringPersist(leadSessionId());
+    const rows = await readTuiSteeringPersist(leadSessionId());
     if (!rows.length) return;
     const livePersistIds = new Set(pending.map((entry) => entry?.steeringPersistId).filter(Boolean));
-    // Crash-consumed dedup: a row whose text already landed in the session
-    // transcript was consumed before the restart — only its disk drop was
-    // lost (drop is an async fire-and-forget write). Re-queuing it silently
-    // re-injects a stale prompt into the next turn (user report: surprise
-    // self-injection after a process restart).
-    const delivered = recentUserTexts(runtime.session, RESTORE_DEDUP_WINDOW);
-    const alreadyDelivered = (text) => delivered.some((body) => body.includes(text));
-    const restored = [];
-    let droppedDelivered = 0;
+    const liveSubmissionIds = new Set(pending.map((entry) => entry?.id).filter(Boolean));
+    const delivered = deliveredSubmissionIds(runtime.session);
+    const consumed = [];
     for (const row of rows) {
       const text = String(row?.text || '').trim();
       if (!text) continue;
       // Live enqueue already holds this row (id assigned before the async
       // disk write). Replaying it is the classic double-booked queue.
       if (row.steeringPersistId && livePersistIds.has(row.steeringPersistId)) continue;
-      if (alreadyDelivered(text)) {
-        droppedDelivered += 1;
+      // Legacy rows get a stable recovery identity from their disk row. It
+      // proves only a future explicit delivery, not an earlier submission.
+      const submissionId = row.submissionId || row.steeringPersistId;
+      if (delivered.has(submissionId) || liveSubmissionIds.has(submissionId)) {
+        consumed.push(row);
+        submissions.remember(submissionId);
         continue;
       }
-      const entry = queue.makeQueueEntry(row.text, {
-        id: row.submissionId || undefined,
-        submittedAt: row.submittedAt || undefined,
-        steeringPersistRestored: true,
-        steeringPersistId: row.steeringPersistId || undefined,
+      const entry = queue.makeQueueEntry(row.content ?? row.text, {
+        ...row,
+        id: submissionId,
+        displayText: row.text,
+        recoveryNeedsReview: !row.submissionId || row.content === undefined,
       });
       pending.push(entry);
-      if (row.submissionId) submissions.remember(row.submissionId);
+      submissions.remember(submissionId);
+      liveSubmissionIds.add(submissionId);
       if (entry.steeringPersistId) livePersistIds.add(entry.steeringPersistId);
-      if (isQueuedEntryVisible(entry)) restored.push(entry);
     }
-    if (restored.length > 0) set({ queued: [...getState().queued, ...restored] });
+    if (consumed.length > 0) await dropTuiSteeringPersist(leadSessionId(), consumed);
+    // Resume clears the visible queue before this call. Republish live rows
+    // too; an idempotent read must not hide entries already held in memory.
+    set({ queued: pending.filter(isQueuedEntryVisible) });
     // The conversation closed while the rows were being read: settle them
     // explicitly (rejected + durable mirror released), never leave them parked.
     if (bag.flags?.admission === 'terminal') bag.settleClosedQueue?.();
-    if (droppedDelivered > 0) {
-      try {
-        process.stderr.write(`[tui] skipped ${droppedDelivered} already-delivered steering row(s) on restore\n`);
-      } catch {
-        /* best effort */
-      }
-    }
-    // Recovery must not create a user turn by itself. An idle reconnect leaves
-    // the restored rows visible/editable in the queue; a real active-turn
-    // boundary or later submit will invoke the normal drain path.
+    // A modern row retains its original delivery rules. Legacy rows cannot
+    // establish their full payload or prior delivery and wait for an explicit
+    // queue action, including through resume's commandBusy-release drain.
   }
 
   return {

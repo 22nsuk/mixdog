@@ -59,20 +59,23 @@ export function createAskCallbacks({ transcript, notifyFnForSession, scheduleSea
     };
   }
 
-  // The turn's change-record key rides the caller's transcript metadata (in
-  // place: the stream stamps assistantAt on this same object), so the
-  // persisted user row and completion carry it across restore.
-  function stampCheckpoint(options) {
+  // The turn's change-record key and every submission in its queued batch
+  // ride the caller's transcript metadata in place (the stream stamps
+  // assistantAt on this same object). The first id owns Undo/Reapply; all
+  // submission ids let recovery recognize inputs already delivered together.
+  function stampPromptIdentity(options) {
     const meta = options.transcriptMeta;
+    if (!meta || typeof meta !== 'object') return meta;
     const checkpointId = String(options.id || '').trim();
-    if (checkpointId && meta && typeof meta === 'object') meta.checkpointId = checkpointId;
+    if (checkpointId) meta.checkpointId = checkpointId;
+    if (Array.isArray(options.submittedIds)) meta.submissionIds = options.submittedIds.slice();
     return meta;
   }
 
   function askCallbacks(turn, session0, options) {
     return {
       beforeToolExecution: () => turn.snapshot.promise || Promise.resolve(),
-      transcriptMeta: stampCheckpoint(options),
+      transcriptMeta: stampPromptIdentity(options),
       promptSource: options.promptSource,
       retryFailedTurn: options.retryFailedTurn === true,
       retryTurnId: options.retryTurnId,

@@ -260,6 +260,9 @@ export function QueueList({
               <span className="queue-item-text" tabIndex={0} data-tooltip={text}>
                 {text}
               </span>
+              {asRecord(entry)?.recoveryNeedsReview === true && (
+                <span className="queue-item-attachments">{t('Review required')}</span>
+              )}
               {imageCount > 0 && (
                 // biome-ignore lint/a11y/useAriaPropsSupportedByRole: the span stands for the attached-image count and needs a text alternative
                 <span

@@ -7,10 +7,10 @@ import { promptContentText } from './queue-helpers.mjs';
 // Restore window for persisted busy-input steering rows. Rows older than this
 // are leftovers of a session that ended long ago — restoring them into a fresh
 // TUI boot reads as a surprise self-injection (user report), so they are
-// discarded at drain time instead.
+// discarded when the mirror is read instead.
 const STALE_STEERING_RESTORE_TTL_MS = 30 * 60 * 1000;
 
-// Serialize this UI process's own steering writes so append→drop→drain keep
+// Serialize this UI process's own steering writes so append→drop→read keep
 // their issue order even though each now waits on the lock asynchronously.
 // Cross-process mutual exclusion still comes from the shared lock protocol;
 // this chain only orders same-process operations that were previously
@@ -59,23 +59,43 @@ function newSteeringPersistId() {
   return `ts_${Date.now().toString(36)}_${randomBytes(4).toString('hex')}`;
 }
 
-function normalizeTuiSteeringQueueEntry(entry) {
-  if (typeof entry === 'string') {
-    const text = entry.trim();
-    return text || null;
+// Daemon intake has already externalized attachment bytes. Keep its content
+// and restoration metadata, plus the options that decide how the queued user
+// input runs; callbacks and other live queue state never belong in the spool.
+function persistedQueuePayload(entry) {
+  const out = {};
+  if (typeof entry.content === 'string' || Array.isArray(entry.content)) out.content = entry.content;
+  for (const field of ['pastedImages', 'pastedTexts', 'transcriptMeta']) {
+    if (entry[field] && typeof entry[field] === 'object' && !Array.isArray(entry[field])) {
+      out[field] = entry[field];
+    }
   }
+  for (const field of ['mode', 'priority', 'context', 'retryTurnId', 'retryAttemptId']) {
+    if (typeof entry[field] === 'string' && entry[field]) out[field] = entry[field];
+  }
+  for (const field of ['skipSlashCommands', 'suppressDisplay', 'retryFailedTurn']) {
+    if (entry[field] === true) out[field] = true;
+  }
+  return out;
+}
+
+function normalizeTuiSteeringQueueEntry(entry) {
+  if (typeof entry === 'string') entry = { text: entry };
   if (!entry || typeof entry !== 'object') return null;
   if (typeof entry.text === 'string' && entry.text.trim()) {
     const text = entry.text.trim();
-    const id = typeof entry.id === 'string' && entry.id.trim() ? entry.id.trim() : null;
+    // Legacy text-only/idless rows receive their identity under the shard
+    // lock. A read persists it before exposing the row, so later restores and
+    // explicit reclamation can identify the same row without comparing text.
+    const id = typeof entry.id === 'string' && entry.id.trim() ? entry.id.trim() : newSteeringPersistId();
     const submissionId =
       typeof entry.submissionId === 'string' && entry.submissionId.trim() ? entry.submissionId.trim() : null;
     const submittedAt = Number(entry.submittedAt);
-    if (!id) return text;
     const at = Number(entry.at);
     return {
       id,
       text,
+      ...persistedQueuePayload(entry),
       ...(Number.isFinite(at) && at > 0 ? { at } : {}),
       ...(submissionId ? { submissionId } : {}),
       ...(Number.isFinite(submittedAt) && submittedAt > 0 ? { submittedAt } : {}),
@@ -138,7 +158,10 @@ function rowMatchesEntry(row, entry) {
   }
   const text = entryPersistText(entry);
   if (!text) return false;
-  return row === text;
+  return (
+    row === text ||
+    (row && typeof row === 'object' && !row.submissionId && !Object.hasOwn(row, 'content') && row.text === text)
+  );
 }
 
 function removePersistRow(q, entry) {
@@ -148,7 +171,7 @@ function removePersistRow(q, entry) {
 
 // Consistency-required: a dropped append loses a user's queued steering
 // message, so we async-wait for the lock (never try-once). Returns a promise;
-// fire-and-forget at call sites is fine — _serialize keeps append/drop/drain
+// fire-and-forget at call sites is fine — _serialize keeps append/drop/read
 // in issue order and the write never blocks the render loop.
 export function appendTuiSteeringPersist(leadSessionId, entry) {
   const text = entryPersistText(entry);
@@ -158,13 +181,24 @@ export function appendTuiSteeringPersist(leadSessionId, entry) {
   if (!entry.steeringPersistId) entry.steeringPersistId = newSteeringPersistId();
   const submissionId = typeof entry.id === 'string' && entry.id.trim() ? entry.id.trim() : null;
   const submittedAt = Number(entry.submittedAt);
-  const record = {
-    id: entry.steeringPersistId,
-    text,
-    at: Date.now(),
-    ...(submissionId ? { submissionId } : {}),
-    ...(Number.isFinite(submittedAt) && submittedAt > 0 ? { submittedAt } : {}),
-  };
+  let record;
+  try {
+    // Capture JSON data now, before the async lock wait: later queue edits
+    // cannot mutate the accepted submission's durable snapshot.
+    record = JSON.parse(
+      JSON.stringify({
+        id: entry.steeringPersistId,
+        text,
+        ...persistedQueuePayload(entry),
+        at: Date.now(),
+        ...(submissionId ? { submissionId } : {}),
+        ...(Number.isFinite(submittedAt) && submittedAt > 0 ? { submittedAt } : {}),
+      })
+    );
+  } catch (err) {
+    writeSteeringDiagnostic(`steering-queue append failed sessionId=${leadSessionId}: ${err?.message || err}`);
+    return Promise.resolve(false);
+  }
   return _serialize(key, async () => {
     try {
       await updatePendingShard(key, (raw) => {
@@ -225,13 +259,11 @@ export function _steeringPersistChainCount() {
   return _persistChains.size;
 }
 
-function drainedRowToRestore(row) {
-  if (typeof row === 'string') {
-    return { text: row, steeringPersistId: null };
-  }
+function persistedRowToRestore(row) {
   if (row && typeof row === 'object' && typeof row.text === 'string') {
     return {
       text: row.text,
+      ...persistedQueuePayload(row),
       steeringPersistId: typeof row.id === 'string' ? row.id : null,
       submissionId: typeof row.submissionId === 'string' ? row.submissionId : null,
       submittedAt: Number.isFinite(Number(row.submittedAt)) ? Number(row.submittedAt) : null,
@@ -240,15 +272,14 @@ function drainedRowToRestore(row) {
   return null;
 }
 
-// Consistency-required (restores queued messages after boot/command). Async
-// lock wait, serialized on _persistChain so it never reorders against a
-// pending append/drop and never blocks the render loop. Returns a promise of
-// the drained rows; call sites await it.
-export function drainTuiSteeringPersist(leadSessionId) {
+// Restore is a read, not delivery: fresh rows stay durable until the queue's
+// commit/reclaim/close path explicitly drops them. The same shard lock makes
+// legacy identity upgrades, stale removal and append/drop ordering atomic.
+export function readTuiSteeringPersist(leadSessionId) {
   const key = tuiSteeringSessionKey(leadSessionId);
   if (!key) return Promise.resolve([]);
   return _serialize(key, async () => {
-    let drained = [];
+    let restored = [];
     let droppedStale = 0;
     try {
       await updatePendingShard(key, (raw) => {
@@ -262,18 +293,25 @@ export function drainTuiSteeringPersist(leadSessionId) {
           if (stale) droppedStale += 1;
           return !stale;
         });
-        drained = fresh.map(drainedRowToRestore).filter(Boolean);
-        if (drained.length === 0 && droppedStale === 0) return undefined;
-        deleteSessionBucket(next, key);
+        restored = fresh.map(persistedRowToRestore).filter(Boolean);
+        if (restored.length === 0 && droppedStale === 0) return undefined;
+        const previous = Array.isArray(raw?.sessions?.[key]) ? raw.sessions[key] : [];
+        if (JSON.stringify(previous) === JSON.stringify(fresh)) return undefined;
+        if (fresh.length > 0) next.sessions[key] = fresh;
+        else deleteSessionBucket(next, key);
         next.updatedAt = Date.now();
         return next;
       });
     } catch (err) {
-      writeSteeringDiagnostic(`steering-queue drain failed sessionId=${leadSessionId}: ${err?.message || err}`);
+      // In particular, never expose an identity whose upgrade did not reach
+      // disk: another read would otherwise mint a second identity for it.
+      restored = [];
+      droppedStale = 0;
+      writeSteeringDiagnostic(`steering-queue read failed sessionId=${leadSessionId}: ${err?.message || err}`);
     }
     if (droppedStale > 0) {
       writeSteeringDiagnostic(`dropped ${droppedStale} stale steering row(s) sessionId=${leadSessionId}`);
     }
-    return drained;
+    return restored;
   });
 }

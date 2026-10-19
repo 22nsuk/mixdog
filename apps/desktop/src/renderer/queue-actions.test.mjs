@@ -42,7 +42,7 @@ test('queued follow-up rows expose independent edit, steer-now, and remove actio
       dom.root.render(
         React.createElement(QueueList, {
           queued: [
-            { id: 'steer-1', displayText: 'steer this now' },
+            { id: 'steer-1', displayText: 'steer this now', recoveryNeedsReview: true },
             { id: 'slash-1', displayText: '/compact' },
           ],
           restoring: false,
@@ -56,6 +56,7 @@ test('queued follow-up rows expose independent edit, steer-now, and remove actio
     const steer = document.querySelector('[aria-label="Steer queued follow-up now: steer this now"]');
     assert.equal(steer?.textContent, 'Steer now');
     assert.equal(steer?.disabled, false);
+    assert.match(steer?.closest('.queue-item')?.textContent || '', /Review required/);
     assert.equal(
       document.querySelector('[aria-label="Steer queued follow-up now: /compact"]')?.disabled,
       true,

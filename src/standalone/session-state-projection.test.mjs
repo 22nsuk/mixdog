@@ -67,6 +67,35 @@ test('tail-only updates do not resend the settled history or queued prompts', ()
   assert.deepEqual(applySessionStatePatch(previous, patch), next);
 });
 
+test('queue recovery review state crosses the daemon hop without exposing the executable payload', () => {
+  const entry = {};
+  const queued = {
+    id: 'recovered',
+    submittedAt: 1,
+    displayText: 'x'.repeat(3_000),
+    content: [{ type: 'text', text: 'full executable content' }],
+    pastedTexts: { 1: { text: 'original pasted content' } },
+    recoveryNeedsReview: true,
+  };
+  const before = projectSessionState(entry, { queued: [queued] });
+  assert.deepEqual(before.queued, [
+    {
+      id: 'recovered',
+      submittedAt: 1,
+      text: 'x'.repeat(2_000),
+      displayText: 'x'.repeat(2_000),
+      mode: 'prompt',
+      priority: 'next',
+      recoveryNeedsReview: true,
+    },
+  ]);
+  const after = projectSessionState(entry, { queued: [{ ...queued, recoveryNeedsReview: false }] });
+  const received = applySessionStatePatch(before, diffSessionState(before, after));
+  assert.equal(Object.hasOwn(received.queued[0], 'recoveryNeedsReview'), false);
+  assert.equal(Object.hasOwn(received.queued[0], 'content'), false);
+  assert.equal(Object.hasOwn(received.queued[0], 'pastedTexts'), false);
+});
+
 test('history edits, queue edits and removed fields still reconstruct the complete state', () => {
   const entry = {};
   const first = { id: 1, text: 'one' };

@@ -13,9 +13,14 @@ import test from 'node:test';
 const dataDir = mkdtempSync(join(tmpdir(), 'mixdog-tui-steering-persist-'));
 process.env.MIXDOG_DATA_DIR = dataDir;
 
-const { appendTuiSteeringPersist, drainTuiSteeringPersist, flushTuiSteeringPersist } = await import(
-  './tui-steering-persist.mjs'
-);
+const {
+  appendTuiSteeringPersist,
+  readTuiSteeringPersist,
+  dropTuiSteeringPersist,
+  flushTuiSteeringPersist,
+} = await import('./tui-steering-persist.mjs');
+const { attachmentsForIntake, materializePromptSubmission, hydratePastedAttachments, hydrateRestorableFileParts } =
+  await import('../../runtime/attachments/store.mjs');
 
 const spoolPath = join(dataDir, 'session-pending-messages.json');
 const legacyPath = spoolPath;
@@ -99,18 +104,155 @@ test('a TUI steering append migrates the legacy spool and leaves foreign rows lo
   assert.equal(steering[0].text, 'steer me');
 });
 
-test('drain touches only its own shard: the file is removed, other shards stay', async () => {
+test('restore reads retain their own shard until commit and leave other shards untouched', async () => {
   const foreignBefore = readFileSync(shardPath('sess_runtime_owner'), 'utf8');
-  const drained = await drainTuiSteeringPersist('leadsessionone');
+  const restored = await readTuiSteeringPersist('leadsessionone');
   assert.deepEqual(
-    drained.map((row) => row.text),
+    restored.map((row) => row.text),
     ['steer me']
   );
 
+  assert.equal(existsSync(shardPath('tui_leadsessionone')), true);
+  assert.deepEqual(await readTuiSteeringPersist('leadsessionone'), restored);
+  await dropTuiSteeringPersist('leadsessionone', restored);
   assert.equal(existsSync(shardPath('tui_leadsessionone')), false);
   assert.equal(readFileSync(shardPath('sess_runtime_owner'), 'utf8'), foreignBefore);
-  // Another lead session's stale bucket is the sweep's concern, not the drain's.
+  // Reading one lead does not age or clear another lead's bucket.
   assert.equal(existsSync(shardPath('tui_staleother')), true);
+});
+
+test('a queued submission keeps its reference payload and options through later writes and repeated restore', async () => {
+  const displayText = 'Review [Pasted text #7 +2 lines] [Image #3: shot.png] [PDF #4: note.pdf]';
+  const pastedText = 'original queued context\n'.repeat(50);
+  const imageData = Buffer.from('queued image original bytes').toString('base64');
+  const pdfData = Buffer.from('%PDF-1.4 queued document original').toString('base64');
+  const intake = materializePromptSubmission(
+    [
+      { type: 'text', text: displayText },
+      { type: 'image', data: imageData, mimeType: 'image/png' },
+      { type: 'file', data: pdfData, mimeType: 'application/pdf', filename: 'note.pdf' },
+    ],
+    {
+      pastedImages: { 3: { id: 3, type: 'image', filename: 'shot.png', mediaType: 'image/png' } },
+      pastedTexts: { 7: { id: 7, text: pastedText, source: 'paste', filename: 'context.txt' } },
+    }
+  );
+  const entry = {
+    id: 'rich-submission',
+    submittedAt: Date.now() - 100,
+    text: displayText,
+    content: intake.prompt,
+    pastedImages: intake.options.pastedImages,
+    pastedTexts: intake.options.pastedTexts,
+    transcriptMeta: {
+      messageId: 'msg_rich_submission',
+      device: 'paired device',
+      attachments: attachmentsForIntake(intake.prompt, intake.options),
+    },
+    mode: 'prompt',
+    priority: 'later',
+    context: 'queued context',
+    skipSlashCommands: true,
+    suppressDisplay: true,
+    retryFailedTurn: true,
+    retryTurnId: 'turn_retry',
+    retryAttemptId: 'attempt_retry',
+    onCommitted() {},
+  };
+  const { id: expectedSubmissionId, ...expected } = JSON.parse(JSON.stringify(entry));
+  const appended = appendTuiSteeringPersist('richlead', entry);
+  // A queued write owns the submitted snapshot even while its lock is pending.
+  entry.content[0].text = 'changed after append';
+  entry.pastedTexts[7].filename = 'changed.txt';
+  entry.transcriptMeta.attachments[0].name = 'changed name';
+  assert.equal(await appended, true);
+  const later = { id: 'later-submission', text: 'later', content: 'later' };
+  await appendTuiSteeringPersist('richlead', later);
+  await dropTuiSteeringPersist('richlead', [later]);
+
+  const serialized = readFileSync(shardPath('tui_richlead'), 'utf8');
+  assert.equal(serialized.includes(JSON.stringify(pastedText).slice(1, -1)), false);
+  assert.equal(serialized.includes(imageData), false);
+  assert.equal(serialized.includes(pdfData), false);
+  assert.equal(serialized.includes('onCommitted'), false);
+  const restored = await readTuiSteeringPersist('richlead');
+  assert.equal(restored.length, 1);
+  assert.deepEqual(restored[0], {
+    ...expected,
+    steeringPersistId: entry.steeringPersistId,
+    submissionId: expectedSubmissionId,
+  });
+  assert.deepEqual(await readTuiSteeringPersist('richlead'), restored);
+  const hydrated = hydratePastedAttachments(restored[0].pastedImages, restored[0].pastedTexts);
+  assert.equal(hydrated.pastedImages[3].content, imageData);
+  assert.equal(hydrated.pastedTexts[7].text, pastedText);
+  assert.deepEqual(hydrateRestorableFileParts(restored[0].content), [
+    { type: 'file', data: pdfData, mimeType: 'application/pdf', filename: 'note.pdf' },
+  ]);
+  await dropTuiSteeringPersist('richlead', restored);
+  assert.deepEqual(await readTuiSteeringPersist('richlead'), []);
+});
+
+test('legacy rows get stable restore identities under the lock without refreshing their age', async () => {
+  const key = 'tui_legacyread';
+  const touched = Date.now() - 5 * 60 * 1000;
+  writeFileSync(
+    shardPath(key),
+    JSON.stringify({
+      version: 1,
+      updatedAt: touched,
+      sessions: { [key]: ['same text', { text: 'same text' }] },
+      sessionTouchedAt: { [key]: touched },
+    })
+  );
+  const [first, second] = await Promise.all([
+    readTuiSteeringPersist('legacyread'),
+    readTuiSteeringPersist('legacyread'),
+  ]);
+  assert.equal(first.length, 2);
+  assert.deepEqual(second, first);
+  assert.notEqual(first[0].steeringPersistId, first[1].steeringPersistId);
+  for (const row of first) {
+    assert.match(row.steeringPersistId, /^ts_/);
+    assert.equal(Object.hasOwn(row, 'content'), false, 'legacy text is not invented as the original content');
+    assert.equal(row.submissionId, null);
+  }
+  const persisted = readShard(key);
+  assert.equal(persisted.sessionTouchedAt[key], touched);
+  assert.equal(persisted.sessions[key].some((row) => Object.hasOwn(row, 'at')), false);
+
+  await dropTuiSteeringPersist('legacyread', [first[0]]);
+  assert.deepEqual(await readTuiSteeringPersist('legacyread'), [first[1]]);
+  const aged = readShard(key);
+  aged.sessionTouchedAt[key] = Date.now() - 31 * 60 * 1000;
+  writeFileSync(shardPath(key), JSON.stringify(aged));
+  assert.deepEqual(await readTuiSteeringPersist('legacyread'), []);
+  assert.equal(existsSync(shardPath(key)), false);
+});
+
+test('restore retains fresh unreadable attachment references and removes only stale rows', async () => {
+  const now = Date.now();
+  const key = 'tui_refread';
+  const content = [{ type: 'image', attachmentRef: 'a'.repeat(64), sizeBytes: 42, mimeType: 'image/png' }];
+  writeFileSync(
+    shardPath(key),
+    JSON.stringify({
+      version: 1,
+      updatedAt: now,
+      sessions: {
+        [key]: [
+          { id: 'ts_stale', text: 'stale', at: now - 31 * 60 * 1000 },
+          { id: 'ts_fresh', text: '[Image]', content, at: now, submissionId: 'fresh' },
+        ],
+      },
+      sessionTouchedAt: { [key]: now },
+    })
+  );
+  const restored = await readTuiSteeringPersist('refread');
+  assert.equal(restored.length, 1);
+  assert.deepEqual(restored[0].content, content, 'startup does not read or drop attachment blobs');
+  assert.deepEqual(readShard(key).sessions[key].map((row) => row.id), ['ts_fresh']);
+  await dropTuiSteeringPersist('refread', restored);
 });
 
 test('steering operations of different sessions never contend on one lock', async () => {

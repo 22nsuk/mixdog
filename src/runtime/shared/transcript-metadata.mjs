@@ -65,6 +65,16 @@ export const stableMessageId = (value) => (typeof value === 'string' && value ? 
 // by it. A surface that drew the row first passes its id in.
 export function persistedUserTranscriptMetadata(value) {
   if (!value || typeof value !== 'object') return null;
+  const submissionIds = Array.isArray(value.submissionIds)
+    ? [
+        ...new Set(
+          value.submissionIds
+            .filter((id) => typeof id === 'string')
+            .map((id) => id.trim())
+            .filter(Boolean)
+        ),
+      ]
+    : [];
   return {
     messageId: stableMessageId(value.messageId),
     ...(typeof value.attemptId === 'string' && value.attemptId ? { attemptId: value.attemptId } : {}),
@@ -76,6 +86,9 @@ export function persistedUserTranscriptMetadata(value) {
     // The turn's change-record key (the outer prompt id), so a restored user
     // row still addresses its turn's Undo/Reapply.
     ...(typeof value.checkpointId === 'string' && value.checkpointId ? { checkpointId: value.checkpointId } : {}),
+    // A queued batch is one user turn, but each submission keeps its own
+    // delivery receipt so recovery never has to infer identity from its text.
+    ...(submissionIds.length ? { submissionIds } : {}),
     ...attachmentsField(value.attachments),
   };
 }

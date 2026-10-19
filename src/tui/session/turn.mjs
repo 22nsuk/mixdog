@@ -725,6 +725,7 @@ export function createRunTurn(bag) {
     try {
       const { result, session } = await runtime.ask(userText, {
         id: turn.submittedIds[0],
+        submittedIds: turn.submittedIds,
         submittedAt: options.submittedAt,
         promptSource: options.promptSource,
         retryFailedTurn: options.retryFailedTurn === true,

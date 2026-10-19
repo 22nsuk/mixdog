@@ -49,6 +49,10 @@ export function isQueuedEntryVisible(entry) {
   return isQueuedEntryEditable(entry);
 }
 
+export function isQueuedEntryAwaitingReview(entry) {
+  return entry?.recoveryNeedsReview === true;
+}
+
 export function isSlashQueuedEntry(entry) {
   if (entry?.skipSlashCommands) return false;
   const text = promptContentText(entry?.content ?? entry?.text ?? '');

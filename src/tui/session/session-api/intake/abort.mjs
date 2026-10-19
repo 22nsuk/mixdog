@@ -4,7 +4,7 @@
 import { hydratePastedAttachments, hydrateRestorableFileParts } from '../../../../runtime/attachments/store.mjs';
 import { abortGoalTurn } from '../../goal-turn-state.mjs';
 import { promptHistoryWithout } from '../../prompt-history.mjs';
-import { isQueuedEntryEditable } from '../../queue-helpers.mjs';
+import { isQueuedEntryAwaitingReview, isQueuedEntryEditable } from '../../queue-helpers.mjs';
 
 // An attachment whose blob is gone is dropped alone; the prompt is kept.
 function hydrateTolerantly(pastedImages, pastedTexts, content = null) {
@@ -116,7 +116,9 @@ export function createAbortAction(bag) {
     // A queued steering prompt means the user already redirected the turn:
     // interrupting should just cancel the running turn and let the steering
     // prompt run next, NOT resurrect the in-flight prompt back into the draft.
-    const hasPendingSteering = pending.some((entry) => isQueuedEntryEditable(entry));
+    const hasPendingSteering = pending.some(
+      (entry) => !isQueuedEntryAwaitingReview(entry) && isQueuedEntryEditable(entry)
+    );
     // A different device than the one that sent the prompt is cancelling. Only
     // plain text can be handed over through the state; a prompt carrying
     // attachments stays in the transcript instead of landing in the wrong

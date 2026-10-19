@@ -1,13 +1,18 @@
-// A turn's change-record key (checkpointId = the outer prompt id) must reach
-// the live turndone row and survive persistence + restore on both the user row
-// and the completion's turndone row.
+// A turn keeps its outer prompt id for Undo/Reapply and every submission in
+// a queued batch for recovery. Both identities must survive the runtime
+// callback bridge and persistence without depending on prompt text.
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { persistedUserTranscriptMetadata } from '../../runtime/shared/transcript-metadata.mjs';
 import { attachAssistantTranscriptCompletion } from '../../runtime/agent/orchestrator/session/manager/ask-turn-settle.mjs';
 import { createAskCallbacks } from '../../session-runtime/turn/turn-run/ask-callbacks.mjs';
+import { createAskTranscriptMeta } from '../../runtime/agent/orchestrator/session/manager/ask-session.mjs';
+import { buildUserTurn } from '../../runtime/agent/orchestrator/session/manager/ask-turn-prepare.mjs';
+import { _sessionForDisk } from '../../runtime/agent/orchestrator/session/store/serialize.mjs';
 import { restoreTranscriptItems } from './session-api-ext.mjs';
-import { applyTurnRouteMetadata, turnDoneItem } from './turn.mjs';
+import { applyTurnRouteMetadata, createRunTurn, turnDoneItem } from './turn.mjs';
+import { turnOptionsForBatch } from './session-flow/drain.mjs';
+import { mergePromptContents } from './queue-helpers.mjs';
 
 test('admitted route updates shared stream metadata and submitted rows without replacing identity', () => {
   const transcriptMeta = { at: 10, messageId: 'message-1', provider: 'old', modelId: 'old', agent: 'Lead' };
@@ -44,6 +49,112 @@ test('the runtime stamps the outer prompt id onto the caller transcript metadata
   assert.equal(meta.checkpointId, 'prompt-1');
   const unstamped = askCallbacks(turn, { id: 's' }, { transcriptMeta: { at: 1 } });
   assert.equal(Object.hasOwn(unstamped.transcriptMeta, 'checkpointId'), false);
+});
+
+async function runStoredBatch(batch) {
+  const session = { id: 'submission-receipts', contextWindow: 128000, messages: [] };
+  const state = { items: [], stats: { turns: 0, inputTokens: 0, outputTokens: 0 } };
+  const { askCallbacks } = createAskCallbacks({
+    transcript: { appendAssistantText() {} },
+    notifyFnForSession: () => null,
+    scheduleSearchRuntimeWarmup: null,
+    hooks: { emit() {} },
+  });
+  let runtimeOptions;
+  const runtime = {
+    id: session.id,
+    session,
+    async ask(prompt, options) {
+      runtimeOptions = options;
+      const callbacks = askCallbacks({ snapshot: {}, timing: {}, signal: null }, session, options);
+      const transcript = createAskTranscriptMeta(callbacks.transcriptMeta);
+      const { userTurnMessage } = await buildUserTurn({ session, prompt, transcriptMeta: transcript.user });
+      session.messages.push(userTurnMessage);
+      return { result: { content: '' }, session };
+    },
+  };
+  let seq = 0;
+  const runTurn = createRunTurn({
+    runtime,
+    flags: { leadTurnEpoch: 0 },
+    pending: [],
+    getState: () => state,
+    set: (patch) => Object.assign(state, patch),
+    nextId: () => `item-${++seq}`,
+    itemIndexById: new Map(),
+    pushItem: (item) => state.items.push(item),
+    tuiDebug() {},
+    syncContextStats() {},
+    flushToolResults() {},
+    denyAllToolApprovals() {},
+    clearActiveToolSummary() {},
+    flushDeferredExecutionPendingResumeKick() {},
+    routeState: () => ({}),
+    agentStatusState: () => ({}),
+    pendingTaskWaitWake: () => false,
+    drainPendingSteering: () => [],
+  });
+  const status = await runTurn(
+    mergePromptContents(batch),
+    turnOptionsForBatch(batch, { commitSteeringQueueEntries() {} })
+  );
+  assert.equal(status, 'done');
+  const stored = JSON.parse(JSON.stringify(_sessionForDisk(session)));
+  return { runtimeOptions, stored };
+}
+
+test('all queued submission ids reach the stored user turn through runtime ask', async () => {
+  const { runtimeOptions, stored } = await runStoredBatch([
+    { id: 'submit-a', text: 'continue', content: 'continue', submittedAt: 10 },
+    { id: 'submit-b', text: 'continue', content: 'continue', submittedAt: 20 },
+  ]);
+  assert.deepEqual(runtimeOptions.submittedIds, ['submit-a', 'submit-b']);
+  assert.equal(stored.messages.length, 1, 'the batch is still one user turn');
+  assert.deepEqual(stored.messages[0].meta.transcript.submissionIds, ['submit-a', 'submit-b']);
+  assert.equal(stored.messages[0].meta.transcript.checkpointId, 'submit-a', 'Undo/Reapply keeps the outer prompt id');
+  assert.equal(Object.hasOwn(stored.messages[0].meta.transcript, 'attachments'), false);
+});
+
+for (const firstHasMetadata of [false, true]) {
+  test(`batched attachment records survive stored transcript restore (first metadata=${firstHasMetadata})`, async () => {
+    const attachment = (id, kind, name, mimeType) => ({ id, attachmentRef: id, kind, name, mimeType, size: 20 });
+    const pdf = attachment('a'.repeat(64), 'file', 'spec.pdf', 'application/pdf');
+    const pasted = attachment('b'.repeat(64), 'text', 'context.txt', 'text/plain');
+    const firstMeta = firstHasMetadata ? { device: 'Desktop', attachments: [pdf] } : undefined;
+    const batch = [
+      { id: 'submit-a', text: 'continue', content: 'continue', submittedAt: 10, transcriptMeta: firstMeta },
+      {
+        id: 'submit-b',
+        text: 'continue',
+        content: 'continue',
+        submittedAt: 20,
+        transcriptMeta: { device: 'Phone', attachments: [pdf, pasted] },
+      },
+    ];
+    const before = JSON.stringify(batch);
+    const { stored } = await runStoredBatch(batch);
+    const [row] = restoreTranscriptItems(stored.messages, { sessionId: stored.id });
+    assert.equal(row.kind, 'user');
+    assert.deepEqual(row.attachments, [pdf, pasted], 'every original remains linked by id after reload');
+    assert.equal(
+      row.device,
+      firstHasMetadata ? 'Desktop' : undefined,
+      'other metadata remains owned by the first entry'
+    );
+    assert.deepEqual(stored.messages[0].meta.transcript.submissionIds, ['submit-a', 'submit-b']);
+    assert.equal(JSON.stringify(batch), before, 'merging does not mutate either accepted submission');
+  });
+}
+
+test('stored submission receipts keep only distinct nonempty ids without inventing legacy identity', () => {
+  const meta = { at: 1, submissionIds: [' submit-a ', '', null, 7, 'submit-b', 'submit-a'] };
+  const stored = persistedUserTranscriptMetadata(meta);
+  assert.deepEqual(stored.submissionIds, ['submit-a', 'submit-b']);
+  meta.submissionIds.push('later');
+  assert.deepEqual(stored.submissionIds, ['submit-a', 'submit-b'], 'stored metadata owns its receipt list');
+  for (const submissionIds of [undefined, [], [null, '', ' '], 'submit-a']) {
+    assert.equal(Object.hasOwn(persistedUserTranscriptMetadata({ at: 1, submissionIds }), 'submissionIds'), false);
+  }
 });
 
 test('checkpointId survives user persistence, completion persistence and restore', () => {

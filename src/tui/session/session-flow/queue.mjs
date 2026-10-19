@@ -96,9 +96,12 @@ export function createQueueOps(bag, { kickDrain }) {
     if (index < 0) return { count: 0, ids: [], priority: 'now' };
     const [entry] = pending.splice(index, 1);
     entry.priority = 'now';
+    entry.recoveryNeedsReview = false;
     pending.unshift(entry);
     const visible = getState().queued.map((queuedEntry) =>
-      String(queuedEntry?.id || '') === targetId ? { ...queuedEntry, priority: 'now' } : queuedEntry
+      String(queuedEntry?.id || '') === targetId
+        ? { ...queuedEntry, priority: 'now', recoveryNeedsReview: false }
+        : queuedEntry
     );
     set({ queued: visible });
     flushEmitImmediate?.();

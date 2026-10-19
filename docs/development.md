@@ -17,6 +17,22 @@ Useful environment variables:
 - `MIXDOG_MODE=ship|dev` — select shipping or development diagnostics.
 - `MIXDOG_DIAGNOSTICS=1` — force diagnostic trace and log output.
 
+## Queued input recovery
+
+Pending user inputs retain their submission IDs, executable content, pasted
+text and attachment references in the session's pending shard. Recovery checks
+submission receipts in stored user messages for prior delivery, so a new
+submission with the same text remains independent. Reading the shard keeps unconsumed inputs on
+disk through another restart; delivery, editing or removal releases their rows.
+The existing 30-minute restore window still applies.
+
+Older text-only records lack the original payload or delivery identity. They
+remain queued for explicit review instead of executing automatically. Desktop
+marks them **Review required**; use **Edit** to reclaim them or **Steer now**
+to send the available text. In the terminal, press Esc while idle with an empty
+draft to reclaim queued input for editing. Attachments omitted by an older
+version cannot be reconstructed from its display text.
+
 ## Core technology
 
 | Layer | Stack |

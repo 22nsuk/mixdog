@@ -7,6 +7,7 @@
 import {
   queuePriorityValue,
   isQueuedEntryEditable,
+  isQueuedEntryAwaitingReview,
   mergePastedImages,
   mergePastedTexts,
 } from '../../queue-helpers.mjs';
@@ -22,7 +23,7 @@ export function createTakeEntriesOps({ pending, pendingNotificationKeys, removeQ
     let bestPriority = Infinity;
     let targetMode = null;
     for (const entry of pending) {
-      if (!predicate(entry)) continue;
+      if (isQueuedEntryAwaitingReview(entry) || !predicate(entry)) continue;
       const p = queuePriorityValue(entry.priority);
       if (p > max) continue;
       if (p < bestPriority) {
@@ -35,6 +36,7 @@ export function createTakeEntriesOps({ pending, pendingNotificationKeys, removeQ
     for (let i = 0; i < pending.length; ) {
       const entry = pending[i];
       if (
+        !isQueuedEntryAwaitingReview(entry) &&
         predicate(entry) &&
         (entry.mode || 'prompt') === targetMode &&
         queuePriorityValue(entry.priority) === bestPriority
@@ -73,7 +75,7 @@ export function createTakeEntriesOps({ pending, pendingNotificationKeys, removeQ
     // A reclaimed prompt goes back to the draft, so its durable steering
     // mirror goes with it; otherwise the next runtime restore re-queues a
     // prompt the user already took back.
-    const mirrored = queued.filter((entry) => entry.steeringPersistId && !entry.steeringPersistRestored);
+    const mirrored = queued.filter((entry) => entry.steeringPersistId);
     if (mirrored.length > 0) void dropTuiSteeringPersist(leadSessionId(), mirrored);
     const queuedText = queued
       .map((item) => item.text)
