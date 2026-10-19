@@ -7,7 +7,7 @@
 import { fixtureRoot } from './lib/isolated-test-env.mjs';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { connect, createServer } from 'node:net';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
@@ -410,7 +410,7 @@ function activation() {
   if (!existsSync(link)) symlinkSync(spawnSync('which', ['python3'], { encoding: 'utf8' }).stdout.trim(), link);
   const file = join(workDir, 'py-fixture.py');
   writeFileSync(file, PY_FIXTURE);
-  return { source: `source ${q(join(bin, 'activate'))}`, file };
+  return { source: `source ${q(join(bin, 'activate'))}`, file, executable: link };
 }
 
 const pgidOf = (pid) => Number(spawnSync('ps', ['-o', 'pgid=', '-p', String(pid)], { encoding: 'utf8' }).stdout.trim());
@@ -429,11 +429,35 @@ test('POSIX: task cancel kills a plain sleep', posixOpts, async () => {
 
 test('POSIX: task cancel kills the issue #115 venv python command', posixOpts, async () => {
   const s = await scenario('posix-issue');
-  const { source } = activation();
-  const code =
-    "import json,os,time; print(json.dumps({'pid':os.getpid(),'ppid':os.getppid(),'pgid':os.getpgrp()}),flush=True); time.sleep(90)";
-  const out = await shell({ command: `${source} && python -u -c '${code}' ${s.token}`, background: true });
-  await running(s, ['python']);
+  const { source, executable } = activation();
+  const ready = join(workDir, `${s.name}-ready.json`);
+  const code = `
+import json,os,shutil,sys,time
+details = {'pid':os.getpid(),'ppid':os.getppid(),'pgid':os.getpgrp(),
+           'executable':sys.executable,'selectedExecutable':shutil.which('python')}
+print(json.dumps(details),flush=True)
+with open(sys.argv[1], 'w') as f:
+    json.dump(details, f)
+with open(sys.argv[2], 'a') as f:
+    f.write('python ' + str(os.getpid()) + '\\n')
+time.sleep(90)
+`;
+  const out = await shell({
+    command: `${source} && python -u -c ${q(code)} ${q(ready)} ${q(s.pidFile)} ${s.token}`,
+    background: true,
+  });
+  // A ps basename is not stable across Python launchers. The running Python
+  // writes its own identity only after it has parsed and begun the script.
+  await until(
+    () => existsSync(ready) && recorded(s).some((row) => row.role === 'python'),
+    30_000,
+    `${s.name}: Python readiness record`
+  );
+  const details = JSON.parse(readFileSync(ready, 'utf8'));
+  assert.equal(details.selectedExecutable, executable, 'activation selects the fixture virtualenv executable');
+  assert.equal(realpathSync(details.executable), realpathSync(executable), 'the selected Python runs the command');
+  assert.ok(alive(details.pid), 'the Python command is still running before cancellation');
+  assert.ok(recorded(s).some((row) => row.role === 'python' && row.pid === details.pid));
   await cancelAndCheck(s, taskIdOf(out));
 });
 

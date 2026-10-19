@@ -61,7 +61,18 @@ test('failed descendant observation reports failure and retains a releasable wor
   assert.match(result.failureReason, /could not be verified/);
   assert.equal(watches.length, 1, 'the held admission joins the termination watch');
   assert.equal(watches[0].tracker.exitAccepted, true, 'the root exited on its own');
+  assert.ok(result.settled instanceof Promise);
+  let settled = false;
+  const completion = result.settled.then(() => {
+    settled = true;
+  });
   assert.deepEqual(await forceReleaseTerminationHold('job_unknown_children'), { released: true });
   assert.equal(released, 1);
-  assert.equal(watches[0].stopped, true);
+  assert.notEqual(watches[0].stopped, true, 'releasing the folder does not confirm its remaining processes exited');
+  await Promise.resolve();
+  assert.equal(settled, false, 'deferred cleanup still belongs to the termination observer');
+  watches[0].onTerminated();
+  await completion;
+  assert.equal(settled, true);
+  assert.equal(released, 1, 'confirmed termination does not release the folder twice');
 });

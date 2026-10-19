@@ -140,28 +140,36 @@ setInterval(() => {}, 1000);
       };
       fixture = current;
       let task = null;
+      // The native client and production termination watch intentionally unref
+      // after root exit. Keep this standalone fixture alive through the real
+      // cancellation and cleanup, bounded beyond the test's 45-second ceiling.
+      const keepAlive = setTimeout(() => {}, 60_000);
       t.after(async () => {
-        current.returnSpawn.resolve();
-        cancelBackgroundTasks({ callerSessionId: ownerSessionId, reason: 'fixture cleanup', notify: false });
-        task ||= getBackgroundTask(listBackgroundTasks({ callerSessionId: ownerSessionId })[0]?.task_id);
-        await heldSlot.release();
-        if (current.server && isRunning(current.server.pid)) process.kill(current.server.pid, 'SIGKILL');
-        if (current.child && isRunning(current.child.pid)) cancelNativeTask(task.taskId);
-        if (current.child) await waitNativeTask(task.taskId, 3_000);
-        if (current.server) await until(() => !isRunning(current.server.pid), 'fixture server cleanup failed');
-        if (task) await Promise.race([task.promise, delay(1_000)]);
-        if (current.run) {
-          current.run.stopTerminationWatch?.();
-          current.run.workspaceAdmission?.();
-          current.run.workspaceAdmission = null;
-          current.run.taskOutput.closeFds();
-          await current.run.resourceLease?.release();
-          current.run.resourceLease = null;
-          retireShellJobRecord(current.run.foregroundRecordId);
-          await _shellJobRecordWritesSettledForTest(current.run.foregroundRecordId);
+        try {
+          current.returnSpawn.resolve();
+          cancelBackgroundTasks({ callerSessionId: ownerSessionId, reason: 'fixture cleanup', notify: false });
+          task ||= getBackgroundTask(listBackgroundTasks({ callerSessionId: ownerSessionId })[0]?.task_id);
+          await heldSlot.release();
+          if (current.server && isRunning(current.server.pid)) process.kill(current.server.pid, 'SIGKILL');
+          if (current.child && isRunning(current.child.pid)) cancelNativeTask(task.taskId);
+          if (current.child) await waitNativeTask(task.taskId, 3_000);
+          if (current.server) await until(() => !isRunning(current.server.pid), 'fixture server cleanup failed');
+          if (task) await Promise.race([task.promise, delay(1_000)]);
+          if (current.run) {
+            current.run.stopTerminationWatch?.();
+            current.run.workspaceAdmission?.();
+            current.run.workspaceAdmission = null;
+            current.run.taskOutput.closeFds();
+            await current.run.resourceLease?.release();
+            current.run.resourceLease = null;
+            retireShellJobRecord(current.run.foregroundRecordId);
+            await _shellJobRecordWritesSettledForTest(current.run.foregroundRecordId);
+          }
+          cleanupBackgroundTasks({ callerSessionId: ownerSessionId, force: true });
+        } finally {
+          fixture = null;
+          clearTimeout(keepAlive);
         }
-        cleanupBackgroundTasks({ callerSessionId: ownerSessionId, force: true });
-        fixture = null;
       });
 
       // Saturate the actual admission controller. Its bounded foreground
