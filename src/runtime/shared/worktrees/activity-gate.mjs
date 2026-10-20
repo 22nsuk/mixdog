@@ -2,14 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { isAbsolute, join } from 'node:path';
-import {
-  parseJsonText,
-  readJsonStateSync,
-  unsupportedState,
-  updateJsonAtomicSync,
-  writeFileAtomicSync,
-  writeJsonAtomicSync,
-} from '../atomic-file.mjs';
+import { parseJsonText, withFileLockSync, writeFileAtomicSync, writeJsonAtomicSync } from '../atomic-file.mjs';
 import { isPidAliveOrUnknown } from '../pid-liveness.mjs';
 import { findGitLayout } from './git-head.mjs';
 import { canonicalPath, isWithin, samePath } from './paths.mjs';
@@ -22,9 +15,10 @@ const overlaps = (a, b) => isWithin(a, b) || isWithin(b, a);
 /**
  * The admission policy's external exception: a linked checkout Mixdog did not
  * create (not a project's main folder, not a registered managed worktree) is
- * never lock-blocked. Management takes no lease on it and its readers are
- * admitted whatever is held elsewhere; its running readers still refuse a
- * management action that touches it.
+ * not held by management. Its readers ignore holds on other checkouts; an
+ * already published hold on this checkout still applies if registry recovery
+ * or a different profile subsequently classifies the checkout as external.
+ * Its running readers still refuse a management action that touches it.
  */
 export function isExternalCheckout(folder) {
   const layout = findGitLayout(folder, { strict: true });
@@ -55,15 +49,7 @@ const isLease = (lease) =>
   typeof lease.path === 'string' &&
   isAbsolute(lease.path);
 const hasLedgerShape = (state) => state?.version === VERSION && Array.isArray(state.leases);
-
-// The whole-file check: a newer build's ledger is intact data in a format this
-// build cannot honour (left in place), anything else off-shape is damage. One
-// bad lease record is not a damaged file; mutate() drops just that record.
-function validateLedger(state) {
-  if (isNewer(state)) throw unsupportedState('Workspace admission ledger was written by a newer build.');
-  if (!hasLedgerShape(state)) throw new TypeError('Workspace admission ledger is malformed.');
-  return state;
-}
+const hasUnknownLeases = (state) => Object.hasOwn(state ?? {}, 'recoveredAt');
 
 const refuseUnreadable = () => {
   throw worktreeRefusal('workspace-admission-unreadable');
@@ -72,82 +58,67 @@ const envMs = (name, fallback) => {
   const value = Number(process.env[name]);
   return Number.isFinite(value) && value > 0 ? value : fallback;
 };
-// How long the leases of a recovered ledger stay unknown. Every process
-// holding a lease republishes it within one heal period, so after this window
-// the ledger is whole again and destructive operations resume on their own.
-const recoveryWindowMs = () => envMs('MIXDOG_ADMISSION_RECOVERY_MS', 15_000);
 const healIntervalMs = () => envMs('MIXDOG_ADMISSION_HEAL_MS', 2_000);
 
-/**
- * A damaged ledger (NUL, truncated, malformed) must not block every prompt and
- * shell command of the workspace, nor may it make a destructive operation fail
- * open. Its bytes are kept aside as `<ledger>.corrupt-<ts>` and the ledger
- * restarts with `recoveredAt`: leases of OTHER processes are unknown, so
- * management refuses (`workspace-admission-unreadable`) until the window
- * passes. Management leases are mirrored in a side file and restored, so
- * readers are still excluded from an operation in progress; every process
- * republishes the leases it holds (heal), so a live holder is never lost. Only
- * a real I/O failure (the path cannot be read or moved) refuses everything.
- * Returns whether the file was found damaged.
- */
-function repairLedger(path) {
-  let damaged = false;
+// All reads, damage preservation and both writes run under the ledger's one
+// lock. Copy damaged bytes before replacing them: moving the only copy aside
+// would turn a failed recovery write into an apparently fresh workspace.
+function readSnapshot(path) {
+  let content;
   try {
-    readJsonStateSync(path, {
-      validate: (state) => {
-        try {
-          return validateLedger(state);
-        } catch (error) {
-          damaged ||= !isNewer(state);
-          throw error;
-        }
-      },
-      decode: (content) => {
-        const text = content.toString('utf8');
-        try {
-          parseJsonText(text);
-        } catch (error) {
-          damaged = true;
-          throw error;
-        }
-        return text;
-      },
-      strictOwner: true,
-    });
-  } catch {
-    throw worktreeRefusal('workspace-admission-unreadable');
+    content = readFileSync(path);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { state: null, content: null, damaged: false };
+    return refuseUnreadable();
   }
-  return damaged;
+  let state;
+  try {
+    state = parseJsonText(content.toString('utf8'));
+  } catch {
+    return { state: null, content, damaged: true };
+  }
+  const damaged = !isNewer(state) && (!hasLedgerShape(state) || !state.leases.every(isLease));
+  return { state, content, damaged };
 }
 
-function keepAside(path, value) {
-  const aside = `${path}.corrupt-${Date.now()}`;
-  try {
-    writeFileAtomicSync(aside, JSON.stringify(value));
-    process.stderr.write(`[state] ${path} held invalid lease records; kept as ${aside}\n`);
-  } catch {
-    // Best effort: the valid records carry on either way.
-  }
+function keepAside(path, content) {
+  const aside = `${path}.corrupt-${Date.now()}-${randomUUID()}`;
+  writeFileAtomicSync(aside, content);
+  process.stderr.write(`[state] ${path} is damaged; kept as ${aside}\n`);
 }
 
 const aliveLease = (lease) => isPidAliveOrUnknown(lease.pid);
 
-// Management leases live in a mirror file as well as the ledger: damage to
-// one never hides an operation in progress from the readers.
-function readMirror(mirror) {
-  try {
-    const state = readJsonStateSync(mirror, { validate: validateLedger, strictOwner: true });
-    return (state?.leases ?? []).filter((lease) => isLease(lease) && lease.kind === 'management' && aliveLease(lease));
-  } catch {
-    return [];
-  }
+// Retain the existing side-file path so legacy management leases are still
+// recoverable. allLeases describes its coverage, not whether ownership is
+// known: recoveredAt survives in both copies until the unknown state is
+// explicitly recovered. Time or a delayed holder's heartbeat proves nothing.
+function writeMirror(mirror, state) {
+  writeJsonAtomicSync(mirror, { ...state, allLeases: true }, { compact: true });
 }
 
-function writeMirror(mirror, leases) {
+function writeState(path, mirror, before, next) {
+  const remaining = new Set(next.leases.map(leaseKey));
+  const releasing = before.leases.some((lease) => !remaining.has(leaseKey(lease)));
+  if (releasing) {
+    // A failed release keeps the old mirror and remains retryable. It must
+    // never remove the recovery copy before the ledger drops the lease.
+    writeJsonAtomicSync(path, next, { compact: true });
+    writeMirror(mirror, next);
+    return;
+  }
+  // Publish a recoverable grant before admitting its caller. If the ledger
+  // write fails, retract the ungranted mirror entry while still holding the
+  // lock. A failed rollback remains conservative; the intact ledger wins on
+  // the next mutation and resynchronizes the mirror.
+  writeMirror(mirror, next);
   try {
-    writeJsonAtomicSync(mirror, { version: VERSION, leases }, { compact: true });
+    writeJsonAtomicSync(path, next, { compact: true });
   } catch (error) {
-    process.stderr.write(`[state] ${mirror} could not be written (${error?.message})\n`);
+    try {
+      writeMirror(mirror, before);
+    } catch {}
+    throw error;
   }
 }
 
@@ -204,43 +175,41 @@ function healHeld() {
 }
 
 /**
- * Runs `update(leases, { unknown })` under the ledger lock. `unknown`: the
- * ledger was recovered recently and may be missing other processes' leases.
+ * Runs `update(leases, { unknown })` under the ledger lock. `unknown`: neither
+ * copy can establish all ownership. It never expires on a timer. A complete
+ * mirror restores live leases even if their holders cannot currently heal.
  * `onNewer` answers for a ledger of a newer build, which is left untouched:
  * it refuses by default; readers pass an answer that admits them unrecorded.
  */
 function mutate(commonDir, update, onNewer = refuseUnreadable) {
   const path = join(commonDir, FILE);
   const mirror = `${path}.management`;
-  // Moves a ledger that is damaged or of the wrong shape aside before the
-  // locked update; that update repairs a damaged file again if one arrived since.
-  const sawDamage = repairLedger(path);
-  let result;
-  updateJsonAtomicSync(
-    path,
-    (current) => {
-      if (isNewer(current)) {
-        result = onNewer();
-        return undefined;
-      }
-      const now = Date.now();
-      let state;
-      let recovered = false;
-      if (current === null) {
-        state = emptyLedger();
-        recovered = sawDamage;
-      } else if (!hasLedgerShape(current)) {
-        keepAside(path, current);
-        state = emptyLedger();
-        recovered = true;
-      } else {
-        state = { ...current, leases: current.leases.filter(isLease) };
-        if (state.leases.length !== current.leases.length) {
-          keepAside(path, current);
-          recovered = true;
-        }
-      }
-      if (recovered) state.recoveredAt = now;
+  return withFileLockSync(
+    `${path}.lock`,
+    () => {
+      const current = readSnapshot(path);
+      if (isNewer(current.state)) return onNewer();
+      const saved = readSnapshot(mirror);
+      if (isNewer(saved.state)) return onNewer();
+      const recovering = current.damaged || current.content === null;
+      const fullMirror = hasLedgerShape(saved.state) && !saved.damaged && saved.state.allLeases === true;
+      const state = hasLedgerShape(current.state)
+        ? { ...current.state, leases: current.state.leases.filter(isLease) }
+        : emptyLedger();
+      const restore = [
+        ...(recovering && hasLedgerShape(saved.state) ? saved.state.leases.filter(isLease) : []),
+        ...[...held.values()].filter((own) => own.commonDir === commonDir).map((own) => own.lease),
+      ];
+      // An absent pair is a fresh workspace. An absent ledger with a mirror
+      // is recovery, including a crash between the two durable writes.
+      const unknown =
+        hasUnknownLeases(state) ||
+        (recovering &&
+          (hasUnknownLeases(saved.state) ||
+            (!fullMirror && (current.damaged || saved.content !== null))));
+      if (unknown) {
+        if (!Number.isFinite(state.recoveredAt)) state.recoveredAt = Date.now();
+      } else delete state.recoveredAt;
       // Only a pid PROVEN dead (ESRCH) drops its lease, whatever its kind; an
       // unprobeable pid still counts as running. A live runtime keeps a command
       // whose tree it cannot verify reserved under its own (live) pid until the
@@ -248,35 +217,34 @@ function mutate(commonDir, update, onNewer = refuseUnreadable) {
       // restarted runtime that can no longer release it.
       state.leases = state.leases.filter(aliveLease);
       const present = new Set(state.leases.map(leaseKey));
-      const restore = [
-        ...(recovered ? readMirror(mirror) : []),
-        ...[...held.values()].filter((own) => own.commonDir === commonDir).map((own) => own.lease),
-      ];
       for (const lease of restore) {
         if (present.has(leaseKey(lease)) || !aliveLease(lease)) continue;
         present.add(leaseKey(lease));
         state.leases.push(lease);
       }
-      const unknown = Number.isFinite(state.recoveredAt) && now - state.recoveredAt < recoveryWindowMs();
-      if (!unknown) delete state.recoveredAt;
-      const managementTokens = () =>
-        state.leases
-          .filter((lease) => lease.kind === 'management')
-          .map((lease) => lease.token)
-          .join();
-      const before = managementTokens();
-      result = update(state.leases, { unknown });
-      if (recovered || managementTokens() !== before) {
-        writeMirror(
-          mirror,
-          state.leases.filter((lease) => lease.kind === 'management')
-        );
+      let next = { ...state, leases: [...state.leases] };
+      let result;
+      let refusal;
+      try {
+        result = update(next.leases, { unknown });
+      } catch (error) {
+        // Persist only the recovered ownership, never a partial request, even
+        // when policy refuses. An immediate retry must see the same protection.
+        refusal = error;
+        next = state;
       }
-      return state;
+      try {
+        if (current.damaged) keepAside(path, current.content);
+        if (saved.damaged) keepAside(mirror, saved.content);
+        writeState(path, mirror, state, next);
+      } catch {
+        return refuseUnreadable();
+      }
+      if (refusal) throw refusal;
+      return result;
     },
     { strictOwner: true }
   );
-  return result;
 }
 
 function release(commonDir, token) {
@@ -297,7 +265,7 @@ function release(commonDir, token) {
 
 /**
  * Readers share a checkout freely. Null means a management writer currently
- * owns it; a reader in an external checkout is never held back.
+ * owns it. An external checkout ignores holds belonging to other checkouts.
  */
 export function tryAdmitWorkspaceActivity(sessionId, cwd, { pid = process.pid, kind = 'turn' } = {}) {
   if (!['turn', 'command'].includes(kind)) throw new TypeError('Invalid workspace reader kind.');
@@ -310,7 +278,16 @@ export function tryAdmitWorkspaceActivity(sessionId, cwd, { pid = process.pid, k
   const admitted = mutate(
     layout.commonDir,
     (leases) => {
-      if (!external && leases.some((other) => other.kind === 'management' && overlaps(other.path, path))) return false;
+      if (
+        leases.some(
+          (other) =>
+            other.kind === 'management' &&
+            overlaps(other.path, path) &&
+            (!external || isWithin(layout.topLevel, other.path))
+        )
+      ) {
+        return false;
+      }
       leases.push(lease);
       return true;
     },
@@ -367,8 +344,8 @@ export function holdWorkspaceActivity(folders, { sessionId = null } = {}) {
             paths.some(({ path }) => overlaps(path, lease.path))
         );
         if (conflicts.length) throw worktreeRefusal('folder-in-use');
-        // A recovered ledger may be missing a live foreign turn: wait for the
-        // holders to republish (bounded by the recovery window).
+        // Unknown foreign ownership cannot be disproven by waiting: holders
+        // may be paused or unable to run their heal timer.
         if (unknown) throw worktreeRefusal('workspace-admission-unreadable');
         for (const { path, external } of paths) {
           if (external) continue;

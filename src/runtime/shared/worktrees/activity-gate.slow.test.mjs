@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdirSync, readFileSync, readdirSync, rmdirSync, unlinkSync, writeFileSync, existsSync } from 'node:fs';
+import fs, { mkdirSync, readFileSync, readdirSync, rmdirSync, unlinkSync, writeFileSync, existsSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
 import { after, beforeEach, test } from 'node:test';
 import { admitWorkspaceActivity, holdWorkspaceActivity, tryAdmitWorkspaceActivity } from './activity-gate.mjs';
@@ -12,14 +13,14 @@ import {
 } from '../../agent/orchestrator/tools/builtin/lib/shell-job-records.mjs';
 import { cleanupTempDirs, git, makeRepo, tempDir, useTempDataDir } from './test-support.mjs';
 import { withFileLockSync } from '../atomic-file.mjs';
-import { putRecord } from './registry.mjs';
+import { putRecord, registryPath } from './registry.mjs';
 import { spawnShellChild } from '../../agent/orchestrator/tools/lib/shell-run-spawn.mjs';
 
 beforeEach(useTempDataDir);
 after(cleanupTempDirs);
 const moduleUrl = new URL('./activity-gate.mjs', import.meta.url).href;
 
-function reader(t, repo, waiting = false, command = false) {
+function reader(t, repo, waiting = false, command = false, env = {}) {
   const child = spawn(
     process.execPath,
     [
@@ -39,10 +40,13 @@ function reader(t, repo, waiting = false, command = false) {
   `,
       repo,
     ],
-    { stdio: ['ignore', 'pipe', 'pipe', 'ipc'], env: { ...process.env, MIXDOG_DATA_DIR: tempDir() } }
+    { stdio: ['ignore', 'pipe', 'pipe', 'ipc'], env: { ...process.env, MIXDOG_DATA_DIR: tempDir(), ...env } }
   );
-  t.after(() => {
-    if (child.exitCode === null) child.kill();
+  t.after(async () => {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    const exited = once(child, 'exit', { signal: AbortSignal.timeout(5000) });
+    child.kill();
+    await exited;
   });
   return child;
 }
@@ -142,21 +146,69 @@ test('a provisioning turn protects its destination before moving, and releases b
   holdWorkspaceActivity([repo, target])();
 });
 
-test('an external checkout is never held, yet its running reader still refuses a writer', () => {
+for (const nested of [false, true]) {
+  test(`an external checkout ${nested ? 'inside' : 'outside'} the main checkout is never held, yet its running reader still refuses a writer`, () => {
+    const repo = makeRepo();
+    const external = join(nested ? repo : tempDir(), 'external');
+    git(repo, 'worktree', 'add', '-q', '-b', 'feature/external', external);
+    const writer = holdWorkspaceActivity([repo, external]);
+    const reader = tryAdmitWorkspaceActivity('external-turn', external);
+    try {
+      assert.ok(reader, 'the external folder admits new work');
+      assert.equal(tryAdmitWorkspaceActivity('project-turn', repo), null, 'the project folder waits');
+    } finally {
+      writer();
+    }
+    try {
+      assert.throws(
+        () => holdWorkspaceActivity([repo, external]),
+        (error) => error.code === 'WORKTREE_BUSY_JOBS' && error.details.reason === 'folder-in-use'
+      );
+    } finally {
+      reader?.();
+    }
+    holdWorkspaceActivity([repo, external])();
+  });
+}
+
+for (const backup of [false, true]) {
+  test(`registry damage ${backup ? 'with an older backup' : 'without a backup'} cannot hide management of a managed checkout`, async () => {
+    const repo = makeRepo();
+    const target = join(tempDir(), 'managed');
+    git(repo, 'worktree', 'add', '-q', '-b', 'feature/managed', target);
+    if (backup) await putRecord({ id: 'unrelated', path: join(tempDir(), 'unrelated') });
+    await putRecord({ id: 'managed', path: target });
+    const release = holdWorkspaceActivity([target]);
+    let admitted;
+    try {
+      assert.equal(tryAdmitWorkspaceActivity('before-damage', target), null);
+      writeFileSync(registryPath(), Buffer.alloc(64));
+      admitted = tryAdmitWorkspaceActivity('after-damage', target);
+      assert.equal(admitted, null, 'registry recovery cannot admit work over a live management lease');
+    } finally {
+      admitted?.();
+      release();
+    }
+    const leave = tryAdmitWorkspaceActivity('after-release', target);
+    assert.ok(leave, 'readers resume after management releases the checkout');
+    leave();
+  });
+}
+
+test('a profile without the registry entry still honors management of that checkout', { timeout: 20000 }, async (t) => {
   const repo = makeRepo();
-  const external = join(tempDir(), 'external');
-  git(repo, 'worktree', 'add', '-q', '-b', 'feature/external', external);
-  const writer = holdWorkspaceActivity([repo, external]);
-  const reader = tryAdmitWorkspaceActivity('external-turn', external);
-  assert.ok(reader, 'the external folder admits new work');
-  assert.equal(tryAdmitWorkspaceActivity('project-turn', repo), null, 'the project folder waits');
-  writer();
-  assert.throws(
-    () => holdWorkspaceActivity([repo, external]),
-    (error) => error.code === 'WORKTREE_BUSY_JOBS' && error.details.reason === 'folder-in-use'
-  );
-  reader();
-  holdWorkspaceActivity([repo, external])();
+  const target = join(tempDir(), 'managed');
+  git(repo, 'worktree', 'add', '-q', '-b', 'feature/managed', target);
+  await putRecord({ id: 'managed', path: target });
+  const release = holdWorkspaceActivity([target]);
+  try {
+    const child = reader(t, target);
+    const exited = once(child, 'exit');
+    assert.equal((await once(child, 'message'))[0], 'blocked');
+    await exited;
+  } finally {
+    release();
+  }
 });
 
 test('a background command retains admission after its parent turn finishes', async () => {
@@ -223,8 +275,80 @@ async function withShortRecovery(run) {
     else process.env.MIXDOG_ADMISSION_HEAL_MS = heal;
   }
 }
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const ledgerOf = (repo) => JSON.parse(readFileSync(join(repo, '.git', 'mixdog-workspace-admission.json'), 'utf8'));
+
+function assertManagementBusy(repo, message) {
+  let release;
+  try {
+    assert.throws(
+      () => {
+        release = holdWorkspaceActivity([repo]);
+      },
+      { code: 'WORKTREE_BUSY_JOBS' },
+      message
+    );
+  } finally {
+    release?.();
+  }
+}
+
+function withFailedRename(path, run) {
+  const rename = fs.renameSync;
+  fs.renameSync = (from, to, ...args) => {
+    if (to === path) throw Object.assign(new Error('injected rename failure'), { code: 'EIO' });
+    return rename(from, to, ...args);
+  };
+  syncBuiltinESMExports();
+  try {
+    return run();
+  } finally {
+    fs.renameSync = rename;
+    syncBuiltinESMExports();
+  }
+}
+
+for (const missing of [false, true]) {
+  test(`repeated management refusals preserve a foreign reader after ledger ${missing ? 'removal' : 'damage'}`, { timeout: 20000 }, async (t) => {
+    const repo = makeRepo();
+    const child = reader(t, repo, false, false, { MIXDOG_ADMISSION_HEAL_MS: '600000' });
+    assert.equal((await once(child, 'message'))[0], 'active');
+    const path = join(repo, '.git', 'mixdog-workspace-admission.json');
+    if (missing) unlinkSync(path);
+    else writeFileSync(path, Buffer.alloc(64));
+    assertManagementBusy(repo, 'the first management attempt refuses during recovery');
+    assertManagementBusy(repo, 'an immediate retry cannot forget the live foreign reader');
+    assert.equal(child.exitCode, null);
+    const exited = once(child, 'exit');
+    child.send('release');
+    await exited;
+    holdWorkspaceActivity([repo])();
+  });
+}
+
+for (const command of [false, true]) {
+  test(`recovery does not expire a delayed live ${command ? 'command' : 'turn'} holder`, { timeout: 20000 }, async (t) => {
+    await withShortRecovery(async () => {
+      const repo = makeRepo();
+      const child = reader(t, repo, false, command, { MIXDOG_ADMISSION_HEAL_MS: '600000' });
+      assert.equal((await once(child, 'message'))[0], 'active');
+      writeFileSync(join(repo, '.git', 'mixdog-workspace-admission.json'), Buffer.alloc(64));
+      const leave = tryAdmitWorkspaceActivity('later-reader', repo);
+      assert.ok(leave, 'readers continue while the ledger recovers');
+      leave();
+      // The foreign holder has not healed. Advance only this process's clock
+      // past the recovery window; elapsed time is not evidence of release.
+      const now = Date.now.bind(Date);
+      t.mock.method(Date, 'now', () => now() + RECOVERY_MS + 100);
+      process.kill(child.pid, 0);
+      assertManagementBusy(repo, 'elapsed recovery time cannot prove that a live holder released its lease');
+      const exited = once(child, 'exit');
+      if (command) child.kill();
+      else child.send('release');
+      await exited;
+      holdWorkspaceActivity([repo])();
+    });
+  });
+}
 
 test('a damaged ledger is kept aside: readers continue, a live holder is never lost, management resumes by itself', async () => {
   await withShortRecovery(async () => {
@@ -246,7 +370,7 @@ test('a damaged ledger is kept aside: readers continue, a live holder is never l
         'the damaged bytes are kept aside, not overwritten'
       );
       later();
-      // The holder in this process republished its lease: management still refuses on it.
+      // Recovery preserves the live holder, so management still refuses on it.
       assert.throws(() => holdWorkspaceActivity([repo]), {
         code: 'WORKTREE_BUSY_JOBS',
         details: { reason: 'folder-in-use' },
@@ -264,7 +388,7 @@ test('a damaged ledger is kept aside: readers continue, a live holder is never l
             import { holdWorkspaceActivity, tryAdmitWorkspaceActivity } from ${JSON.stringify(moduleUrl)};
             const cwd = process.argv[1];
             tryAdmitWorkspaceActivity('new-process', cwd)();
-            assert.throws(() => holdWorkspaceActivity([cwd]), { details: { reason: 'workspace-admission-unreadable' } });
+            assert.throws(() => holdWorkspaceActivity([cwd]), { details: { reason: 'folder-in-use' } });
           `,
           repo,
         ],
@@ -275,27 +399,53 @@ test('a damaged ledger is kept aside: readers continue, a live holder is never l
       for (const copy of asideCopies(repo)) unlinkSync(copy);
     }
     leave();
-    await sleep(RECOVERY_MS + 100);
     holdWorkspaceActivity([repo])();
     assert.deepEqual(ledgerOf(repo).leases, []);
-    assert.equal(ledgerOf(repo).recoveredAt, undefined, 'the unknown-lease state cleared on its own');
+    assert.equal(ledgerOf(repo).recoveredAt, undefined, 'complete recovery needs no unknown-lease delay');
   });
 });
 
-test('a recovered ledger refuses management only for the unknown window, then the block clears', async () => {
-  await withShortRecovery(async () => {
-    const repo = makeRepo();
-    writeFileSync(join(repo, '.git', 'mixdog-workspace-admission.json'), Buffer.alloc(64));
-    tryAdmitWorkspaceActivity('reader', repo)();
-    assert.throws(() => holdWorkspaceActivity([repo]), {
-      code: 'WORKTREE_BUSY_JOBS',
-      details: { reason: 'workspace-admission-unreadable' },
-    });
-    await sleep(RECOVERY_MS + 100);
-    holdWorkspaceActivity([repo])();
-    assert.equal(ledgerOf(repo).recoveredAt, undefined);
+test('damage without recovery evidence admits readers but keeps management refused across retries and elapsed time', (t) => {
+  const repo = makeRepo();
+  writeFileSync(join(repo, '.git', 'mixdog-workspace-admission.json'), Buffer.alloc(64));
+  assertManagementBusy(repo, 'the first refusal must retain the unresolved recovery state');
+  assertManagementBusy(repo, 'retrying cannot turn lost ownership evidence into an empty workspace');
+  const leave = tryAdmitWorkspaceActivity('reader', repo);
+  assert.ok(leave, 'readers can continue while earlier ownership is unknown');
+  leave();
+  const now = Date.now.bind(Date);
+  t.mock.method(Date, 'now', () => now() + 24 * 60 * 60 * 1000);
+  assert.throws(() => holdWorkspaceActivity([repo]), {
+    code: 'WORKTREE_BUSY_JOBS',
+    details: { reason: 'workspace-admission-unreadable' },
   });
+  assertManagementBusy(repo, 'elapsed time and repeated refusals cannot clear unknown ownership');
 });
+
+for (const [name, primary, mirror] of [
+  ['legacy management-only mirror', null, { version: 1, leases: [] }],
+  ['full mirror with an invalid record', null, { version: 1, allLeases: true, leases: [null] }],
+  ['old recovery timestamp', { version: 1, leases: [], recoveredAt: 1 }, { version: 1, allLeases: true, leases: [] }],
+  ['invalid record and recovery timestamp', { version: 1, leases: [null], recoveredAt: 'bad' }, null],
+  ['malformed recovery timestamp', { version: 1, leases: [], recoveredAt: 'bad' }, null],
+  ['null recovery timestamp', { version: 1, leases: [], recoveredAt: null }, null],
+]) {
+  test(`${name} cannot become complete ownership evidence on retry`, (t) => {
+    const repo = makeRepo();
+    const path = join(repo, '.git', 'mixdog-workspace-admission.json');
+    writeFileSync(path, primary ? JSON.stringify(primary) : Buffer.alloc(64));
+    if (mirror) writeFileSync(`${path}.management`, JSON.stringify(mirror));
+    const leave = tryAdmitWorkspaceActivity('reader', repo);
+    assert.ok(leave, 'uncertain ownership still permits readers');
+    leave();
+    assertManagementBusy(repo, 'rewriting the mirror cannot resolve uncertain ownership');
+    const now = Date.now.bind(Date);
+    t.mock.method(Date, 'now', () => now() + 24 * 60 * 60 * 1000);
+    assertManagementBusy(repo, 'elapsed time cannot resolve uncertain ownership');
+    unlinkSync(path);
+    assertManagementBusy(repo, 'recovering from the rewritten mirror must retain uncertainty');
+  });
+}
 
 test('a damaged ledger cannot hide a foreign management operation from readers', { timeout: 20000 }, async (t) => {
   await withShortRecovery(async () => {
@@ -375,7 +525,6 @@ test('one invalid lease record is dropped without discarding the valid leases', 
     const exited = once(child, 'exit');
     child.send('release');
     await exited;
-    await sleep(RECOVERY_MS + 100);
     holdWorkspaceActivity([repo])();
   });
 });
@@ -395,5 +544,89 @@ test('an unreadable ledger is not overwritten and admission resumes after access
     details: { reason: 'workspace-admission-unreadable' },
   });
   rmdirSync(path);
+  holdWorkspaceActivity([repo])();
+});
+
+test('a failed recovery-mirror write cannot grant new activity', () => {
+  const repo = makeRepo();
+  holdWorkspaceActivity([repo])();
+  const mirror = join(repo, '.git', 'mixdog-workspace-admission.json.management');
+  let unexpectedRelease;
+  try {
+    withFailedRename(mirror, () => {
+      assert.throws(
+        () => {
+          unexpectedRelease = tryAdmitWorkspaceActivity('unrecorded-reader', repo);
+        },
+        { code: 'WORKTREE_BUSY_JOBS', details: { reason: 'workspace-admission-unreadable' } }
+      );
+      assert.throws(
+        () => {
+          unexpectedRelease = holdWorkspaceActivity([repo]);
+        },
+        { code: 'WORKTREE_BUSY_JOBS', details: { reason: 'workspace-admission-unreadable' } }
+      );
+    });
+  } finally {
+    unexpectedRelease?.();
+  }
+  holdWorkspaceActivity([repo])();
+});
+
+test('a failed primary grant is retracted from the recovery mirror', () => {
+  for (const kind of ['turn', 'management']) {
+    const repo = makeRepo();
+    holdWorkspaceActivity([repo])();
+    const path = join(repo, '.git', 'mixdog-workspace-admission.json');
+    let unexpectedRelease;
+    try {
+      withFailedRename(path, () => {
+        assert.throws(
+          () => {
+            unexpectedRelease = kind === 'turn'
+              ? tryAdmitWorkspaceActivity('failed-primary-grant', repo)
+              : holdWorkspaceActivity([repo]);
+          },
+          { code: 'WORKTREE_BUSY_JOBS', details: { reason: 'workspace-admission-unreadable' } }
+        );
+      });
+    } finally {
+      unexpectedRelease?.();
+    }
+    writeFileSync(path, Buffer.alloc(64));
+    holdWorkspaceActivity([repo])();
+  }
+});
+
+test('a release can retry a failed mirror write without leaving stale ownership', () => {
+  const repo = makeRepo();
+  holdWorkspaceActivity([repo])();
+  const leave = tryAdmitWorkspaceActivity('retry-release', repo);
+  const path = join(repo, '.git', 'mixdog-workspace-admission.json');
+  const mirror = `${path}.management`;
+  try {
+    withFailedRename(mirror, () => {
+      assert.throws(leave, {
+        code: 'WORKTREE_BUSY_JOBS',
+        details: { reason: 'workspace-admission-unreadable' },
+      });
+    });
+    const next = spawnSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '-e',
+        `import { holdWorkspaceActivity } from ${JSON.stringify(moduleUrl)};
+         holdWorkspaceActivity([process.argv[1]])();`,
+        repo,
+      ],
+      { encoding: 'utf8', timeout: 10000, env: { ...process.env, MIXDOG_DATA_DIR: tempDir() } }
+    );
+    assert.equal(next.error, undefined);
+    assert.equal(next.status, 0, 'a healthy primary takes precedence over a stale mirror: ' + next.stderr);
+  } finally {
+    leave();
+  }
+  writeFileSync(path, Buffer.alloc(64));
   holdWorkspaceActivity([repo])();
 });

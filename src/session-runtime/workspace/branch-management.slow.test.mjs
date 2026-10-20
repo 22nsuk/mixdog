@@ -227,8 +227,8 @@ test('mergeProjectBranch preserves a live foreign turn when its shared ledger is
     ],
     {
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
-      // The child republishes its lease into a recovered ledger within 200ms.
-      env: { ...process.env, MIXDOG_DATA_DIR: tempDir(), MIXDOG_ADMISSION_HEAL_MS: '200' },
+      // Recovery must preserve the turn even when its holder cannot heal in time.
+      env: { ...process.env, MIXDOG_DATA_DIR: tempDir(), MIXDOG_ADMISSION_HEAL_MS: '600000' },
     }
   );
   t.after(async () => {
@@ -252,40 +252,36 @@ test('mergeProjectBranch preserves a live foreign turn when its shared ledger is
   const path = join(repo, '.git', 'mixdog-workspace-admission.json');
   const damaged = Buffer.alloc(readFileSync(path).length);
   writeFileSync(path, damaged);
-  // Whether the live turn's lease is still unknown or the child already
-  // republished it, the merge must not run.
-  await assert.rejects(merge(), (error) => {
-    assert.equal(error.code, 'WORKTREE_BUSY_JOBS');
-    assert.ok(['workspace-admission-unreadable', 'folder-in-use'].includes(error.details.reason), error.details.reason);
-    return true;
-  });
-  assert.equal(git(repo, 'rev-parse', 'HEAD'), head);
-  assert.equal(existsSync(join(repo, 'feature.txt')), false);
+
+  const assertMergeBlocked = async () => {
+    await assert.rejects(merge(), (error) => {
+      assert.equal(error.code, 'WORKTREE_BUSY_JOBS');
+      assert.ok(['workspace-admission-unreadable', 'folder-in-use'].includes(error.details.reason), error.details.reason);
+      return true;
+    });
+    assert.equal(git(repo, 'rev-parse', 'HEAD'), head);
+    assert.equal(existsSync(join(repo, 'feature.txt')), false);
+  };
+  // The first refusal must leave enough evidence for an immediate retry.
+  await assertMergeBlocked();
+  await assertMergeBlocked();
+
+  // A reader may repair the ledger, but neither that write nor the former
+  // recovery window proves that a different process's admitted turn ended.
+  const leaveReader = tryAdmitWorkspaceActivity('recovery-reader', repo);
+  assert.ok(leaveReader);
+  leaveReader();
+  await new Promise((resolve) => setTimeout(resolve, 1600));
   const alive = once(child, 'message');
   child.send('ping');
   assert.equal((await alive)[0], 'alive');
+  await assertMergeBlocked();
 
-  // The live turn republishes its lease, so the merge now refuses on it by name.
-  for (let i = 0; i < 100 && !readFileSync(path, 'utf8').includes('foreign-turn'); i += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  await assert.rejects(merge(), { code: 'WORKTREE_BUSY_JOBS', details: { reason: 'folder-in-use' } });
-  assert.equal(git(repo, 'rev-parse', 'HEAD'), head);
-
-  // Once the turn ends and the unknown window has passed, the block clears by itself.
+  // Normal release clears the refusal without deleting or repairing state by hand.
   const exited = once(child, 'exit');
   child.send('release');
   assert.deepEqual(await exited, [0, null]);
-  let merged = null;
-  for (let i = 0; i < 100 && !merged; i += 1) {
-    try {
-      merged = await merge();
-    } catch (error) {
-      assert.equal(error.details?.reason, 'workspace-admission-unreadable', String(error.stack));
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-  }
-  assert.equal(merged?.merged, true);
+  assert.equal((await merge()).merged, true);
   assert.equal(git(repo, 'rev-parse', 'HEAD^2'), git(source.path, 'rev-parse', 'HEAD'));
 });
 

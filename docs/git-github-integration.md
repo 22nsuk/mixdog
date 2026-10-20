@@ -46,14 +46,41 @@ list. Authentication is managed in the plugin details.
 
 ## Workspace activity recovery
 
-"Workspace activity cannot be verified. Nothing was changed." can mean the
-repository's shared activity ledger is unreadable or damaged. Mixdog preserves
-that file and refuses new work and workspace changes: its missing contents
-cannot establish whether another profile still has a running turn, background
-command, or branch change. Valid records still reclaim leases whose processes
-are confirmed dead; restarting alone does not repair a damaged record.
+Mixdog keeps turn, command and management leases in the repository's shared
+`mixdog-workspace-admission.json` ledger and a recovery copy named
+`mixdog-workspace-admission.json.management`. The latter name is retained for
+compatibility; new copies cover all three lease kinds. Both copies are written
+under the same lock before a new admission succeeds.
 
-To recover a damaged ledger:
+A damaged or missing ledger is rebuilt from the complete recovery copy.
+Damaged bytes are preserved as `.corrupt-<timestamp>-<id>`. Live holders remain
+protected even when their runtime is paused or cannot run its heal timer.
+Readers continue unless a management lease holds their checkout. Management
+resumes when conflicting leases are released or their processes are confirmed
+dead; a recovery timeout no longer clears ownership. A refused request still
+persists the recovered state, so retrying cannot bypass it.
+
+A healthy ledger also repairs its recovery copy. If neither copy can establish
+all ownership, or only an older management-only copy survives, the unknown
+state is preserved across retries and restarts. Readers can continue under the
+known management holds, but destructive workspace changes refuse with
+"Workspace activity cannot be verified. Nothing was changed." Waiting does
+not establish that missing holders stopped. If both copies are lost, missing
+management holds cannot be reconstructed either; use the recovery procedure
+below. A real read or write access failure refuses admission until access is
+restored.
+
+Automatic recovery requires participating runtimes to write the full recovery
+copy. Finish or restart older runtimes using this repository and its linked
+worktrees when upgrading: older versions record readers only in the ledger,
+so a mixed-version recovery copy cannot establish all live ownership.
+
+An existing management hold also survives a worktree registry recovery or a
+reader using a different profile. A fallback registry that omits the checkout
+does not cancel its published hold. This does not reconstruct lost managed
+worktree registration; the external-checkout policy for new holds is unchanged.
+
+To recover when ownership cannot be reconstructed:
 
 1. Finish or stop all Mixdog work using the repository **and its linked
    worktrees**, including background commands in every profile. Stop those
@@ -61,12 +88,12 @@ To recover a damaged ledger:
    may leave its runtime or commands running.
 2. From a checkout, locate the shared Git directory with
    `git rev-parse --path-format=absolute --git-common-dir`. Inspect and preserve
-   its `mixdog-workspace-admission.json` file.
+   its ledger and `.management` recovery copy.
 3. If permissions or storage errors prevented the read, restore access instead
    of resetting the ledger. If the contents are damaged and all work is stopped,
-   manually move **only that file** to a separate name for inspection, then
-   restart Mixdog. The absent ledger can now start empty without losing live
-   ownership. Do not delete the Git directory or substitute an older ledger
+   manually move **both admission files** to separate names for inspection,
+   then restart Mixdog. The absent pair can now start empty without losing
+   live ownership. Do not delete the Git directory or substitute an older
    snapshot that may omit still-running work.
 
 ## Reference review
