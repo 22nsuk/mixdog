@@ -25,6 +25,23 @@ const { retainNativeTaskResult } = await import('./lib/native-spawn-client.mjs')
 const { executeTaskTool, stopBackgroundShellJob } = await import('./builtin/task-tool.mjs');
 after(cleanupTempDirs);
 
+// These bounds must keep advancing while a test controls shell timers.
+const signalTimeout = setTimeout;
+const clearSignalTimeout = clearTimeout;
+async function waitForSignal(promise, label) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = signalTimeout(() => reject(new Error(`${label} did not settle`)), 5_000);
+      }),
+    ]);
+  } finally {
+    clearSignalTimeout(timer);
+  }
+}
+
 test('a wiring fault after spawn settles the run instead of hanging the caller', async () => {
   const releases = [];
   const admission = {
@@ -136,6 +153,10 @@ for (const cancellation of ['none', 'before root exit', 'after root exit']) {
     const flush = () => new Promise((resolve) => setImmediate(resolve));
     let rows = [{ pid: 4550 }, { pid: 4551, ppid: 4550, token: 'queued-worker' }];
     tree.state.next = () => processTable(rows);
+    const admissionRequested = Promise.withResolvers();
+    const admissionGranted = Promise.withResolvers();
+    const ready = Promise.withResolvers();
+    const rootKilled = Promise.withResolvers();
     let run;
     spawn = async ({ run: current }) => {
       run = current;
@@ -148,8 +169,16 @@ for (const cancellation of ['none', 'before root exit', 'after root exit']) {
           this.exitCode = 1;
           rows = [{ pid: 4551, ppid: 1, token: 'queued-worker' }];
           this.emit('close', 1, null);
+          rootKilled.resolve();
           return true;
         },
+      });
+      // Admission and policy preflight may outlive any number of event-loop
+      // turns. The run is ready only after its close handler is installed.
+      run.child.on('newListener', function onListener(event) {
+        if (event !== 'close') return;
+        this.removeListener('newListener', onListener);
+        ready.resolve();
       });
       run.terminationTracker = createProcessTreeTracker({ pid: run.child.pid });
       await run.terminationTracker.capture();
@@ -161,43 +190,61 @@ for (const cancellation of ['none', 'before root exit', 'after root exit']) {
       admission: {
         async acquire() {
           if (++admissions === 1) throw Object.assign(new Error('saturated'), { admissionSaturated: true });
+          admissionRequested.resolve();
+          await admissionGranted.promise;
           return { release: async () => {} };
         },
       },
     });
-    assert.equal(queued.backgrounded, true);
-    await flush();
-    const task = getBackgroundTask(run.foregroundRecordId);
-    assert.ok(task);
+    let task;
     let stopping = null;
-    if (cancellation === 'before root exit') cancelBackgroundTask(task.taskId, 'cancel queued foreground');
-    else {
-      run.child.exitCode = 0;
-      rows = [{ pid: 4551, ppid: 4550, token: 'queued-worker' }];
-      run.child.emit('close', 0, null);
-    }
-    await flush();
-    if (cancellation === 'after root exit') {
-      retainNativeTaskResult({ jobId: task.taskId, status: 'completed', exitCode: 0 });
-      await executeTaskTool({ action: 'read', task_id: task.taskId }, { sessionId: 'queued-owner' });
-      assert.equal(task.status, 'running', 'task read cannot finalize the queued run from its native root result');
-      tree.state.kills.length = 0;
-      stopping = stopBackgroundShellJob(task.taskId, { sessionId: 'queued-owner' });
-      await flush();
-      t.mock.timers.tick(200);
-      await flush();
-      assert.ok(tree.state.kills.includes(4551), 'task cancellation reaches the handed-off survivor');
-    }
     try {
+      assert.equal(queued.backgrounded, true);
+      await waitForSignal(admissionRequested.promise, 'queued admission request');
+      assert.equal(run, undefined, 'the queued command waits for its execution slot');
+      admissionGranted.resolve();
+      await waitForSignal(ready.promise, 'queued command startup');
+      task = getBackgroundTask(run.foregroundRecordId);
+      assert.ok(task);
+      if (cancellation === 'before root exit') {
+        cancelBackgroundTask(task.taskId, 'cancel queued foreground');
+        await waitForSignal(rootKilled.promise, 'queued root cancellation');
+        assert.equal(run.child.exitCode, 1, 'cancellation reaches the running root before fixture cleanup');
+      } else {
+        run.child.exitCode = 0;
+        rows = [{ pid: 4551, ppid: 4550, token: 'queued-worker' }];
+        run.child.emit('close', 0, null);
+      }
+      await flush();
+      if (cancellation === 'after root exit') {
+        retainNativeTaskResult({ jobId: task.taskId, status: 'completed', exitCode: 0 });
+        await executeTaskTool({ action: 'read', task_id: task.taskId }, { sessionId: 'queued-owner' });
+        assert.equal(task.status, 'running', 'task read cannot finalize the queued run from its native root result');
+        tree.state.kills.length = 0;
+        stopping = stopBackgroundShellJob(task.taskId, { sessionId: 'queued-owner' });
+        await flush();
+        t.mock.timers.tick(200);
+        await flush();
+        assert.ok(tree.state.kills.includes(4551), 'task cancellation reaches the handed-off survivor');
+      }
       assert.equal(task.status, 'running', 'a live descendant keeps the task active');
       assert.equal(task.finishedAt, null);
       assert.throws(() => holdWorkspaceActivity([repo]), { code: 'WORKTREE_BUSY_JOBS' });
     } finally {
+      // A failed startup assertion must not leave a queued callback able to
+      // enter the next case's shared spawn fixture and acquire its workspace.
+      admissionGranted.resolve();
+      await waitForSignal(Promise.race([ready.promise, queued.settled]), 'queued startup cleanup');
       rows = [];
-      t.mock.timers.tick(5_000);
+      if (run?.child && run.child.exitCode == null) {
+        run.child.exitCode = 0;
+        run.child.emit('close', 0, null);
+      }
       await flush();
+      t.mock.timers.tick(5_000);
+      await waitForSignal(queued.settled, 'queued tree cleanup');
+      if (stopping) await waitForSignal(stopping, 'queued stop cleanup');
     }
-    await queued.settled;
     assert.equal(task.status, cancelled ? 'cancelled' : 'completed');
     if (stopping) assert.deepEqual(await stopping, { stopped: true });
     assert.doesNotThrow(() => holdWorkspaceActivity([repo])());
