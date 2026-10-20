@@ -276,16 +276,41 @@ test('CP949 stream ending in a lone lead byte is held back until final', async (
   assert.equal(directOutput('codepage-lead2', done).getLiveTail(), `${CP949_TEXT}한`);
 });
 
-test('promoted completion flushes the decoders', () => {
+test('promoted completion flushes the decoders and closes capture once the tree settles', async (t) => {
+  let settleTree;
   const run = {
     child: { exitCode: 0 },
+    treeSettled: new Promise((resolve) => {
+      settleTree = resolve;
+    }),
     taskOutput: new TaskOutput('codepage-promoted'),
     stdoutDecoder: new ShellTextDecoder('euc-kr'),
     stderrDecoder: new ShellTextDecoder('euc-kr'),
   };
+  t.after(() => run.taskOutput.deleteFiles());
+  run.taskOutput.forceSpill();
+  const stdoutEnd = t.mock.method(run.stdoutDecoder, 'end');
+  const stderrEnd = t.mock.method(run.stderrDecoder, 'end');
+  const closeFds = t.mock.method(run.taskOutput, 'closeFds');
   assert.equal(run.stdoutDecoder.write(Buffer.from('é done\n', 'utf8')), '');
-  createPromotedCaptureRelease(run)();
-  assert.equal(run.taskOutput.stdoutBuf, 'é done\n');
+  assert.equal(run.stderrDecoder.write(Buffer.from('é error\n', 'utf8')), '');
+  const releaseCapture = createPromotedCaptureRelease(run);
+  releaseCapture();
+  releaseCapture();
+  await Promise.resolve();
+  for (const operation of [stdoutEnd, stderrEnd, closeFds]) assert.equal(operation.mock.callCount(), 0);
+  assert.equal(fstatSync(run.taskOutput.stdoutFd).size, 0, 'root exit leaves stdout open and unflushed');
+  assert.equal(fstatSync(run.taskOutput.stderrFd).size, 0, 'root exit leaves stderr open and unflushed');
+
+  settleTree(true);
+  await run.treeSettled;
+  releaseCapture();
+  await Promise.resolve();
+  for (const operation of [stdoutEnd, stderrEnd, closeFds]) assert.equal(operation.mock.callCount(), 1);
+  assert.equal(run.taskOutput.stdoutFd, null);
+  assert.equal(run.taskOutput.stderrFd, null);
+  assert.equal(await run.taskOutput.getStdout(true), 'é done\n');
+  assert.equal(await run.taskOutput.getStderr(true), 'é error\n');
 });
 
 function spill(name, bytes) {
