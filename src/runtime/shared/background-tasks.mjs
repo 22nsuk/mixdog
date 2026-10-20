@@ -22,6 +22,7 @@ const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled']);
 // A `notifyOnCancel` task reports its cancellation to the owner once, after its
 // run settles, so the notification can carry what the run produced before it
 // stopped. A run that never settles still reports, header-only, after this grace.
+// Tasks that defer cancellation until settlement do not use this grace period.
 const CANCEL_NOTIFY_GRACE_MS = 10_000;
 const tasks = new Map();
 let seq = 0;
@@ -164,6 +165,7 @@ export function registerBackgroundTask({
   renderResult,
   cancel,
   notifyOnCancel = false,
+  deferCancelUntilSettled = false,
 } = {}) {
   pruneTasks();
   const explicitId = clean(taskId);
@@ -203,6 +205,7 @@ export function registerBackgroundTask({
     renderResult: typeof renderResult === 'function' ? renderResult : null,
     cancel: typeof cancel === 'function' ? cancel : null,
     notifyOnCancel: notifyOnCancel === true,
+    deferCancelUntilSettled: deferCancelUntilSettled === true,
   };
   tasks.set(id, task);
   emitSessionActivityChange(task.ownerSessionId || '');
@@ -303,14 +306,24 @@ export function cleanupBackgroundTasks(options = {}) {
   return { removed: before - after, tasks: after };
 }
 
-// `notify`: true notifies immediately, false never notifies (owner teardown).
+// `notify`: true requests a notification, false never notifies (owner teardown).
 // Left unset, a `notifyOnCancel` task defers its single `cancelled`
 // notification until its run settles (see settleCancelledBackgroundTask); any
 // other task stays silent.
 function cancelRunningTask(task, reason, notify) {
+  if (task.deferCancelUntilSettled) {
+    // The run/watcher owns the completion boundary. Record the request before
+    // calling its cancel hook, which may complete synchronously; retries may
+    // request another termination attempt but cannot undo owner teardown silence.
+    task.pendingCancel ||= { reason };
+    if (notify === false || (notify === true && task.pendingCancel.notify !== false)) {
+      task.pendingCancel.notify = notify;
+    }
+  }
   try {
     task.cancel?.();
   } catch {}
+  if (task.deferCancelUntilSettled) return;
   completeBackgroundTask(task.taskId, { status: 'cancelled', error: reason, notify: notify === true });
   if (task.notifyOnCancel !== true || notify === true || task.status !== 'cancelled' || task.cancelNotify) return;
   if (notify === false) {
@@ -439,6 +452,14 @@ export function completeBackgroundTask(
   const task = getBackgroundTask(taskId);
   if (!task) return null;
   if (TERMINAL_STATUSES.has(task.status)) return task;
+  if (task.pendingCancel) {
+    const pending = task.pendingCancel;
+    status = 'cancelled';
+    error ??= pending.reason;
+    notify = notify && (pending.notify === true || (pending.notify !== false && task.notifyOnCancel));
+    if (!notify) task.cancelNotify = 'silent';
+    task.pendingCancel = null;
+  }
   const now = Date.now();
   task.status = normalizeStatus(status);
   task.finishedAtMs = now;

@@ -6,8 +6,8 @@ import { isShellJobRunning, subscribeShellJobSettled } from '../shell-jobs.mjs';
 // capture) stay in use by a command that was promoted to a background task, so
 // they are removed when that TASK SETTLES. A fixed 10 s timer deleted the
 // hoisted script out from under a still-running command; the ceiling below only
-// covers a job whose settlement event never arrives, and the exit hook prevents
-// one-shot CLI/test leftovers.
+// covers a job whose settlement event never arrives. Only files already safe
+// to remove enter the retry/exit-hook set: host exit does not stop descendants.
 // Rules:
 //   - a promoted command still USES its artifacts, so removal waits for the
 //     task to settle (a fixed timer deleted the script under a live command);
@@ -81,7 +81,6 @@ export function removeTransportFileNow(file) {
 
 export function cleanupArtifactOnTaskSettled(file, jobId, remove = removeTransportFile) {
   if (!file) return;
-  registerTransportArtifact(file);
   let finished = false;
   let unsubscribe = null;
   const done = () => {
@@ -93,6 +92,7 @@ export function cleanupArtifactOnTaskSettled(file, jobId, remove = removeTranspo
       /* best-effort */
     }
     unsubscribe = null;
+    registerTransportArtifact(file);
     finishTransportArtifact(file, remove);
   };
   unsubscribe = jobId ? subscribeShellJobSettled(jobId, done) : null;

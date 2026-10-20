@@ -462,7 +462,7 @@ export async function listShellJobRecords({ strict = false } = {}) {
   });
 }
 
-/** Retire the record once the job is no longer running. */
+/** Retire a finished foreground marker or an explicitly released hold. */
 export function retireShellJobRecord(jobId) {
   const key = String(jobId || '').trim();
   if (!key) return;
@@ -472,7 +472,7 @@ export function retireShellJobRecord(jobId) {
   paths.delete(key);
   // Queued behind every earlier publish and ahead of any later one: a promoted
   // job publishing after this call is written only once this removal is done.
-  void enqueue(key, async () => {
+  return enqueue(key, async () => {
     records.delete(key);
     incarnations.delete(key);
     await removePaths(list);

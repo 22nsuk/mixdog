@@ -174,15 +174,37 @@ export function setNativeTaskOutputPaths(jobId, { stdoutPath = null, stderrPath 
   if (known) Object.assign(known, paths);
 }
 
+/** Retain the shell owner's final tree result in the existing bounded cache.
+ *  Its native root may have finished (and expired) long before its children.
+ *  Late native refreshes must preserve this final status and finish time. */
+export function retainNativeTaskResult(detail) {
+  const key = String(detail?.jobId || '').trim();
+  if (!key || detail.status === 'running') return;
+  _setTaskOverride(key, {
+    terminalResult: {
+      status: detail.status,
+      nativeStatus: detail.nativeStatus,
+      killed: detail.killed === true,
+      finishedAt: detail.finishedAt,
+    },
+  });
+  _tasks.set(key, { ...detail });
+  _terminalAtMs.delete(key);
+  _markTerminalTask(key, detail.status);
+}
+
 function normalizeTask(task) {
   if (!task || typeof task !== 'object' || !task.jobId) return null;
   const jobId = String(task.jobId);
   const override = _taskOverrides.get(jobId);
   const startedAtMs = override?.startedAtMs || Number(task.startedAtMs) || Date.now();
   const finishedAtMs = Number(task.finishedAtMs) || 0;
+  const requestId = Number(task.requestId) || 0;
+  const exitCode = task.exitCode == null ? null : Number(task.exitCode);
+  const signal = task.signal || null;
   return {
     jobId,
-    requestId: Number(task.requestId) || 0,
+    requestId,
     pid: Number(task.pid) || null,
     kind: 'native',
     status: String(task.status || 'running'),
@@ -191,8 +213,13 @@ function normalizeTask(task) {
     shellType: task.shellType ? String(task.shellType) : null,
     ownerSessionId: task.ownerSessionId ? String(task.ownerSessionId) : null,
     clientHostPid: Number(task.clientHostPid) || null,
-    exitCode: task.exitCode == null ? null : Number(task.exitCode),
-    signal: task.signal || null,
+    exitCode,
+    signal,
+    // A failed IPC request is terminal diagnostically, but says nothing
+    // about the OS process. Only a real wait status proves root exit.
+    rootExitObserved: _tasks.get(jobId)?.rootExitObserved === true ||
+      _server?.pending.get(requestId)?.child?.rootExitObserved === true ||
+      Number.isInteger(exitCode) || Boolean(signal),
     timedOut: task.timedOut === true,
     killed: task.killed === true,
     error: task.error ? String(task.error) : null,
@@ -205,6 +232,7 @@ function normalizeTask(task) {
     stdoutPath: override?.stdoutPath || null,
     stderrPath: override?.stderrPath || null,
     mergeStderr: false,
+    ...override?.terminalResult,
   };
 }
 
@@ -252,6 +280,7 @@ class NativeSpawnChild extends EventEmitter {
     this.killed = false;
     this.exitCode = null;
     this.signalCode = null;
+    this.rootExitObserved = false;
     this.stdout = new LineStream();
     this.stderr = new LineStream();
     this.stdin = null;
@@ -368,6 +397,11 @@ function _teardown(error, { kill = true } = {}) {
   _server = null;
   _lastFailureAt = Date.now();
   if (!server) return;
+  // root_exit can precede task_complete by the output-drain interval.
+  // Preserve that real observation before fail() removes pending children.
+  for (const task of _tasks.values()) {
+    if (server.pending.get(task.requestId)?.child?.rootExitObserved === true) task.rootExitObserved = true;
+  }
   for (const pending of server.pending.values()) {
     try {
       pending.fail(error || new Error('native spawn server exited'));
@@ -600,10 +634,14 @@ export function tryNativeSpawn({ shell, argv, spawnOptions = {}, cwd } = {}) {
     fail(error) {
       server.pending.delete(id);
       const err = error instanceof Error ? error : new Error(String(error || 'native spawn failed'));
-      if (fake.exitCode == null) {
-        fake.exitCode = 1;
-        fake.emit('error', err);
-        fake.emit('close', 1, null);
+      if (!fake._closed) {
+        if (!fake.rootExitObserved) fake.exitCode = 1;
+        fake._closed = true;
+        try {
+          fake.emit('error', err);
+        } finally {
+          fake.emit('close', fake.exitCode, fake.signalCode);
+        }
       }
       _recomputeServerRef(server);
     },
@@ -620,17 +658,21 @@ export function tryNativeSpawn({ shell, argv, spawnOptions = {}, cwd } = {}) {
       } else if (event === 'stderr' && (message.dataBase64 || message.text)) {
         const chunk = message.dataBase64 ? Buffer.from(String(message.dataBase64), 'base64') : String(message.text);
         fake.stderr.emit('data', chunk);
-      } else if (event === 'root_exit') {
-        fake.exitCode = message.code == null ? null : Number(message.code);
-        fake.signalCode = message.signal || null;
-        fake.emit('exit', fake.exitCode, fake.signalCode);
-      } else if (event === 'exit') {
-        server.pending.delete(id);
-        fake.exitCode = message.code == null ? null : Number(message.code);
-        fake.signalCode = message.signal || null;
-        fake._closed = true;
-        fake.emit('close', fake.exitCode, fake.signalCode);
-        _recomputeServerRef(server);
+      } else if (event === 'root_exit' || event === 'exit') {
+        const code = message.code == null ? null : Number(message.code);
+        const signal = message.signal || null;
+        if (Number.isInteger(code) || signal) {
+          fake.exitCode = code;
+          fake.signalCode = signal;
+          fake.rootExitObserved = true;
+        }
+        if (event === 'root_exit') fake.emit('exit', fake.exitCode, fake.signalCode);
+        else {
+          server.pending.delete(id);
+          fake._closed = true;
+          fake.emit('close', fake.exitCode, fake.signalCode);
+          _recomputeServerRef(server);
+        }
       } else if (event === 'error') {
         const detail = String(message.message || 'native spawn failed');
         const err = new Error(message.code ? `${message.code}: ${detail}` : detail);

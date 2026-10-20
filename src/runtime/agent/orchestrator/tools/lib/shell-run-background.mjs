@@ -15,6 +15,7 @@
 //   shell-run-background/promotion-results.mjs — the ExecResult of each promotion outcome
 import { clearForegroundRecord, clearForegroundTimers, elapsedSinceStart } from './shell-run-state.mjs';
 import { readCapturedOutput } from './shell-run-settle.mjs';
+import { peekShellJob, waitForShellJob } from '../builtin/shell-jobs.mjs';
 import { handOverLease, killAfterFailedPromotion, promoteWithRetry } from './shell-run-background/promote-job.mjs';
 import {
   promotedSpillPaths,
@@ -56,6 +57,7 @@ export function createAutoBackground({
   ownerSessionId,
   promotedTimeoutMs,
   backgroundDeadlineMs,
+  releasePromotedCapture,
 }) {
   const { taskOutput, abortSignal } = run;
   const promotion = { run, command, cwd, clientHostPid, ownerSessionId };
@@ -73,11 +75,9 @@ export function createAutoBackground({
     // they cannot treeKill the now-promoted child.
     clearForegroundTimers(run);
     // Keep the abort handler ATTACHED through the promotion window. A user
-    // cancel racing in after promotion starts must still bring the promoted
-    // child down — the handler's treeKill(child) does exactly that (settle()
-    // is inert once autoBackgrounded, but the kill itself still lands, and
-    // refreshShellJob then flags the job failed). We only detach on a real
-    // settle() or on the promotion-failure fallback below.
+    // cancel racing with promotion must still stop the tree. The foreground
+    // owner snapshots until registry adoption; the adopted job owns later
+    // cancellation. We detach after the outcome of that handoff is reported.
     // Every subsequent stdout/stderr chunk must hit disk — the call is
     // about to resolve and nobody will drain the in-memory buffers again.
     try {
@@ -108,6 +108,7 @@ export function createAutoBackground({
     }
     const jobId = job.jobId;
     run.autoBackgroundJobId = jobId;
+    releasePromotedCapture?.();
     await handOverLease(run);
     // Snapshot the partial output captured so far for the immediate result.
     const { stdout, stderr } = await readCapturedOutput(taskOutput);
@@ -127,6 +128,14 @@ export function createAutoBackground({
     // well — when 'close' fired before the once('close') wiring, nothing
     // else would ever flip the promoted job detail off 'running'.
     if (run.child.exitCode != null || run.child.signalCode != null) {
+      // Promotion may commit after root exit while descendants still run.
+      // Allow one bounded observation for the usual completed race; otherwise
+      // return a tracked task whose lifecycle still owns its artifacts.
+      const detail = await waitForShellJob(jobId, { timeoutMs: 2_000 });
+      if (detail?.status === 'running' || peekShellJob(jobId)?.status === 'running') {
+        resolveBackgrounded(run, { jobId, reason, remainingBackgroundTimeoutMs }, capture);
+        return;
+      }
       // The run is over: the mid-run snapshot held back an incomplete tail
       // and left the encoding open. A completed result carries the final read.
       const final = await readCapturedOutput(taskOutput, true);
@@ -139,7 +148,7 @@ export function createAutoBackground({
   return (options) => {
     void _autoBackground(options).catch((error) => {
       if (run.isResolved()) return;
-      resolveCleanupFailure(run, error);
+      return resolveCleanupFailure(run, error);
     });
   };
 }

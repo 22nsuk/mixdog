@@ -5,7 +5,7 @@
 // PROCESS_TABLE_READ_BOUND_MS, and then sends the kill whether or not they
 // arrived. A missing snapshot leaves the outcome unknown, so the workspace
 // stays held under the observation loop instead of being released blind.
-import { cancelNativeTasks } from './native-spawn-client.mjs';
+import { cancelNativeTask, cancelNativeTasks, getNativeTask } from './native-spawn-client.mjs';
 import { killAfterSnapshot } from './shell-descendants.mjs';
 
 // jobId -> { ownerSessionId, prepareKill }. prepareKill() marks the tree as
@@ -25,6 +25,31 @@ export function registerOwnedShellTree(jobId, entry) {
 export function unregisterOwnedShellTree(jobId, entry) {
   const key = String(jobId || '').trim();
   if (ownedTrees.get(key) === entry) ownedTrees.delete(key);
+}
+
+/** Cancel a queued command's current tree without claiming another command
+ *  of the same owner. Its lifecycle keeps the registration until termination,
+ *  so retries still reach descendants after the foreground result returned. */
+export function cancelOwnedShellTree(jobId) {
+  const key = String(jobId || '').trim();
+  const entry = ownedTrees.get(key);
+  if (!entry) return null;
+  let ready;
+  try {
+    ready = entry.prepareKill();
+  } catch {
+    ready = false;
+  }
+  const send = () => {
+    try {
+      return getNativeTask(key)?.status === 'running' ? cancelNativeTask(key) : null;
+    } catch {
+      // A lost native link is not termination; the lifecycle observer keeps
+      // the tree and its known identities available for cleanup.
+      return null;
+    }
+  };
+  return ready === true ? send() : killAfterSnapshot(Promise.resolve(ready).catch(() => false), send);
 }
 
 /** Prepare the kill of every registered tree — of one owner, or of all when
@@ -52,6 +77,7 @@ export function prepareOwnedShellTreeKills(ownerSessionId = null) {
  *  promise that sends the cancel once the snapshots land or the bound passes. */
 export function cancelOwnedShellTrees(ownerSessionId) {
   const owner = String(ownerSessionId || '').trim();
+  if (!owner) return cancelNativeTasks({ ownerSessionId: owner });
   const pending = prepareOwnedShellTreeKills(owner);
   if (pending.length === 0) return cancelNativeTasks({ ownerSessionId: owner });
   let result = null;

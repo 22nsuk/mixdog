@@ -5,10 +5,13 @@ import { holdWorkspaceActivity, tryAdmitWorkspaceActivity } from '../../../../..
 import { cleanupTempDirs, makeRepo } from '../../../../../shared/worktrees/test-support.mjs';
 import { processTable, scriptedChildTree } from '../../lib/process-table-fixture.mjs';
 import {
+  cancelBackgroundTask,
   completeBackgroundTask,
+  getBackgroundTask,
   hasActiveBackgroundTasks,
   registerBackgroundTask,
 } from '../../../../../shared/background-tasks.mjs';
+import { parseTaskNotification } from '../../../../../shared/task-notification-envelope.mjs';
 import { withTurnProgress } from '../../../session/agent-pool-progress.mjs';
 import { isTurnInFlight } from '../../../session/manager/runtime-state.mjs';
 
@@ -125,4 +128,70 @@ test('survivors a finished command left running do not hold the idle agent row w
   await flush();
   await flush();
   assert.equal(hasActiveBackgroundTasks(scope), false, 'the task settled once the survivors were gone');
+});
+
+test('cancelling detached survivors keeps the task live and sweeping until physical termination', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const repo = makeRepo();
+  const owner = 'sess_cancel_survivors';
+  const jobId = 'job_cancel_survivors';
+  const notifications = [];
+  const survivor = { pid: process.pid, ppid: 1, token: 'survivor' };
+  tree.state.next = () => processTable([survivor]);
+  tree.state.kills.length = 0;
+  adoptShellWorkspaceAdmission(jobId, tryAdmitWorkspaceActivity(owner, repo, { kind: 'command' }));
+  renderCompletedResult({
+    result: {
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+      descendants: {
+        taskId: jobId,
+        rootPid: 7300,
+        groupPid: null,
+        killPids: [process.pid],
+        watchPids: [process.pid],
+        watch: [{ pid: process.pid, token: 'survivor', name: 'node.exe' }],
+        reachable: true,
+      },
+    },
+    command: 'node server.js',
+    analysisCommand: 'node server.js',
+    cwd: repo,
+    options: { sessionId: owner, notifyFn: (text) => notifications.push(text) },
+    startedAtMs: Date.now(),
+    stdout: '',
+    stderr: '',
+    timeout: 0,
+  });
+  await flush();
+  const task = getBackgroundTask(jobId);
+  assert.equal(task.detached, true);
+  cancelBackgroundTask(jobId, 'cancelled by task control', { notify: true });
+  assert.deepEqual(await task.cancelOutcome, { terminated: false, survivors: [process.pid] });
+  assert.equal(task.status, 'running');
+  assert.equal(task.finishedAtMs, null);
+  assert.equal(hasActiveBackgroundTasks({ callerSessionId: owner }), true);
+  assert.equal(isHeld(repo), true);
+  assert.equal(notifications.length, 0);
+
+  const attempts = tree.state.kills.length;
+  t.mock.timers.tick(5_000);
+  await flush();
+  assert.ok(tree.state.kills.length > attempts, 'the existing observer starts sweeping after cancellation');
+  assert.equal(task.status, 'running');
+  assert.equal(notifications.length, 0);
+
+  tree.state.next = () => processTable([]);
+  t.mock.timers.tick(5_000);
+  await task.promise;
+  assert.equal(task.status, 'cancelled');
+  assert.equal(task.result.status, 'cancelled');
+  assert.equal(hasActiveBackgroundTasks({ callerSessionId: owner }), false);
+  assert.equal(isHeld(repo), false);
+  completeBackgroundTask(jobId, { status: 'completed' });
+  t.mock.timers.tick(5_000);
+  await flush();
+  assert.equal(notifications.length, 1);
+  assert.equal(parseTaskNotification(notifications[0]).status, 'cancelled');
 });

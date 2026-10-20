@@ -11,6 +11,7 @@ import {
   cleanupBackgroundTasks,
   completeBackgroundTask,
   getBackgroundTask,
+  hasActiveBackgroundTasks,
   reconcileBackgroundTask,
   registerBackgroundTask,
   renderBackgroundTask,
@@ -381,6 +382,109 @@ test('shell task cancellation keeps its notification behavior', async () => {
     assert.equal(parseTaskNotification(notifications[0]).status, 'cancelled');
   } finally {
     cleanupBackgroundTasks({ force: true });
+  }
+});
+
+test('shell cancellation awaiting settlement stays active and retained without a notification grace timeout', () => {
+  const notifications = [];
+  let cancelCalls = 0;
+  mock.timers.enable({ apis: ['Date', 'setTimeout'], now: Date.now() });
+  const task = registerBackgroundTask({
+    surface: 'shell',
+    deferCancelUntilSettled: true,
+    notifyOnCancel: true,
+    context: { callerSessionId: CANCEL_OWNER, notifyFn: (text) => notifications.push(text) },
+    cancel: () => {
+      cancelCalls += 1;
+    },
+  });
+  try {
+    cancelBackgroundTask(task.taskId, 'cancelled by task control');
+    cancelBackgroundTask(task.taskId, 'retry');
+    assert.equal(cancelCalls, 2, 'a pending cancellation can retry its termination hook');
+    assert.equal(task.status, 'running');
+    assert.equal(task.finishedAt, null);
+    assert.equal(task.finishedAtMs, null);
+    assert.equal(acknowledgeBackgroundTaskCompletion(task.taskId), null);
+    assert.equal(hasActiveBackgroundTasks({ callerSessionId: CANCEL_OWNER }), true);
+    mock.timers.tick(31 * 60_000);
+    cleanupBackgroundTasks();
+    assert.equal(getBackgroundTask(task.taskId), task, 'unfinished cancellation must survive task TTL pruning');
+    assert.equal(notifications.length, 0, 'notification cannot outrun physical settlement');
+
+    completeBackgroundTask(task.taskId, { resultText: 'final output', terminalReason: 'tree-settled' });
+    assert.equal(task.status, 'cancelled');
+    assert.equal(task.finishedAtMs, Date.now());
+    assert.equal(task.error, 'cancelled by task control');
+    assert.equal(task.resultText, 'final output');
+    assert.equal(task.terminalReason, 'tree-settled');
+    assert.equal(hasActiveBackgroundTasks({ callerSessionId: CANCEL_OWNER }), false);
+    reconcileBackgroundTask(task.taskId);
+    completeBackgroundTask(task.taskId, { status: 'failed', error: 'late' });
+    assert.equal(notifications.length, 1);
+    assert.equal(parseTaskNotification(notifications[0]).status, 'cancelled');
+  } finally {
+    mock.timers.reset();
+    cleanupBackgroundTasks({ force: true });
+  }
+});
+
+for (const outcome of ['resolve', 'reject']) {
+  test(`shell cancellation becomes terminal when its run ${outcome}s`, async () => {
+    const notifications = [];
+    const run = controlledRun();
+    const task = startBackgroundTask({
+      surface: 'shell',
+      deferCancelUntilSettled: true,
+      context: { notifyFn: (text) => notifications.push(text) },
+      run: () => run.promise,
+    });
+    try {
+      cancelBackgroundTask(task.taskId, 'cancelled by task control', { notify: true });
+      assert.equal(task.status, 'running');
+      assert.equal(notifications.length, 0);
+      const result = { exit_code: 143, stdout: 'partial output' };
+      if (outcome === 'resolve') run.resolve(result);
+      else run.reject(new Error('process stopped'));
+      await task.promise;
+      assert.equal(task.status, 'cancelled');
+      if (outcome === 'resolve') assert.equal(task.result, result);
+      else assert.equal(task.error, 'process stopped');
+      reconcileBackgroundTask(task.taskId);
+      assert.equal(notifications.length, 1);
+      assert.equal(parseTaskNotification(notifications[0]).status, 'cancelled');
+    } finally {
+      cleanupBackgroundTasks({ force: true });
+    }
+  });
+}
+
+test('settled shell cancellation honors default silence and sticky owner notification suppression', () => {
+  for (const scenario of ['default', 'explicit-silent', 'owner-teardown']) {
+    const notifications = [];
+    const task = registerBackgroundTask({
+      surface: 'shell',
+      deferCancelUntilSettled: true,
+      notifyOnCancel: scenario !== 'default',
+      context: { callerSessionId: CANCEL_OWNER, notifyFn: (text) => notifications.push(text) },
+    });
+    try {
+      cancelBackgroundTask(task.taskId, 'cancelled', {
+        notify: scenario === 'explicit-silent' ? false : undefined,
+      });
+      if (scenario === 'owner-teardown') {
+        cancelBackgroundTasks({ callerSessionId: CANCEL_OWNER, reason: 'cli-exit', notify: false });
+      }
+      if (scenario !== 'default') cancelBackgroundTask(task.taskId, 'retry', { notify: true });
+      assert.equal(task.status, 'running');
+      assert.equal(notifications.length, 0);
+      completeBackgroundTask(task.taskId, { resultText: 'final output' });
+      reconcileBackgroundTask(task.taskId);
+      assert.equal(task.status, 'cancelled');
+      assert.equal(notifications.length, 0, scenario);
+    } finally {
+      cleanupBackgroundTasks({ force: true });
+    }
   }
 });
 

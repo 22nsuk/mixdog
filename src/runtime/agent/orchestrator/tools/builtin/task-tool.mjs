@@ -28,11 +28,11 @@ import {
 import { recordDeliveredCompletion } from '../../session/manager/delivered-completions.mjs';
 import { listShellJobRecords, readShellJobRecord } from './lib/shell-job-records.mjs';
 import { resourceAdmission } from '../../../../shared/resource-admission.mjs';
+import { onSessionActivityChange } from '../../../../shared/session-activity-signal.mjs';
 import { readShellTaskOutput } from './lib/shell-task-output.mjs';
 
-// Ceiling for confirming that a cancelled task's process really exited. The
-// wait returns the moment the native task settles, so this only bounds a
-// process that ignores the kill.
+// First confirmation window for a cancelled task. If its root has exited but
+// the tree remains, the descendant confirmation window below follows it.
 const TASK_CANCEL_CONFIRM_MS = 5_000;
 // Ceiling for confirming that every process the task started is gone once its
 // root exited: a sweep is a table read, the kill and a second read (each read
@@ -43,7 +43,7 @@ function cancelPendingText(taskId) {
   return [
     'status: cancel-pending',
     `task_id: ${taskId}`,
-    'the kill was sent and the command itself exited, but processes it started are still alive. They keep being terminated and stay tracked (the folder stays held) until they are gone; re-run task cancel or task read to check again.',
+    'the command itself exited, but processes it started are still alive or their termination could not be verified. They stay tracked and known survivors keep being terminated until the tree is gone; re-run task cancel or task read to check again.',
   ].join('\n');
 }
 
@@ -69,8 +69,14 @@ function recoveredTaskMatches(record, options = {}) {
 }
 
 function refreshShellTask(taskId, { includeRunning = false } = {}) {
-  const job = peekShellJob(taskId);
+  let job = peekShellJob(taskId);
   if (!job) return null;
+  const task = getBackgroundTask(taskId);
+  if (task?.deferCancelUntilSettled && task.promise && task.status === 'running' && job.status !== 'running') {
+    // A queued foreground run can have a terminal native root while its
+    // physical run promise still owns descendants and cleanup.
+    job = { ...job, status: 'running', finishedAt: null, terminationUnconfirmed: true };
+  }
   const publicResult = shellJobPublicTaskResult(job);
   if (job.status !== 'running') {
     completeBackgroundTask(taskId, {
@@ -82,7 +88,6 @@ function refreshShellTask(taskId, { includeRunning = false } = {}) {
       notify: false,
     });
   } else if (includeRunning) {
-    const task = getBackgroundTask(taskId);
     if (task) {
       task.result = publicResult;
       task.resultText = JSON.stringify(publicResult, null, 2);
@@ -158,6 +163,27 @@ async function listTasks(options) {
 // goes with the task however it settles or is removed.
 const waitCeilingHits = new WeakMap();
 
+// Registry settlement emits activity synchronously. A removable listener
+// lets a bounded wait end without retaining a reaction on an indefinite run.
+function waitForRegistryTask(task, timeoutMs, signal = null) {
+  return new Promise((resolve) => {
+    let unsubscribe = () => {};
+    const done = () => {
+      clearTimeout(timer);
+      unsubscribe();
+      signal?.removeEventListener('abort', done);
+      resolve();
+    };
+    const timer = setTimeout(done, timeoutMs);
+    timer.unref?.();
+    unsubscribe = onSessionActivityChange(() => {
+      if (task.status !== 'running') done();
+    });
+    signal?.addEventListener('abort', done, { once: true });
+    if (signal?.aborted || task.status !== 'running') done();
+  });
+}
+
 // Blocks until the shell task settles, the timeout elapses, the turn is
 // cancelled, or anything deliverable is queued for this session (user input,
 // steering, or any task notification: an agent or another shell job
@@ -179,29 +205,10 @@ async function waitForShellTask(task, taskId, args, options) {
   let notified = false;
   let notifiedTaskId = null;
   try {
-    // A shell task whose descendants outlived the shell process has no
-    // native job to subscribe to — the process it belonged to is gone.
-    // Its registry promise (resolved by the descendant observer) is the
-    // completion event in that case.
-    if (!peekShellJob(taskId) && task.status === 'running' && task.promise) {
-      await new Promise((resolve) => {
-        const timer = setTimeout(resolve, waitTimeoutMs);
-        timer.unref?.();
-        const done = () => {
-          clearTimeout(timer);
-          if (waitSignal) {
-            try {
-              waitSignal.removeEventListener('abort', done);
-            } catch {}
-          }
-          resolve();
-        };
-        task.promise.then(done, done);
-        if (waitSignal) {
-          if (waitSignal.aborted) done();
-          else waitSignal.addEventListener('abort', done, { once: true });
-        }
-      });
+    // Queued runs and detached survivors settle in the task registry. A
+    // native root result cannot shorten their physical completion boundary.
+    if (task.status === 'running' && task.promise && (task.deferCancelUntilSettled || !peekShellJob(taskId))) {
+      await waitForRegistryTask(task, waitTimeoutMs, waitSignal);
     } else {
       await waitForShellJob(taskId, {
         timeoutMs: waitTimeoutMs,
@@ -222,6 +229,24 @@ async function waitForShellTask(task, taskId, args, options) {
 // confirmed gone (or never had one), 'unconfirmed' when the kill was delivered
 // but the exit could not be confirmed, 'not-found' for an unknown task.
 async function cancelShellTaskOutcome(task, taskId, options) {
+  // Queued runs and detached descendants own their cancellation through the
+  // registry hook. In particular, a queued foreground root must be captured
+  // by its runner before a native kill is sent.
+  if (task.deferCancelUntilSettled && task.promise) {
+    cancelBackgroundTask(taskId, 'cancelled by task control');
+    await waitForRegistryTask(task, TASK_CANCEL_CONFIRM_MS + TASK_CANCEL_TREE_CONFIRM_MS);
+    if (task.status === 'running') {
+      return {
+        outcome: 'unconfirmed',
+        text: [
+          'status: cancel-unconfirmed',
+          `task_id: ${taskId}`,
+          'cancellation was requested, but termination has not been confirmed. The task stays tracked until its processes are gone; re-run task cancel or task read to check again.',
+        ].join('\n'),
+      };
+    }
+    return { outcome: 'cancelled', text: renderTaskCancelSuccess(taskId, task) };
+  }
   // A tracked task with no native job is still cancellable: the
   // registry's own cancel hook owns it (descendants that outlived
   // their shell). Remember that it WAS live so the outcome is
@@ -234,7 +259,10 @@ async function cancelShellTaskOutcome(task, taskId, options) {
     // delivered signal left a live, unmonitored process behind a
     // false 'cancelled'.
     const confirmed = await waitForShellJob(taskId, { timeoutMs: TASK_CANCEL_CONFIRM_MS });
-    if (confirmed && confirmed.status === 'running') {
+    if (
+      confirmed?.status === 'running' &&
+      (confirmed.nativeStatus === 'running' || confirmed.rootExitObserved === false)
+    ) {
       // Watcher and notify context stay armed: the eventual exit
       // must still reach the owner.
       return {
@@ -242,7 +270,7 @@ async function cancelShellTaskOutcome(task, taskId, options) {
         text: [
           'status: cancel-unconfirmed',
           `task_id: ${taskId}`,
-          'the cancellation was delivered but the process has not exited yet. It stays tracked and its completion is still delivered; re-run task cancel or task read to check again.',
+          'cancellation was requested but the root process termination has not been confirmed. It stays tracked and its completion is still delivered; re-run task cancel or task read to check again.',
         ].join('\n'),
       };
     }
@@ -268,6 +296,7 @@ async function cancelShellTaskOutcome(task, taskId, options) {
       };
     }
   }
+  if (job) refreshShellTask(taskId);
   cancelBackgroundShellJobWatch(taskId);
   clearShellJobNotifyCtx(taskId);
   cancelBackgroundTask(taskId, 'cancelled by task control');
@@ -299,7 +328,7 @@ export async function stopBackgroundShellJob(taskId, options = {}) {
   if (!id) return { stopped: false, error: 'task_id is required' };
   const task = getBackgroundTask(id, { context: options });
   if (!task || task.surface !== 'shell') return { stopped: false, error: `task not found: ${id}` };
-  const job = peekShellJob(id);
+  const job = refreshShellTask(id);
   const status = job ? job.status : task.status;
   if (status !== 'running') return { stopped: false, error: `task already ${status}: ${id}` };
   try {

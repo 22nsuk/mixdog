@@ -37,6 +37,7 @@ mock.module('../lib/native-spawn-client.mjs', {
       return { ...tasks.get(jobId) };
     },
     setNativeTaskOutputPaths: noop,
+    retainNativeTaskResult: (detail) => tasks.set(detail.jobId, { ...detail }),
     setNativeTaskStartedAt: noop,
     trackNativeForegroundTask: async () => null,
     cancelNativeTasks: ({ ownerSessionId }) => {

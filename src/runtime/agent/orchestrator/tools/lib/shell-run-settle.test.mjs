@@ -8,6 +8,7 @@ import { holdWorkspaceActivity, tryAdmitWorkspaceActivity } from '../../../../sh
 import { cleanupTempDirs, makeRepo } from '../../../../shared/worktrees/test-support.mjs';
 
 import { processTable, scriptedChildTree } from './process-table-fixture.mjs';
+import { TaskOutput } from '../shell-exec-output.mjs';
 
 // The operating system is the only thing replaced: every process-table read
 // answers from a scripted table, and the live record is observed via spies.
@@ -93,6 +94,156 @@ const settleAndFlush = async (run) => {
   await createSettle(run, () => {})(1, 'SIGKILL');
   await flush();
 };
+
+test('native transport failure keeps a surviving foreground root and its capture owned', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const repo = makeRepo();
+  const child = runningChild();
+  // Native client close is synthetic after IPC loss: exitCode is diagnostic,
+  // while the actual root is still present in the operating system.
+  child.exitCode = 1;
+  child.rootExitObserved = false;
+  child._closed = true;
+  const { run, counters } = unconfirmedRun(repo, child, { killUnconfirmed: false });
+  run.killed = false;
+  run.foregroundRecordId = 'job_fg_transport_failure';
+  run.spawnError = new Error('native spawn server exited');
+  run.taskOutput = new TaskOutput('transport-failure-output');
+  run.taskOutput.forceSpill();
+  run.taskOutput.writeStdout('output before server loss');
+  let result;
+  run.resolveResult = (value) => { result = value; };
+  await capturedBeforeKill(run, [{ pid: ROOT }]);
+  tree.state.kills.length = 0;
+  try {
+    await createSettle(run, () => {})(1, null);
+    await flush();
+    assert.equal(isHeld(repo), true, 'a synthetic close cannot release a live root');
+    assert.equal(existsSync(run.taskOutput.stdoutPath), true);
+    assert.notEqual(run.taskOutput.stdoutFd, null, 'the live producer retains its output descriptor');
+    assert.ok(result.settled, 'reported failure retains physical settlement');
+    assert.equal(result.stderr, 'native spawn server exited');
+    assert.equal(counters.resourceLeases, 1, 'the failed foreground slot is returned immediately');
+    assert.ok(tree.state.kills.includes(ROOT), 'cleanup sweeps the positively identified root');
+    tree.state.next = () => processTable([]);
+    t.mock.timers.tick(5_000);
+    await result.settled;
+    await flush();
+    assert.equal(isHeld(repo), false);
+    assert.equal(run.taskOutput.stdoutFd, null);
+    assert.equal(existsSync(result.stdoutPath), true, 'the reported capture path remains readable');
+  } finally {
+    run.stopTerminationWatch?.();
+    run.workspaceAdmission?.();
+    run.taskOutput.deleteFiles();
+  }
+});
+
+test('native transport failure without a prior root identity holds artifacts and never kills a reused pid', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const repo = makeRepo();
+  const child = runningChild();
+  child.exitCode = 1;
+  child.rootExitObserved = false;
+  child._closed = true;
+  const { run } = unconfirmedRun(repo, child, { killUnconfirmed: false });
+  run.killed = false;
+  run.foregroundRecordId = 'job_fg_transport_unidentified';
+  run.spawnError = new Error('native spawn server exited');
+  run.taskOutput = new TaskOutput('transport-unidentified-output');
+  run.taskOutput.forceSpill();
+  run.taskOutput.writeStdout('output before losing the process handle');
+  tree.state.next = () => processTable([
+    { pid: ROOT, token: 'reused-root' },
+    { pid: 7321, ppid: ROOT, token: 'unrelated-child' },
+  ]);
+  tree.state.kills.length = 0;
+  let settled = false;
+  try {
+    await createSettle(run, () => {})(1, null);
+    void run.treeSettled.then(() => { settled = true; });
+    await flush();
+    assert.equal(isHeld(repo), true);
+    assert.deepEqual(tree.state.kills, [], 'a bare recycled pid is never a physical kill target');
+    tree.state.next = () => processTable([]);
+    t.mock.timers.tick(5_000);
+    await flush();
+    assert.equal(settled, false, 'an empty later table cannot prove the lost tree ended');
+    assert.equal(existsSync(run.taskOutput.stdoutPath), true);
+    assert.equal((await forceReleaseTerminationHold(run.foregroundRecordId, { callerSessionId: 'session' })).released, true);
+    assert.equal(isHeld(repo), false, 'explicit release remains available for uncertainty');
+    assert.equal(existsSync(run.taskOutput.stdoutPath), true, 'workspace release cannot delete uncertain output');
+    assert.equal(settled, false);
+  } finally {
+    run.stopTerminationWatch?.();
+    run.workspaceAdmission?.();
+    run.taskOutput.deleteFiles();
+  }
+});
+
+test('native transport failure after a captured foreground kill can confirm the tree is gone', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const repo = makeRepo();
+  const child = runningChild();
+  const { run } = unconfirmedRun(repo, child);
+  run.foregroundRecordId = 'job_fg_killed_before_transport_failure';
+  await capturedBeforeKill(run, [{ pid: ROOT }, { pid: 7322, ppid: ROOT }]);
+  child.rootExitObserved = false;
+  child.exitCode = 1;
+  child._closed = true;
+  tree.state.next = () => processTable([]);
+  await createSettle(run, () => {})(1, null);
+  await flush();
+  assert.equal(isHeld(repo), false, 'lost exit delivery cannot discard an already-completed pre-kill capture');
+  await run.treeSettled;
+});
+
+for (const phase of ['output read', 'descendant probe']) {
+  test(`owner cancellation during the ${phase} keeps cleanup tied to the surviving tree`, async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const repo = makeRepo();
+    const child = runningChild();
+    const { run } = unconfirmedRun(repo, child, { killUnconfirmed: false });
+    run.killed = false;
+    run.foregroundRecordId = `job_cancel_during_${phase.replaceAll(' ', '_')}`;
+    const worker = { pid: 4490, ppid: ROOT, token: 'late-cancel-worker' };
+    await capturedBeforeKill(run, [{ pid: ROOT }, worker]);
+    exitChild(child, 0);
+    registerForegroundOwnedTree(run, 'session');
+    let resume;
+    const paused = new Promise((resolve) => { resume = resolve; });
+    let closed = false;
+    run.taskOutput.closeFds = () => { closed = true; };
+    if (phase === 'output read') {
+      run.taskOutput.getStdout = () => paused.then(() => '');
+      tree.state.next = () => processTable([worker]);
+    } else {
+      tree.state.next = () => paused.then(() => processTable([worker]));
+    }
+    tree.state.kills.length = 0;
+    const settling = createSettle(run, () => {})(0, null);
+    await flush();
+    assert.equal(run.settled, true, 'the foreground result transition has started');
+    await cancelOwnedShellTrees('session');
+    resume();
+    await settling;
+    await flush();
+    try {
+      assert.equal(isHeld(repo), true, 'late cancellation does not release a live workspace');
+      assert.equal(closed, false, 'the surviving producer still owns its capture');
+      assert.ok(run.treeSettled, 'physical settlement remains observable');
+      assert.ok(tree.state.kills.flat().includes(worker.pid), 'the cancellation reaches the observed survivor');
+    } finally {
+      tree.state.next = () => processTable([]);
+      t.mock.timers.tick(5_000);
+      await flush();
+      run.workspaceAdmission?.();
+    }
+    await run.treeSettled;
+    assert.equal(isHeld(repo), false);
+    assert.equal(closed, true);
+  });
+}
 // The identities a kill path records while the root is still alive.
 async function capturedBeforeKill(run, rows) {
   tree.state.next = () => processTable(rows);
@@ -148,7 +299,9 @@ test(
     tree.state.next = () =>
       processTable([{ pid: ROOT }, { pid: 4300, ppid: ROOT }, { pid: 4301, ppid: 4300, token: 'worker' }]);
     child.kill = () => {
-      tree.state.next = () => processTable([{ pid: 4301, ppid: 4300, token: 'worker' }]);
+      // The root ignores the kill attempts; an intermediate has exited and
+      // its worker is already orphaned. Each retry can still capture root.
+      tree.state.next = () => processTable([{ pid: ROOT }, { pid: 4301, ppid: 4300, token: 'worker' }]);
       return true;
     };
     run.settle = createSettle(run, () => {});
@@ -156,6 +309,7 @@ test(
     await flush();
     for (let attempt = 0; attempt < 3; attempt += 1) await tick(5_000);
     assert.equal(run.killUnconfirmed, true);
+    tree.state.next = () => processTable([{ pid: 4301, ppid: 4300, token: 'worker' }]);
     exitChild(child, 137);
     await flush();
     assert.equal(isHeld(repo), true, 'the orphaned worker still runs');
@@ -211,6 +365,49 @@ test(
     await flush();
     assert.equal(isHeld(repo), false);
     assert.equal(records.published.length, 0, 'never marked unconfirmed');
+  })
+);
+
+test(
+  'a root exit and workspace force-release preserve capture files until the captured tree ends',
+  withTimers(async () => {
+    const repo = makeRepo();
+    const child = runningChild();
+    const { run } = unconfirmedRun(repo, child, { killUnconfirmed: false });
+    run.taskOutput = new TaskOutput('tree_settlement_capture');
+    run.taskOutput.forceSpill();
+    run.taskOutput.writeStdout('before root exit\n');
+    const path = run.taskOutput.stdoutPath;
+    let result;
+    run.resolveResult = (value) => { result = value; };
+    await capturedBeforeKill(run, [{ pid: ROOT }, { pid: 4401, ppid: ROOT }]);
+    exitChild(child, 137);
+    tree.state.next = () => processTable([{ pid: 4401, ppid: 1 }]);
+    try {
+      await settleAndFlush(run);
+      assert.equal(existsSync(path), true, 'the descendant may still use the capture');
+      assert.equal(typeof result.settled?.then, 'function');
+      let ended = false;
+      result.settled.then(() => { ended = true; });
+      assert.deepEqual(await forceReleaseTerminationHold(run.foregroundRecordId, { callerSessionId: 'session' }), {
+        released: true,
+      });
+      assert.equal(isHeld(repo), false);
+      await tick(5_000);
+      assert.equal(ended, false, 'workspace release is not process termination');
+      assert.equal(existsSync(path), true);
+      run.taskOutput.writeStdout('after root exit\n');
+      assert.equal(run.taskOutput.writeError, null);
+      tree.state.next = () => processTable([]);
+      await tick(5_000);
+      await result.settled;
+      assert.equal(ended, true);
+      assert.match(await run.taskOutput.getStdout(true), /after root exit/);
+      assert.equal(existsSync(path), true, 'the returned log path remains readable after completion');
+    } finally {
+      run.stopTerminationWatch?.();
+      run.taskOutput.deleteFiles();
+    }
   })
 );
 
@@ -360,7 +557,7 @@ test(
 );
 
 test(
-  'an unconfirmed termination can be force-released only by its owner, and the watch ends',
+  'only the owner can release a hold, while physical termination keeps being observed',
   withTimers(async () => {
     const repo = makeRepo();
     const child = runningChild();
@@ -384,7 +581,8 @@ test(
     assert.deepEqual(records.retired, ['job_unconfirmed_kill']);
     const reads = tree.state.reads;
     await tick(30_000);
-    assert.equal(tree.state.reads, reads, 'the observation loop stopped');
+    assert.ok(tree.state.reads > reads, 'workspace release does not stop physical observation');
+    run.stopTerminationWatch();
     assert.equal(
       (await forceReleaseTerminationHold('job_unconfirmed_kill', { callerSessionId: 'session' })).released,
       false
@@ -474,7 +672,8 @@ test(
     assert.deepEqual(records.retired, ['job_closed_blind']);
     const reads = tree.state.reads;
     await tick(30_000);
-    assert.equal(tree.state.reads, reads, 'the observation loop stopped');
+    assert.ok(tree.state.reads > reads, 'workspace release does not stop physical observation');
+    run.stopTerminationWatch();
   })
 );
 
@@ -537,7 +736,8 @@ test(
     assert.equal(isHeld(repo), false);
     const reads = tree.state.reads;
     await tick(30_000);
-    assert.equal(tree.state.reads, reads, 'the observation loop stopped');
+    assert.ok(tree.state.reads > reads, 'workspace release does not stop physical observation');
+    run.stopTerminationWatch();
   })
 );
 
@@ -560,7 +760,8 @@ test(
     assert.equal(existsSync(join(jobsDir, 'job_unconfirmed_kill.release-requested')), false, 'the request is consumed');
     const reads = tree.state.reads;
     await tick(30_000);
-    assert.equal(tree.state.reads, reads, 'the observation loop stopped');
+    assert.ok(tree.state.reads > reads, 'workspace release does not stop physical observation');
+    run.stopTerminationWatch();
   })
 );
 
@@ -633,7 +834,8 @@ test(
       assert.equal(records.retired.length, retiredBefore + 1, 'the release retires the kept record');
       const reads = tree.state.reads;
       await tick(30_000);
-      assert.equal(tree.state.reads, reads, 'the observation loop stopped');
+      assert.ok(tree.state.reads > reads, 'workspace release does not stop physical observation');
+    run.stopTerminationWatch();
     })
   )
 );

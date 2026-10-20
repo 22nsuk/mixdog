@@ -4,16 +4,20 @@
  * successful one, and the kill fallback that follows a failed one.
  */
 import { promoteForegroundShellJob } from '../../builtin/shell-jobs.mjs';
-import { treeKillForceSettle } from '../shell-run-state.mjs';
+import { capturePreKill, treeKillForceSettle } from '../shell-run-state.mjs';
 
 export async function promoteWithRetry(
   { run, command, cwd, clientHostPid, ownerSessionId },
   { remainingBackgroundTimeoutMs, stdoutPath, stderrPath }
 ) {
+  // Start before native promotion can await IPC. Owner cancellation still
+  // belongs to the foreground run until the registry adopts this same tree.
+  void capturePreKill(run);
   let promotionFailure = '';
   const tryPromote = async () => {
     try {
       const promoted = await promoteForegroundShellJob({
+        run,
         command,
         cwd,
         pid: run.child.pid,

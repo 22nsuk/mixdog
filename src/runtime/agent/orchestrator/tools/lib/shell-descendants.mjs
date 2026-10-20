@@ -70,7 +70,9 @@ const identityKey = (entry) => `${entry.pid}:${entry.token ?? ''}`;
 export function createProcessTreeTracker({ pid, members = [], exitObserved = false } = {}) {
   const rootPid = Number(pid) || 0;
   let rootToken = null;
+  let rootIdentityRequired = false;
   let complete = false;
+  let captureVersion = 0;
   const tracked = new Map();
   let live = [];
   for (const entry of members) tracked.set(identityKey(entry), { ...entry });
@@ -91,7 +93,8 @@ export function createProcessTreeTracker({ pid, members = [], exitObserved = fal
   // The root's pid still names OUR root (or nothing): its dangling child links
   // are ours. A different process under that pid is a reuse — not ours.
   const rootPidIsOurs = (table, rootAlive) =>
-    rootAlive || !table.tokenOf.has(rootPid) || (rootToken != null && table.tokenOf.get(rootPid) === rootToken);
+    rootAlive || (rootToken != null && table.tokenOf.get(rootPid) === rootToken) ||
+    (!rootIdentityRequired && !table.tokenOf.has(rootPid));
 
   function absorb(table, rootAlive) {
     const from = [];
@@ -117,12 +120,12 @@ export function createProcessTreeTracker({ pid, members = [], exitObserved = fal
     }
     if (rootAlive) {
       rootToken = rootToken ?? table.tokenOf.get(rootPid) ?? null;
-      complete = true;
     }
   }
 
   function rootIsAlive(table, rootExited) {
     if (rootExited || !table.tokenOf.has(rootPid)) return false;
+    if (rootIdentityRequired && rootToken == null) return false;
     return rootToken == null || table.tokenOf.get(rootPid) === rootToken;
   }
 
@@ -134,13 +137,34 @@ export function createProcessTreeTracker({ pid, members = [], exitObserved = fal
     get live() {
       return live;
     },
+    /** A lost process handle cannot establish identity from its old pid.
+     *  Keep earlier positive identities, but require a matching root captured
+     *  before that loss for any fresh snapshot to prove completeness. */
+    requireRootIdentity() {
+      if (rootIdentityRequired) return;
+      rootIdentityRequired = true;
+      // A completed pre-kill capture remains evidence if the kill already
+      // ran. A new cleanup attempt invalidates it through capture() below.
+      if (rootToken == null) {
+        complete = false;
+        captureVersion += 1;
+      }
+    },
     /** Pre-termination snapshot; call while the root still runs. */
     async capture({ rootExited = false } = {}) {
       if (rootPid <= 0) return false;
+      const version = ++captureVersion;
+      // A promotion baseline cannot account for children started since then.
+      // Preserve its identities for cleanup, but require this capture to
+      // succeed before absence can prove termination. An older pending read
+      // must not restore completeness after a newer capture failed.
+      complete = false;
       // Even if an in-flight read saw the root, children may have appeared
       // since it began. Join the next fresh read before parent links break.
       const table = await readProcessTable();
-      absorb(table, rootIsAlive(table, rootExited));
+      const rootAlive = rootIsAlive(table, rootExited);
+      absorb(table, rootAlive);
+      if (version === captureVersion && rootAlive) complete = true;
       return complete;
     },
     /** For a root that exited ON ITS OWN (no kill in between): it is observed
@@ -205,12 +229,14 @@ export function watchTermination({
   onTerminated,
   onUnconfirmed = null,
   releaseRequested = null,
+  onRelease = null,
   intervalMs = TERMINATION_RECHECK_MS,
   sweep = false,
 }) {
   let timer = null;
   let stopped = false;
   let reportedUnconfirmed = false;
+  let releasePending = false;
   const stop = () => {
     stopped = true;
     if (timer) clearTimeout(timer);
@@ -221,29 +247,36 @@ export function watchTermination({
     if (stopped) return;
     let state = 'unknown';
     let observation = null;
-    // An explicit user force-release made from another process (the hold's
-    // workspace is visible there): released as if confirmed, never on time.
-    if (releaseRequested?.()) state = 'gone';
-    else
+    // Releasing a workspace does not establish that its processes exited.
+    // Keep observation and cleanup alive after a local or remote override.
+    releasePending = releasePending || releaseRequested?.() === true;
+    if (releasePending) {
       try {
+        await onRelease?.();
+        releasePending = false;
+      } catch {
+        /* retry the requested workspace release on the next pass */
+      }
+    }
+    try {
+      observation = tracker.observe({ rootExited: rootExited() });
+      observation.catch(() => {});
+      // A pass that has not answered by the next cadence tick is unknown.
+      state = await withinBound(observation, intervalMs, 'unknown');
+      if (state === 'running' && (typeof sweep === 'function' ? sweep() : sweep) && !stopped) {
+        await withinBound(
+          sweepLiveIdentities(tracker).catch(() => {}),
+          intervalMs,
+          null
+        );
+        await observation.catch(() => {});
         observation = tracker.observe({ rootExited: rootExited() });
         observation.catch(() => {});
-        // A pass that has not answered by the next cadence tick is unknown.
         state = await withinBound(observation, intervalMs, 'unknown');
-        if (state === 'running' && sweep && !stopped) {
-          await withinBound(
-            sweepLiveIdentities(tracker).catch(() => {}),
-            intervalMs,
-            null
-          );
-          await observation.catch(() => {});
-          observation = tracker.observe({ rootExited: rootExited() });
-          observation.catch(() => {});
-          state = await withinBound(observation, intervalMs, 'unknown');
-        }
-      } catch {
-        state = 'unknown';
       }
+    } catch {
+      state = 'unknown';
+    }
     if (stopped) return;
     if (state !== 'gone' && !reportedUnconfirmed) {
       reportedUnconfirmed = true;
@@ -316,16 +349,17 @@ function delay(ms) {
  *               exited keeps a dangling parent id, so an intermediate that
  *               already exited breaks the link).
  *  Rejects when the process table cannot be read completely. */
-export async function probeShellDescendants({ pid } = {}) {
+export async function probeShellDescendants({ pid, tracker = null } = {}) {
   const root = Number(pid) || 0;
   if (root <= 0) return null;
   // POSIX fast path: no member of the command's group at all.
-  if (!isWin && !groupAlive(root)) return null;
-  const tracker = createProcessTreeTracker({ pid: root, exitObserved: true });
+  if (!tracker && !isWin && !groupAlive(root)) return null;
+  tracker = tracker || createProcessTreeTracker({ pid: root });
+  tracker.acceptExitObservation();
   const state = await tracker.observe({ rootExited: true });
   if (state === 'gone') return null;
   if (state === 'unknown') throw new Error('Remaining child processes could not be verified.');
-  return survivorHandle(root, tracker.live);
+  return { ...survivorHandle(root, tracker.live), tracker };
 }
 
 function survivorHandle(rootPid, live) {
@@ -342,7 +376,7 @@ function survivorHandle(rootPid, live) {
 }
 
 const trackerFor = (handle) =>
-  createProcessTreeTracker({ pid: handle.rootPid, members: handle.watch, exitObserved: true });
+  (handle.tracker ||= createProcessTreeTracker({ pid: handle.rootPid, members: handle.watch, exitObserved: true }));
 
 /** Resolve once every observed survivor (by identity) has exited, or false
  *  once `signal` aborts. These processes are not our children any more, so
@@ -350,7 +384,8 @@ const trackerFor = (handle) =>
  *  re-checks them at the termination cadence. */
 export function waitForShellDescendants(handle, { signal = null } = {}) {
   if (!handle) return Promise.resolve(true);
-  return new Promise((resolve) => {
+  if (!signal && handle.settled) return handle.settled;
+  const settled = new Promise((resolve) => {
     if (signal?.aborted) {
       resolve(false);
       return;
@@ -361,6 +396,7 @@ export function waitForShellDescendants(handle, { signal = null } = {}) {
     };
     const stop = watchTermination({
       tracker: trackerFor(handle),
+      sweep: () => handle.killed === true,
       onTerminated: () => {
         signal?.removeEventListener('abort', onAbort);
         resolve(true);
@@ -368,6 +404,8 @@ export function waitForShellDescendants(handle, { signal = null } = {}) {
     });
     signal?.addEventListener('abort', onAbort, { once: true });
   });
+  if (!signal) handle.settled = settled;
+  return settled;
 }
 
 /** Terminate the survivors, signalling only processes whose identity still
@@ -375,6 +413,7 @@ export function waitForShellDescendants(handle, { signal = null } = {}) {
  *  actually died instead of what was signalled. Never rejects. */
 export async function killShellDescendants(handle) {
   if (!handle) return { terminated: true, survivors: [] };
+  handle.killed = true;
   try {
     const table = await readProcessTable();
     // The group id is ours only while no other process holds the root pid.
