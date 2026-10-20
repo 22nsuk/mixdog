@@ -4,7 +4,8 @@
  * during promotion, backgrounded, or cleanup failure.
  */
 import { killShellJob } from '../../builtin/shell-jobs.mjs';
-import { ExecResult, treeKill } from '../../shell-exec-output.mjs';
+import { ExecResult } from '../../shell-exec-output.mjs';
+import { cleanupFailedShellRun } from '../shell-run-settle.mjs';
 import {
   clearForegroundRecord,
   detachAbortHandler,
@@ -43,6 +44,7 @@ function capturedFields(run, { stdout, stderr, spill }) {
     ...spill,
     taskId: run.taskId,
     outputCaptureError: run.taskOutput.writeError,
+    settled: run.treeSettled,
   };
 }
 
@@ -51,14 +53,13 @@ function capturedFields(run, { stdout, stderr, spill }) {
  * cancelled process as a successful still-running background task.
  */
 export function resolveCancelledAfterPromotion(run, jobId, capture) {
+  const alreadyCancelled = run.killed;
   run.killed = true;
   run.killCause = 'cancellation';
   try {
-    killShellJob(jobId);
+    if (!alreadyCancelled) killShellJob(jobId);
   } catch {}
-  try {
-    treeKill(run.child);
-  } catch {}
+  detachAbortHandler(run);
   run.resolveResult(
     new ExecResult({
       ...capturedFields(run, capture),
@@ -86,8 +87,9 @@ export function resolveCompletedDuringPromotion(run, capture) {
       ...capturedFields(run, capture),
       exitCode: run.child.exitCode,
       signal: run.child.signalCode || null,
-      timedOut: false,
-      killed: false,
+      timedOut: run.timedOut,
+      killed: run.killed,
+      killCause: run.killCause,
       partialOutput: false,
       backgrounded: false,
     })
@@ -124,34 +126,42 @@ export function resolveBackgrounded(run, { jobId, reason, remainingBackgroundTim
  * the child is killed, the unreferenced capture files dropped, the lease
  * returned, and the call resolves with the cleanup failure.
  */
-export function resolveCleanupFailure(run, error) {
+export async function resolveCleanupFailure(run, error) {
   const { taskOutput } = run;
   run.settled = true;
   run.autoBackgrounded = true;
   clearForegroundRecord(run);
-  run.killed = true;
   run.killCause = 'resource-cleanup-error';
   detachAbortHandler(run);
+  let cleanupError = null;
   try {
-    if (run.autoBackgroundJobId) killShellJob(run.autoBackgroundJobId);
-  } catch {}
-  try {
-    treeKill(run.child);
-  } catch {}
-  // settle() is inert from here (settled), so the cleanup it owns has to
-  // run in this branch: the reported result carries no spill paths, so
-  // the capture files are unreferenced garbage — drop them, close their
-  // descriptors and hand back any lease the failed handoff still holds.
-  try {
-    taskOutput.deleteFiles();
-  } catch {
-    /* best-effort */
+    if (run.autoBackgroundJobId) {
+      run.killed = true;
+      void run.treeSettled.then(() => {
+        run.workspaceAdmission?.();
+        run.workspaceAdmission = null;
+        taskOutput.deleteFiles();
+      }).catch((captureError) => {
+        taskOutput.writeError ||= captureError;
+      });
+      // The registry already owns this tree. Its pre-kill capture must finish
+      // before signalling; a second direct kill would break that ordering.
+      try {
+        killShellJob(run.autoBackgroundJobId);
+      } finally {
+        cleanupError = await releaseResourceLease(run);
+      }
+    } else {
+      cleanupError = await cleanupFailedShellRun(run);
+    }
+  } catch (secondaryError) {
+    cleanupError = secondaryError;
   }
-  void releaseResourceLease(run);
+  const failure = `resource cleanup failed during background promotion: ${error?.message || error}`;
   run.resolveResult(
     new ExecResult({
       stdout: '',
-      stderr: `resource cleanup failed during background promotion: ${error?.message || error}`,
+      stderr: cleanupError ? `${failure}; cleanup failed: ${cleanupError?.message || cleanupError}` : failure,
       exitCode: 1,
       signal: run.child?.signalCode || null,
       timedOut: false,
@@ -162,6 +172,7 @@ export function resolveCleanupFailure(run, error) {
       outputCaptureError: taskOutput.writeError,
       failurePhase: 'tool',
       failureReason: 'resource cleanup failed',
+      settled: run.treeSettled,
       backgrounded: false,
     })
   );

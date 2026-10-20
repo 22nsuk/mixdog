@@ -1255,9 +1255,9 @@ export function buildPowerShellFilterTeePlan(command) {
 }
 
 // Read the tail of a tee spill file (BOM-sniffed: Windows PowerShell 5.1
-// writes UTF-16LE, pwsh 7 writes UTF-8) and ALWAYS delete the file. Returns
-// null when the file is missing/empty/unreadable.
-export function consumeFilterTeeCapture(teePath, { maxBytes = 16384 } = {}) {
+// writes UTF-16LE, pwsh 7 writes UTF-8). Reading does not end the producer's
+// ownership of the file. Returns null when it is missing/empty/unreadable.
+export function readFilterTeeCapture(teePath, { maxBytes = 16384 } = {}) {
   let out = null;
   try {
     const st = statSync(teePath);
@@ -1281,10 +1281,16 @@ export function consumeFilterTeeCapture(teePath, { maxBytes = 16384 } = {}) {
   } catch {
     out = null;
   }
+  return out?.trim() ? out : null;
+}
+
+/** Read and remove a capture whose producer has settled. */
+export function consumeFilterTeeCapture(teePath, options) {
+  const out = readFilterTeeCapture(teePath, options);
   try {
     unlinkSync(teePath);
   } catch {
     /* best-effort cleanup */
   }
-  return out?.trim() ? out : null;
+  return out;
 }

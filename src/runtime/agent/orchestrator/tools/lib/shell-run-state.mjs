@@ -9,12 +9,17 @@ import { ShellTextDecoder, TaskOutput, treeKill } from '../shell-exec-output.mjs
 import { createProcessTreeTracker, killAfterSnapshot } from './shell-descendants.mjs';
 import { registerOwnedShellTree } from './owned-shell-trees.mjs';
 
+export const shellRootExitObserved = (child) =>
+  child?.rootExitObserved !== false && (child?.exitCode != null || child?.signalCode != null);
+
 /** One pre-kill identity read of the run's tree (every kill path shares it):
  *  resolves true once the capture is complete, false when it failed. */
 export function capturePreKill(run) {
   run.terminationTracker = run.terminationTracker || createProcessTreeTracker({ pid: run.child.pid });
-  const rootExited = run.child.exitCode != null || run.child.signalCode != null;
-  return run.terminationTracker.capture({ rootExited }).catch(() => false);
+  if (shellRootExitObserved(run.child)) return Promise.resolve(run.terminationTracker.complete);
+  if (run.child.rootExitObserved === false && run.child._closed) run.terminationTracker.requireRootIdentity();
+  run.terminationCapture = run.terminationTracker.capture().catch(() => false);
+  return run.terminationCapture;
 }
 
 /** Session close cancels every tree its session owns. For a foreground run
@@ -22,11 +27,19 @@ export function capturePreKill(run) {
  *  kill, and mark the run owner-cancelled so its settle completes on confirmed
  *  termination instead of on the root's exit. */
 export function registerForegroundOwnedTree(run, ownerSessionId) {
-  if (!ownerSessionId) return;
   run.ownedTree = {
-    ownerSessionId,
+    ownerSessionId: ownerSessionId || null,
     prepareKill: () => {
-      if (run.settled || run.autoBackgrounded || !run.child?.pid) return true;
+      // Promotion owns nothing until its registry adoption replaces this
+      // entry. Keep pre-kill capture live throughout the asynchronous handoff.
+      if (!run.child?.pid) return true;
+      const exitedOnItsOwn = !run.killed && shellRootExitObserved(run.child);
+      if (exitedOnItsOwn) {
+        // Cancellation may arrive while settle is still reading output or
+        // observing survivors. No kill broke the original parent links.
+        run.terminationTracker = run.terminationTracker || createProcessTreeTracker({ pid: run.child.pid });
+        run.terminationTracker.acceptExitObservation();
+      }
       run.killed = true;
       run.ownerCancelled = true;
       run.killCause = run.killCause || 'session-close';
@@ -124,6 +137,8 @@ export function createShellRun({ abortSignal, resolve, jobId = null }) {
     // Process identities captured before a kill, and the stop() of the
     // observation loop that holds the workspace until they are gone.
     terminationTracker: null,
+    terminationCapture: null,
+    treeSettled: null,
     stopTerminationWatch: null,
   };
 }
@@ -241,7 +256,7 @@ export function treeKillForceSettle(run, cause) {
       if (run.settled || run.autoBackgrounded) return;
       // A confirmed exit is settled by the child's own close/exit
       // handlers with its real status; nothing to force here.
-      if (run.child?.exitCode != null || run.child?.signalCode != null) return;
+      if (shellRootExitObserved(run.child)) return;
       attempts += 1;
       if (attempts < KILL_CONFIRM_ATTEMPTS) {
         snapshotThenKill(run, armConfirmation);

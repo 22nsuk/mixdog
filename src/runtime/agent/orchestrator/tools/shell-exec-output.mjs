@@ -636,8 +636,9 @@ export class ExecResult {
     // the spill files now owned by the shell-jobs registry.
     this.backgrounded = opts.backgrounded === true;
     this.jobId = opts.jobId || null;
-    // A command queued behind a saturated shell lane is no shell job; this
-    // promise settles when the queued run finishes.
+    // Physical command lifetime, including queued work and descendants that
+    // outlive the foreground result. Artifact owners wait for this promise;
+    // releasing a workspace hold does not settle it.
     this.settled = opts.settled || null;
     this.backgroundMessage = opts.backgroundMessage || null;
     // Survivors observed AFTER the shell process exited (process group on

@@ -63,5 +63,13 @@ test('failed descendant observation reports failure and retains a releasable wor
   assert.equal(watches[0].tracker.exitAccepted, true, 'the root exited on its own');
   assert.deepEqual(await forceReleaseTerminationHold('job_unknown_children'), { released: true });
   assert.equal(released, 1);
-  assert.equal(watches[0].stopped, true);
+  assert.equal(Boolean(watches[0].stopped), false, 'workspace release does not stop physical observation');
+  let settled = false;
+  result.settled.then(() => { settled = true; });
+  await Promise.resolve();
+  assert.equal(settled, false, 'workspace release is not termination evidence');
+  watches[0].onTerminated();
+  await result.settled;
+  assert.equal(settled, true);
+  assert.equal(released, 1, 'physical settlement does not release the workspace twice');
 });

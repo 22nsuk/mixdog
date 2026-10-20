@@ -3,7 +3,7 @@ import { killShellJob, watchBackgroundShellJob } from '../shell-jobs.mjs';
 import { renderBackgroundPartialOutput } from '../shell-output.mjs';
 import { readShellTaskOutput } from '../lib/shell-task-output.mjs';
 import { normalizeOutputPath } from '../path-utils.mjs';
-import { cleanupArtifactOnTaskSettled, consumeTeeArtifact } from './transport-artifacts.mjs';
+import { cleanupArtifactOnTaskSettled, consumeTeeArtifact, removeTransportFileNow } from './transport-artifacts.mjs';
 import { _backgroundResultLines, _prependDestructiveWarning } from './result-format.mjs';
 
 const DEFAULT_BACKGROUND_MESSAGE =
@@ -40,6 +40,7 @@ function registerPromotedTask({ result, command, cwd, options, startedAtMs }) {
         timeoutMs: result.backgroundTimeoutMs || 0,
       },
       resultType: 'shell_task_result',
+      deferCancelUntilSettled: true,
       cancel: () => killShellJob(result.jobId),
     });
   } catch {
@@ -69,7 +70,10 @@ export function renderBackgroundedResult({ result, command, cwd, options, starte
   // The promoted producer is still writing into the tee file, so it cannot be
   // consumed here — but it must not survive the command either. Consume (and
   // delete) it when the task settles.
-  if (teePlan) cleanupArtifactOnTaskSettled(teePlan.teePath, result.jobId, consumeTeeArtifact);
+  if (teePlan) {
+    if (result.settled) result.settled.then(() => removeTransportFileNow(teePlan.teePath)).catch(() => {});
+    else cleanupArtifactOnTaskSettled(teePlan.teePath, result.jobId, consumeTeeArtifact);
+  }
   let taskBlock = null;
   if (task) taskBlock = renderBackgroundTask(task, { ownerTool: true });
   else if (result.jobId) taskBlock = `[task_id: ${result.jobId}]`;
