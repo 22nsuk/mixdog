@@ -80,6 +80,8 @@ test('opening Settings → Connection does not shift the page when its data arri
         'process.env.NODE_ENV': '"production"',
         'import.meta.url': '"http://mixdog.test/assets/index.js"',
       },
+      // Settings imports skin images; this in-memory fixture has no asset server.
+      loader: { '.jpg': 'dataurl' },
       plugins: [lazyChunkBoundary],
     }),
     build({
