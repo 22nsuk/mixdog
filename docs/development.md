@@ -17,6 +17,13 @@ Useful environment variables:
 - `MIXDOG_MODE=ship|dev` — select shipping or development diagnostics.
 - `MIXDOG_DIAGNOSTICS=1` — force diagnostic trace and log output.
 
+The data directory's `.mixdog-user-data.json` marker ties configuration backups
+to that profile's instance. If it cannot be read or its identity is invalid,
+Mixdog preserves it and refuses to create a fresh configuration over a missing
+one. Restore access to the original marker, or repair it with the original
+`instanceId`, so recovery can use that instance's backups. A readable configuration
+remains available, and initialization is retried after a failed check.
+
 ## Core technology
 
 | Layer | Stack |
