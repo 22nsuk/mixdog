@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import fs, { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
 import { after, afterEach, beforeEach, test } from 'node:test';
 import { createWorkspaceTransitions } from './transitions.mjs';
@@ -138,6 +139,46 @@ function externalSource(repo) {
 }
 
 for (const [name, setup] of Object.entries(ENTRY_POINTS)) {
+  test(`${name}: a failed mirror release cannot resurrect completed merge ownership`, async (t) => {
+    const repo = makeRepo();
+    const { source, merge } = await setup(repo);
+    commitFile(source.path, 'feature.txt', 'feature\n');
+    const path = join(repo, '.git', 'mixdog-workspace-admission.json');
+    const mirror = `${path}.management`;
+    const rename = fs.renameSync;
+    const fault = t.mock.method(fs, 'renameSync', (from, to, ...args) => {
+      if (samePath(to, mirror) && JSON.parse(readFileSync(from, 'utf8')).leases.length === 0) {
+        throw Object.assign(new Error('injected mirror release failure'), { code: 'EIO' });
+      }
+      return rename(from, to, ...args);
+    });
+    syncBuiltinESMExports();
+    try {
+      await assert.rejects(merge(), {
+        code: 'WORKTREE_BUSY_JOBS',
+        details: { reason: 'workspace-admission-unreadable' },
+      });
+      assert.equal(git(repo, 'rev-parse', 'HEAD^2'), git(source.path, 'rev-parse', 'HEAD'));
+      assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')).leases, []);
+      assert.equal(JSON.parse(readFileSync(mirror, 'utf8')).leases.length, 2);
+    } finally {
+      fault.mock.restore();
+      syncBuiltinESMExports();
+    }
+    // withManagementFolders has discarded the release handle. Admission owns
+    // the retry, including both paths sharing the management token.
+    for (const folder of [repo, source.path]) {
+      const leave = tryAdmitWorkspaceActivity('after-completed-merge', folder);
+      try {
+        assert.ok(leave, 'a completed merge cannot leave either checkout blocked');
+      } finally {
+        leave?.();
+      }
+    }
+    commitFile(source.path, 'next.txt', 'next merge\n');
+    assert.equal((await merge()).merged, true, 'subsequent management also resumes');
+  });
+
   test(`${name}: a dirty source or one with a Git operation in progress is refused`, async () => {
     const repo = makeRepo();
     const { source, merge } = await setup(repo);

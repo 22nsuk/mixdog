@@ -52,6 +52,12 @@ Mixdog keeps turn, command and management leases in the repository's shared
 compatibility; new copies cover all three lease kinds. Both copies are written
 under the same lock before a new admission succeeds.
 
+If a release cannot update both copies, its error still reaches the caller,
+but the runtime remembers that the work finished. The heal timer or the next
+admission retries that release before granting new activity, without requiring
+the caller to keep the release handle. Completed leases are not republished as
+live ownership; other running leases remain protected.
+
 A damaged or missing ledger is rebuilt from the complete recovery copy.
 Damaged bytes are preserved as `.corrupt-<timestamp>-<id>`. Live holders remain
 protected even when their runtime is paused or cannot run its heal timer.

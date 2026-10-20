@@ -14,6 +14,7 @@ import {
 import { cleanupTempDirs, git, makeRepo, tempDir, useTempDataDir } from './test-support.mjs';
 import { withFileLockSync } from '../atomic-file.mjs';
 import { putRecord, registryPath } from './registry.mjs';
+import { samePath } from './paths.mjs';
 import { spawnShellChild } from '../../agent/orchestrator/tools/lib/shell-run-spawn.mjs';
 
 beforeEach(useTempDataDir);
@@ -295,7 +296,7 @@ function assertManagementBusy(repo, message) {
 function withFailedRename(path, run) {
   const rename = fs.renameSync;
   fs.renameSync = (from, to, ...args) => {
-    if (to === path) throw Object.assign(new Error('injected rename failure'), { code: 'EIO' });
+    if (samePath(to, path)) throw Object.assign(new Error('injected rename failure'), { code: 'EIO' });
     return rename(from, to, ...args);
   };
   syncBuiltinESMExports();
@@ -597,6 +598,101 @@ test('a failed primary grant is retracted from the recovery mirror', () => {
     holdWorkspaceActivity([repo])();
   }
 });
+
+for (const failedCopy of ['primary', 'mirror']) {
+  for (const recovery of ['timer', 'mutation', 'missing ledger']) {
+    test(`a failed ${failedCopy} management release is completed by ${recovery} without its handle`, (t) => {
+      t.mock.timers.enable({ apis: ['setInterval'] });
+      const repo = makeRepo();
+      const release = holdWorkspaceActivity([repo]);
+      t.after(release);
+      const path = join(repo, '.git', 'mixdog-workspace-admission.json');
+      const mirror = `${path}.management`;
+      withFailedRename(failedCopy === 'primary' ? path : mirror, () => {
+        assert.throws(release, {
+          code: 'WORKTREE_BUSY_JOBS',
+          details: { reason: 'workspace-admission-unreadable' },
+        });
+        assert.equal(ledgerOf(repo).leases.length, failedCopy === 'primary' ? 1 : 0);
+        assert.equal(JSON.parse(readFileSync(mirror, 'utf8')).leases.length, 1);
+        // Another failed repair must retain the release intent, not ownership.
+        t.mock.timers.tick(2000);
+      });
+
+      if (recovery === 'timer') {
+        t.mock.timers.tick(2000);
+        assert.deepEqual(ledgerOf(repo).leases, [], 'the timer finishes release without another caller');
+        assert.deepEqual(JSON.parse(readFileSync(mirror, 'utf8')).leases, []);
+      } else if (recovery === 'missing ledger') {
+        unlinkSync(path);
+      }
+      const leave = tryAdmitWorkspaceActivity('after-failed-release', repo);
+      try {
+        assert.ok(leave, 'the completed management lease must not be republished');
+        assert.equal(ledgerOf(repo).leases.some((lease) => lease.kind === 'management'), false);
+      } finally {
+        leave?.();
+      }
+      holdWorkspaceActivity([repo])();
+    });
+  }
+}
+
+for (const failedCopy of ['primary', 'mirror']) {
+  test(`pending release recovery does not publish a new reader after its ${failedCopy} grant fails`, (t) => {
+    const repo = makeRepo();
+    const release = holdWorkspaceActivity([repo]);
+    t.after(release);
+    const path = join(repo, '.git', 'mixdog-workspace-admission.json');
+    const mirror = `${path}.management`;
+    withFailedRename(mirror, () => assert.throws(release, { code: 'WORKTREE_BUSY_JOBS' }));
+    const rename = fs.renameSync;
+    const fault = t.mock.method(fs, 'renameSync', (from, to, ...args) => {
+      if (
+        samePath(to, failedCopy === 'primary' ? path : mirror) &&
+        JSON.parse(readFileSync(from, 'utf8')).leases.some((lease) => lease.sessionId === 'failed-grant')
+      ) {
+        throw Object.assign(new Error('injected grant failure'), { code: 'EIO' });
+      }
+      return rename(from, to, ...args);
+    });
+    syncBuiltinESMExports();
+    try {
+      assert.throws(() => tryAdmitWorkspaceActivity('failed-grant', repo), {
+        code: 'WORKTREE_BUSY_JOBS',
+        details: { reason: 'workspace-admission-unreadable' },
+      });
+    } finally {
+      fault.mock.restore();
+      syncBuiltinESMExports();
+    }
+    assert.deepEqual(ledgerOf(repo).leases, [], 'neither a completed hold nor an ungranted reader survives');
+    assert.deepEqual(JSON.parse(readFileSync(mirror, 'utf8')).leases, []);
+    holdWorkspaceActivity([repo])();
+  });
+}
+
+for (const kind of ['turn', 'command']) {
+  test(`automatic release recovery removes only the completed ${kind} and preserves a live reader`, (t) => {
+    t.mock.timers.enable({ apis: ['setInterval'] });
+    const repo = makeRepo();
+    const leave = tryAdmitWorkspaceActivity('completed', repo, { kind });
+    const live = tryAdmitWorkspaceActivity('still-running', repo);
+    t.after(() => {
+      leave();
+      live();
+    });
+    const mirror = join(repo, '.git', 'mixdog-workspace-admission.json.management');
+    withFailedRename(mirror, () => assert.throws(leave, { code: 'WORKTREE_BUSY_JOBS' }));
+    t.mock.timers.tick(2000);
+    for (const state of [ledgerOf(repo), JSON.parse(readFileSync(mirror, 'utf8'))]) {
+      assert.deepEqual(state.leases.map((lease) => lease.sessionId), ['still-running']);
+    }
+    assertManagementBusy(repo, 'a pending release cannot remove another live lease');
+    live();
+    holdWorkspaceActivity([repo])();
+  });
+}
 
 test('a release can retry a failed mirror write without leaving stale ownership', () => {
   const repo = makeRepo();

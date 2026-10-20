@@ -101,7 +101,7 @@ function writeState(path, mirror, before, next) {
   const remaining = new Set(next.leases.map(leaseKey));
   const releasing = before.leases.some((lease) => !remaining.has(leaseKey(lease)));
   if (releasing) {
-    // A failed release keeps the old mirror and remains retryable. It must
+    // A failed release remains pending for this process to retry. It must
     // never remove the recovery copy before the ledger drops the lease.
     writeJsonAtomicSync(path, next, { compact: true });
     writeMirror(mirror, next);
@@ -122,7 +122,8 @@ function writeState(path, mirror, before, next) {
   }
 }
 
-// Leases this process holds, republished into any ledger that lost them.
+// Live leases are republished if lost. A failed release stays here with
+// releasing=true until both copies are cleared, even if its caller moves on.
 const held = new Map();
 let healTimer = null;
 
@@ -161,7 +162,7 @@ function healHeld() {
   const byDir = new Map();
   for (const [key, { commonDir }] of held) byDir.set(commonDir, [...(byDir.get(commonDir) ?? []), key]);
   for (const [commonDir, keys] of byDir) {
-    if (!ledgerLacks(commonDir, keys)) continue;
+    if (!keys.some((key) => held.get(key)?.releasing) && !ledgerLacks(commonDir, keys)) continue;
     try {
       mutate(
         commonDir,
@@ -193,12 +194,14 @@ function mutate(commonDir, update, onNewer = refuseUnreadable) {
       if (isNewer(saved.state)) return onNewer();
       const recovering = current.damaged || current.content === null;
       const fullMirror = hasLedgerShape(saved.state) && !saved.damaged && saved.state.allLeases === true;
-      const state = hasLedgerShape(current.state)
+      let state = hasLedgerShape(current.state)
         ? { ...current.state, leases: current.state.leases.filter(isLease) }
         : emptyLedger();
       const restore = [
         ...(recovering && hasLedgerShape(saved.state) ? saved.state.leases.filter(isLease) : []),
-        ...[...held.values()].filter((own) => own.commonDir === commonDir).map((own) => own.lease),
+        ...[...held.values()]
+          .filter((own) => own.commonDir === commonDir && !own.releasing)
+          .map((own) => own.lease),
       ];
       // An absent pair is a fresh workspace. An absent ledger with a mirror
       // is recovery, including a crash between the two durable writes.
@@ -222,6 +225,26 @@ function mutate(commonDir, update, onNewer = refuseUnreadable) {
         present.add(leaseKey(lease));
         state.leases.push(lease);
       }
+      try {
+        if (current.damaged) keepAside(path, current.content);
+        if (saved.damaged) keepAside(mirror, saved.content);
+        const releasing = new Set(
+          [...held.values()]
+            .filter((own) => own.commonDir === commonDir && own.releasing)
+            .map((own) => own.lease.token)
+        );
+        if (releasing.size) {
+          const released = { ...state, leases: state.leases.filter((lease) => !releasing.has(lease.token)) };
+          // Finish pending releases before evaluating or publishing another
+          // request. Combining a release with a new grant would use release
+          // write ordering and could leave an ungranted lease on failure.
+          writeState(path, mirror, state, released);
+          state = released;
+          for (const token of releasing) untrack(token);
+        }
+      } catch {
+        return refuseUnreadable();
+      }
       let next = { ...state, leases: [...state.leases] };
       let result;
       let refusal;
@@ -234,8 +257,6 @@ function mutate(commonDir, update, onNewer = refuseUnreadable) {
         next = state;
       }
       try {
-        if (current.damaged) keepAside(path, current.content);
-        if (saved.damaged) keepAside(mirror, saved.content);
         writeState(path, mirror, state, next);
       } catch {
         return refuseUnreadable();
@@ -251,13 +272,18 @@ function release(commonDir, token) {
   let done = false;
   return () => {
     if (done) return;
-    mutate(
-      commonDir,
-      (leases) => {
-        for (let i = leases.length - 1; i >= 0; i--) if (leases[i].token === token) leases.splice(i, 1);
-      },
-      () => {}
-    );
+    try {
+      mutate(
+        commonDir,
+        (leases) => {
+          for (let i = leases.length - 1; i >= 0; i--) if (leases[i].token === token) leases.splice(i, 1);
+        },
+        () => {}
+      );
+    } catch (error) {
+      for (const own of held.values()) if (own.lease.token === token) own.releasing = true;
+      throw error;
+    }
     done = true;
     untrack(token);
   };
