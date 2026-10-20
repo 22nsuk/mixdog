@@ -3,9 +3,9 @@
 // the final version, before the publish that shows the cards, and each is
 // kept per version so an earlier card keeps its own.
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import test from 'node:test';
 
 import { remoteVisualizeState } from '../../shared/visualize.ts';
@@ -13,6 +13,7 @@ import { VISIBLE_PASSWORD_SCRIPT } from './export-render.ts';
 import { exportTabBytes, thumbnailRenderers } from './host-export-path.ts';
 import { createVisualizeService } from './service.ts';
 import { TURN_END_THUMBNAIL_MS } from './thumbnails.ts';
+import { waitUntil } from '../../../../../src/runtime/shared/wait-until.test-support.mjs';
 
 const SESSION = 's1';
 const png = (text) => Buffer.from(text);
@@ -123,9 +124,24 @@ test('each version keeps its own picture; an earlier card asks for it by version
     assert.equal(await t.thumbnailOf('v1', 2), dataUrl('PIC2'));
     assert.equal(await t.thumbnailOf('v1', 7), undefined);
     assert.equal(await t.thumbnailOf('v9', 1), undefined);
-    // Kept beside each version's folder too.
-    const folder = readdirSync(t.versions, { recursive: true });
-    assert.equal(folder.filter((name) => /[\\/][12]\.png$/.test(String(name))).length, 2);
+    // settled() drains reload jobs; thumbnail writes finish independently.
+    // Wait for the bytes too: a newly created file can still be empty.
+    const pictures = await waitUntil(
+      () => {
+        const files = readdirSync(t.versions, { recursive: true }).filter((name) => /[\\/][12]\.png$/.test(String(name)));
+        const pictures = files.map((name) => [basename(name), readFileSync(join(t.versions, name))]);
+        const complete = [1, 2].every((n) =>
+          pictures.some(([name, bytes]) => name === `${n}.png` && bytes.equals(png(`PIC${n}`)))
+        );
+        return complete ? pictures : false;
+      },
+      { message: 'both version thumbnails are written to disk' }
+    );
+    assert.equal(pictures.length, 2);
+    assert.deepEqual(pictures.sort(([a], [b]) => a.localeCompare(b)), [
+      ['1.png', png('PIC1')],
+      ['2.png', png('PIC2')],
+    ]);
 
     // A turn that opens the unchanged tab again keeps its picture (no capture).
     t.log.length = 0;
