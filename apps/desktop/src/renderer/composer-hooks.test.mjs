@@ -190,6 +190,16 @@ test('an ambiguous failure restored onto a colliding chip id is renumbered and r
   let current;
   const sends = [];
   let failFirst;
+  let signalSubmitted;
+  const submitted = new Promise((resolve) => {
+    signalSubmitted = resolve;
+  });
+  const subtle = globalThis.crypto.subtle;
+  const originalDigest = subtle.digest;
+  let releaseDigest;
+  const digestGate = new Promise((resolve) => {
+    releaseDigest = resolve;
+  });
   function Harness() {
     const [draft, setDraft] = useState('review this');
     const [, setSubmitting] = useState(false);
@@ -244,6 +254,7 @@ test('an ambiguous failure restored onto a colliding chip id is renumbered and r
           if (sends.length === 1) {
             return new Promise((_resolve, reject) => {
               failFirst = () => reject(new Error('connection interrupted'));
+              signalSubmitted();
             });
           }
           return Promise.resolve(true);
@@ -264,13 +275,26 @@ test('an ambiguous failure restored onto a colliding chip id is renumbered and r
     chipOnly: true,
   };
   try {
+    // act() does not wait for Web Crypto. Keep the digest pending so this
+    // scenario also covers a send that has not reached submit yet.
+    subtle.digest = function digest(...args) {
+      return digestGate.then(() => originalDigest.apply(this, args));
+    };
     await mounted.render({});
     await act(async () => current.replaceAttachments([pdf]));
-    // The send goes out; it is unknown whether it arrived when it fails.
     let first;
     await act(async () => {
       first = current.send();
     });
+    assert.equal(sends.length, 0, 'the send is still waiting for its attachment digest');
+    await act(async () => {
+      releaseDigest();
+      // Wait for submit entry, not first: that promise deliberately stays
+      // pending until failFirst simulates an ambiguous transport failure.
+      await submitted;
+    });
+    assert.equal(sends.length, 1);
+    // The send went out; it is unknown whether it arrived when it fails.
     // Meanwhile a new chip takes id 1 in the cleared composer.
     const image = { id: 1, name: 'shot.png', kind: 'image', mimeType: 'image/png', data: 'iVBORw0KGgo=', token: '' };
     await act(async () => current.replaceAttachments([image]));
@@ -297,6 +321,8 @@ test('an ambiguous failure restored onto a colliding chip id is renumbered and r
       )
     );
   } finally {
+    subtle.digest = originalDigest;
+    releaseDigest();
     await mounted.cleanup();
   }
 });
