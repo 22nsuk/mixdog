@@ -130,7 +130,7 @@ async function reserveBackupDirAsync(scopeDir, reason) {
   }
 }
 
-// The names past the newest `keep`, never the just-written backup.
+// The committed names past the newest `keep`, never the just-written backup.
 function backupsToPrune(names, own, keep = 40) {
   return [...names]
     .sort()
@@ -391,7 +391,14 @@ function copyTree(src, dst, copied) {
 
 /** Prune one data dir's scope only; other scopes and legacy entries stay. */
 function pruneBackups(scopeDir, names, own) {
-  for (const name of backupsToPrune(names, own)) {
+  const committed = names.filter((name) => {
+    try {
+      return statSync(join(scopeDir, name, BACKUP_MANIFEST)).isFile();
+    } catch {
+      return false;
+    }
+  });
+  for (const name of backupsToPrune(committed, own)) {
     try {
       rmSync(join(scopeDir, name), { recursive: true, force: true });
     } catch {}
@@ -461,16 +468,25 @@ export function backupUserData(dataDir, reason = 'snapshot', { dirs = [] } = {})
   const scopeDir = scopeDirFor(dataDir);
   const { backupDir, names } = reserveBackupDir(scopeDir, reason);
   const copied = [];
-  for (const rel of USER_DATA_FILES) {
-    const src = join(dataDir, rel);
-    if (existsSync(src)) copyTree(src, join(backupDir, rel), copied);
-  }
-  for (const rel of [...USER_DATA_DIRS, ...dirs]) {
-    const src = join(dataDir, rel);
-    if (existsSync(src)) copyTree(src, join(backupDir, rel), copied);
+  try {
+    for (const rel of USER_DATA_FILES) {
+      const src = join(dataDir, rel);
+      if (existsSync(src)) copyTree(src, join(backupDir, rel), copied);
+    }
+    for (const rel of [...USER_DATA_DIRS, ...dirs]) {
+      const src = join(dataDir, rel);
+      if (existsSync(src)) copyTree(src, join(backupDir, rel), copied);
+    }
+    if (copied.length > 0) finishBackup(dataDir, backupDir, reason);
+  } catch (error) {
+    // Roll back only this reservation; cleanup must not replace the original
+    // failure. Leftovers are uncommitted and do not consume retention slots.
+    try {
+      rmSync(backupDir, { recursive: true, force: true });
+    } catch {}
+    throw error;
   }
   if (copied.length > 0) {
-    finishBackup(dataDir, backupDir, reason);
     pruneBackups(scopeDir, names, basename(backupDir));
     if (process.env.MIXDOG_SETUP_QUIET !== '1') {
       process.stderr.write(`[user-data-backup] ${reason}: copied ${copied.length} file(s) to ${backupDir}\n`);
@@ -499,7 +515,13 @@ async function copyTreeAsync(src, dst, copied) {
 }
 
 async function pruneBackupsAsync(scopeDir, names, own) {
-  for (const name of backupsToPrune(names, own)) {
+  const committed = [];
+  for (const name of names) {
+    try {
+      if ((await statP(join(scopeDir, name, BACKUP_MANIFEST))).isFile()) committed.push(name);
+    } catch {}
+  }
+  for (const name of backupsToPrune(committed, own)) {
     try {
       await rmP(join(scopeDir, name), { recursive: true, force: true });
     } catch {}
@@ -512,16 +534,23 @@ export async function backupUserDataAsync(dataDir, reason = 'snapshot') {
   const scopeDir = scopeDirFor(dataDir);
   const { backupDir, names } = await reserveBackupDirAsync(scopeDir, reason);
   const copied = [];
-  for (const rel of USER_DATA_FILES) {
-    const src = join(dataDir, rel);
-    if (existsSync(src)) await copyTreeAsync(src, join(backupDir, rel), copied);
-  }
-  for (const rel of USER_DATA_DIRS) {
-    const src = join(dataDir, rel);
-    if (existsSync(src)) await copyTreeAsync(src, join(backupDir, rel), copied);
+  try {
+    for (const rel of USER_DATA_FILES) {
+      const src = join(dataDir, rel);
+      if (existsSync(src)) await copyTreeAsync(src, join(backupDir, rel), copied);
+    }
+    for (const rel of USER_DATA_DIRS) {
+      const src = join(dataDir, rel);
+      if (existsSync(src)) await copyTreeAsync(src, join(backupDir, rel), copied);
+    }
+    if (copied.length > 0) finishBackup(dataDir, backupDir, reason);
+  } catch (error) {
+    try {
+      await rmP(backupDir, { recursive: true, force: true });
+    } catch {}
+    throw error;
   }
   if (copied.length > 0) {
-    finishBackup(dataDir, backupDir, reason);
     await pruneBackupsAsync(scopeDir, names, basename(backupDir));
     if (process.env.MIXDOG_SETUP_QUIET !== '1') {
       process.stderr.write(`[user-data-backup] ${reason}: copied ${copied.length} file(s) to ${backupDir}\n`);

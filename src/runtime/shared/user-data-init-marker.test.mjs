@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import fs, { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import fsPromises from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join, relative } from 'node:path';
+import { basename, dirname, join, relative } from 'node:path';
 import test from 'node:test';
 
 import { readConfig, updateSection, updateSectionAsync } from './config.mjs';
@@ -65,9 +66,10 @@ function completedManifests(root) {
 function initialized(t) {
   const state = sandbox(t);
   writeFileSync(state.configPath, JSON.stringify(originalConfig));
-  backupUserData(state.dataDir, 'original');
+  const { dir: backupDir } = backupUserData(state.dataDir, 'original');
   return {
     ...state,
+    backupDir,
     markerBytes: readFileSync(state.markerPath),
     manifests: completedManifests(state.backupRoot),
   };
@@ -87,6 +89,17 @@ function failMarkerReads(t, markerPath, code) {
   };
   t.after(restore);
   return { error, restore };
+}
+
+function mockFsMethod(t, target, method, implementation) {
+  const mocked = t.mock.method(target, method, implementation);
+  syncBuiltinESMExports();
+  const restore = () => {
+    mocked.mock.restore();
+    syncBuiltinESMExports();
+  };
+  t.after(restore);
+  return restore;
 }
 
 for (const [kind, code, save] of [
@@ -141,6 +154,7 @@ for (const [kind, backup] of [
     assert.deepEqual(originalReadFileSync(state.markerPath), state.markerBytes);
     assert.deepEqual(readFileSync(state.configPath), configBytes);
     assert.deepEqual(completedManifests(state.backupRoot), state.manifests);
+    assert.deepEqual(readdirSync(dirname(state.backupDir)), [basename(state.backupDir)]);
 
     restore();
     const recovered = await backup(state.dataDir, 'readable-marker');
@@ -150,6 +164,114 @@ for (const [kind, backup] of [
     );
   });
 }
+
+for (const [kind, backup, io, readMethod, removeMethod] of [
+  ['sync', backupUserData, fs, 'readFileSync', 'rmSync'],
+  ['async', backupUserDataAsync, fsPromises, 'readFile', 'rm'],
+]) {
+  test(`${kind} backup removes a partially copied reservation without touching completed history`, async (t) => {
+    const state = initialized(t);
+    const scheduleDir = join(state.dataDir, 'schedules');
+    mkdirSync(scheduleDir);
+    const schedulePath = join(scheduleDir, 'job.json');
+    writeFileSync(schedulePath, '{"schedule":"kept"}');
+    const error = Object.assign(new Error('schedule read failed'), { code: 'EIO' });
+    const originalRead = io[readMethod];
+    mockFsMethod(t, io, readMethod, (path, ...args) => {
+      if (String(path) === schedulePath) throw error;
+      return originalRead(path, ...args);
+    });
+
+    await assert.rejects(async () => backup(state.dataDir, 'copy-error'), (actual) => actual === error);
+    assert.deepEqual(readdirSync(dirname(state.backupDir)), [basename(state.backupDir)]);
+    assert.deepEqual(completedManifests(state.backupRoot), state.manifests);
+    assert.deepEqual(readFileSync(state.markerPath), state.markerBytes);
+    assert.deepEqual(JSON.parse(readFileSync(state.configPath, 'utf8')), originalConfig);
+  });
+
+  test(`${kind} retention ignores failed cleanup reservations but counts completed schedule-only snapshots`, async (t) => {
+    const state = initialized(t);
+    const scopeDir = dirname(state.backupDir);
+    const { error, restore: restoreMarker } = failMarkerReads(t, state.markerPath, 'EIO');
+    const cleanupError = Object.assign(new Error('reservation cleanup denied'), { code: 'EACCES' });
+    const originalRemove = io[removeMethod];
+    const restoreRemove = mockFsMethod(t, io, removeMethod, (path, ...args) => {
+      if (dirname(String(path)) === scopeDir && String(path) !== state.backupDir) throw cleanupError;
+      return originalRemove(path, ...args);
+    });
+    for (let index = 0; index < 40; index += 1) {
+      await assert.rejects(async () => backup(state.dataDir, 'marker-error'), (actual) => actual === error);
+    }
+    assert.equal(readdirSync(scopeDir).length, 41);
+    assert.deepEqual(completedManifests(state.backupRoot), state.manifests);
+    restoreMarker();
+    restoreRemove();
+
+    const recovered = await backup(state.dataDir, 'repaired');
+    assert.equal(existsSync(state.backupDir), true, 'incomplete reservations cannot evict the original backup');
+    assert.equal(Object.keys(completedManifests(state.backupRoot)).length, 2);
+    assert.deepEqual(loadLatestMixdogConfigFromBackup(state.dataDir, { fresh: true }), originalConfig);
+
+    // A completed backup need not contain a config: schedules are user data too.
+    rmSync(state.configPath);
+    mkdirSync(join(state.dataDir, 'schedules'));
+    writeFileSync(join(state.dataDir, 'schedules', 'job.json'), '{"schedule":"kept"}');
+    const schedules = [];
+    for (let index = 0; index < 39; index += 1) {
+      schedules.push(await backup(state.dataDir, 'schedules-only'));
+    }
+    assert.equal(existsSync(state.backupDir), false, 'the oldest of 41 completed snapshots is pruned');
+    assert.equal(existsSync(recovered.dir), true);
+    assert.equal(Object.keys(completedManifests(state.backupRoot)).length, 40);
+    for (const snapshot of schedules) {
+      assert.equal(existsSync(join(snapshot.dir, 'mixdog-config.json')), false);
+      assert.equal(readFileSync(join(snapshot.dir, 'schedules', 'job.json'), 'utf8'), '{"schedule":"kept"}');
+    }
+  });
+
+  test(`${kind} backup remains committed when reporting fails after publication`, async (t) => {
+    const state = initialized(t);
+    process.env.MIXDOG_SETUP_QUIET = '0';
+    const error = new Error('backup report failed');
+    const originalWrite = process.stderr.write;
+    t.mock.method(process.stderr, 'write', function (chunk, ...args) {
+      if (String(chunk).startsWith('[user-data-backup]')) throw error;
+      return originalWrite.call(this, chunk, ...args);
+    });
+    await assert.rejects(async () => backup(state.dataDir, 'published'), (actual) => actual === error);
+    const manifests = completedManifests(state.backupRoot);
+    assert.equal(Object.keys(manifests).length, 2);
+    const published = Object.entries(manifests).filter(([, bytes]) => JSON.parse(bytes).reason === 'published');
+    assert.equal(published.length, 1);
+    assert.deepEqual(
+      JSON.parse(readFileSync(join(state.backupRoot, dirname(published[0][0]), 'mixdog-config.json'), 'utf8')),
+      originalConfig
+    );
+    assert.equal(existsSync(state.backupDir), true);
+  });
+}
+
+test('an init marker damaged during async copying rolls back only that reservation', async (t) => {
+  const state = initialized(t);
+  const originalRead = fsPromises.readFile;
+  let copiedConfig = false;
+  mockFsMethod(t, fsPromises, 'readFile', async (path, ...args) => {
+    const bytes = await originalRead(path, ...args);
+    if (String(path) === state.configPath) {
+      copiedConfig = true;
+      writeFileSync(state.markerPath, '{"instanceId":');
+    }
+    return bytes;
+  });
+  await assert.rejects(
+    backupUserDataAsync(state.dataDir, 'marker-damaged-mid-copy'),
+    (error) => error instanceof SyntaxError && error.message.includes(state.markerPath)
+  );
+  assert.equal(copiedConfig, true);
+  assert.equal(readFileSync(state.markerPath, 'utf8'), '{"instanceId":');
+  assert.deepEqual(readdirSync(dirname(state.backupDir)), [basename(state.backupDir)]);
+  assert.deepEqual(completedManifests(state.backupRoot), state.manifests);
+});
 
 for (const [label, damaged] of [
   ['malformed JSON', '{"instanceId":'],
