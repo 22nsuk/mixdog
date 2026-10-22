@@ -60,6 +60,7 @@ import {
   MODEL_PROXY_REQUEST_EVENT,
 } from '../../../../src/runtime/agent/orchestrator/providers/model-proxy-channel.mjs';
 import { modelProxyClientMode } from '../../../../src/runtime/shared/model-proxy-mode.mjs';
+import { registerAgentRoomHost } from '../../../../src/runtime/shared/agent-room-host.mjs';
 import { registerSessionSidebarHost } from '../../../../src/runtime/shared/session-sidebar-host.mjs';
 import { sessionSidebarChangeHandler } from './session-sidebar-actions';
 
@@ -658,8 +659,14 @@ export async function createDesktopService({
     (root) => operations.invoke('lspDisposeUnder', [root])
   );
   // The Lead's `session` tool (favorite / archive) runs
-  // in this daemon and applies its change through the same host methods.
-  const unregisterSessionSidebarHost = registerSessionSidebarHost(sessionSidebarChangeHandler(host));
+  // in this daemon and applies its change through the same host methods; its
+  // session list and the sub-agent retention sweep read the flags.
+  const unregisterSessionSidebarHost = registerSessionSidebarHost(sessionSidebarChangeHandler(host), {
+    state: () => host.sessionSidebarState(),
+  });
+  // Group rooms run only here: the `session` tool's sends to a room and a
+  // member's relay of its reported work reach them through this host.
+  const unregisterAgentRoomHost = registerAgentRoomHost(host.agentRoomHost());
   const settingsStore = operations.settingsStore;
   // A deleted session takes its server-window upload staging folder with it.
   const deleteSessionWithUploads = async (sessionId: unknown): Promise<unknown> => {
@@ -829,6 +836,7 @@ export async function createDesktopService({
     async dispose(): Promise<void> {
       unregisterTerminalReleaser();
       unregisterSessionSidebarHost();
+      unregisterAgentRoomHost();
       importProgress.dispose();
       stateSync.dispose();
       desktopEventListeners.clear();

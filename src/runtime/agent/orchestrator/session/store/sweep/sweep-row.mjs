@@ -13,6 +13,7 @@ import { _queueSessionSummaryUpsert, _queueSessionSummaryRemoval } from '../summ
 import { deleteSession } from '../session-delete.mjs';
 import { markSessionClosed } from '../lifecycle-barriers.mjs';
 import { BLANK_SCRATCH_MAX_AGE_MS, RUNNING_STALL_MS, SWEEP_RECORD_NO_DATA, readSweepRecord } from './sweep-record.mjs';
+import { subAgentMember } from './sub-agent-retention.mjs';
 import { isAgentHomeSessionId } from '../../agent-home.mjs';
 import { isRoomThreadSessionId } from '../../agent-room.mjs';
 
@@ -27,6 +28,14 @@ const effectiveFields = (actual, row) => ({
   lastHeartbeatAt: Number(actual?.lastHeartbeatAt) > 0 ? Number(actual.lastHeartbeatAt) : row.lastHeartbeatAt || 0,
   createdAt: Number(actual?.createdAt) > 0 ? Number(actual.createdAt) : row.createdAt || 0,
 });
+
+/** Every sub-agent record, open or closed, fresh or not, for the tree
+ *  retention its caller applies (sub-agent-retention.mjs). */
+function noteSubAgent(ctx, id, doc) {
+  if (!ctx.plan.retainSubAgents) return;
+  const member = subAgentMember(id, doc);
+  if (member) ctx.tally.subAgents.push(member);
+}
 
 /** A closed record: a mature tombstone is deleted; otherwise a stale summary
  *  row that still claims the session open is repaired and the row is kept. */
@@ -153,6 +162,7 @@ function sweepOpenRecord(ctx, row, record, { jsonMtime }) {
     tally.remaining++;
     return;
   }
+  noteSubAgent(ctx, row.id, record.doc);
   const eff = effectiveFields(record.doc, row);
   const ownerNamed = typeof eff.owner === 'string' && eff.owner.length > 0;
   // Freshness gate — recently-touched open sessions are skipped cheaply here.
@@ -277,7 +287,10 @@ export function sweepRow(ctx, row) {
     return;
   }
   if (record.closed === true || actual.status === 'closed') {
+    const cleanedBefore = ctx.tally.tombstonesCleaned;
     sweepClosedRecord(ctx, row, actual, jsonPath);
+    // A tombstone this sweep just deleted is gone, not a member.
+    if (ctx.tally.tombstonesCleaned === cleanedBefore) noteSubAgent(ctx, row.id, actual);
     return;
   }
   sweepOpenRecord(ctx, row, record, { jsonMtime: jsonProbe.mtimeMs || 0 });

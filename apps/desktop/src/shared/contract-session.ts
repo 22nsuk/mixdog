@@ -390,6 +390,8 @@ export interface DesktopModelOption {
   latest?: boolean;
   /** Free-form secondary line; media lanes use it for the provider name. */
   description?: string;
+  /** A custom provider's registered name, so the picker needs no setup call. */
+  providerName?: string;
   supportsVision?: boolean;
   effortOptions: DesktopModelEffortOption[];
   fastCapable: boolean;
@@ -516,6 +518,10 @@ export interface DesktopSubmitOptions {
   /** Host-stamped name of the device that sent this (see session-device.ts).
    *  Request validation rejects it from a caller. */
   device?: string;
+  /** Host-only: a group-room member turn's place in a bot-to-bot chain
+   *  (bot-hops.mjs), from the send or relay it answers. Request validation
+   *  rejects it from a caller. */
+  hop?: number;
 }
 
 export interface DesktopAbortOptions {

@@ -40,6 +40,7 @@ import {
   markPendingGoalReminder,
   snapshotPendingGoalReminder,
 } from '../runtime-core/goal-reminder.mjs';
+import { rearmLateDeferredTools } from '../runtime-core/tool-catalog.mjs';
 
 async function setStage(opts, stage) {
   try {
@@ -552,7 +553,15 @@ async function compactBeforeSend(ctx) {
     return;
   }
   ctx.compactChanged = messagesArrayChanged(messages, run.compacted);
-  if (ctx.compactChanged) adoptCompactedTranscript(ctx, run);
+  if (ctx.compactChanged) {
+    adoptCompactedTranscript(ctx, run);
+    // The adopted compaction strips late MCP tool announcements from older turns.
+    try {
+      rearmLateDeferredTools(sessionRef);
+    } catch {
+      /* best-effort, like the Goal reminder: a tool reminder never fails the compaction */
+    }
+  }
   reportCompactOutcome(ctx, run);
   // PostCompact belongs only to a completed compaction pass, never the
   // ordinary pre-send threshold check.

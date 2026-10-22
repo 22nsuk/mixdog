@@ -3,10 +3,12 @@ import test from 'node:test';
 import {
   buildCatalogFailureItems,
   buildModelProviderItems,
+  catalogProviderDisplayNames,
   loadProviderCatalogFailures,
   loadProviderDisplayNames,
   providerDisplayName,
   resolveProviderDisplayName,
+  routeLabel,
 } from './model-options.mjs';
 
 const CUSTOM_ID = 'custom-a92e4651-dab8-45a1-aa63-70b7be71c1f7';
@@ -25,6 +27,30 @@ test('provider list shows the setup-given name for custom providers', () => {
   const items = buildModelProviderItems(models, null, { [CUSTOM_ID]: '내 AI' });
   assert.equal(items.find((item) => item._provider === CUSTOM_ID).label, '내 AI');
   assert.equal(items.find((item) => item._provider === 'openai').label, providerDisplayName('openai'));
+});
+
+test('row providerName names a custom provider when setup is missing; setup still wins', async () => {
+  const rows = [
+    { provider: 'openai', id: 'gpt-x', providerName: 'Spoof' },
+    { provider: CUSTOM_ID, id: 'my-model', providerName: 'Gateway' },
+  ];
+  const setupNames = await loadProviderDisplayNames({});
+  const names = catalogProviderDisplayNames(rows, setupNames);
+  const items = buildModelProviderItems(rows, null, names);
+  assert.equal(items.find((item) => item._provider === CUSTOM_ID).label, 'Gateway');
+  assert.equal(items.find((item) => item._provider === 'openai').label, providerDisplayName('openai'));
+  assert.equal(catalogProviderDisplayNames(rows, { [CUSTOM_ID]: '내 AI' })[CUSTOM_ID], '내 AI');
+  assert.equal(catalogProviderDisplayNames([{ provider: CUSTOM_ID, id: 'm' }])[CUSTOM_ID], undefined);
+});
+
+test('routeLabel names a custom provider by its setup name, built-ins by their label', () => {
+  const names = { [CUSTOM_ID]: '내 AI' };
+  assert.equal(routeLabel({ provider: CUSTOM_ID, model: 'my-model' }, names).split(' · ')[0], '내 AI');
+  assert.equal(routeLabel({ provider: CUSTOM_ID, model: 'my-model' }).split(' · ')[0], CUSTOM_ID);
+  assert.equal(
+    routeLabel({ provider: 'openai', model: 'gpt-x' }, names).split(' · ')[0],
+    providerDisplayName('openai')
+  );
 });
 
 test('resolveProviderDisplayName prefers setup names', () => {

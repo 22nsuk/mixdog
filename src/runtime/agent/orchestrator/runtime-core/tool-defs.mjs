@@ -73,9 +73,9 @@ export const SESSION_TOOL = {
     openWorldHint: false,
     agentHidden: true,
   },
-  trigger: 'Session lookup/control, bot status, agent task sessions, title, compact, fork, Project and worktrees.',
+  trigger: 'Session lookup/control, bot status, agent task sessions and their initial location, title, compact, fork, Project.',
   description:
-    'Inspect sessions or control another by exact ID, never a guessed one. send acknowledges queue intake, not completion: promise a report of it only when its result has reportsBack: true. create returns status: started — started, not done yet; it reports its final answer, after the agents it started finish, unless its result says reportsBack: false. reportsBack: false carries reportsBackReason, the reason to tell the user. Cancel/delete and worktree actions require the user’s request. Other actions affect only the current session. Pass files on with attachments; a reported turn returns the files it produced as attachments.',
+    'Inspect sessions or control another by exact ID, never a guessed one. send acknowledges queue intake, not completion: promise a report of it only when its result has reportsBack: true. create returns status: started — started, not done yet; it reports its final answer, after the agents it started finish, unless its result says reportsBack: false. reportsBack: false carries reportsBackReason, the reason to tell the user. Cancel/delete require the user’s request. Other actions affect only the current session. A new session’s initial location (Project folder branch or its own worktree) is set here, with create’s worktree; worktree operations on existing sessions (enter, return, merge, remove, list, prune) use the git tool’s action:"worktree". Pass files on with attachments; a reported turn returns the files it produced as attachments.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -97,13 +97,9 @@ export const SESSION_TOOL = {
           'list-projects',
           'favorite',
           'archive',
-          'merge-worktree',
-          'remove-worktree',
-          'list-worktrees',
-          'prune-worktrees',
         ],
         description:
-          'status defaults to current; list pages sessions; bots shows each bot’s activity, work, approvals, routines and attention flags, or with session_id (a bot id or its chat) its routines and recent sessions; read returns latest items; send queues prompt (reportsBack: the turn result reports back here); cancel stops the turn; delete removes the session. create (bot conversations) starts a visible agent task session from brief (started, not done yet); unknown Project: list-projects first, still ambiguous: ask the user. compact runs after this turn; fork copies it without switching. merge-worktree merges into the Project’s checked-out branch; remove-worktree returns to the Project (repeat on WORKTREE_REMOVAL_INCOMPLETE); list-worktrees includes retaining sessions; prune-worktrees removes only clean, merged, unretained worktrees.',
+          'status defaults to current; list pages sessions, without sub-agent or archived ones unless include_agents/include_archived; bots shows each bot’s activity, work, approvals, routines and attention flags, or with session_id (a bot id or its chat) its routines and recent sessions; read returns latest items; send queues prompt (reportsBack: the turn result reports back here); cancel stops the turn; delete removes the session. create (bot conversations) starts a visible agent task session from brief (started, not done yet); unknown Project: list-projects first, still ambiguous: ask the user. compact runs after this turn; fork copies it without switching.',
       },
       title: { type: 'string', description: 'rename: new current-session title; create: task title.' },
       session_id: {
@@ -112,6 +108,11 @@ export const SESSION_TOOL = {
           'ID from list; required for read/send/cancel/delete, optional for status/bots. send/cancel/delete cannot target the caller.',
       },
       prompt: { type: 'string', description: 'send: message to enqueue; loads a cold session.' },
+      to: {
+        type: 'string',
+        description:
+          'send to a group room (sess_room_*): the member bot it is for, by agent id or room name (or start prompt with @name); only that member answers. A member session (sess_rmem_*) is never a send target.',
+      },
       limit: {
         type: 'integer',
         minimum: 1,
@@ -120,6 +121,14 @@ export const SESSION_TOOL = {
           'list/read: maximum rows, default 25; bots: sessions, default 10. Output: 8KiB per page, 12KiB for initial read tail; follow nextOffset/nextTextOffset for more.',
       },
       cursor: { type: 'string', description: 'list: returned nextCursor.' },
+      include_agents: {
+        type: 'boolean',
+        description: 'list: also sub-agent sessions, default false; your own agents: agent list/status.',
+      },
+      include_archived: {
+        type: 'boolean',
+        description: 'list: also archived sessions (archived: true), default false.',
+      },
       offset: {
         type: 'integer',
         minimum: 0,
@@ -141,13 +150,25 @@ export const SESSION_TOOL = {
           'Existing directory; implies set-project. Resolve names with list-projects first. Shell cd does not switch Project.',
       },
       compact: { type: 'boolean', description: 'fork: compact the copy.' },
-      force: {
-        type: 'boolean',
-        description: 'remove-worktree: allow uncommitted/unmerged work only when explicitly requested.',
-      },
       value: { type: 'boolean', description: 'favorite/archive: on or off.' },
       brief: { type: 'string', description: 'create: self-contained instruction, the first message.' },
       project: { type: 'string', description: 'create: registered Project name or existing directory.' },
+      worktree: {
+        type: 'object',
+        description:
+          'create: where the new session starts, never carrying uncommitted changes. {mode:"branch"}: the Project folder on its current branch. {mode:"worktree", name?}: its own new managed worktree (name: letters, digits, ".", "_", "-"; default from the title); a non-git folder or unregistered Project is an error. Omitted: the user’s New task default. The brief is sent only once the session is placed.',
+        properties: {
+          mode: { type: 'string', enum: ['branch', 'worktree'] },
+          name: { type: 'string', maxLength: 64, description: 'mode worktree: worktree name.' },
+        },
+        required: ['mode'],
+        additionalProperties: false,
+      },
+      confirm_large: {
+        type: 'boolean',
+        description:
+          'create: only after the user confirmed the large-repository warning (WORKTREE_LARGE_REPO_CONFIRM, with its size) for the worktree.',
+      },
       model: {
         type: 'string',
         description: 'create: provider/model or preset; default is the Lead model (else the last-used one).',

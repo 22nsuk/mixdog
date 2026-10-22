@@ -4,10 +4,12 @@ import {
   boundaryGestureReached,
   boundaryTarget,
   IOS_TOUCH_SETTLE_MS,
-  touchMoveShouldReleaseFollow,
+  scrollMetrics,
   touchScrollLatchOpen,
+  touchTravelled,
   type TouchLike,
 } from './transcript-follow-rules';
+import type { FollowSignals } from './use-follow-signals';
 
 /** A lifted finger keeps holding corrections this long: a fling it starts
  *  latches meanwhile, and a tap that only stopped a fling lands after it. */
@@ -52,15 +54,19 @@ function followDetachedTouch(
 export function useFollowTouch({
   viewport,
   markGesture,
-  stop,
-  lastTop,
   wheelScrolling,
+  signals,
+  lastWriteAt,
+  onLift,
 }: {
   viewport: RefObject<HTMLDivElement | null>;
   markGesture(): void;
-  stop(reason?: string, previousTop?: number): void;
-  lastTop: RefObject<number>;
   wheelScrolling(): boolean;
+  signals: RefObject<FollowSignals>;
+  /** When the timeline last wrote the offset. */
+  lastWriteAt(): number;
+  /** Every finger is up: judge the scroll the touch ended. */
+  onLift(): void;
 }) {
   const touchGesture = useRef<number | undefined>(undefined);
   const touchLatched = useRef(false);
@@ -93,32 +99,37 @@ export function useFollowTouch({
       }),
     [fingerOnGlass]
   );
-  // A touch scroll holds measured-size corrections and page landings off the
-  // native offset until its fling is over, on every engine. On an Android
-  // phone a scrollTop write under a touch fling desyncs the fling from the
-  // page: the fling stops short, and the next touch reconciles the two
-  // offsets in one jump (Android: 위로 빠르게 넘기면 멈추고, 다시 터치하면 훨씬
-  // 위로 순간이동). Headless Chromium keeps flinging through such a write, so
-  // only a device shows it. Chromium's fling ends at scrollend (or the idle
-  // fallback); iOS WebKit fires no reliable end, so its hold ends once the
-  // scroll has been quiet for a moment. A touch hold lands early at the top
-  // edge, so a fling toward older history never sticks at native 0 short of
-  // a page that landed above it (transcript-list-touch-deviation).
-  // A finger on the glass holds too, scrolling or not, and so does one lifted
-  // a moment ago: landing in the gap between the fling's stop and the next
-  // touch is the jump itself, and a lifted finger may still start a fling.
+  // On iOS WebKit a touch scroll holds measured-size corrections and page
+  // landings off the native offset until its fling is over: a scrollTop write
+  // there cancels the momentum. WebKit fires no reliable end, so the hold ends
+  // once the scroll has been quiet for a moment. Native 0 with a page held
+  // above it is no exception while the momentum is on it: the hold lands
+  // early only once the logical offset is at the real top, or when a new
+  // finger lands at native 0 (its drag must reach the page); otherwise it
+  // waits for the settle (transcript-list-touch-deviation). A finger on the
+  // glass holds too, scrolling or not, and so does one lifted a moment ago: a
+  // lifted finger may still start a fling.
+  // Nowhere else. Chromium (Android Chrome, its WebView, a desktop
+  // touchscreen) keeps a touch fling's momentum through a scrollTop write —
+  // the fling is a stream of scroll deltas applied to wherever the offset is,
+  // the path its own scroll anchoring adjusts under — so corrections are
+  // written at once, as virtual-core writes them off iOS. Held there, a page
+  // landed above the reader stayed outside the native scroll range until the
+  // fling ended, and an upward fling stopped at the old first row, mid-history
+  // (Android: 위로 스크롤하면 중간에 멈춘다).
   const [iosWebKit] = useState(isIOSWebSurface);
   const touchEndedAt = useRef(0);
   const touchHoldsCorrections = useCallback(
     () =>
-      fingerOnGlass() ||
-      Date.now() - touchEndedAt.current < TOUCH_RELEASE_SETTLE_MS ||
-      touchScrollLatchOpen({
-        latched: touchLatched.current,
-        touchDown: false,
-        sinceScrollMs: Date.now() - touchScrollAt.current,
-        idleMs: iosWebKit ? IOS_TOUCH_SETTLE_MS : undefined,
-      }),
+      iosWebKit &&
+      (fingerOnGlass() ||
+        Date.now() - touchEndedAt.current < TOUCH_RELEASE_SETTLE_MS ||
+        touchScrollLatchOpen({
+          latched: touchLatched.current,
+          touchDown: false,
+          sinceScrollMs: Date.now() - touchScrollAt.current,
+          idleMs: IOS_TOUCH_SETTLE_MS,
+        })),
     [fingerOnGlass, iosWebKit]
   );
   const holdsScrollCorrections = useCallback(
@@ -148,6 +159,7 @@ export function useFollowTouch({
       const previous = touchGesture.current;
       touchGesture.current = next;
       if (next === undefined || previous === undefined) return;
+      if (touchTravelled(signals.current.touchStartY, next)) signals.current.touchMoved = true;
       const delta = previous - next;
       if (!delta) return;
       const target = boundaryTarget(event.currentTarget, event.target);
@@ -158,16 +170,9 @@ export function useFollowTouch({
         // the touch, not to a window that expires while the phone is busy.
         touchLatched.current = true;
         touchScrollAt.current = Date.now();
-        // Wheel intent releases synchronously before Chromium's first scroll
-        // frame; touch must do the same. Keeping the end anchor alive until the
-        // later scroll event lets row measurement and followOnAppend reverse the
-        // finger's movement, producing the mobile up/down scrollbar shake.
-        if (touchMoveShouldReleaseFollow({ delta, transcriptReached })) {
-          stop('touch', lastTop.current);
-        }
       }
     },
-    [lastTop, markGesture, stop]
+    [markGesture, signals]
   );
 
   const handleTouchEnd = useCallback(() => {
@@ -179,18 +184,31 @@ export function useFollowTouch({
     // idle fallback is what closes it.
     touchScrollAt.current = Date.now();
     touchEndedAt.current = touchScrollAt.current;
-  }, []);
+    onLift();
+  }, [onLift]);
 
   const handleTouchStart = useCallback(
     (event: TouchLike) => {
       touchGesture.current = event.touches[0]?.clientY;
+      const state = signals.current;
+      if (!touchDown.current) {
+        // The first finger down: what the lift is judged against.
+        const root = viewport.current;
+        state.touchStartTop = root ? scrollMetrics(root).top : 0;
+        state.touchStartY = event.touches[0]?.clientY ?? 0;
+        state.touchStartWriteAt = lastWriteAt();
+        state.touchMoved = false;
+        state.touchScrolled = false;
+        state.touchEndUpAt = 0;
+        state.mutationAt = Number.NEGATIVE_INFINITY;
+      }
       touchDown.current = true;
       touchTarget.current = event.target as { isConnected?: boolean } | null;
       touchScrollAt.current = Date.now();
       releaseTouchTarget.current?.();
       releaseTouchTarget.current = followDetachedTouch(event, handleTouchMove, handleTouchEnd);
     },
-    [handleTouchEnd, handleTouchMove]
+    [handleTouchEnd, handleTouchMove, lastWriteAt, signals, viewport]
   );
   useEffect(
     () => () => {

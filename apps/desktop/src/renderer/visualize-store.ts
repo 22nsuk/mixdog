@@ -15,6 +15,7 @@ import {
 import { browserPageRequestsAvailable, requestBrowserPage } from './browser-page-request';
 import { linkOpenTarget } from './link-open-target';
 import { isMobileRemoteSurface } from './mobile-surface';
+import { timeFormatOptions } from './time-format-preference';
 import { sameTarget } from './visualize-card-model';
 import { emitVisualizeZoomInput, emitVisualizeZoomModifier } from './visualize-zoom';
 
@@ -395,7 +396,7 @@ export function setVisualizePanelOnScreen(sessionId: string, shown: boolean): vo
     onScreen.delete(sessionId);
     userPicks.delete(sessionId);
   }
-  // Chat card tiles mark the tab "Showing" only while the panel is on screen.
+  // Chat card tiles outline the shown tab only while the panel is on screen.
   if (was !== shown) emit();
 }
 
@@ -823,7 +824,7 @@ export function visualizeExportPane(tab: Pick<VisualizeSessionState['tabs'][numb
 /** When a list entry was opened: the time today, else the date and time. */
 export function visualizeHistoryTime(at: number, now: number = Date.now()): string {
   const date = new Date(at);
-  const time = date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  const time = date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', ...timeFormatOptions() });
   return date.toDateString() === new Date(now).toDateString()
     ? time
     : `${date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${time}`;

@@ -27,6 +27,7 @@ import {
   agentHomeSessionId,
   agentIdOfHomeSession,
 } from '../../../../src/runtime/agent/orchestrator/session/agent-home.mjs';
+import { agentDescendantIds } from '../../../../src/runtime/agent/orchestrator/session/store-summary-visibility.mjs';
 import { MIXY_AGENT_ID } from '../shared/agent-contacts';
 import { agentGreetingKickoff } from '../shared/agent-greeting';
 import { createAgentHomeSessions, startSessionOver } from './agent-home-sessions';
@@ -59,6 +60,8 @@ export type SessionWorkspaceResolution = {
 const mintArchiveId = () => `sess_${process.pid}_${Date.now()}_${randomUUID().replaceAll('-', '')}`;
 
 export interface SessionHostLifecycleOwner {
+  /** Take a deleted agent out of every room's members. */
+  forgetRoomMember(agentId: string): Promise<void>;
   readonly client: SessionClient;
   readonly publication: SessionHostPublication;
   readonly sessionViews: SessionViewRegistry;
@@ -119,6 +122,8 @@ export interface SessionHostLifecycleOwner {
   listSessions(): Promise<DesktopSessionSummary[]>;
   /** Ids of every stored row the daemon listed, before summary filtering. */
   storedSessionIds(): string[];
+  /** Every stored row the daemon listed, before summary filtering. */
+  storedSessionRows(): ReadonlyArray<Record<string, unknown>>;
   sessionCatalogLoaded(): boolean;
   sessionCatalog(): DesktopSessionSummary[];
   publishSessionCatalog(sessions: DesktopSessionSummary[]): void;
@@ -307,8 +312,7 @@ export class SessionHostLifecycle {
 
   private readonly agentHomes = createAgentHomeSessions({
     listAgents: () => this.owner.invokeControl('listAgents', []),
-    mixyRoute: async () =>
-      ((await this.owner.invokeControl('getLeadStatus', [])) as { route?: unknown } | null)?.route ?? null,
+    mixyRoute: () => this.owner.invokeControl('getLeadHomeRoute', []),
     readSession: (sessionId) => this.owner.readSession(sessionId, false, false),
     createSession: async (sessionId, params) => {
       const created = await this.owner.client.create(
@@ -341,6 +345,7 @@ export class SessionHostLifecycle {
     ],
     agentPresence: (agentIds) => this.owner.invokeControl('agentDefinitionPresence', [agentIds]),
     taskWorkspace: () => this.owner.taskWorkspace(),
+    forgetRoomMember: (agentId) => this.owner.forgetRoomMember(agentId),
     disableAgentSchedules: (agentId) =>
       disableAgentSchedules((method, args) => this.owner.invokeControl(method, args), agentId),
     clearSession: (sessionId, archiveAs) => this.resetSessionConversation(sessionId, { archiveAs }),
@@ -428,14 +433,34 @@ export class SessionHostLifecycle {
     }
   }
 
-  async setSessionArchived(sessionId: string, archived: boolean): Promise<void> {
+  /** Archive or restore a session with its sub-agent sessions (any depth,
+   *  from the daemon's catalog rows): a restore brings back the ones its
+   *  archive took (DesktopSessionMetadata.setArchived). `cascade: false`
+   *  changes that session alone. */
+  async setSessionArchived(sessionId: string, archived: boolean, cascade = true): Promise<void> {
     const id = sessionIdOf(sessionId);
     await this.owner.sessionMetadata.load();
-    if (!(await this.owner.sessionMetadata.setArchived(id, archived))) return;
+    if (cascade && !this.owner.sessionCatalogLoaded()) await this.owner.listSessions();
+    const descendants = cascade ? agentDescendantIds(this.owner.storedSessionRows(), id) : [];
+    if (!(await this.owner.sessionMetadata.setArchived(id, archived, descendants))) return;
     // Archive metadata does not alter daemon sessions or the process-global
     // agent pool. Re-project the resident rows instead of paying for both
     // catalogs and a full session-store identity/stat scan before replying.
     await this.republishSessionCatalog();
+  }
+
+  /** A session the daemon's store deleted on its own (sub-agent retention):
+   *  its sidebar records go, as an explicit delete's do. */
+  async forgetSessionMetadata(sessionId: string): Promise<void> {
+    await this.owner.sessionMetadata.forget(sessionIdOf(sessionId));
+    await this.republishSessionCatalog();
+  }
+
+  /** The archive flags (the runtime's session list and sub-agent retention
+   *  read them through the session-sidebar host). */
+  async sessionSidebarState(): Promise<{ archived: Record<string, number> }> {
+    await this.owner.sessionMetadata.load();
+    return { archived: { ...this.owner.sessionMetadata.archived } };
   }
 
   async deleteSession(sessionId: string): Promise<SessionSnapshot> {

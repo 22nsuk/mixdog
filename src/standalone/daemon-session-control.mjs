@@ -1,15 +1,43 @@
 import { SESSION_ID_PATTERN } from '../runtime/agent/orchestrator/runtime-core/session-id.mjs';
 import { sessionListOutput, sessionReadOutput, SESSION_TOOL_OUTPUT_BYTES } from './session-tool-output.mjs';
 import { createAgentTaskSessions } from '../session-runtime/agent-task-sessions.mjs';
+import { assertWorktreeMutationAllowed } from '../session-runtime/services/worktree-access.mjs';
 import { createBotStatus, scanCatalog, scopedBot, sessionBotOf } from '../session-runtime/bot-status.mjs';
 import { handoffContent } from '../session-runtime/handoff-attachments.mjs';
 import { BOT_HOP_LIMIT_ERROR, MAX_BOT_HOPS } from '../runtime/shared/bot-hops.mjs';
 import { rebindDelegation } from '../runtime/agent/orchestrator/session/human-gate/delegation.mjs';
+import { isAgentOnlySession } from '../runtime/agent/orchestrator/session/store-summary-visibility.mjs';
+import { readSessionSidebarState } from '../runtime/shared/session-sidebar-host.mjs';
+import { agentRoomHost } from '../runtime/shared/agent-room-host.mjs';
+import {
+  roomIdOfSession,
+  roomMemberOfSession,
+  roomSessionId,
+} from '../runtime/agent/orchestrator/session/agent-room.mjs';
 
 const TARGET_ACTIONS = new Set(['status', 'read', 'send', 'cancel', 'delete']);
 const MUTATING_ACTIONS = new Set(['send', 'cancel', 'delete']);
+// The workspace methods `worktree` reaches on another session (all on the
+// session protocol's read/configure allowlists).
+const WORKTREE_METHODS = new Set(['getBranchMenu', 'requestWorktree', 'selectBranch', 'mergeWorkspace', 'removeWorktree']);
 // Why a send from a conversation that is no bot's reports nothing back.
 const NOT_BOT_REASON = 'only a bot conversation gets session results reported back; check that session for the result';
+
+/** The member a send to room log `sessionId` addresses, through the desktop
+ *  room host: `{ host, agentId, sessionId, text }`; throws when no desktop is
+ *  attached or no member resolves. */
+async function roomAddressee(sessionId, args) {
+  let host;
+  try {
+    host = agentRoomHost();
+  } catch (error) {
+    throw new Error(`session: cannot send to ${sessionId}: ${error.message}`);
+  }
+  const member = await host.member(sessionId, { to: args.to, prompt: args.prompt }).catch((error) => {
+    throw new Error(`session: ${error?.message || error}`);
+  });
+  return { host, ...member };
+}
 
 /** Model-facing session operations over the same service used by desktop and TUI. */
 export function createSessionControl({
@@ -17,9 +45,41 @@ export function createSessionControl({
   agentTasks = createAgentTaskSessions({ getSessionService }),
   botStatus = createBotStatus({ getSessionService }),
 }) {
+  /**
+   * Another session's workspace for the git tool's worktree operations
+   * (session-runtime/workspace/worktree-tool.mjs): one workspace method with
+   * one input, through the same configure / read lanes the desktop uses. No
+   * `ownTurn` ever crosses: the target must be idle. A change (anything but
+   * the menu read) needs the caller's trusted scope (`callerScope`, from
+   * worktree-access.mjs worktreeCallerScope) to be an attended conversation.
+   */
+  async function worktreeControl(args, caller, callerScope) {
+    const sessionId = typeof args.session_id === 'string' ? args.session_id.trim() : '';
+    if (!SESSION_ID_PATTERN.test(sessionId)) throw new Error('session: session_id is required for action=worktree');
+    if (sessionId === caller) throw new Error('session: worktree control must target another session');
+    if (!WORKTREE_METHODS.has(args.method)) throw new Error(`session: unsupported worktree method "${args.method}"`);
+    if (args.method !== 'getBranchMenu') assertWorktreeMutationAllowed(callerScope, `session: worktree ${args.method}`);
+    const service = getSessionService();
+    if (!service) throw new Error('session: session service is unavailable');
+    if (args.method === 'getBranchMenu') {
+      return (await service.readSession({ sessionId, action: 'getBranchMenu', args: [] })).value;
+    }
+    const result = await service.configureSession(
+      { sessionId, action: args.method, args: [args.input ?? {}] },
+      { revision: 1 }
+    );
+    return result.value;
+  }
+
   return async function executeSessionControl(args = {}, context = {}) {
     const action = args.action;
-    if (action !== 'list' && action !== 'create' && action !== 'bots' && !TARGET_ACTIONS.has(action)) {
+    if (
+      action !== 'list' &&
+      action !== 'create' &&
+      action !== 'bots' &&
+      action !== 'worktree' &&
+      !TARGET_ACTIONS.has(action)
+    ) {
       throw new Error(`session: unsupported remote action "${action}"`);
     }
     const caller = context.callerSessionId;
@@ -28,6 +88,7 @@ export function createSessionControl({
     }
     // `callerAgentId`: set only for an attended agent conversation (workspace-tools.mjs).
     if (action === 'create') return agentTasks.create(args, context);
+    if (action === 'worktree') return worktreeControl(args, caller, context.callerScope);
     // `callerScope`: the caller's schedule-access scope (workspace-tools.mjs).
     if (action === 'bots') return botStatus(args, context);
     const sessionId = typeof args.session_id === 'string' ? args.session_id.trim() : '';
@@ -53,30 +114,70 @@ export function createSessionControl({
     const service = getSessionService();
     if (!service) throw new Error('session: session service is unavailable');
     if (action === 'list') {
+      for (const flag of ['include_agents', 'include_archived']) {
+        if (args[flag] !== undefined && typeof args[flag] !== 'boolean') {
+          throw new Error(`session: ${flag} must be a boolean`);
+        }
+      }
       // Scoped like bots (`callerScope`, bot-status.mjs): the human's sessions
       // list everything, a bot (or its unattended run) only its own sessions,
-      // anything else the plain rows without previews.
+      // anything else the plain rows without previews. Sub-agent sessions (a
+      // parent finds its own through the agent tool) and archived ones (the
+      // desktop's flag) only on request; the scan pages past the rows left
+      // out, so a page is never short while more rows match.
       const own = scopedBot(context.callerScope);
-      if (own) {
-        const scan = await scanCatalog(service, (row) => sessionBotOf(row) === own, {
-          cursor: args.cursor || null,
-          want: limit,
-        });
-        return sessionListOutput({ sessions: scan.rows, nextCursor: scan.nextCursor }, limit);
-      }
-      const page = await service.listSessionCatalog({ page: { limit, cursor: args.cursor || null } });
-      return sessionListOutput(page, limit, { rich: own === '' });
+      const archived = (await readSessionSidebarState())?.archived ?? {};
+      const keep = (row) =>
+        (!own || sessionBotOf(row) === own) &&
+        (args.include_agents === true || !isAgentOnlySession(row)) &&
+        (args.include_archived === true || !Object.hasOwn(archived, row.id));
+      // Bounded: past 10000 rows scanned with fewer than `limit` matching, the
+      // page ends (possibly empty) with a nextCursor to continue from.
+      const scan = await scanCatalog(service, keep, { cursor: args.cursor || null, want: limit, maxRows: 10_000 });
+      const sessions = scan.rows.map((row) => (Object.hasOwn(archived, row.id) ? { ...row, archived: true } : row));
+      return sessionListOutput({ sessions, nextCursor: scan.nextCursor }, limit, { rich: own !== null });
     }
     if (action === 'send') {
       if (typeof args.prompt !== 'string' || !args.prompt.trim()) {
         throw new Error('session: prompt is required for action=send');
       }
+      // A room member's session is the room's to drive: a message goes to the
+      // room, naming the member.
+      if (roomMemberOfSession(sessionId)) {
+        throw new Error(
+          `session: ${sessionId} is a group-room member's session; send to its room (session_id ${roomSessionId(roomMemberOfSession(sessionId).roomId)}) with to: <member>`
+        );
+      }
+      // A send to a room's log is a message to one member there (`to`, or a
+      // leading @name), run by the desktop room host; the member's turn in
+      // its member session is the turn that answers and reports.
+      const room = roomIdOfSession(sessionId) ? await roomAddressee(sessionId, args) : null;
+      if (room?.sessionId === caller) throw new Error('session: send must target another session');
       // An agent conversation's send reports its turn back to the agent's
       // home: a task session it created by its stored origin, any other
       // session by an origin for this send only.
       // Forwarded files ride along as stored attachment parts (workspace-tools.mjs).
-      const prompt = handoffContent(args.prompt, context.attachmentParts);
-      let origin = await agentTasks.reportOrigin(sessionId, context.callerAgentId, caller);
+      const prompt = handoffContent(room ? room.text : args.prompt, context.attachmentParts);
+      const turnSessionId = room ? room.sessionId : sessionId;
+      const from = { sessionId: caller, ...(context.callerAgentId ? { agentId: context.callerAgentId } : {}) };
+      // The member's turn carries the send's hop (`transcriptMeta.hop`), so a
+      // chain through the room counts on toward MAX_BOT_HOPS.
+      const submit = room
+        ? async ({ id, onSettled, follow, transcriptMeta } = {}) => ({
+            accepted:
+              (await room.host.ask(sessionId, {
+                agentId: room.agentId,
+                prompt,
+                from,
+                ...(id ? { id } : {}),
+                ...(transcriptMeta?.hop > 0 ? { hop: transcriptMeta.hop } : {}),
+                ...(onSettled ? { onSettled } : {}),
+                ...(follow ? { follow } : {}),
+              })) === true,
+          })
+        : null;
+      const addressed = room ? { to: room.agentId } : {};
+      let origin = await agentTasks.reportOrigin(turnSessionId, context.callerAgentId, caller);
       // A send made in a bot-descended turn (`callerHop` > 0), or by a bot to
       // another session, extends the chain by one; a bot's own task session
       // only continues it. Refused past the limit, whatever the target.
@@ -91,20 +192,25 @@ export function createSessionControl({
         // The task session a bot created acts as the sending conversation does
         // from now on (attended chat or run); another's session keeps its own.
         if (origin.target !== 'session') await rebindDelegation(sessionId, caller);
-        const sent = await agentTasks.send(sessionId, prompt, origin);
-        return { sessionId, ...sent, ...(hop > 0 ? { hop } : {}) };
+        const sent = await agentTasks.send(turnSessionId, prompt, origin, submit);
+        return { sessionId, ...addressed, ...sent, ...(hop > 0 ? { hop } : {}) };
       }
       const hop = turnHop > 0 ? chained(turnHop + 1) : 0;
-      // New work from this sender: a delegated target acts as the sender does.
-      await rebindDelegation(sessionId, caller);
-      const result = await service.submitSession({
-        sessionId,
-        prompt,
-        options: { mode: 'prompt', transcriptMeta: { sender: 'lead', ...(hop > 0 ? { hop } : {}) } },
-      });
-      const accepted = result.accepted === true;
+      let accepted;
+      if (submit) accepted = (await submit(hop > 0 ? { transcriptMeta: { hop } } : {})).accepted;
+      else {
+        // New work from this sender: a delegated target acts as the sender does.
+        await rebindDelegation(sessionId, caller);
+        const result = await service.submitSession({
+          sessionId,
+          prompt,
+          options: { mode: 'prompt', transcriptMeta: { sender: 'lead', ...(hop > 0 ? { hop } : {}) } },
+        });
+        accepted = result.accepted === true;
+      }
       return {
         sessionId,
+        ...addressed,
         accepted,
         reportsBack: false,
         ...(accepted ? { reportsBackReason: NOT_BOT_REASON } : {}),
@@ -112,6 +218,17 @@ export function createSessionControl({
       };
     }
     if (action === 'cancel') {
+      // A room's exchange is run by the desktop room host, so its stop (the UI
+      // stop button) ends it; the log is not a session the service can abort.
+      if (roomIdOfSession(sessionId)) {
+        let host;
+        try {
+          host = agentRoomHost();
+        } catch (error) {
+          throw new Error(`session: cannot cancel ${sessionId}: ${error.message}`);
+        }
+        return { sessionId, aborted: host.stop(sessionId) === true };
+      }
       const result = await service.abortSession({ sessionId });
       return { sessionId, aborted: result.aborted === true };
     }

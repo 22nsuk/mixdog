@@ -1,12 +1,12 @@
-import { GitCommitHorizontal, GitPullRequest, SlidersHorizontal, Upload } from 'lucide-react';
+import { ChevronDown, GitCommitHorizontal, GitPullRequest, SlidersHorizontal, Upload } from 'lucide-react';
 import { parseIslandGitRequestText } from './island-git-request';
-import { Suspense, createContext, memo, useContext, useEffect, useId, useLayoutEffect, useRef } from 'react';
-import { extractFileMarkers } from './attachment-menu';
+import { Suspense, createContext, memo, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { useAttachmentContextMenu } from './attachment-context-menu';
 import { MarkdownOpenFileContext, MarkdownSessionContext, MarkdownTranscriptItemContext } from './MarkdownLink';
 import type { TranscriptItem } from './desktop-types';
 import { isOtherDevice } from '../shared/session-devices';
 import { t, uiFormatLocale } from './i18n';
+import { timeFormatOptions } from './time-format-preference';
 import { useRoomContacts } from './agent-room-parts';
 import { stripAgentMessageEnvelope } from '../../../../src/runtime/shared/agent-message-envelope.mjs';
 import { localizeRouteFallbackNotice } from './error-notice-copy';
@@ -18,7 +18,7 @@ import {
   resolveStreamingMarkdownChunks,
 } from './streaming-markdown';
 import StreamingMarkdownBody from './StreamingMarkdownBody';
-import { type FadeArrival, streamFadeTimeline } from './markdown-stream-fade';
+import { dropStreamFadeTimeline, STREAM_FADE_SETTLE_MS, streamFadeTimeline } from './markdown-stream-fade';
 import { preloadSyncMarkdownParser } from './markdown-worker-client';
 import { CopyControl } from './transcript-primitives';
 import { noteStreamCommit } from './transcript-stream-metrics';
@@ -41,20 +41,57 @@ import { asRecord } from './text-format';
 export { routineNoticeText };
 export { loadAttachmentThumbnail, ReturnedAttachments } from './transcript-attachments';
 import {
+  extractEscapedFileMarkers,
   extractImageMarkers,
   extractPastedTextMarkers,
   extractTweaksLines,
   type PastedTextChip,
   ReturnedAttachments,
   SentAttachments,
+  splitInlinePastes,
   stripImagePlaceholders,
   stripImageTokens,
+  useSentPastedTexts,
 } from './transcript-attachments';
 
 // StreamingMarkdownBody already loads the same renderer in this module.
 // Wrapping history in React.lazy suspended even after preloading completed,
 // holding the first transcript behind React's fallback reveal throttle.
 export { MarkdownBody };
+
+const SENT_PASTE_PREVIEW_LINES = 20;
+
+/** A sent paste inline; past 20 lines only the first 20 are rendered until expanded. */
+function SentPasteBlock({ text }: { text?: string }) {
+  const id = useId();
+  const [expanded, setExpanded] = useState(false);
+  const full = text ?? '';
+  const lines = full.split('\n');
+  const long = lines.length > SENT_PASTE_PREVIEW_LINES;
+  const collapsed = long && !expanded;
+  return (
+    <>
+      <p
+        id={id}
+        className={collapsed ? 'message-pasted-text message-pasted-text-collapsed' : 'message-pasted-text'}
+      >
+        {collapsed ? lines.slice(0, SENT_PASTE_PREVIEW_LINES).join('\n') : full}
+      </p>
+      {long && (
+        <button
+          type="button"
+          className="message-pasted-toggle"
+          aria-expanded={expanded}
+          aria-controls={id}
+          onClick={() => setExpanded((value) => !value)}
+        >
+          {t(expanded ? 'Show less' : 'Show more')}
+          <ChevronDown size={12} aria-hidden="true" />
+        </button>
+      )}
+    </>
+  );
+}
 
 const StableMarkdownBody = memo(function StableMarkdownBody({ text }: { text: string }) {
   if (isPlainTextMarkdown(text)) return <p>{text}</p>;
@@ -65,25 +102,32 @@ const MarkdownResponse = memo(function MarkdownResponse({
   text,
   streaming,
   fadeKey,
-  fadeMs,
-  fadeArrival,
+  fadeRevision = 0,
 }: {
   text: string;
   streaming: boolean;
-  /** Row identity of the reply's word-fade timeline (markdown-stream-fade). */
+  /** Row identity of the reply's word-fade timeline (markdown-stream-fade);
+   *  empty: nothing fades. */
   fadeKey: string;
-  /** How long each newly shown word fades in. */
-  fadeMs: number;
-  /** The latest arrival: its new words fade top to bottom. */
-  fadeArrival: FadeArrival | null;
+  /** The reveal's last rewrite of `text` (use-transcript-text-reveal). */
+  fadeRevision?: number;
 }) {
   const markdownCache = useRef(createStreamingMarkdownCache());
   const workerPipeline = useRef(streaming);
-  const instanceKey = useId();
-  // Every chunk, frozen ones included, fades on the reply's one timeline: a
-  // paragraph that froze mid-fade keeps animating and the next block's first
-  // words fade too. A settled reply keeps it: its words keep their wrappers.
-  const fadeTimeline = streamFadeTimeline(fadeKey || instanceKey, streaming, fadeMs, fadeArrival);
+  // Every chunk, frozen ones included, fades on the reply's one timeline. A
+  // settled reply keeps it STREAM_FADE_SETTLE_MS, so the rest it then shows
+  // at once still fades; after that its words show unwrapped.
+  const [fadeSettled, setFadeSettled] = useState(false);
+  const fadeTimeline = fadeKey && !fadeSettled ? streamFadeTimeline(fadeKey, streaming) : null;
+  fadeTimeline?.sync(text, performance.now(), fadeRevision);
+  useEffect(() => {
+    if (streaming || !fadeTimeline) return;
+    const timer = setTimeout(() => {
+      dropStreamFadeTimeline(fadeKey);
+      setFadeSettled(true);
+    }, STREAM_FADE_SETTLE_MS);
+    return () => clearTimeout(timer);
+  }, [streaming, fadeTimeline, fadeKey]);
   useLayoutEffect(() => {
     if (streaming) noteStreamCommit(text.length);
   }, [streaming, text]);
@@ -149,7 +193,7 @@ export function transcriptItemsEqual(previous: TranscriptItem | undefined, next:
 function messageMetadata(item: TranscriptItem) {
   const shortTime =
     typeof item.at === 'number' && Number.isFinite(item.at) && item.at > 0
-      ? new Date(item.at).toLocaleTimeString(uiFormatLocale(), { timeStyle: 'short' })
+      ? new Date(item.at).toLocaleTimeString(uiFormatLocale(), { timeStyle: 'short', ...timeFormatOptions() })
       : '';
   return { shortTime };
 }
@@ -229,18 +273,49 @@ export const TranscriptDevicesContext = createContext(false);
  *  sent from this device is never labelled "from <this device>". */
 export const TranscriptViewerDeviceContext = createContext<string | null>('');
 
-/** The returned files no attachment could carry (too large, or a type no
- *  prompt takes, such as a video): links to their paths, drawn as file chips. */
-function ReturnedFileLinks({ files }: { files: unknown }) {
-  const links = (Array.isArray(files) ? files : [])
-    .map((file) => asRecord(file))
-    .filter((file) => file && !file.id && typeof file.path === 'string' && file.path)
-    .map((file) => `- [${String(file?.name || 'file').replace(/[[\]]/g, '')}](<${String(file?.path)}>)`);
-  if (!links.length) return null;
+/** Whether a settled reply carries a response footer (status line + copy). */
+export function showsResponseFooter(item: TranscriptItem, completion?: TranscriptItem): boolean {
+  return item.kind === 'assistant' && !item.streaming && Boolean(completion) && isVisibleTranscriptItem(item);
+}
+
+/** The response footer: the turn's status line, time and copy control. One
+ *  element for waiting and complete alike, so the swap never remounts it. */
+export function TranscriptResponseFooter({
+  item,
+  completion,
+  animateComplete,
+  completionActivityKey,
+  backgroundWork,
+  trailing = false,
+}: {
+  item: TranscriptItem;
+  completion: TranscriptItem;
+  animateComplete?: boolean;
+  completionActivityKey?: string;
+  backgroundWork?: BackgroundWorkCounts;
+  /** Rendered after the turn's cards rather than inside the message. */
+  trailing?: boolean;
+}) {
+  // Only the footer shows the time. Formatting it per render cost the live
+  // row a locale lookup on every streamed commit.
+  const metadata = messageMetadata(item);
+  const text = String(item.text || '');
   return (
-    <div className="message-body">
-      <MarkdownBody text={links.join('\n')} copyControl={CopyControl} />
-    </div>
+    // biome-ignore lint/a11y/useSemanticElements: the footer names a group of response details; a <fieldset> would restyle it.
+    <footer
+      className={trailing ? 'response-footer response-footer-trailing' : 'response-footer'}
+      role="group"
+      aria-label={t('Response details')}
+    >
+      <CompletionStatus
+        item={completion}
+        animateComplete={animateComplete}
+        completionActivityKey={completionActivityKey}
+        backgroundWork={backgroundWork}
+      />
+      {metadata?.shortTime && <time className="message-time">{metadata.shortTime}</time>}
+      {text && <CopyControl value={text} label="Copy response" className="message-actions response-copy" />}
+    </footer>
   );
 }
 
@@ -254,11 +329,19 @@ export const TranscriptRow = memo(
     attachedUser = false,
     disclosureScope = '',
     revealKey = '',
+    paced = false,
+    footerAfterCards = false,
   }: {
+    /** The turn's cards follow this row: its response footer is rendered by the
+     *  caller after them (TranscriptResponseFooter), not inside the message. */
+    footerAfterCards?: boolean;
     /** Background work still running; passed only to the latest completion. */
     backgroundWork?: BackgroundWorkCounts;
-    /** Row key of an assistant part: its arrivals fade in while it streams. */
+    /** Row key of an assistant part: its reveal and fade identity. */
     revealKey?: string;
+    /** The coding transcript: a live part reveals in paced steps and its new
+     *  words fade in; elsewhere received text shows whole, unfaded. */
+    paced?: boolean;
     item: TranscriptItem;
     completion?: TranscriptItem;
     animateComplete?: boolean;
@@ -269,13 +352,13 @@ export const TranscriptRow = memo(
     const multiDevice = useContext(TranscriptDevicesContext);
     const viewerDevice = useContext(TranscriptViewerDeviceContext);
     const sessionScope = useContext(MarkdownSessionContext);
+    const { texts: pastedTexts, records: pastedTokenRecords } = useSentPastedTexts(item, sessionScope);
     const assistant = item.kind === 'assistant';
-    // Received text shows as it arrives; its new words fade in.
     const revealed = useTranscriptTextReveal({
       key: assistant ? revealKey : '',
-      scope: sessionScope,
       text: assistant ? String(item.text || '') : '',
       streaming: Boolean(item.streaming),
+      paced,
     });
     const streaming = Boolean(item.streaming);
     const previousStreaming = useRef(streaming);
@@ -305,15 +388,8 @@ export const TranscriptRow = memo(
       const held = asRecord(item.heldRequest);
       if (held?.status === 'pending') return <HeldRequestCard held={held} sessionId={sessionScope} />;
       const task = asRecord(item.routine);
-      if (task?.kind === 'task') {
-        return (
-          <>
-            <AgentTaskLine routine={task} />
-            <ReturnedAttachments records={item.attachments} />
-            <ReturnedFileLinks files={task.files} />
-          </>
-        );
-      }
+      // A task report's files stay in its session: the card says how many.
+      if (task?.kind === 'task') return <AgentTaskLine routine={task} />;
       const tone = item.tone === 'error' || item.tone === 'warn' ? item.tone : '';
       const routine = routineNoticeText(item.routine);
       return (
@@ -354,18 +430,15 @@ export const TranscriptRow = memo(
       );
     }
     const showFooter = !user && !streaming && Boolean(completion);
-    // Only the footer shows the time. Formatting it per render cost the live
-    // row a locale lookup on every streamed commit.
-    const metadata = showFooter ? messageMetadata(item) : null;
     const attachedImages = user && Array.isArray(item.images) ? item.images : [];
     const imageMarkers = user ? extractImageMarkers(text) : { text, chips: [] };
     const markerChips = attachedImages.length > 0 ? [] : imageMarkers.chips;
     const userDisplayText =
       attachedImages.length > 0 ? stripImagePlaceholders(stripImageTokens(imageMarkers.text)) : imageMarkers.text;
     const pastedFold = user
-      ? extractPastedTextMarkers(userDisplayText)
+      ? extractPastedTextMarkers(userDisplayText, pastedTexts)
       : { text: userDisplayText, chips: [] as PastedTextChip[] };
-    const fileFold = user ? extractFileMarkers(pastedFold.text) : { text: pastedFold.text, chips: [] };
+    const fileFold = user ? extractEscapedFileMarkers(pastedFold.text) : { text: pastedFold.text, chips: [] };
     const webhookFold = user ? extractWebhookPayload(fileFold.text) : { text: fileFold.text, payload: '' };
     const tweaksFold = user ? extractTweaksLines(webhookFold.text) : { text: webhookFold.text, lines: [] as string[] };
     // The runtime reports which `$name` mentions it applied; only those are
@@ -392,6 +465,7 @@ export const TranscriptRow = memo(
                 images={attachedImages}
                 markerChips={markerChips}
                 pastedChips={pastedFold.chips}
+                pastedRecords={pastedTokenRecords.filter((_, index) => pastedTexts[index] === undefined)}
                 fileChips={fileFold.chips}
                 menuProps={menuProps}
               />
@@ -400,11 +474,19 @@ export const TranscriptRow = memo(
           {(!user || tweaksFold.text || tweaksFold.lines.length > 0) && (
             // biome-ignore lint/a11y/noStaticElementInteractions: only suppresses native drag; the body is not an interactive control.
             <div className="message-body" onDragStart={(event) => event.preventDefault()}>
-              {user && tweaksFold.text ? (
-                <p>
-                  <SkillMentionText text={tweaksFold.text} isSkill={(name) => appliedSkills.includes(name)} />
-                </p>
-              ) : null}
+              {user && tweaksFold.text
+                ? splitInlinePastes(tweaksFold.text).map((part, index) =>
+                    'paste' in part ? (
+                      // biome-ignore lint/suspicious/noArrayIndexKey: parts are parsed from a sent message and never reorder.
+                      <SentPasteBlock key={`paste-${index}`} text={pastedTexts[part.paste]} />
+                    ) : (
+                      // biome-ignore lint/suspicious/noArrayIndexKey: parts are parsed from a sent message and never reorder.
+                      <p key={`text-${index}`}>
+                        <SkillMentionText text={part.text.trim()} isSkill={(name) => appliedSkills.includes(name)} />
+                      </p>
+                    )
+                  )
+                : null}
               {tweaksFold.lines.map((line, index) => (
                 // biome-ignore lint/suspicious/noArrayIndexKey: lines are parsed from a sent message and never reorder.
                 <p key={`tweaks-${index}`} className="message-tweaks-line">
@@ -417,9 +499,8 @@ export const TranscriptRow = memo(
                   <MarkdownResponse
                     text={revealed.text}
                     streaming={streaming}
-                    fadeKey={revealKey}
-                    fadeMs={revealed.fadeMs}
-                    fadeArrival={revealed.arrival}
+                    fadeKey={paced ? revealKey : ''}
+                    fadeRevision={revealed.revision}
                   />
                 </MarkdownTranscriptItemContext.Provider>
               )}
@@ -430,18 +511,14 @@ export const TranscriptRow = memo(
             <small className="message-device">{t('from {{device}}', { device: item.device })}</small>
           )}
           {user && <SteerStatus item={item} />}
-          {showFooter && completion && (
-            // biome-ignore lint/a11y/useSemanticElements: the footer names a group of response details; a <fieldset> would restyle it.
-            <footer className="response-footer" role="group" aria-label={t('Response details')}>
-              <CompletionStatus
-                item={completion}
-                animateComplete={animateComplete}
-                completionActivityKey={completionActivityKey}
-                backgroundWork={backgroundWork}
-              />
-              {metadata?.shortTime && <time className="message-time">{metadata.shortTime}</time>}
-              {text && <CopyControl value={text} label="Copy response" className="message-actions response-copy" />}
-            </footer>
+          {showFooter && completion && !footerAfterCards && (
+            <TranscriptResponseFooter
+              item={item}
+              completion={completion}
+              animateComplete={animateComplete}
+              completionActivityKey={completionActivityKey}
+              backgroundWork={backgroundWork}
+            />
           )}
         </article>
         {announceSettled && !completion && (
@@ -460,6 +537,8 @@ export const TranscriptRow = memo(
     previous.backgroundWork?.shell === next.backgroundWork?.shell &&
     previous.backgroundWork?.agent === next.backgroundWork?.agent &&
     previous.attachedUser === next.attachedUser &&
+    previous.footerAfterCards === next.footerAfterCards &&
     previous.revealKey === next.revealKey &&
+    previous.paced === next.paced &&
     previous.disclosureScope === next.disclosureScope
 );

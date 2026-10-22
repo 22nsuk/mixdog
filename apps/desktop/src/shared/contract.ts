@@ -997,14 +997,9 @@ export interface DesktopApi {
             origin?: string;
             receiverOrigin?: string;
             files?: Array<{ name: string; path: string; size: number; outside: boolean }>;
-            /** Absent: the card waits until the person answers (no countdown). */
-            expiresAt?: number;
             /** Set when a standing "always allow" may be recorded for this bot
              *  and these kinds of step (`submit`, `post`, `upload`); null = it only asks once. */
             remember: { kinds: Array<'submit' | 'post' | 'upload' | 'confirm'> } | null;
-            /** Why it only asks once: `confirm` (an action the operator set to
-             *  always ask) or `bot` (not a bot's own chat). */
-            onceReason: '' | 'confirm' | 'bot';
           }
     ) => void
   ): () => void;

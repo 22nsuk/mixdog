@@ -9,6 +9,7 @@ import { AGENT_MODE, resolveSessionMode } from '../../runtime/agent/orchestrator
 import { agentIdOfHomeSession } from '../../runtime/agent/orchestrator/session/agent-home.mjs';
 import { turnHopOf } from '../../runtime/shared/bot-hops.mjs';
 import { scheduleCallerScope } from '../services/schedule-access.mjs';
+import { worktreeCallerScope } from '../services/worktree-access.mjs';
 import { resolveHandoffAttachments, sessionRoots } from '../handoff-attachments.mjs';
 
 const USER_TITLE_ERROR = 'session: the user already titled this session; the title was not changed';
@@ -44,9 +45,6 @@ export function createWorkspaceToolHandlers({
   getLifecycleApi = () => null,
   executeSessionControl = null,
 }) {
-  // The Lead's own worktree, on the user's request: the same authority the
-  // branch chip menu drives, tolerating the calling turn but nothing else
-  // running (workers, background shells).
   const assertLead = (action, callerCtx) => {
     const callerSessionId = callerCtx?.callerSessionId || rt.session?.id || null;
     if (!rt.session?.id || callerSessionId !== rt.session.id) {
@@ -55,24 +53,6 @@ export function createWorkspaceToolHandlers({
     return rt.session.id;
   };
 
-  const worktreeAction = async (action, args, callerCtx) => {
-    const workspace = getWorkspaceApi();
-    if (!workspace) throw new Error(`session: ${action} is unavailable in this runtime`);
-    assertLead(action, callerCtx);
-    let result;
-    if (action === 'merge-worktree') {
-      result = await workspace.mergeWorkspace({ confirmed: true }, { ownTurn: true });
-    } else if (action === 'remove-worktree') {
-      result = await workspace.removeWorktree({ force: args?.force === true }, { ownTurn: true });
-    } else if (action === 'list-worktrees') {
-      result = await workspace.listWorktrees();
-    } else {
-      result = await workspace.pruneWorktrees();
-    }
-    return JSON.stringify({ action, cwd: rt.currentCwd, result }, null, 2);
-  };
-
-  const WORKTREE_ACTIONS = new Set(['merge-worktree', 'remove-worktree', 'list-worktrees', 'prune-worktrees']);
   const SIDEBAR_ACTIONS = new Set(['favorite', 'archive']);
 
   // Sidebar flags only (the desktop's favorite/archive metadata).
@@ -127,6 +107,8 @@ export function createWorkspaceToolHandlers({
             callerAgentId,
             callerCwd,
             ...(action === 'send' || action === 'create' ? { callerHop: turnHopOf(rt.session) } : {}),
+            // Whether a create may provision a worktree (worktree-access.mjs).
+            ...(action === 'create' ? { callerScope: worktreeCallerScope(rt.session) } : {}),
             // Which bots and sessions it may see (bot-status.mjs).
             ...(action === 'bots' || action === 'list' ? { callerScope: scheduleCallerScope(rt.session) } : {}),
             ...(attachmentParts.length ? { attachmentParts } : {}),
@@ -137,7 +119,6 @@ export function createWorkspaceToolHandlers({
     if (target && target !== assertLead(action, callerCtx)) {
       throw new Error(`session: action=${action} only applies to the current session`);
     }
-    if (WORKTREE_ACTIONS.has(action)) return worktreeAction(action, args, callerCtx);
     if (SIDEBAR_ACTIONS.has(action)) return sidebarAction(action, args, callerCtx);
     let currentCwd = callerCwd;
     if (action === 'status' || action === 'list-projects' || action === 'set-project') assertLead(action, callerCtx);
@@ -265,6 +246,8 @@ export function createWorkspaceToolHandlers({
         clientHostPid: callerCtx?.clientHostPid || rt.session?.clientHostPid || process.pid,
         signal: callerCtx?.signal,
         notifyFn: notifyFnForSession(callerSessionId),
+        // The jobs it starts report back at this turn's bot-chain hop (bot-hops.mjs).
+        ...(turnHopOf(rt.session) > 0 ? { hop: turnHopOf(rt.session) } : {}),
         // The jobs this call starts are recorded under it (agent-task-starts.mjs).
         ...(callerCtx?.toolCallId ? { toolCallId: callerCtx.toolCallId } : {}),
       });

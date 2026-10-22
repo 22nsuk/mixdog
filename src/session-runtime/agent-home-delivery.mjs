@@ -19,11 +19,10 @@
  * once; a cold thread picks it up from its stored record.
  *
  * A group-room member's task reports (enqueueTask `from` its member session)
- * go to the room instead: each line lands in the member's own session (never
- * waking it: the room host drives its turns), and a blocked or ended turn
- * also lands in the room's log as that member's speech row
- * (agent-room-delivery.mjs appendTaskReports), where the room's next exchange
- * sees it. Both ride this same durable queue, keyed by those sessions.
+ * land in that member session alone, never as rows in the room's log. An
+ * ended turn is owed a wake like a home's, but the relay turn runs in the
+ * room: the desktop room host (agent-room-host.mjs `relay`) gives the member
+ * one turn there to relay the result, with the same batches and retries.
  */
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -42,8 +41,9 @@ import {
   isRoomThreadSessionId,
   roomIdOfSession,
   roomMemberOfSession,
-  roomSessionId,
 } from '../runtime/agent/orchestrator/session/agent-room.mjs';
+import { agentRoomHost } from '../runtime/shared/agent-room-host.mjs';
+import { sendDepth } from '../runtime/shared/bot-hops.mjs';
 import {
   TASK_LOOP_CAP,
   agentTaskMessage,
@@ -147,8 +147,6 @@ export const ROUND_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 // Per home: round-trip targets counted (least recently counted drop first),
 // reporting turns watched at once, and posted results owed a wake.
 export const QUEUE_CAPS = Object.freeze({ roundTargets: 100, watches: 200, wakeRunIds: 100 });
-// A task report's output kept for its room row (newlines kept).
-const ROOM_REPORT_TEXT_LIMIT = 4000;
 // Waits before the 2nd, 3rd and 4th try of a relay (wake) turn that did not finish.
 export const WAKE_RETRY_DELAYS_MS = Object.freeze([30_000, 120_000, 600_000]);
 // Refused wake submissions of one batch, a minute apart, before it is given up.
@@ -356,7 +354,9 @@ export function createRoutineResultQueue(
         const state = wakeState(doc.wakes, homeId);
         const index = state.batches.findIndex((batch) => batch.id === batchId);
         if (index < 0) return undefined;
-        next = { ...state.batches[index], id: `awake_${randomUUID()}`, tries, notBefore };
+        // The new try's turn is its own: it follows no earlier turn.
+        const { follows: _follows, ...batch } = state.batches[index];
+        next = { ...batch, id: `awake_${randomUUID()}`, tries, notBefore };
         const batches = state.batches.map((batch, i) => (i === index ? next : batch));
         return withWakeState(doc, homeId, { ...state, batches });
       });
@@ -422,11 +422,14 @@ export function createRoutineResultQueue(
         else {
           // A task turn's end counts one round trip, once per run id, per home
           // and target: the user's next message in that home starts over
-          // (resetRounds), and so does a count idle past ROUND_TTL_MS.
+          // (resetRounds), and so does a count idle past ROUND_TTL_MS. Only a
+          // send made in a bot-descended turn counts: the user's or a routine's
+          // own delegations never use the budget up.
           const own = freshRounds(doc.rounds[homeId]);
-          const round = (own[item.taskSessionId]?.n || 0) + 1;
+          const counts = sendDepth(item) > 0;
+          const round = counts ? (own[item.taskSessionId]?.n || 0) + 1 : 0;
           next = appended(doc, homeId, [{ ...item, round }]);
-          if (next) {
+          if (next && counts) {
             const counted = { ...own, [item.taskSessionId]: { n: round, at: now() } };
             next = { ...next, rounds: { ...doc.rounds, [homeId]: counted } };
           }
@@ -459,6 +462,16 @@ export function createRoutineResultQueue(
     /** Every stored watch, oldest first. */
     async watches() {
       return Object.values((await read()).watches);
+    },
+    /** The watch of `runId` follows the turn submitted as `submissionId`: a
+     *  room member's one turn answering several sends, or a fresh turn
+     *  replacing one cut short (recovery reads that turn's end). */
+    async followWatch(runId, submissionId) {
+      await update((doc) => {
+        const watch = doc.watches[runId];
+        if (!watch || watch.follows === submissionId) return undefined;
+        return { ...doc, watches: { ...doc.watches, [runId]: { ...watch, follows: submissionId } } };
+      });
     },
     /** Drop the watch of `runId` (its turn was never taken). */
     async unwatch(runId) {
@@ -596,36 +609,6 @@ function taskReportItem({ runId, taskSessionId, title, status, text = '', target
   };
 }
 
-/** The room-log item of task report `item` by member `agentId` (`text`: the
- *  report's whole output, newlines kept). */
-function roomReportItem(item, agentId, text) {
-  return {
-    runId: item.runId,
-    kind: 'room-report',
-    speaker: agentId,
-    taskSessionId: item.taskSessionId,
-    title: item.title,
-    status: item.status,
-    text: String(text ?? '')
-      .trim()
-      .slice(0, ROOM_REPORT_TEXT_LIMIT),
-    ...(item.target ? { target: item.target } : {}),
-    ...(item.files ? { files: item.files } : {}),
-    at: item.at,
-  };
-}
-
-/** Queue a room member's task report: the member's own session (`from`) gets
- *  the line without a wake; a blocked or ended turn (`toRoom`) is the
- *  member's row in the room log too. The watch drops with the last write, so
- *  a restart in between re-queues both (deduplicated). */
-async function queueRoomTaskReport(queue, { from, roomLogId, toRoom }, item, agentId, text, unwatch) {
-  await queue.add(from, { ...item, roundTrip: false }, { unwatch: toRoom ? '' : unwatch });
-  if (toRoom) {
-    await queue.add(roomLogId, roomReportItem(item, agentId, text), { unwatch });
-  }
-}
-
 /** Append to `session.messages` the omission notice and the queued `items`
  *  not posted before. `fresh`: the rows newly posted; `toWake`: the run ids
  *  owed a wake (every dequeued task result, posted now or before). */
@@ -659,6 +642,7 @@ function createHomeRelay({
   queue,
   saveSession,
   live,
+  roomRelay,
   busy,
   later,
   drain,
@@ -672,14 +656,17 @@ function createHomeRelay({
   // 'done' or 'failed' once it settled (until the batch is retired).
   const relays = new Map();
 
-  /** How batch `batchId`'s relay turn went: '' when no turn took it, else
+  /** How `batch`'s relay turn went: '' when no turn took it, else
    *  'running', 'done' or 'failed'. A turn an earlier process took decides by
-   *  its recorded end; one with none was cut off by the restart. */
-  function relayOf(batchId, messages, taken) {
-    const local = relays.get(batchId);
+   *  its recorded end; one with none was cut off by the restart. A room
+   *  member's batch may be answered by a turn under another submission id
+   *  (`follows`, recorded before that turn was submitted). */
+  function relayOf(batch, messages, taken) {
+    const local = relays.get(batch.id);
     if (local) return local;
-    if (!taken.has(batchId)) return '';
-    const outcome = submissionOutcome(messages, batchId);
+    const turnId = batch.follows || batch.id;
+    if (!taken.has(turnId)) return '';
+    const outcome = submissionOutcome(messages, turnId);
     return outcome && outcome !== 'open' && outcome.status === 'completed' ? 'done' : 'failed';
   }
 
@@ -726,7 +713,7 @@ function createHomeRelay({
     for (;;) {
       batch = (await queue.wakes(homeId)).batches[0] || (await queue.batchWake(homeId));
       if (!batch) return;
-      const relay = relayOf(batch.id, session.messages, taken);
+      const relay = relayOf(batch, session.messages, taken);
       // Its settle drains again.
       if (relay === 'running') return;
       if (relay) {
@@ -744,15 +731,23 @@ function createHomeRelay({
       // Its rows are gone with a thread reset.
       await queue.woke(homeId, batch.id);
     }
+    // A room member relays in its room (the room host runs that turn), any
+    // other thread in a hidden turn of its own.
     const surface = live();
-    if (typeof surface?.wake !== 'function') return later(homeId, busyRetryMs);
+    const wake = roomMemberOfSession(homeId) ? roomRelay : surface?.wake?.bind(surface);
+    if (typeof wake !== 'function') return later(homeId, busyRetryMs);
     const batchId = batch.id;
     let turn;
     relays.set(batchId, 'running');
     try {
-      // The turn descends from the bot-to-bot sends it reports: it carries their highest hop.
-      const hop = Math.max(0, ...woken.map((message) => Number(message?.meta?.routine?.hop) || 0));
-      turn = await surface.wake(homeId, agentTaskWakePrompt(woken, { more }), { id: batchId, hop });
+      // The reports answer sends this home made itself: the wake turn resumes
+      // at the depth of the turns that sent them (bot-hops.mjs), 0 for work the
+      // user or a routine started, so only bot-descended chains keep counting.
+      const hop = Math.max(0, ...woken.map((message) => sendDepth(message?.meta?.routine)));
+      // A room relay may be answered under another turn's submission id: the
+      // batch records it before that turn is submitted.
+      const follow = (submissionId) => queue.markBatch(homeId, batchId, { follows: submissionId });
+      turn = await wake(homeId, agentTaskWakePrompt(woken, { more }), { id: batchId, hop, follow });
       if (turn === false) throw new Error('the wake turn was refused');
     } catch (error) {
       relays.delete(batchId);
@@ -812,9 +807,10 @@ export function createAgentHomeDelivery({
   // Refused or failing wake submissions of one batch (missingRetryMs apart)
   // before it is given up the same way.
   wakeRefusalLimit = WAKE_REFUSAL_LIMIT,
-  // Post queued room task reports into a room log (agent-room-delivery.mjs).
-  postRoomReports = async (roomLogId, items) =>
-    (await import('./agent-room-delivery.mjs')).appendRoomTaskReports(roomLogId, items),
+  // A room member's relay turn (wake of a member session): its turn in the
+  // room, through the desktop room host (agent-room-host.mjs `relay`), with
+  // the live surface's `wake` contract.
+  roomRelay = (sessionId, prompt, options) => agentRoomHost().relay(sessionId, prompt, options),
   log = (line) => process.stderr.write(`mixdog routines: ${line}\n`),
 }) {
   const busy = (sessionId) => {
@@ -834,6 +830,7 @@ export function createAgentHomeDelivery({
     queue,
     saveSession,
     live,
+    roomRelay,
     busy,
     later,
     drain,
@@ -874,6 +871,13 @@ export function createAgentHomeDelivery({
     return true;
   }
 
+  /** A room log's queued rows: task reports go to member sessions now, so what
+   *  an earlier version left under the log's id is dropped, never posted. */
+  async function dropRoomLogQueue(logId, items, omitted) {
+    log(`${items.length} legacy task report(s) queued for the room log ${logId} are dropped`);
+    await dropQueued(queue, logId, items, omitted);
+  }
+
   /** A missing home of an agent that can never have one (no bot): its queued
    *  rows are dropped with a log line, never retried. */
   async function dropHomeless(homeId, items, omitted) {
@@ -884,34 +888,13 @@ export function createAgentHomeDelivery({
     return true;
   }
 
-  /** Post every queued task report of the room log `roomLogId` as member rows. */
-  async function drainRoomLog(roomLogId) {
-    const items = await queue.items(roomLogId);
-    const omitted = await queue.omitted(roomLogId);
-    if (!items.length && !omitted) return;
-    const session = loadSession(roomLogId);
-    if (!session || session.closed === true) {
-      if (await dropGoneRoomThread(roomLogId, items, omitted)) return;
-      log(`${items.length} task report(s) wait for the room log ${roomLogId}`);
-      return later(roomLogId, missingRetryMs);
-    }
-    // A room log has no notice row: the dropped count is only logged.
-    if (omitted) log(`${omitted.count} older task report(s) for ${roomLogId} were dropped: its queue was full`);
-    if (items.length) await postRoomReports(roomLogId, items);
-    await queue.remove(
-      roomLogId,
-      items.map((item) => item.runId),
-      omitted
-    );
-  }
-
   /** Post every queued result of `homeId` if its thread is idle; else retry later. */
   async function drainOnce(homeId) {
-    if (roomIdOfSession(homeId)) return drainRoomLog(homeId);
     const items = await queue.items(homeId);
     const omitted = await queue.omitted(homeId);
     const owed = owesWake(await queue.wakes(homeId));
     if (!items.length && !omitted && !owed) return;
+    if (roomIdOfSession(homeId)) return dropRoomLogQueue(homeId, items, omitted);
     const agentId = agentIdOfHomeSession(homeId);
     if (agentId && agentId !== MIXY_AGENT_ID && agentPresence(agentId) === 'deleted') {
       // The owner is gone (its home archived): Mixy, the default owner, gets them.
@@ -1014,23 +997,16 @@ export function createAgentHomeDelivery({
    *  create) for its home thread, then start draining it. `status` 'started'
    *  and 'blocked' only post a line; a turn's end also wakes the agent. */
   async function enqueueTask(agentId, report) {
-    const { runId, taskSessionId, status, text = '', watchId = '', from = '' } = report;
+    const { runId, taskSessionId, watchId = '', from = '' } = report;
     const homeId = agentHomeSessionId(agentId) || agentHomeSessionId(MIXY_AGENT_ID);
     if (!runId || !taskSessionId) throw new Error('task report: runId and taskSessionId required');
     const item = taskReportItem(report);
     const unwatch = watchId ? String(watchId) : '';
-    const member = roomMemberOfSession(from);
-    if (member?.agentId === agentId) {
-      const roomLogId = roomSessionId(member.roomId);
-      const toRoom = status !== 'started';
-      await queueRoomTaskReport(queue, { from, roomLogId, toRoom }, item, agentId, text, unwatch);
-      void drain(from);
-      if (toRoom) void drain(roomLogId);
-      return toRoom ? roomLogId : from;
-    }
-    await queue.add(homeId, item, { unwatch });
-    void drain(homeId);
-    return homeId;
+    // A room member's own work reports to its member session, never its home.
+    const target = roomMemberOfSession(from)?.agentId === agentId ? from : homeId;
+    await queue.add(target, item, { unwatch });
+    void drain(target);
+    return target;
   }
 
   /** Show `run`'s live-only row (routineRunNotice: `running`, or a result whose
@@ -1083,6 +1059,7 @@ export function createAgentHomeDelivery({
     recover,
     watchTask,
     unwatchTask: (runId) => queue.unwatch(runId),
+    followTask: (runId, submissionId) => queue.followWatch(runId, submissionId),
     taskWatches: () => queue.watches(),
     resetRounds: (homeId) => queue.resetRounds(homeId),
   };
@@ -1164,6 +1141,11 @@ export async function watchAgentTask(watch) {
 /** Drop one reporting turn's watch (its turn was never taken). */
 export async function unwatchAgentTask(runId) {
   return (await processDelivery()).unwatchTask(runId);
+}
+
+/** One reporting turn's watch follows the turn submitted as `submissionId`. */
+export async function followAgentTask(runId, submissionId) {
+  return (await processDelivery()).followTask(runId, submissionId);
 }
 
 /** A user's own message in `homeId`: its round trips with every target restart. */

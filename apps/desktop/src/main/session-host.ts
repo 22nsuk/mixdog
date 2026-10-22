@@ -39,6 +39,7 @@ import {
 import { isActiveDesktopAgentEntry } from '../shared/agent-activity';
 import { desktopSessionSummaries } from './desktop-state';
 import type { RoomDecision } from '../../../../src/runtime/agent/orchestrator/session/agent-room-supervisor.mjs';
+import type { AgentRoomHost } from '../../../../src/runtime/shared/agent-room-host.mjs';
 import { type AgentRooms, createAgentRoomFileStore, createAgentRooms } from './agent-rooms';
 import { deleteAgentMemory, listAgentMemory } from './agent-memory';
 import {
@@ -232,6 +233,7 @@ export class SessionHost implements DesktopService {
         await this.projects.enter(path);
       },
       knownProject: (path) => this.knownProjectPath(path),
+      forgetRoomMember: (agentId) => this.agentRooms.forgetMember(agentId),
       registeredProject: (path) => this.projects.knownPath(path),
       touchProject: async (path) => {
         try {
@@ -260,6 +262,7 @@ export class SessionHost implements DesktopService {
       ensureColdViewRefresh: () => this.catalog.ensureColdViewRefresh(),
       listSessions: () => this.listSessions(),
       storedSessionIds: () => this.rawSessionRows.map((row) => String(row.id || '')).filter(Boolean),
+      storedSessionRows: () => this.rawSessionRows,
       sessionCatalogLoaded: () => this.sessionCatalogLoaded,
       sessionCatalog: () => this.sessionCatalog(),
       publishSessionCatalog: (sessions) => this.publishSessionCatalog(sessions),
@@ -268,10 +271,10 @@ export class SessionHost implements DesktopService {
     this.agentRooms = createAgentRooms({
       store: createAgentRoomFileStore(join(options.userDataPath, 'agent-rooms.json')),
       listAgents: () => this.transport.invokeControl('listAgents', []),
+      agentPresence: (agentIds) => this.transport.invokeControl('agentDefinitionPresence', [agentIds]),
       leadName: async () =>
         String(((await this.transport.invokeControl('getLeadStatus', [])) as { name?: unknown } | null)?.name || ''),
-      mixyRoute: async () =>
-        ((await this.transport.invokeControl('getLeadStatus', [])) as { route?: unknown } | null)?.route ?? null,
+      mixyRoute: () => this.transport.invokeControl('getLeadHomeRoute', []),
       sessionExists: async (sessionId) => {
         try {
           await this.readSession(sessionId, false, false);
@@ -294,7 +297,13 @@ export class SessionHost implements DesktopService {
       readItems: async (sessionId) => (await this.readSession(sessionId, false, false))?.items ?? [],
       // A member's turn goes in as any chat prompt does; the user's files in it
       // are already stored references, which the daemon intake takes as they are.
-      submit: (sessionId, prompt) => this.lifecycle.submitToSession(sessionId, prompt as DesktopPromptContent, {}),
+      // A turn another session waits on carries its submission id and its
+      // bot-to-bot hop (stamped as transcript metadata, session-device.ts).
+      submit: (sessionId, prompt, options) =>
+        this.lifecycle.submitToSession(sessionId, prompt as DesktopPromptContent, {
+          ...(options?.id ? { id: options.id } : {}),
+          ...(options?.hop ? { hop: options.hop } : {}),
+        }),
       readSnapshot: (sessionId) => this.readSession(sessionId, false, false),
       decideTurn: async (input) =>
         ((await this.transport.invokeControl('decideRoomTurn', [input])) as
@@ -825,6 +834,18 @@ export class SessionHost implements DesktopService {
     return this.lifecycle.setSessionArchived(sessionId, archived);
   }
 
+  async archiveSessionAlone(sessionId: string): Promise<void> {
+    return this.lifecycle.setSessionArchived(sessionId, true, false);
+  }
+
+  async forgetSessionMetadata(sessionId: string): Promise<void> {
+    return this.lifecycle.forgetSessionMetadata(sessionId);
+  }
+
+  async sessionSidebarState(): Promise<{ archived: Record<string, number> }> {
+    return this.lifecycle.sessionSidebarState();
+  }
+
   async openAgentHome(agentId: string): Promise<{ sessionId: string }> {
     return this.lifecycle.openAgentHome(agentId);
   }
@@ -944,6 +965,17 @@ export class SessionHost implements DesktopService {
       return this.agentRooms.approve(sessionIdOf(sessionId), id, decision);
     }
     return this.lifecycle.resolveToolApprovalForSession(sessionId, id, decision);
+  }
+
+  /** The daemon's way into the group rooms (agent-room-host.mjs): a
+   *  `session send` to a room, and a member relaying its reported work. */
+  agentRoomHost(): AgentRoomHost {
+    return {
+      member: (sessionId, request) => this.agentRooms.member(sessionIdOf(sessionId), request),
+      ask: (sessionId, request) => this.agentRooms.ask(sessionIdOf(sessionId), request),
+      relay: (sessionId, prompt, options) => this.agentRooms.relay(sessionIdOf(sessionId), prompt, options),
+      stop: (sessionId) => this.agentRooms.stop(sessionIdOf(sessionId)),
+    };
   }
 
   /** Group rooms (agent-rooms.ts): `create` (config) → `{ sessionId }`,

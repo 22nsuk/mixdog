@@ -34,11 +34,9 @@ export function approvalReasonText(text: string): string {
     'This sends or posts outside Mixdog; it needs your approval.': () =>
       t('This sends or posts outside Mixdog; it needs your approval.'),
     "This agent's permission blocks this action.": () => t("This agent's permission blocks this action."),
-    // tool-exec/before-hook.mjs CONNECTOR_APPROVAL_REASON, room-member-gate.mjs ROOM_APPROVAL_REASON.
+    // tool-exec/before-hook.mjs CONNECTOR_APPROVAL_REASON.
     'This connector tool is set to ask before it runs for this agent.': () =>
       t('This connector tool is set to ask before it runs for this agent.'),
-    'Group-room members need your approval before changing anything.': () =>
-      t('Group-room members need your approval before changing anything.'),
     // human-gate/run-policy.mjs AUTOMATION_GRANT_REASON.
     "Approving lets this schedule's or webhook's runs act without asking, within the bot's permissions. Payments and permanent deletes are never done in runs.":
       () =>
@@ -104,16 +102,12 @@ function useRequester(
 }
 
 /** "사무관 › Worker": the runtime's chain of a delegated request (its tokens
- *  'Lead' and 'Task session' in this UI's language), or '' when it has none. */
+ *  'Lead' in this UI's language), or '' when it has none. */
 export function approvalChainLabel(chain: unknown): string {
   const parts = Array.isArray(chain)
     ? chain.filter((part): part is string => typeof part === 'string' && part !== '')
     : [];
-  const label = (part: string) => {
-    if (part === 'Lead') return t('Lead');
-    if (part === 'Task session') return t('Task session');
-    return part;
-  };
+  const label = (part: string) => (part === 'Lead' ? t('Lead') : part);
   return parts.length > 1 ? parts.map(label).join(' › ') : '';
 }
 

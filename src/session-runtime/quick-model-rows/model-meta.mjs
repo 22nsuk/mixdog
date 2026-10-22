@@ -5,10 +5,12 @@ import { getModelMetadataSync } from '../../runtime/agent/orchestrator/providers
 import { isCustomProviderName } from '../../runtime/agent/orchestrator/providers/custom-reasoning.mjs';
 
 const CUSTOM_DECLARED_FIELDS = [
+  'supportsVision',
   'supportsReasoning',
   'reasoningOptions',
   'reasoningLevels',
   'reasoningContentField',
+  'providerName',
   'hidden',
   'manual',
   'customReasoning',

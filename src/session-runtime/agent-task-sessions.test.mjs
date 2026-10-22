@@ -7,6 +7,8 @@ import test from 'node:test';
 import { createAgentTaskSessions, resolveTaskProject, submissionOutcome } from './agent-task-sessions.mjs';
 import { agentTaskMessage, routineResultNotice } from '../runtime/agent/orchestrator/session/routine-result.mjs';
 import { createAgentHomeDelivery, createRoutineResultQueue } from './agent-home-delivery.mjs';
+import { worktreeError } from '../runtime/shared/worktrees/contract.mjs';
+import { markUnattendedRun } from './held-requests.mjs';
 import { createSessionControl } from '../standalone/daemon-session-control.mjs';
 import { isUserTurn } from '../standalone/session-service/session-calls/session-turns.mjs';
 import { createWorkspaceToolHandlers } from './internal-tool-executor/workspace-tools.mjs';
@@ -15,16 +17,14 @@ import { sessionOriginFields } from '../runtime/agent/orchestrator/session/manag
 import { restoreTranscriptItems } from '../runtime/agent/orchestrator/session/transcript-restore/restore.mjs';
 import {
   roomMemberSessionId,
-  roomRowItem,
   roomRowMessage,
-  roomRowsOfItems,
   roomSessionId,
-  rowsSinceCursor,
 } from '../runtime/agent/orchestrator/session/agent-room.mjs';
-import { createAgentRoomDelivery } from './agent-room-delivery.mjs';
-import { roomMemberToolDecision } from './room-member-gate.mjs';
 
 const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+// The trusted scope of an attended agent conversation (worktree-access.mjs worktreeCallerScope).
+const ATTENDED = { kind: 'agent', agentId: 'lead', attended: true };
 
 function tempDir(t) {
   const dir = mkdtempSync(join(tmpdir(), 'agent-task-'));
@@ -35,6 +35,7 @@ function tempDir(t) {
 /** A session service over one fake task-session runtime. */
 function fakeService() {
   const calls = [];
+  const hooks = {};
   const state = {};
   const listeners = new Set();
   const runtime = {
@@ -51,6 +52,11 @@ function fakeService() {
     },
     configureSession: async (params, ctx) => {
       calls.push(['configure', params, ctx]);
+      if (hooks.configure) return hooks.configure(params, ctx);
+      // A provisioned worktree leaves the session bound.
+      if (params.action === 'requestWorktree') {
+        return { value: { pending: false, workspace: { worktreeId: 'fix-login', branch: 'mixdog/fix-login' } } };
+      }
       return { value: {} };
     },
     materializeSession: async () => runtime,
@@ -62,7 +68,7 @@ function fakeService() {
   const emit = () => {
     for (const listener of [...listeners]) listener();
   };
-  return { service, calls, state, listeners, emit };
+  return { service, calls, hooks, state, listeners, emit };
 }
 
 function tasks(h, overrides = {}) {
@@ -157,7 +163,7 @@ test('create records the origin, follows the worktree default and returns at onc
   const { api, delivered } = tasks(h, { newTaskDefault: async () => 'worktree' });
   const result = await api.create(
     { brief: 'Read README.md\nand report its first line', project: 'mixdog', model: 'test/fast' },
-    { callerSessionId: 'sess_home_lead', callerAgentId: 'lead', callerCwd: '/home' }
+    { callerSessionId: 'sess_home_lead', callerAgentId: 'lead', callerCwd: '/home', callerScope: ATTENDED }
   );
   assert.deepEqual(result, {
     session_id: 'sess_task_1',
@@ -230,7 +236,7 @@ test('create records the origin, follows the worktree default and returns at onc
   assert.equal(record.titleSource, 'ai');
 });
 
-const CALLER = { callerSessionId: 'sess_home_lead', callerAgentId: 'lead' };
+const CALLER = { callerSessionId: 'sess_home_lead', callerAgentId: 'lead', callerScope: ATTENDED };
 
 test('a created task session starts on the Lead route; an explicit model wins', async () => {
   const h = fakeService();
@@ -344,6 +350,277 @@ test('a Project task without the worktree default stays in the Project folder', 
   await assert.rejects(
     api.create({ brief: 'x', project: '/no/such/dir' }, { callerSessionId: 'sess_home_lead', callerAgentId: 'lead' }),
     /neither a registered Project/
+  );
+});
+
+const names = (h) => h.calls.map(([name]) => name);
+const configured = (h) => h.calls.filter(([name]) => name === 'configure').map(([, params]) => params);
+
+test('create worktree {mode:"branch"} stays in the Project folder even under the worktree default', async () => {
+  const h = fakeService();
+  const { api } = tasks(h, { newTaskDefault: async () => 'worktree' });
+  const result = await api.create({ brief: 'x', project: 'mixdog', worktree: { mode: 'branch' } }, CALLER);
+  assert.equal(result.project, '/repo/mixdog');
+  assert.deepEqual(names(h), ['create', 'submit']);
+});
+
+test('create worktree {mode:"worktree"} provisions a named worktree that carries no changes, then sends the brief', async () => {
+  const h = fakeService();
+  const { api } = tasks(h);
+  await api.create({ brief: 'Fix it', project: 'mixdog', worktree: { mode: 'worktree', name: 'fix-login' } }, CALLER);
+  assert.deepEqual(names(h), ['create', 'configure', 'submit']);
+  const [request] = configured(h);
+  assert.equal(request.action, 'requestWorktree');
+  const [args] = request.args;
+  assert.deepEqual(
+    { ...args, txId: undefined },
+    { provision: true, carryChanges: 'leave', prompt: 'Fix it', txId: undefined, name: 'fix-login' }
+  );
+  assert.match(args.txId, /^atask_/);
+});
+
+test('create worktree {mode:"worktree"} without a name lets the brief title name it, under any default', async () => {
+  const h = fakeService();
+  const { api } = tasks(h, { newTaskDefault: async () => 'branch' });
+  await api.create({ brief: 'x', title: 'Check the login', project: 'mixdog', worktree: { mode: 'worktree' } }, CALLER);
+  const [args] = configured(h)[0].args;
+  assert.equal(args.prompt, 'Check the login');
+  assert.equal('name' in args, false);
+  assert.equal('confirmLarge' in args, false);
+});
+
+test('an invalid worktree option is refused before any session exists', async () => {
+  const h = fakeService();
+  const { api } = tasks(h);
+  const create = (worktree) => api.create({ brief: 'x', project: 'mixdog', worktree }, CALLER);
+  await assert.rejects(create({ mode: 'worktree', name: 'a b' }), /worktree.name is invalid/);
+  await assert.rejects(create({ mode: 'branch', name: 'ok' }), /applies only to mode "worktree"/);
+  await assert.rejects(create({ mode: 'detached' }), /worktree.mode must be/);
+  await assert.rejects(create('worktree'), /worktree.mode must be/);
+  assert.deepEqual(h.calls, []);
+});
+
+test('an explicit worktree on no Project or an unregistered folder returns the typed error and creates nothing', async (t) => {
+  const h = fakeService();
+  const { api } = tasks(h);
+  const dir = tempDir(t);
+  for (const project of [undefined, dir]) {
+    await assert.rejects(
+      api.create({ brief: 'x', project, worktree: { mode: 'worktree' } }, { ...CALLER, callerCwd: dir }),
+      (error) => error.code === 'WORKTREE_PROJECT_UNKNOWN' && /WORKTREE_PROJECT_UNKNOWN/.test(error.message)
+    );
+  }
+  assert.deepEqual(h.calls, []);
+});
+
+test('a folder that cannot have a worktree: explicit mode returns the typed error, the default keeps the folder', async () => {
+  const h = fakeService();
+  h.hooks.configure = async (params) => {
+    if (params.action === 'deleteSession') return { value: true };
+    throw worktreeError('WORKTREE_UNSUPPORTED_REPO');
+  };
+  const explicit = tasks(h).api;
+  await assert.rejects(
+    explicit.create({ brief: 'x', project: 'mixdog', worktree: { mode: 'worktree' } }, CALLER),
+    (error) => error.code === 'WORKTREE_UNSUPPORTED_REPO'
+  );
+  assert.deepEqual(submitted(h), [], 'the brief is not sent');
+  assert.deepEqual(
+    configured(h).map((params) => params.action),
+    ['requestWorktree', 'deleteSession'],
+    'the empty session is dropped'
+  );
+  const silent = tasks(h, { newTaskDefault: async () => 'worktree' }).api;
+  const result = await silent.create({ brief: 'x', project: 'mixdog' }, CALLER);
+  assert.equal(result.status, 'started');
+  assert.equal(submitted(h).length, 1);
+});
+
+test('a large repository comes back with its size, and confirm_large retries it', async () => {
+  const h = fakeService();
+  h.hooks.configure = async (params) => {
+    if (params.action === 'deleteSession') return { value: true };
+    if (!params.args[0].confirmLarge) {
+      throw worktreeError('WORKTREE_LARGE_REPO_CONFIRM', undefined, {
+        estimateBytes: 3 * 1024 * 1024 * 1024,
+        thresholdBytes: 1024 * 1024 * 1024,
+      });
+    }
+    return { value: { pending: false, workspace: { worktreeId: 'big', branch: 'mixdog/big' } } };
+  };
+  const { api } = tasks(h);
+  const args = { brief: 'x', project: 'mixdog', worktree: { mode: 'worktree' } };
+  await assert.rejects(api.create(args, CALLER), (error) => {
+    assert.equal(error.code, 'WORKTREE_LARGE_REPO_CONFIRM');
+    assert.match(error.message, /about 3072 MB \(warning threshold 1024 MB\)/);
+    assert.match(error.message, /confirm_large: true/);
+    return true;
+  });
+  assert.deepEqual(submitted(h), []);
+  const result = await api.create({ ...args, confirm_large: true }, CALLER);
+  assert.equal(result.status, 'started');
+  assert.equal(submitted(h).length, 1);
+  assert.equal(configured(h).at(-1).args[0].confirmLarge, true);
+});
+
+test('the brief is not sent unless the session ended up in its worktree', async () => {
+  for (const value of [{ pending: true, workspace: null }, { pending: false, workspace: { branch: 'main' } }, {}]) {
+    const h = fakeService();
+    h.hooks.configure = async (params) => (params.action === 'deleteSession' ? { value: true } : { value });
+    const { api } = tasks(h);
+    await assert.rejects(
+      api.create({ brief: 'x', project: 'mixdog', worktree: { mode: 'worktree' } }, CALLER),
+      (error) => error.code === 'WORKTREE_NOT_IMPLEMENTED'
+    );
+    assert.deepEqual(submitted(h), []);
+  }
+});
+
+test('the session tool hands create its worktree option and confirm_large through', async () => {
+  const seen = [];
+  const handler = createWorkspaceToolHandlers({
+    rt: { session: { id: 'sess_home_lead', owner: 'cli', agent: 'lead', sourceType: 'lead' }, config: {} },
+    executeSessionControl: async (args) => seen.push(args),
+  }).session;
+  const worktree = { mode: 'worktree', name: 'fix-login' };
+  await handler(
+    { action: 'create', brief: 'x', worktree, confirm_large: true },
+    { callerCtx: { callerSessionId: 'sess_home_lead' }, callerCwd: '/home' }
+  );
+  assert.deepEqual(seen[0].worktree, worktree);
+  assert.equal(seen[0].confirm_large, true);
+});
+
+test('the session tool gives create the calling session\'s trusted worktree scope, never the model\'s', async () => {
+  const seen = [];
+  const scopeOf = async (session, extra = {}) => {
+    const handler = createWorkspaceToolHandlers({
+      rt: { session, config: {} },
+      executeSessionControl: async (args, context) => seen.push(context.callerScope),
+    }).session;
+    await handler(
+      { action: 'create', brief: 'x', worktree: { mode: 'worktree' }, ...extra },
+      { callerCtx: { callerSessionId: session.id }, callerCwd: '/home' }
+    );
+    return seen.at(-1);
+  };
+  const attended = await scopeOf({ id: 'sess_home_lead', owner: 'cli', agent: 'lead', sourceType: 'lead' });
+  assert.equal(attended.attended, true);
+  // A model-supplied scope never replaces it.
+  const forged = await scopeOf(
+    { id: 'sess_home_reviewer', owner: 'cli', agent: 'reviewer', sourceType: 'lead' },
+    { callerScope: { kind: 'human', attended: true } }
+  );
+  assert.deepEqual([forged.kind, forged.agentId], ['agent', 'reviewer']);
+  const member = roomMemberSessionId('abc123', 'gh');
+  assert.equal((await scopeOf({ id: member, owner: 'cli', sourceType: 'lead' })).attended, false);
+  const unmark = markUnattendedRun('sess_home_reviewer', { kind: 'schedule', agentId: 'reviewer', name: 'nightly' });
+  try {
+    const routine = await scopeOf({ id: 'sess_home_reviewer', owner: 'cli', agent: 'reviewer', sourceType: 'lead' });
+    assert.equal(routine.attended, false);
+    assert.equal(routine.unattended, true);
+  } finally {
+    unmark();
+  }
+});
+
+test('a caller that may not change worktrees: an explicit worktree is refused before any session, the default keeps the folder', async () => {
+  const refused = [
+    ['an unattended run', { kind: 'agent', agentId: 'reviewer', unattended: true, attended: false }],
+    ['a room member', { kind: 'room-member', agentId: 'gh', attended: false }],
+    ['a caller with no scope', undefined],
+  ];
+  for (const [label, callerScope] of refused) {
+    const h = fakeService();
+    const { api } = tasks(h, {
+      newTaskDefault: async () => 'worktree',
+    });
+    const caller = { ...CALLER, callerScope };
+    await assert.rejects(
+      api.create({ brief: 'x', project: 'mixdog', worktree: { mode: 'worktree', name: 'fix' } }, caller),
+      /changes worktrees only in a conversation session/,
+      `${label}: explicit worktree`
+    );
+    assert.deepEqual(h.calls, [], `${label}: nothing is created or provisioned`);
+    // The worktree default silently stays in the Project folder.
+    const result = await api.create({ brief: 'y', project: 'mixdog' }, caller);
+    assert.equal(result.status, 'started', label);
+    assert.deepEqual(names(h), ['create', 'submit'], `${label}: no worktree request under the default`);
+    // A plain folder start was always open to it.
+    await api.create({ brief: 'z', project: 'mixdog', worktree: { mode: 'branch' } }, caller);
+    assert.equal(configured(h).length, 0, label);
+  }
+});
+
+test('the worktree default provisions for an attended caller, and its failure to resolve leaves no session behind', async () => {
+  const h = fakeService();
+  const attended = tasks(h, { newTaskDefault: async () => 'worktree' }).api;
+  await attended.create({ brief: 'x', project: 'mixdog' }, CALLER);
+  assert.deepEqual(names(h), ['create', 'configure', 'submit']);
+
+  const broken = fakeService();
+  const { api } = tasks(broken, {
+    newTaskDefault: async () => {
+      throw new Error('config unreadable');
+    },
+  });
+  await assert.rejects(api.create({ brief: 'x', project: 'mixdog' }, CALLER), /config unreadable/);
+  assert.deepEqual(broken.calls, [], 'the default is resolved before the session is created');
+});
+
+test('a task session that could not be dropped after a provisioning failure is named in the error', async () => {
+  const h = fakeService();
+  const logs = [];
+  h.hooks.configure = async (params) => {
+    if (params.action === 'deleteSession') throw new Error('store locked');
+    throw worktreeError('WORKTREE_LARGE_REPO_CONFIRM', undefined, {
+      estimateBytes: 3 * 1024 * 1024 * 1024,
+      thresholdBytes: 1024 * 1024 * 1024,
+    });
+  };
+  const { api } = tasks(h, { log: (line) => logs.push(line) });
+  await assert.rejects(
+    api.create({ brief: 'x', project: 'mixdog', worktree: { mode: 'worktree' } }, CALLER),
+    (error) => {
+      assert.equal(error.code, 'WORKTREE_LARGE_REPO_CONFIRM', 'the typed failure stays typed');
+      assert.match(error.message, /confirm_large: true/);
+      assert.match(error.message, /sess_task_1 could not be deleted either \(store locked\)/);
+      assert.match(error.message, /session action=delete session_id=sess_task_1/);
+      assert.equal(error.orphanSessionId, 'sess_task_1');
+      assert.deepEqual(error.details, { estimateBytes: 3 * 1024 * 1024 * 1024, thresholdBytes: 1024 * 1024 * 1024 });
+      assert.equal(error.cause.code, 'WORKTREE_LARGE_REPO_CONFIRM');
+      assert.match(error.cause.message, /WORKTREE_LARGE_REPO_CONFIRM/);
+      return true;
+    }
+  );
+  assert.deepEqual(submitted(h), []);
+  assert.equal(logs.length, 1);
+  // A resolved refusal ({ value: false }) leaves the orphan just the same.
+  const refusedDelete = fakeService();
+  refusedDelete.hooks.configure = async (params) => {
+    if (params.action === 'deleteSession') return { value: false };
+    throw worktreeError('WORKTREE_UNSUPPORTED_REPO', undefined, { projectPath: '/repo/mixdog' });
+  };
+  await assert.rejects(
+    tasks(refusedDelete).api.create({ brief: 'x', project: 'mixdog', worktree: { mode: 'worktree' } }, CALLER),
+    (error) => {
+      assert.equal(error.code, 'WORKTREE_UNSUPPORTED_REPO');
+      assert.deepEqual(error.details, { projectPath: '/repo/mixdog' });
+      assert.equal(error.cause.code, 'WORKTREE_UNSUPPORTED_REPO');
+      assert.equal(error.orphanSessionId, 'sess_task_1');
+      assert.match(error.message, /sess_task_1 could not be deleted either \(the session service refused the deletion\)/);
+      return true;
+    }
+  );
+  // A dropped session adds nothing to the error.
+  const dropped = fakeService();
+  dropped.hooks.configure = async (params) => {
+    if (params.action === 'deleteSession') return { value: true };
+    throw worktreeError('WORKTREE_UNSUPPORTED_REPO');
+  };
+  await assert.rejects(
+    tasks(dropped).api.create({ brief: 'x', project: 'mixdog', worktree: { mode: 'worktree' } }, CALLER),
+    (error) => error.code === 'WORKTREE_UNSUPPORTED_REPO' && !/could not be deleted/.test(error.message)
   );
 });
 
@@ -482,6 +759,7 @@ const report = (n, status = 'completed') => ({
   title: 'README',
   status,
   text: `answer ${n}`,
+  hop: 1, // sent from a bot-descended turn: only those count as round trips
 });
 
 test('a task result is persisted before delivery, retried on failure, and wakes the agent once', async (t) => {
@@ -533,6 +811,20 @@ test('after three round trips the report asks the agent to check with the user',
   assert.equal(h.wakes.length, 4, 'one wake per reported turn');
 });
 
+test('sends from a turn the user or a routine started never count as round trips', async (t) => {
+  const h = homeDelivery(t);
+  for (const n of [1, 2, 3, 4, 5, 6]) {
+    // The Lead's own delegation (hop 1 to another session, sent at depth 0).
+    const own = { ...report(n), taskSessionId: 'sess_home_records', target: 'session', hop: 1 };
+    await h.delivery.drain(await h.delivery.enqueueTask('lead', own));
+  }
+  assert.equal(h.wakes.length, 6, 'every report wakes the Lead');
+  assert.equal(
+    h.thread().some((message) => /check with the user|did not wake you|round trip/.test(message.content)),
+    false
+  );
+});
+
 test('a turn waiting for the user posts one faint line and wakes nobody', async (t) => {
   const h = homeDelivery(t);
   await h.delivery.drain(await h.delivery.enqueueTask('lead', report(1, 'blocked')));
@@ -554,6 +846,7 @@ test("an ordinary session reports as a session, and another agent's thread stops
     status: 'completed',
     text: `answer ${n}`,
     target: 'session',
+    hop: 2, // a bot-descended send (depth 1)
   });
   for (const n of [1, 2, 3, 4, 5]) await h.delivery.drain(await h.delivery.enqueueTask('lead', botReport(n)));
   const thread = h.thread();
@@ -584,6 +877,7 @@ test("the user's own message in the home thread restarts its round trips, so a c
     status: 'completed',
     text: `answer ${n}`,
     target: 'session',
+    hop: 2,
   });
   for (const n of [1, 2, 3, 4]) await h.delivery.drain(await h.delivery.enqueueTask('lead', botReport(n)));
   assert.equal(h.wakes.length, 3);
@@ -654,6 +948,7 @@ function restartWorld(t) {
         add: (watch) => (world.failWatch ? Promise.reject(new Error('disk full')) : delivery.watchTask(watch)),
         list: () => delivery.taskWatches(),
         remove: (runId) => delivery.unwatchTask(runId),
+        follow: (runId, submissionId) => delivery.followTask(runId, submissionId),
       },
       queuedSubmissionIds: async () => [...persisted],
       loadSession: async (id) => records.get(id) || null,
@@ -722,6 +1017,74 @@ test('a restart while the target turn runs reports it once that turn ends', asyn
   assert.equal(second.h.listeners.size, 0, 'the re-attached watch ends with the report');
   assert.equal(await w.boot().api.recover(), 0, 'a later start has nothing to re-attach');
   assert.equal(Object.hasOwn(w.target(), 'taskOrigin'), false, 'the target never gets an origin stored');
+});
+
+test("sends a room answered under another turn's submission id recover that turn's answer after a restart", async (t) => {
+  const w = restartWorld(t);
+  const first = w.boot();
+  const origin = await first.api.reportOrigin(TARGET, 'lead', HOME);
+  // The room host takes each send's turn; it submits nothing here.
+  const taken = [];
+  const room = async (options) => {
+    taken.push(options);
+    return { accepted: true };
+  };
+  for (const question of ['a', 'b', 'c', 'd']) await first.api.send(TARGET, question, origin, room);
+  const [a, , c] = taken.map((options) => options.id);
+  // b was answered by a's turn (coalesced); c's own turn was cut short and a
+  // fresh turn answered c and d (superseded): each watch follows its turn,
+  // recorded before that turn ran.
+  await taken[1].follow(a);
+  await taken[2].follow('rturn_1');
+  await taken[3].follow('rturn_1');
+  // The daemon stops before any of this process's onSettled ran.
+  w.target().messages.push(
+    promptRow(a),
+    replyRow(a, 'answer A'),
+    promptRow(c),
+    promptRow('rturn_1'),
+    replyRow('rturn_1', 'answer F')
+  );
+  const second = w.boot();
+  assert.equal(await second.api.recover(), 4);
+  for (let i = 0; i < 20 && w.home.messages.length < 4; i += 1) {
+    await settle();
+    await second.delivery.drain(HOME);
+  }
+  const reports = w.home.messages.map((message) => message.content);
+  assert.equal(reports.length, 4);
+  assert.equal(reports.filter((text) => /reported \(completed\)[\s\S]*answer A/.test(text)).length, 2, 'a and b');
+  assert.equal(reports.filter((text) => /reported \(completed\)[\s\S]*answer F/.test(text)).length, 2, 'c and d');
+  assert.deepEqual(await w.watchIds(), []);
+});
+
+test("coalesced then cut short: after a restart both sends recover the replacement turn's answer", async (t) => {
+  const w = restartWorld(t);
+  const first = w.boot();
+  const origin = await first.api.reportOrigin(TARGET, 'lead', HOME);
+  const taken = [];
+  const room = async (options) => {
+    taken.push(options);
+    return { accepted: true };
+  };
+  for (const question of ['a', 'b']) await first.api.send(TARGET, question, origin, room);
+  const [a, b] = taken.map((options) => options.id);
+  // a's turn answers both (b follows a); it is cut short, and the
+  // replacement takes b's own id: a follows b, and b's alias returns to itself.
+  await taken[1].follow(a);
+  await taken[0].follow(b);
+  await taken[1].follow(b);
+  w.target().messages.push(promptRow(a), promptRow(b), replyRow(b, 'answer B'));
+  const second = w.boot();
+  assert.equal(await second.api.recover(), 2);
+  for (let i = 0; i < 20 && w.home.messages.length < 2; i += 1) {
+    await settle();
+    await second.delivery.drain(HOME);
+  }
+  const reports = w.home.messages.map((message) => message.content);
+  assert.equal(reports.length, 2);
+  assert.ok(reports.every((text) => /reported \(completed\)[\s\S]*answer B/.test(text)));
+  assert.deepEqual(await w.watchIds(), []);
 });
 
 test('a turn that ended while no report was queued reports once on recovery, never twice', async (t) => {
@@ -907,7 +1270,7 @@ test('a wake taken before a restart is not taken again when a later result is ow
 });
 
 const DAY = 24 * 60 * 60 * 1000;
-const roundItem = (runId, target) => ({ runId, kind: 'agent-task', taskSessionId: target, roundTrip: true });
+const roundItem = (runId, target) => ({ runId, kind: 'agent-task', taskSessionId: target, roundTrip: true, hop: 1 });
 
 function capWorld(
   t,
@@ -1074,7 +1437,7 @@ test('the end of a stored turn is read from its completion, interruption or the 
   assert.deepEqual(submissionOutcome([merged, replyRow('a', 'both')], 'b'), { status: 'completed', text: 'both' });
 });
 
-test('a room member opens a task session and its result lands in the room as its row', async (t) => {
+test('a room member opens a task session: its result reaches the member session alone and wakes its relay turn in the room', async (t) => {
   const member = roomMemberSessionId('abc123', 'gh');
   const roomLog = roomSessionId('abc123');
   const spoke = roomRowMessage({
@@ -1089,9 +1452,9 @@ test('a room member opens a task session and its result lands in the room as its
     [roomLog, { id: roomLog, messages: [spoke], generation: 1 }],
   ]);
   const loadStored = (id) => sessions.get(id) || null;
-  const room = createAgentRoomDelivery({ loadSession: loadStored, saveSession: async () => {}, live: () => null });
   const queue = createRoutineResultQueue(join(tempDir(t), 'routine-results.json'));
   const wakes = [];
+  const relays = [];
   const delivery = createAgentHomeDelivery({
     loadSession: loadStored,
     saveSession: async () => {},
@@ -1099,7 +1462,11 @@ test('a room member opens a task session and its result lands in the room as its
     queue,
     live: () => ({ busy: () => false, notice: () => {}, wake: async (...args) => wakes.push(args) }),
     retryLater: () => {},
-    postRoomReports: (id, items) => room.appendTaskReports(id, items),
+    // The room host's relay turn (agent-room-host.mjs), finished at once.
+    roomRelay: async (...args) => {
+      relays.push(args);
+      return { settled: Promise.resolve('done') };
+    },
     log: () => {},
   });
   const pending = [];
@@ -1118,11 +1485,6 @@ test('a room member opens a task session and its result lands in the room as its
     turnArtifacts: async () => ({ files: [], omitted: 0 }),
   });
   const memberSession = { id: member, owner: 'cli', sourceType: 'lead' };
-  // The room's approval gate lets the create through as the home thread would.
-  assert.deepEqual(
-    await roomMemberToolDecision({ name: 'session', args: { action: 'create', brief: 'x' }, cwd: '.' }, null),
-    null
-  );
   const session = createWorkspaceToolHandlers({
     rt: { session: memberSession, config: {} },
     executeSessionControl: createSessionControl({ getSessionService: () => h.service, agentTasks: api }),
@@ -1148,31 +1510,26 @@ test('a room member opens a task session and its result lands in the room as its
     /started, not done yet; its final answer is reported here when it finishes\./
   );
   assert.equal(sessions.get(roomLog).messages.length, 1);
-  // The brief's turn ends: the result is the member's row in the room log.
+  // The brief's turn ends: the result lands in the member session, never as a raw room row.
   const [{ options }] = submitted(h);
   options.onSettled({ status: 'done', result: { content: 'Report built.\n\n- 3 charts' } });
   for (let i = 0; i < 20 && pending.length < 2; i += 1) await settle();
-  await Promise.all(pending);
-  await delivery.drain(roomLog);
+  assert.equal(await Promise.all(pending).then((homes) => homes.at(-1)), member);
   await delivery.drain(member);
-  const posted = sessions.get(roomLog).messages.at(-1);
   assert.deepEqual(
-    [posted.meta.room.kind, posted.meta.room.speaker, posted.meta.room.name],
-    ['speech', 'gh', 'GH Bot']
+    sessions.get(roomLog).messages.map((message) => message.meta.transcript.messageId),
+    ['row_gh_1'],
+    'the room log gets no report row'
   );
-  assert.equal(
-    posted.content,
-    'Task session **Build the report** (`sess_task_1`) completed.\n\nReport built.\n\n- 3 charts'
-  );
-  // The room's next exchange shows it to the other members.
-  const rows = roomRowsOfItems(sessions.get(roomLog).messages.map((message, i) => roomRowItem(message, `i${i}`)));
-  assert.deepEqual(
-    rowsSinceCursor(rows, 'row_gh_1', 'reviewer').map((row) => row.speaker),
-    ['gh']
-  );
-  // The member itself reads it in its own session; nothing wakes it, no home gets it.
   assert.match(sessions.get(member).messages.at(-1).content, /<task-output session="sess_task_1" status="completed">/);
+  // The member is woken to relay it: a turn in its room through the room host, not a hidden home turn.
   assert.equal(wakes.length, 0);
+  assert.equal(relays.length, 1);
+  assert.equal(relays[0][0], member);
+  assert.match(relays[0][1], /Report built\.[\s\S]*Relay the report above to the user now/);
+  assert.match(relays[0][2].id, /^awake_/);
+  for (let i = 0; i < 5; i += 1) await settle();
+  assert.deepEqual(await queue.wakes(member), { owed: [], batches: [], overflow: null }, 'the relay turn retired it');
   assert.deepEqual(await queue.items('sess_home_gh'), []);
   assert.deepEqual(await delivery.taskWatches(), [], 'the watch dropped once the report was queued');
   // A replayed report adds nothing.
@@ -1186,11 +1543,55 @@ test('a room member opens a task session and its result lands in the room as its
       from: member,
     })
   );
-  assert.equal(sessions.get(roomLog).messages.length, 2);
+  assert.equal(sessions.get(member).messages.length, 2);
+  assert.equal(relays.length, 1, 'never relayed twice');
   // A later send from the room to a task its agent opened at home reports to the room.
   const stored = { taskOrigin: { agentId: 'gh', sessionId: 'sess_home_gh', title: 'T' } };
   const re = tasks(fakeService(), { loadSession: async () => stored });
   assert.equal((await re.api.reportOrigin('sess_task_9', 'gh', member)).sessionId, member);
+});
+
+test("a member's relay answered under another turn's id is found by that turn after a restart, never relayed twice", async (t) => {
+  const member = roomMemberSessionId('abc123', 'gh');
+  const thread = { id: member, messages: [], generation: 1 };
+  const file = join(tempDir(t), 'routine-results.json');
+  const relays = [];
+  const boot = (roomRelay) =>
+    createAgentHomeDelivery({
+      loadSession: (id) => (id === member ? thread : null),
+      saveSession: async () => {},
+      turnInFlight: () => false,
+      queue: createRoutineResultQueue(file),
+      live: () => ({ busy: () => false, notice: () => {} }),
+      retryLater: () => {},
+      roomRelay,
+      log: () => {},
+    });
+  // The room answers the relay in a turn under another id, and the process stops mid-turn.
+  const first = boot(async (...args) => {
+    relays.push(args);
+    await args[2].follow('rturn_1');
+    return { settled: new Promise(() => {}) };
+  });
+  await first.drain(
+    await first.enqueueTask('gh', {
+      runId: 'turn_1_end',
+      taskSessionId: 'sess_task_1',
+      title: 'Job',
+      status: 'completed',
+      text: 'built',
+      from: member,
+    })
+  );
+  assert.equal(relays.length, 1);
+  thread.messages.push(promptRow('rturn_1'), replyRow('rturn_1', 'Relayed: built.'));
+  const second = boot(async (...args) => {
+    relays.push(args);
+    return { settled: Promise.resolve('done') };
+  });
+  for (const homeId of await second.recover()) await second.drain(homeId);
+  assert.equal(relays.length, 1, 'the answering turn retired the relay');
+  assert.deepEqual(await createRoutineResultQueue(file).wakes(member), { owed: [], batches: [], overflow: null });
 });
 
 test('a report that cannot be queued is retried in-process, delivered once, and keeps its watch when every try fails', async () => {

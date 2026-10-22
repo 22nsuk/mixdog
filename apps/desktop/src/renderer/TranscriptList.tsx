@@ -41,17 +41,13 @@ type TranscriptListProps = {
    *  corrections are held off the native offset until it ends
    *  (transcript-list-touch-deviation). */
   hasTouchScroll?: () => boolean;
-  /** True while that hold belongs to a touch scroll: it lands early at the
-   *  top edge, so a fling never sticks short of rows landed above it. */
+  /** True while that hold belongs to a touch scroll: it lands early once the
+   *  logical offset reaches the real top. */
   touchHoldsCorrections?: () => boolean;
   /** Claims reader ownership before this list writes selection auto-scroll. */
   onSelectionAutoScroll(delta: number): void;
   /** Who paints the rows: an agent chat's rows learn their heights apart. */
   surface?: TranscriptRowSurface;
-  /** The follow hook's pause: an agent reply taller than the viewport that
-   *  arrived whole opens at its first line, and follow lets go there.
-   *  Without it follow cannot let go, so the end pin always keeps the end. */
-  pauseFollow?: () => void;
 };
 
 /**
@@ -78,12 +74,9 @@ export function TranscriptList({
   touchHoldsCorrections = noTouchScroll,
   onSelectionAutoScroll,
   surface = 'coding',
-  pauseFollow,
 }: TranscriptListProps) {
   const surfaceRef = useRef(surface);
   surfaceRef.current = surface;
-  const pauseFollowRef = useRef(pauseFollow);
-  pauseFollowRef.current = pauseFollow;
   const spacer = useRef<HTMLDivElement>(null);
   // The viewport's scrollTop as last observed in a scroll event or written by
   // this list: every other consumer reads this instead of the DOM.
@@ -156,9 +149,7 @@ export function TranscriptList({
     flushDeferredResizes,
     scheduleResizeFlush,
   } = useDeferredResizes({ rowsRef, hasScrollGestureRef, virtualizerRef, visibleTop });
-  const { contentHeight, maxScrollTop, endPin, wholeReply } = useTranscriptEndPin({
-    rowsRef,
-    pauseFollowRef,
+  const { contentHeight, maxScrollTop, endPin } = useTranscriptEndPin({
     viewport,
     spacer,
     scrollInset,
@@ -230,7 +221,6 @@ export function TranscriptList({
     virtualizerRef,
     anchorOverride,
     settleHeldShrinks,
-    onFollowReleased: wholeReply.release,
   });
   useSelectionDrag({ viewport, sessionKey, rowsRef, setSelectionPin, onSelectionAutoScroll });
 

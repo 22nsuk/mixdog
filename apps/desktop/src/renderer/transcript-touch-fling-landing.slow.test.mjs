@@ -4,16 +4,15 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import puppeteer from 'puppeteer-core';
 
-// Phone, long session: the reader flings toward older history and the next
-// page lands above them mid-fling. A touch fling holds that landing as a row
-// offset (a translateY of the row space): on an Android phone a scrollTop
-// write under the fling desyncs it until the next touch jumps (위로 빠르게
-// 넘기면 멈추고, 다시 터치하면 훨씬 위로 순간이동). Held to the end, the native
-// offset stayed short of the logical one by the whole page: the fling ran into
-// native 0 and stopped there with the page unreachable above it (phone: 다시
-// 들어간 긴 세션에서 위로 넘기면 중간에 멈추고 튄다). The hold therefore lands
-// once the fling comes within a screen of the top, and the fling carries on
-// into the page.
+// Android phone, long session: the reader flings toward older history and the
+// next page lands above them mid-fling. Held as a row offset (a translateY of
+// the row space), the page stayed outside the native scroll range, so the
+// fling ran into native 0 at the old first row and stopped there, mid-history
+// (phone: 위로 스크롤하면 중간에 멈춘다). Chromium keeps a touch fling's
+// momentum through a scrollTop write, so off iOS WebKit the landing is written
+// at once and the same fling carries on into the page. Headless Chromium runs
+// the same fling (a stream of scroll deltas) as Android Chrome and its
+// WebView, not their fling curve or any device-only input path.
 
 const HARNESS = `
   import { useLayoutEffect, useRef, useState } from 'react';
@@ -91,7 +90,7 @@ async function fling(cdp, distance) {
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-test('a page landing above a touch fling is held, lands at the top edge, and the fling carries on into it', async (t) => {
+test('on Android a page landing above a touch fling is written at once and the fling carries on into it', async (t) => {
   const resolveDir = fileURLToPath(new URL('.', import.meta.url));
   const bundle = await build({
     stdin: { resolveDir, loader: 'tsx', contents: HARNESS },
@@ -162,18 +161,18 @@ test('a page landing above a touch fling is held, lands at the top edge, and the
   }
   const frames = await page.evaluate(() => window.landing.frames);
   assert.deepEqual(errors, []);
-  assert.ok(Math.abs(landed.after - landed.before) < 1, 'the landing writes nothing under the fling');
-  const held = frames.filter((frame) => frame.transform);
-  assert.ok(held.length > 0, 'the landing is held as a row offset under the fling');
-  // The page's hold: the frames from the landing until its row offset drops.
-  const first = frames.indexOf(held[0]);
-  const end = frames.findIndex((frame, index) => index > first && !frame.transform);
-  assert.ok(end > first && !frames.at(-1).transform, 'the hold lands once the fling is over or at the top');
   assert.ok(
-    frames[end].top - frames[end - 1].top > landed.page - 1_000,
-    `its one write moves the native offset by the page (${frames[end - 1].top} -> ${frames[end].top}, page ${landed.page})`
+    landed.after - landed.before > landed.page - 1_000,
+    `the landing is one native write by the page (${landed.before} -> ${landed.after}, page ${landed.page})`
   );
-  // The fling carried on past the old top into the landed page instead of
-  // sticking at native 0 with the page held out of reach above it.
+  assert.deepEqual(
+    frames.filter((frame) => frame.transform),
+    [],
+    'nothing is held as a row offset'
+  );
+  // The momentum went on after the write: the native offset kept falling.
+  assert.ok(frames.length > 2 && frames.at(-1).top < frames[0].top - 1, 'the fling keeps moving after the landing');
+  // It carried on past the old first row into the landed page instead of
+  // stopping at native 0 with the page out of reach above it.
   assert.ok(previous < landed.page, `the fling went on into the page (rest ${previous}, page ${landed.page})`);
 });

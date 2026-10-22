@@ -4,7 +4,7 @@
 // strictly one at a time: after the user's addressees, a supervisor step on the
 // Maintainer model picks each next speaker or ends the talk, under hard caps.
 // A member speaks from its own session per room, sees only the rows new since
-// it last spoke, and its write tools always ask the user (room-member-gate.mjs).
+// it last spoke, and its tools follow the same approval rules as its home chat.
 // The room's log is a plain session, so the transcript, read cursors, unread
 // counts and the phone all work unchanged. A round in flight lives in memory
 // only: a restarted host marks it interrupted and never resumes it.
@@ -15,6 +15,8 @@ import {
   normalizeRoomConfig,
   parseRoomAsk,
   roomIdOfSession,
+  roomMemberNamed,
+  roomMemberOfSession,
   roomMemberSessionId,
   roomSessionId,
   type roomTurnPrompt,
@@ -23,6 +25,7 @@ import type {
   RoomDecision,
   RoomSupervisorInput,
 } from '../../../../src/runtime/agent/orchestrator/session/agent-room-supervisor.mjs';
+import type { AgentRoomHost, AgentRoomTurnDetail } from '../../../../src/runtime/shared/agent-room-host.mjs';
 import { readJsonState, writeJsonAtomicAsync } from '../../../../src/runtime/shared/atomic-file.mjs';
 import { type AgentCatalogRow, MIXY_AGENT_ID, contactAgentRows } from '../shared/agent-contacts';
 import type {
@@ -37,7 +40,7 @@ import { routeParams } from './agent-home-sessions';
 import { type RoomExchangeHost, runRoomExchangeIn } from './agent-room-exchange';
 import { createRoomLog } from './agent-room-log';
 import { createRoomRecords } from './agent-room-records';
-import type { RoomTurnHost, RunState } from './agent-room-turn';
+import type { MemberLabel, RoomCall, RoomExchangeOptions, RoomTurnHost, RunState } from './agent-room-turn';
 import { catalogWithRooms, decorateRoomSnapshot, roomSummary } from './agent-room-views';
 
 export interface AgentRoomRecord extends RoomConfig {
@@ -79,8 +82,12 @@ export interface AgentRoomDeps {
   listAgents(): Promise<unknown>;
   /** Mixy's display name (agents/lead/agent.json `name`); '' for the default. */
   leadName?(): Promise<string>;
-  /** Mixy's own route (getLeadStatus `route`), null when it has none. */
+  /** The route Mixy follows (`getLeadHomeRoute`): its own, else Main's; null
+   *  when neither is set. */
   mixyRoute?(): Promise<unknown>;
+  /** Per-id definition presence from the files (`agentDefinitionPresence`):
+   *  only 'deleted' removes a member from its rooms. */
+  agentPresence?(agentIds: string[]): Promise<unknown>;
   sessionExists(sessionId: string): Promise<boolean>;
   createSession(sessionId: string, params: Record<string, unknown>): Promise<void>;
   renameSession(sessionId: string, title: string): Promise<void>;
@@ -91,8 +98,13 @@ export interface AgentRoomDeps {
   /** The transcript items of a session, read without publishing. */
   readItems(sessionId: string): Promise<unknown[]>;
   /** A member's turn: its prompt, text or parts with the user's stored files
-   *  (submitted like a chat prompt). */
-  submit(sessionId: string, prompt: ReturnType<typeof roomTurnPrompt>): Promise<boolean>;
+   *  (submitted like a chat prompt), under submission `id` and at bot-to-bot
+   *  `hop` when given. */
+  submit(
+    sessionId: string,
+    prompt: ReturnType<typeof roomTurnPrompt>,
+    options?: { id?: string; hop?: number }
+  ): Promise<boolean>;
   /** One supervisor step on the Maintainer model (the daemon's
    *  `decideRoomTurn`): the next speaker, finish, null for no usable answer, or
    *  `unmanaged` when no Maintainer model is configured. */
@@ -162,6 +174,21 @@ async function roomLogRoute(
 
 export { inLogOrder } from './agent-room-log';
 
+/** `call` with an `onSettled` that runs once, whichever path ends it first. */
+function settlesOnce(call: RoomCall): RoomCall {
+  const onSettled = call.onSettled;
+  if (!onSettled) return call;
+  let done = false;
+  return {
+    ...call,
+    onSettled: (detail) => {
+      if (done) return;
+      done = true;
+      onSettled(detail);
+    },
+  };
+}
+
 function roomDocOf(value: unknown): AgentRoomStoreDoc {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new TypeError('The room records are not an object.');
@@ -200,23 +227,32 @@ export function createAgentRooms(deps: AgentRoomDeps) {
   const pollMs = deps.pollMs ?? 500;
   const log = deps.log ?? ((line: string) => console.warn(`[mixdog-rooms] ${line}`));
   const records = createRoomRecords(deps);
-  const { loadRecords, ready, refreshNames, memberLabels, persist, roomOf, names } = records;
+  const { loadRecords, ready: recordsReady, refreshNames, memberLabels, persist, roomOf, names } = records;
   const running = new Map<string, RunState>();
   const roomLog = createRoomLog(deps, records.rooms);
   const post = roomLog.post;
   const roomRows = roomLog.rows;
 
-  async function ensureMemberSession(roomId: string, member: { id: string; route: unknown }): Promise<string> {
+  /** The member's own session in the room, created on first use. Whether the
+   *  member still belongs is checked in the room writes' queue, the one a
+   *  removal runs in: a member removed before never gets a session, and one
+   *  removed after finds it created, to delete. */
+  function ensureMemberSession(roomId: string, member: { id: string; route: unknown }): Promise<string> {
     const sessionId = roomMemberSessionId(roomId, member.id);
-    if (await deps.sessionExists(sessionId)) return sessionId;
-    await deps.createSession(sessionId, {
-      ...(member.id === MIXY_AGENT_ID
-        ? routeParams(await deps.mixyRoute?.())
-        : { ...routeParams(member.route), sessionProfile: { homeAgent: member.id } }),
-      cwd: await deps.taskWorkspace(),
-      desktopSession: { classification: 'task', projectPath: null },
+    return writer(async () => {
+      if (!records.rooms()[roomId]?.members.includes(member.id)) {
+        throw new Error(`"${member.id}" is not a member of that room.`);
+      }
+      if (await deps.sessionExists(sessionId)) return sessionId;
+      await deps.createSession(sessionId, {
+        ...(member.id === MIXY_AGENT_ID
+          ? routeParams(await deps.mixyRoute?.())
+          : { ...routeParams(member.route), sessionProfile: { homeAgent: member.id } }),
+        cwd: await deps.taskWorkspace(),
+        desktopSession: { classification: 'task', projectPath: null },
+      });
+      return sessionId;
     });
-    return sessionId;
   }
 
   /** What a member's turn in this room needs from the host. */
@@ -227,7 +263,7 @@ export function createAgentRooms(deps: AgentRoomDeps) {
     post: (rows) => post(roomId, rows),
     republish: () => deps.republish(roomSessionId(roomId)),
     memberSession: (member) => ensureMemberSession(roomId, member),
-    submit: (sessionId, prompt) => deps.submit(sessionId, prompt),
+    submit: (sessionId, prompt, options) => deps.submit(sessionId, prompt, options),
     readSnapshot: (sessionId) => deps.readSnapshot(sessionId),
     abort: (sessionId) => deps.abort(sessionId),
     persist,
@@ -244,7 +280,8 @@ export function createAgentRooms(deps: AgentRoomDeps) {
     room: () => roomOf(roomId),
     exists: () => Boolean(records.rooms()[roomId]),
     track: (state) => running.set(roomId, state),
-    untrack: () => running.delete(roomId),
+    untrack: (state) => running.get(roomId) === state && running.delete(roomId),
+    failRelays: (error) => dropRelays(roomId, { status: 'failed', error }),
     rows: () => roomRows(roomId),
     post: (rows) => post(roomId, rows),
     labels: memberLabels,
@@ -258,16 +295,67 @@ export function createAgentRooms(deps: AgentRoomDeps) {
     random,
     log,
   });
-  const exchange = (roomId: string, options: { to?: string[]; waiting?: boolean }) =>
-    runRoomExchangeIn(exchangeHost(roomId), options);
+  const exchange = (roomId: string, options: RoomExchangeOptions) => runRoomExchangeIn(exchangeHost(roomId), options);
 
-  const start = (roomId: string, options: { to?: string[]; waiting?: boolean }) => {
+  const start = (roomId: string, options: RoomExchangeOptions) => {
     // A save that fails outside the exchange's own try (before it, or in its
-    // finally) is logged, never left as an unhandled rejection.
-    void exchange(roomId, options).catch((error) =>
-      log(`room ${roomId} exchange failed: ${error instanceof Error ? error.message : String(error)}`)
-    );
+    // finally) is logged, never left as an unhandled rejection; a call it
+    // carried ends failed (a call settles once).
+    void exchange(roomId, options)
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        log(`room ${roomId} exchange failed: ${message}`);
+        for (const call of options.calls ?? []) call.onSettled?.({ status: 'failed', error: message });
+      })
+      .then(() => drainRelays(roomId));
   };
+
+  /** Relays held back per room while its talk runs: a relay never cuts a
+   *  member off, it waits for the exchange in flight to end. */
+  const relayQueue = new Map<string, RoomCall[]>();
+
+  /** An exchange in `roomId` ended: the relays it held back run as one
+   *  exchange, each member once, unless another exchange already took the
+   *  room (its own end drains them). */
+  function drainRelays(roomId: string): void {
+    const queued = relayQueue.get(roomId);
+    if (!queued?.length || running.has(roomId)) return;
+    relayQueue.delete(roomId);
+    const to = [...new Set(queued.map((call) => call.agentId))];
+    route(roomId, { to, waiting: false, only: true, calls: queued });
+  }
+
+  /** The stop button, or a save the room's talk needed failed: the relays held
+   *  back end (cancelled, or failed); the delivery retries them later. */
+  function dropRelays(roomId: string, detail: AgentRoomTurnDetail = { status: 'cancelled' }): void {
+    const queued = relayQueue.get(roomId) ?? [];
+    relayQueue.delete(roomId);
+    for (const call of queued) call.onSettled?.(detail);
+  }
+
+  /** Route a new request into room `roomId`: it starts an exchange, or, while
+   *  one runs, is merged into the one that runs next (every member any of
+   *  them called keeps its turn, in the order named; `only` holds when every
+   *  merged request is `only`), and the member speaking is cut off: its
+   *  answer would respond to older rows. Each call settles once. */
+  function route(roomId: string, options: Required<Pick<RoomExchangeOptions, 'to' | 'waiting'>> & RoomExchangeOptions) {
+    const calls = (options.calls ?? []).map(settlesOnce);
+    const active = running.get(roomId);
+    if (!active) return start(roomId, { ...options, calls });
+    // A stopping exchange hands nothing on: calls that arrive now end cancelled.
+    if (active.stop) {
+      for (const call of calls) call.onSettled?.({ status: 'cancelled' });
+      calls.length = 0;
+    }
+    const prior = active.pending;
+    active.pending = {
+      to: [...new Set([...(prior?.to ?? []), ...options.to])],
+      waiting: prior?.waiting === true || options.waiting,
+      only: (prior ? prior.only === true : true) && options.only === true,
+      calls: [...(prior?.calls ?? []), ...calls],
+    };
+    if (active.speaking && active.memberSession) void deps.abort(active.memberSession).catch(() => undefined);
+  }
 
   async function create(input: Record<string, unknown>): Promise<{ sessionId: string; roomId: string }> {
     await ready();
@@ -307,10 +395,21 @@ export function createAgentRooms(deps: AgentRoomDeps) {
     }
     await refreshNames();
     const renamed = config.name !== room.name;
-    Object.assign(room, config);
+    // Members taken out leave as a deleted bot does; the roster keeps its identity.
+    const gone = new Set(room.members.filter((id) => !config.members.includes(id)));
+    if (gone.size) removeFromRoom(room, gone);
+    const { members, ...settings } = config;
+    Object.assign(room, settings);
+    room.members.splice(0, room.members.length, ...members);
     await persist();
     if (renamed) await deps.renameSession(roomSessionId(roomId), config.name).catch(() => undefined);
     deps.republishCatalog();
+    // Their conversations go with them (no one owns them afterwards; a member
+    // added back starts a fresh one), as a deleted bot's do.
+    const failed = await deleteSessions([...gone].map((id) => roomMemberSessionId(roomId, id)));
+    if (failed) {
+      throw new Error(`The room was updated, but ${failed} conversations of removed members could not be deleted.`);
+    }
     return summaryOf(room);
   }
 
@@ -321,15 +420,135 @@ export function createAgentRooms(deps: AgentRoomDeps) {
     delete records.rooms()[roomId];
     roomLog.forget(roomId);
     await persist();
-    const failed: string[] = [];
-    for (const id of room.members) {
-      await deps.deleteSession(roomMemberSessionId(roomId, id)).catch(() => failed.push(id));
-    }
-    await deps.deleteSession(roomSessionId(roomId)).catch(() => failed.push('room'));
+    const failed = await deleteSessions([
+      ...room.members.map((id) => roomMemberSessionId(roomId, id)),
+      roomSessionId(roomId),
+    ]);
     deps.republishCatalog();
-    if (failed.length) {
-      throw new Error(`The room was removed, but ${failed.length} of its conversations could not be deleted.`);
+    if (failed) throw new Error(`The room was removed, but ${failed} of its conversations could not be deleted.`);
+  }
+
+  // Membership belongs to the agent's existence: a bot proven deleted leaves
+  // every room it was in, in the operation that finds out. A restored bot does
+  // not rejoin (`update` adds it back by hand); a room keeps its id and log
+  // however few members remain.
+
+  /** The calls of `calls` addressed to `gone` end cancelled and leave it
+   *  (in place: the exchange shares the array). */
+  function cancelCallsTo(calls: RoomCall[], gone: ReadonlySet<string>): void {
+    const kept = calls.filter((call) => !gone.has(call.agentId));
+    for (const call of calls) if (gone.has(call.agentId)) call.onSettled?.({ status: 'cancelled' });
+    calls.splice(0, calls.length, ...kept);
+  }
+
+  /** `gone` left room `roomId`: what is owed to them ends. Their calls waiting
+   *  in the room's exchange, in the exchange that runs next and in the relay
+   *  queue end cancelled, and they are no queued target. Their turn in flight
+   *  (or about to start) notices the removal itself (memberTurn). */
+  function cancelOwedTo(roomId: string, gone: ReadonlySet<string>): void {
+    const queued = relayQueue.get(roomId);
+    if (queued) {
+      cancelCallsTo(queued, gone);
+      if (!queued.length) relayQueue.delete(roomId);
     }
+    const state = running.get(roomId);
+    if (!state) return;
+    cancelCallsTo(state.calls, gone);
+    if (state.pending) {
+      if (state.pending.calls) cancelCallsTo(state.pending.calls, gone);
+      state.pending.to = state.pending.to?.filter((id) => !gone.has(id));
+    }
+  }
+
+  /** `gone` out of `room`'s members and everything kept for them (owed turns,
+   *  cursors, seen rows, calls waiting on them). The members array stays the
+   *  same array: an exchange in flight holds it as its roster. */
+  function removeFromRoom(room: AgentRoomRecord, gone: ReadonlySet<string>): void {
+    room.members.splice(0, room.members.length, ...room.members.filter((id) => !gone.has(id)));
+    if (room.owed) room.owed = room.owed.filter((id) => !gone.has(id));
+    for (const id of gone) {
+      delete room.cursors[id];
+      if (room.seen) delete room.seen[id];
+    }
+    cancelOwedTo(room.id, gone);
+  }
+
+  /** `agentIds` out of every room's members; Mixy is never removed. Who left
+   *  which room. */
+  function dropMembers(agentIds: readonly string[]): Array<{ roomId: string; agentId: string }> {
+    const ids = new Set(agentIds.filter((id) => id !== MIXY_AGENT_ID));
+    const left: Array<{ roomId: string; agentId: string }> = [];
+    for (const room of Object.values(records.rooms())) {
+      const gone = new Set(room.members.filter((id) => ids.has(id)));
+      if (!gone.size) continue;
+      removeFromRoom(room, gone);
+      for (const agentId of gone) left.push({ roomId: room.id, agentId });
+    }
+    return left;
+  }
+
+  /** Each of `sessionIds` deleted, whatever happens to the others; how many
+   *  could not be. */
+  async function deleteSessions(sessionIds: string[]): Promise<number> {
+    let failed = 0;
+    for (const id of sessionIds) await deps.deleteSession(id).catch(() => (failed += 1));
+    return failed;
+  }
+
+  const memberSessionsOf = (left: Array<{ roomId: string; agentId: string }>) =>
+    left.map(({ roomId, agentId }) => roomMemberSessionId(roomId, agentId));
+
+  /** A bot whose definition was proven deleted leaves every room, saved, and
+   *  its room conversations are deleted as a room's are on removal. */
+  const forgetMember = (agentId: string): Promise<void> =>
+    writer(async () => {
+      await ready();
+      const left = dropMembers([agentId]);
+      if (!left.length) return;
+      await persist();
+      deps.republishCatalog();
+      const failed = await deleteSessions(memberSessionsOf(left));
+      if (failed) {
+        throw new Error(`The member left its rooms, but ${failed} of its conversations could not be deleted.`);
+      }
+    });
+
+  /** Once, as the rooms load: members whose definition is proven deleted
+   *  (`agentDefinitionPresence`; an unknown or failed check proves nothing)
+   *  leave, and the rooms are saved. */
+  async function pruneDeleted(): Promise<void> {
+    const ids = [...new Set(Object.values(records.rooms()).flatMap((room) => room.members))];
+    if (!deps.agentPresence || !ids.some((id) => id !== MIXY_AGENT_ID)) return;
+    const presence = (await deps.agentPresence(ids).catch(() => null)) as Record<string, unknown> | null;
+    if (!presence || typeof presence !== 'object') return;
+    const left = dropMembers(ids.filter((id) => presence[id] === 'deleted'));
+    if (!left.length) return;
+    await persist();
+    deps.republishCatalog();
+    // Load must not fail on a conversation that stays behind: it is logged.
+    const failed = await deleteSessions(memberSessionsOf(left));
+    if (failed) log(`${failed} conversations of members who left their rooms could not be deleted`);
+  }
+
+  let prepared: Promise<void> | null = null;
+  /** The rooms loaded and pruned; every mutation starts here. */
+  function ready(): Promise<void> {
+    prepared ??= recordsReady()
+      .then(pruneDeleted)
+      .catch((error) => {
+        prepared = null;
+        throw error;
+      });
+    return prepared;
+  }
+
+  /** The one writer of room records (rooms created, changed, removed, members
+   *  forgotten): each runs whole, read to save, after the one before it. */
+  let writes: Promise<unknown> = Promise.resolve();
+  function writer<T>(write: () => Promise<T>): Promise<T> {
+    const done = writes.then(write);
+    writes = done.catch(() => undefined);
+    return done;
   }
 
   async function leave(roomId: string): Promise<void> {
@@ -413,18 +632,122 @@ export function createAgentRooms(deps: AgentRoomDeps) {
     // Taken up as soon as the row is in the log, before the save yields: a
     // member's older answer cannot land meanwhile, and a second message never
     // starts an exchange of its own beside this one.
-    const active = running.get(roomId);
-    if (active) {
-      // Several messages sent meanwhile run as one exchange: every member any
-      // of them addressed keeps its turn, in the order named.
-      active.pending = { to: [...new Set([...(active.pending?.to ?? []), ...parsed.to])], waiting: true };
-      // The member speaking answers rows older than this message: cut it off
-      // now (its turn posts nothing) rather than at the next turn boundary.
-      if (active.speaking && active.memberSession) void deps.abort(active.memberSession).catch(() => undefined);
-    } else start(roomId, { to: parsed.to, waiting: true });
+    route(roomId, { to: parsed.to, waiting: true });
     await persist();
     deps.republishCatalog();
     return true;
+  }
+
+  /** The member a message from another session addresses (room host
+   *  `member`, agent-room-host.mjs): `to` (an agent id or display name), else
+   *  a leading `@name` in `prompt`; its member session exists afterwards. */
+  async function addressee(
+    sessionId: string,
+    { to, prompt }: { to?: unknown; prompt?: unknown }
+  ): Promise<{ agentId: string; name: string; sessionId: string; text: string }> {
+    await ready();
+    const roomId = roomIdOfSession(sessionId);
+    const room = roomOf(roomId);
+    const labels = await memberLabels(room);
+    const members = [...labels.values()];
+    const named = typeof to === 'string' ? to.trim() : '';
+    let text = typeof prompt === 'string' ? prompt.trim() : '';
+    let agentId = roomMemberNamed(named, members);
+    if (!named && text.startsWith('@')) {
+      const parsed = parseRoomAsk(`/ask ${text.slice(1)}`, members);
+      if (parsed.to.length === 1 && parsed.text) [agentId, text] = [parsed.to[0], parsed.text];
+    }
+    const roster = members.map((member) => `${member.name} (${member.id})`).join(', ');
+    if (!agentId) {
+      throw new Error(
+        named
+          ? `"${named}" is not a member of room "${room.name}"; its members are ${roster}.`
+          : `A message to room "${room.name}" must name the member it is for (to: agent id or name); its members are ${roster}.`
+      );
+    }
+    const member = labels.get(agentId) as MemberLabel;
+    return { agentId, name: member.name, sessionId: await ensureMemberSession(roomId, member), text };
+  }
+
+  /** A message from another session (`from`) into the room, for member
+   *  `agentId` alone: posted as a user-kind row naming its real sender, then
+   *  routed like a user message to that member, and no other member follows
+   *  up. `id` / `onSettled`: the member's turn's submission id and end. */
+  async function ask(
+    sessionId: string,
+    { agentId, prompt, from, id = '', hop = 0, onSettled, follow }: Parameters<AgentRoomHost['ask']>[1]
+  ): Promise<boolean> {
+    await ready();
+    const roomId = roomIdOfSession(sessionId);
+    const room = roomOf(roomId);
+    if (!room.members.includes(agentId)) throw new Error(`"${agentId}" is not a member of room "${room.name}".`);
+    const labels = await memberLabels(room);
+    const content = prompt as DesktopPromptContent;
+    const upload = roomUpload(content, {});
+    const text = promptText(content);
+    if (!text && !upload) throw new Error('Write a message to send.');
+    const fromAgent = from.agentId || '';
+    const fromName = fromAgent ? (names.get(fromAgent) ?? fromAgent) : 'Lead';
+    const row: RoomRow = {
+      id: `ask_${newId()}`,
+      kind: 'user',
+      at: now(),
+      text,
+      to: [agentId],
+      toName: [labels.get(agentId)?.name ?? agentId],
+      fromSession: from.sessionId,
+      ...(fromAgent ? { fromAgent } : {}),
+      fromName,
+      ...(upload ? { upload } : {}),
+    };
+    await post(roomId, [row]);
+    room.lastAt = row.at;
+    const call: RoomCall = {
+      agentId,
+      askedBy: fromName,
+      ...(id ? { id } : {}),
+      ...(hop > 0 ? { hop } : {}),
+      ...(onSettled ? { onSettled } : {}),
+      ...(follow ? { follow } : {}),
+    };
+    route(roomId, { to: [agentId], waiting: true, only: true, calls: [call] });
+    await persist();
+    deps.republishCatalog();
+    return true;
+  }
+
+  /** Member session `sessionId` relays its own reported work (`prompt`, the
+   *  agent-home-delivery wake prompt) in one turn in its room, once the room
+   *  is idle; `settled` resolves that turn's end status ('done' when it
+   *  finished). */
+  async function relay(
+    sessionId: string,
+    prompt: string,
+    { id = '', hop = 0, follow }: NonNullable<Parameters<AgentRoomHost['relay']>[2]> = {}
+  ) {
+    await ready();
+    const member = roomMemberOfSession(sessionId);
+    if (!member) throw new TypeError('Not a group-room member session.');
+    const room = roomOf(member.roomId);
+    if (!room.members.includes(member.agentId)) throw new Error('That agent is no longer a member of the room.');
+    let settle: (status: string) => void = () => undefined;
+    const settled = new Promise<string>((resolve) => {
+      settle = resolve;
+    });
+    const call: RoomCall = {
+      agentId: member.agentId,
+      relay: prompt,
+      ...(id ? { id } : {}),
+      ...(hop > 0 ? { hop } : {}),
+      ...(follow ? { follow } : {}),
+      onSettled: (detail) => settle(detail.status),
+    };
+    // A relay never cuts a member off: while the room talks it waits in the
+    // room's queue, which the exchange's end drains.
+    if (running.get(member.roomId)?.stop) call.onSettled?.({ status: 'cancelled' });
+    else if (running.has(member.roomId)) relayQueue.set(member.roomId, [...(relayQueue.get(member.roomId) ?? []), call]);
+    else route(member.roomId, { to: [member.agentId], waiting: false, only: true, calls: [call] });
+    return { settled };
   }
 
   /** "더 진행": the named members a capped message still owes a turn, else
@@ -441,11 +764,13 @@ export function createAgentRooms(deps: AgentRoomDeps) {
   }
 
   /** The stop button: the speaking member's turn is cancelled and no one
-   *  else gets a turn. */
+   *  else gets a turn, not even a relay held back. */
   function stop(sessionId: string): boolean {
+    dropRelays(roomIdOfSession(sessionId));
     const state = running.get(roomIdOfSession(sessionId));
     if (!state) return false;
     state.stop = true;
+    for (const call of state.pending?.calls ?? []) call.onSettled?.({ status: 'cancelled' });
     state.pending = null;
     if (state.memberSession) void deps.abort(state.memberSession).catch(() => undefined);
     return true;
@@ -491,12 +816,16 @@ export function createAgentRooms(deps: AgentRoomDeps) {
 
   return {
     ready,
-    create,
-    update,
-    remove,
+    create: (input: Record<string, unknown>) => writer(() => create(input)),
+    update: (roomId: string, patch: Record<string, unknown>) => writer(() => update(roomId, patch)),
+    remove: (roomId: string) => writer(() => remove(roomId)),
+    forgetMember,
     leave,
     reset,
     send,
+    member: addressee,
+    ask,
+    relay,
     proceed,
     stop,
     approve,

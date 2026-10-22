@@ -442,6 +442,7 @@ function publicCustomModelRows(rows) {
     model.hidden = item.hidden === true;
     model.manual = item.manual === true;
     for (const key of [
+      'supportsVision',
       'supportsReasoning',
       'reasoningOptions',
       'reasoningLevels',
@@ -588,7 +589,8 @@ async function modelProxyProviderSetup(options) {
       });
   const custom = Object.entries(providers)
     .filter(([id, entry]) => isCustomProviderId(id) && entry?.type === 'custom')
-    .map(([id]) => ({ id, name: id }));
+    // Older desktops advertise no name: the id is the fallback.
+    .map(([id, entry]) => ({ id, name: (typeof entry.name === 'string' && entry.name.trim()) || id }));
   return {
     managedByClient: true,
     api: [...project(API_PROVIDERS, 'api', 'api-key'), ...project(custom, 'api', 'custom')],
@@ -1111,7 +1113,15 @@ export async function saveCustomProvider(cfgMod, rawInput) {
   return typed ? serializeCustomKeySave(id, commit) : commit();
 }
 
-const MODEL_PATCH_KEYS = new Set(['manual', 'hidden', 'name', 'contextWindow', 'maxOutputTokens', 'reasoning']);
+const MODEL_PATCH_KEYS = new Set([
+  'manual',
+  'hidden',
+  'name',
+  'contextWindow',
+  'maxOutputTokens',
+  'supportsVision',
+  'reasoning',
+]);
 const REASONING_PATCH_KEYS = new Set(['levels', 'wireFormat', 'wireValues', 'replay']);
 
 // Tri-state merge: undefined preserves, null deletes the property, a value replaces it.

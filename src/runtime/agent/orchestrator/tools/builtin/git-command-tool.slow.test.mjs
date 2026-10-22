@@ -190,8 +190,10 @@ test('git command tool preserves native text, shell syntax, and destructive comm
   assert.match(cappedStatus, /\[output capped at 2 lines; 2 more lines omitted;/);
   for (const name of ['one.tmp', 'two.tmp', 'three.tmp']) rmSync(join(repo, name));
 
+  // `worktree add` maps to a managed worktree (git-worktree-tool.test.mjs);
+  // the porcelain listing still answers from git itself.
   const worktree = join(root, 'worktree');
-  parseOk(await git(repo, `worktree add -b topic ${quote(worktree)} HEAD`));
+  assert.equal(spawnSync('git', ['-C', repo, 'worktree', 'add', '-q', '-b', 'topic', worktree]).status, 0);
   assert.match(JSON.stringify(parseOk(await git(repo, 'worktree list --porcelain'))), /topic/);
   assert.match(JSON.stringify(parseOk(await git(repo, 'branch --list'))), /topic/);
 
@@ -400,9 +402,19 @@ test('git exposes command and selected staging in one compact contract', () => {
     'include_stage_ids',
     'diff_id',
     'change_ids',
+    'worktree_action',
+    'session_id',
+    'name',
+    'branch',
+    'create',
+    'carry',
+    'confirm_large',
+    'force',
   ]);
   assert.equal(properties.include_stage_ids.type, 'boolean');
-  assert.deepEqual(properties.action.enum, ['command', 'stage']);
+  assert.deepEqual(properties.action.enum, ['command', 'stage', 'worktree']);
+  assert.deepEqual(properties.worktree_action.enum, ['enter', 'return', 'merge', 'remove', 'list', 'prune']);
+  assert.deepEqual(properties.carry.enum, ['leave', 'carry']);
   assert.equal(GIT_TOOL_DEF.inputSchema.required, undefined);
   assert.deepEqual(
     properties.command.anyOf.map((entry) => entry.type),
@@ -419,6 +431,8 @@ test('git exposes command and selected staging in one compact contract', () => {
   assert.match(GIT_TOOL_DEF.description, /Run Git here, never through shell/i);
   assert.match(GIT_TOOL_DEF.description, /An array \(max 10\) runs in order and stops on failure/i);
   assert.match(GIT_TOOL_DEF.description, /history only when needed/i);
+  assert.match(GIT_TOOL_DEF.description, /Worktrees are managed only/);
+  assert.match(GIT_TOOL_DEF.description, /list --porcelain stays raw git/);
   assert.match(properties.command.description, /no pipes\/redirects\/substitution/i);
   assert.match(properties.command.description, /&& chain runs as the array/i);
 });
@@ -751,6 +765,67 @@ test('git stages selected change IDs and rejects stale diff snapshots without to
   assert.equal(stale.reason, 'stale_diff');
   const cachedAfterStale = spawnSync('git', ['-C', repo, 'diff', '--cached'], { encoding: 'utf8' }).stdout;
   assert.equal(cachedAfterStale, cached);
+});
+
+// Dense Korean is three bytes a character, so characters straddle the pipe
+// reads of a large diff. `size` bytes: whole rows, ASCII padding, then `끝`.
+function koreanFixture(size) {
+  const row = Buffer.from(`${'한글경계검사'.repeat(24)}\n`);
+  const tail = Buffer.from('끝\n');
+  const body = Buffer.alloc(size - tail.length, 'x');
+  for (let at = 0; at + row.length <= body.length; at += row.length) row.copy(body, at);
+  return Buffer.concat([body, tail]);
+}
+
+test('staging keeps multibyte text split across pipe reads byte-exact in added, deleted and context lines', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'mixdog-git-utf8-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const repo = join(root, 'repo');
+  parseOk(await git(root, `init ${quote(repo)}`));
+  parseOk(await git(repo, 'config user.email test@example.com'));
+  parseOk(await git(repo, 'config user.name Test'));
+  parseOk(await git(repo, 'config core.autocrlf false'));
+  const files = { 'a.txt': koreanFixture(65_537), 'b.txt': koreanFixture(262_147) };
+  const stageAll = async () => {
+    const diff = parseDiff(parseOk(await git(repo, 'diff', { output_limit: 1, include_stage_ids: true })));
+    assert.ok(diff.changes.length > 0);
+    const ids = diff.changes.map(({ id }) => id);
+    return parseStage(await executeGitTool({ action: 'stage', diff_id: diff.diff_id, change_ids: ids }, repo));
+  };
+  const assertIndexMatches = (label) => {
+    for (const [path, bytes] of Object.entries(files)) {
+      const blob = spawnSync('git', ['-C', repo, 'show', `:${path}`]).stdout;
+      assert.ok(blob.equals(bytes), `${path}: ${label} staged byte-exact`);
+    }
+  };
+  // Two new files in one batch: every added line carries split characters.
+  for (const [path, bytes] of Object.entries(files)) writeFileSync(join(repo, path), bytes);
+  assert.equal((await stageAll()).staged, true);
+  assertIndexMatches('new file');
+  parseOk(await git(repo, 'commit -m base'));
+  // Tracked edits on every 25th row (under the 50-id stage cap): the deleted
+  // and context lines around them carry split characters too.
+  for (const [path, bytes] of Object.entries(files)) {
+    const lines = bytes.toString('utf8').split('\n');
+    files[path] = Buffer.from(lines.map((line, i) => (i % 25 ? line : line.replaceAll('한', '글'))).join('\n'));
+    writeFileSync(join(repo, path), files[path]);
+  }
+  assert.equal((await stageAll()).staged, true);
+  assertIndexMatches('tracked change');
+});
+
+test('a diff with bytes that are not UTF-8 offers no staging ids, so no replaced character is ever staged', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'mixdog-git-not-utf8-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const repo = join(root, 'repo');
+  parseOk(await git(root, `init ${quote(repo)}`));
+  // "한글" saved as EUC-KR.
+  writeFileSync(join(repo, 'legacy.txt'), Buffer.from([0xc7, 0xd1, 0xb1, 0xdb, 0x0a]));
+  const text = parseOk(await git(repo, 'diff', { output_limit: 100, include_stage_ids: true }));
+  assert.match(text, /^diff --git a\/legacy\.txt b\/legacy\.txt$/m, 'the diff itself is still shown');
+  assert.doesNotMatch(text, /^diff_id:/m);
+  assert.match(text, /not UTF-8[\s\S]*git add -- <paths>/);
+  assert.equal(spawnSync('git', ['-C', repo, 'diff', '--cached', '--name-only'], { encoding: 'utf8' }).stdout, '');
 });
 
 test('ordinal change ids are scoped to their diff_id: stale or unknown snapshots never reuse them', async (t) => {

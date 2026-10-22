@@ -60,6 +60,7 @@ import { useComposerPromptRestore } from './use-composer-prompt-restore';
 import { useComposerSubmission } from './use-composer-submission';
 import { useComposerKeyboard } from './use-composer-keyboard';
 import { useComposerFocus } from './use-composer-focus';
+import { restoreDraftHandoff } from './composer-attachment-restore';
 import { useComposerHistory } from './use-composer-history';
 import { useComposerIme } from './use-composer-ime';
 import { useComposerMessageSelector } from './use-composer-message-selector';
@@ -81,6 +82,7 @@ import {
   composerPlaceholder,
 } from './composer-surfaces';
 import { disabledMentionedSkills, useComposerSkillHighlight, useSkillCatalog } from './composer-skill-mentions';
+import { isInMarkdownCode } from '../../../../src/runtime/shared/skill-mentions.mjs';
 import { ComposerBanners } from './ComposerBanners';
 import {
   type ComposerModelControlProps,
@@ -97,10 +99,12 @@ import {
   RoomAskPalette,
   RoomMentionChip,
   contentAsking,
-  roomMentionCandidates,
   draftAskingMore,
   roomAskCandidates,
   roomAskTargets,
+  roomTagCandidates,
+  roomTagTargets,
+  roomTaggedMembers,
   useComposerRoomMembers,
 } from './composer-room-ask';
 import { useVisualizeFeedback, visualizeFeedbackPending } from './visualize-feedback-store';
@@ -514,13 +518,15 @@ export const Composer = memo(function Composer(props: ComposerProps) {
     const handoff: typeof steer.draft.current = {
       scope: () => activeIdentityScope.current,
       recoveryScope: () => recoveryScopeRef.current,
-      restore(value, { ifEmpty = false, notice } = {}) {
-        if (ifEmpty && (draftRef.current.trim() || attachmentsRef.current.length > 0)) return false;
-        const restored = restoredAttachments(value, String(value.text || ''));
-        const text = mergeRestoredAttachments(restored.attachments, restored.text);
-        const next = [text, draftRef.current].filter(Boolean).join('\n');
-        draftRef.current = next;
-        setDraft(next);
+      restore(value, { ifEmpty = false, replace = false, notice } = {}) {
+        if (
+          !restoreDraftHandoff(
+            { draftRef, attachmentsRef, replaceAttachments, restoredAttachments, mergeRestoredAttachments, setDraft },
+            value,
+            { ifEmpty, replace }
+          )
+        )
+          return false;
         history.navigation.current = { index: -1, seed: '' };
         if (notice) showComposerNotice(notice);
         window.setTimeout(() => textarea.current?.focus(), 0);
@@ -531,7 +537,15 @@ export const Composer = memo(function Composer(props: ComposerProps) {
     return () => {
       if (steer.draft.current === handoff) steer.draft.current = null;
     };
-  }, [steer, attachmentsRef, restoredAttachments, mergeRestoredAttachments, showComposerNotice, history.navigation]);
+  }, [
+    steer,
+    attachmentsRef,
+    replaceAttachments,
+    restoredAttachments,
+    mergeRestoredAttachments,
+    showComposerNotice,
+    history.navigation,
+  ]);
   useComposerPromptRestore({ promptRestore, setDraft, draftRef, textarea, onQueuedRestored });
   const selector = useComposerMessageSelector({
     userMessages,
@@ -601,11 +615,13 @@ export const Composer = memo(function Composer(props: ComposerProps) {
       stashComposerTags(scope, taggedRef.current);
     };
   }, [attachmentsRef, replaceAttachments]);
-  const taggedMembers = tagged.flatMap((id) => roomMembers?.filter((member) => member.id === id) ?? []);
-  const tagMatch = agentMode && roomMembers ? mention.match : null;
+  const taggedMembers = roomTaggedMembers(tagged, roomMembers);
+  // An `@` inside Markdown code (a fence or inline span) is text, not a tag.
+  const tagMatch =
+    agentMode && roomMembers && mention.match && !isInMarkdownCode(draft, mention.match.start) ? mention.match : null;
   const tagCandidates =
     tagMatch && composerFocused && paneActive && tagDismissed !== mention.signature
-      ? roomMentionCandidates(tagMatch.query, roomMembers).filter((member) => !tagged.includes(member.id))
+      ? roomTagCandidates(tagMatch.query, roomMembers).filter((member) => !tagged.includes(member.id))
       : [];
   const tagMember = (agentId: string) => {
     const match = tagMatch;
@@ -627,10 +643,7 @@ export const Composer = memo(function Composer(props: ComposerProps) {
   const submitTagged: typeof submit = taggedMembers.length
     ? async (content, options) => {
         const accepted = await submit(
-          contentAsking(
-            content,
-            taggedMembers.map((member) => member.id)
-          ),
+          contentAsking(content, roomTagTargets(taggedMembers, roomMembers ?? [])),
           options
         );
         if (accepted === true) setTagged([]);

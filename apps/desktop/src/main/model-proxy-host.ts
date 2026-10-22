@@ -217,6 +217,7 @@ export const MODEL_PROXY_SEND_OPTION_KEYS: ReadonlySet<string> = new Set([
   'max_tokens',
   'maxAttempts',
   'maxOutputTokens',
+  'maxOutputTokensOverride',
   'maxTokens',
   'min_p',
   'minP',
@@ -444,11 +445,18 @@ function hiddenCustomModels(entry: Record<string, unknown>): string[] {
   return [...hidden];
 }
 
+/** The name the user registered a custom provider under, when it has one. */
+function customProviderName(entry: Record<string, unknown>): { name?: string } {
+  const name = typeof entry.name === 'string' ? redactedText(entry.name.trim(), 200) : '';
+  return name ? { name } : {};
+}
+
 /** What a server learns about this PC's providers: whether each is usable for
  *  it and the adapter traits its stand-in needs. A provider the server may not
  *  use is left out entirely. No base URL, account, org, label, model list or
- *  any other stored field; a custom provider adds only the ids of models
- *  hidden on this PC, so remote pickers hide them too. */
+ *  any other stored field; a custom provider adds only its registered name
+ *  (so the server's pickers show it instead of the generated id) and the ids
+ *  of models hidden on this PC, so remote pickers hide them too. */
 function publicProviderConfig(
   providers: unknown,
   isProviderAllowed: (provider: string) => boolean
@@ -467,7 +475,9 @@ function publicProviderConfig(
     if (budget) modelProxy.firstResponseBudget = budget;
     out[name] = {
       enabled: entry.enabled === true,
-      ...(entry.type === 'custom' ? { type: 'custom', hiddenModels: hiddenCustomModels(entry) } : {}),
+      ...(entry.type === 'custom'
+        ? { type: 'custom', ...customProviderName(entry), hiddenModels: hiddenCustomModels(entry) }
+        : {}),
       ...(['present', 'absent', 'unreadable'].includes(String(entry.authState)) ? { authState: entry.authState } : {}),
       modelProxy,
     };

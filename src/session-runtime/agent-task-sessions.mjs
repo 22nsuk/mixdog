@@ -18,8 +18,13 @@
  *
  * A group-room member (its member session `sess_rmem_<room>_<agent>`) opens
  * and drives task sessions the same way; its reports carry `from` (the member
- * session), so they land in the ROOM's log as that member's row and in its own
- * member session, never in its home (agent-home-delivery.mjs enqueueTask).
+ * session), so they land in that member session alone, never in its home or
+ * the room's log, and an ended turn gives the member a turn in its room to
+ * relay it (agent-home-delivery.mjs enqueueTask).
+ *
+ * A send to a group room's log goes to one member through the desktop room
+ * host (daemon-session-control.mjs): the member's turn in its member session
+ * is the reporting turn, taken by the room (`submit`), not by a prompt.
  */
 import { randomUUID } from 'node:crypto';
 import { realpathSync, statSync } from 'node:fs';
@@ -30,6 +35,9 @@ import { roomMemberOfSession } from '../runtime/agent/orchestrator/session/agent
 import { wrapAgentMessage } from '../runtime/shared/agent-message-envelope.mjs';
 import { sessionsWithPendingWork } from '../runtime/shared/pending-agent-work.mjs';
 import { agentTaskIdOfExecution } from './services/agent-tool/restart-notify.mjs';
+import { worktreeError, worktreeNameError } from '../runtime/shared/worktrees/contract.mjs';
+import { samePath } from '../runtime/shared/worktrees/paths.mjs';
+import { assertWorktreeMutationAllowed } from './services/worktree-access.mjs';
 
 const TITLE_LIMIT = 60;
 
@@ -293,7 +301,7 @@ const WATCH_CAP_REASON =
 const LAST_USED_ROUTE_MAX_PAGES = 20;
 
 /** A report's `from` when its origin is a group-room member session: the
- *  report goes to that member's room instead of the agent's home. */
+ *  report goes to that member session instead of the agent's home. */
 const roomFrom = (originSessionId) => (roomMemberOfSession(originSessionId) ? { from: originSessionId } : {});
 
 /** The route of `modelRef`: a provider/model[@effort…] ref (a superseded
@@ -514,20 +522,68 @@ async function deliverWithRetries({ deliver, retryDelaysMs, log }, agentId, sess
   }
 }
 
-/** Start task session `sessionId` in its own worktree; a repo that cannot
- *  have one keeps the Project folder. */
-async function requestTaskWorktree(sessions, sessionId, title, requestId) {
+/** Where create's `worktree` option starts the task session: `{ mode }` is
+ *  'default' (the user's New task setting), 'branch' (the Project folder on its
+ *  current branch) or 'worktree' (its own new one, `name` optional). */
+function taskLocation(option) {
+  if (option === undefined || option === null) return { mode: 'default' };
+  if (typeof option !== 'object' || Array.isArray(option) || !['branch', 'worktree'].includes(option.mode)) {
+    throw new Error('session: worktree.mode must be "branch" or "worktree"');
+  }
+  if (option.name === undefined) return { mode: option.mode };
+  if (option.mode !== 'worktree') throw new Error('session: worktree.name applies only to mode "worktree"');
+  const reason = worktreeNameError(option.name);
+  if (reason) throw new Error(`session: worktree.name is invalid: ${reason}`);
+  return { mode: 'worktree', name: option.name };
+}
+
+const megabytes = (bytes) => `${Math.round(Number(bytes) / (1024 * 1024))} MB`;
+
+/** A typed worktree failure as the model should read it: its code and, for a
+ *  large repository, the size to put to the user. */
+function taskWorktreeFailure(error) {
+  const details = error?.details;
+  const size =
+    error?.code === 'WORKTREE_LARGE_REPO_CONFIRM' && Number.isFinite(details?.estimateBytes)
+      ? ` The repository is about ${megabytes(details.estimateBytes)} (warning threshold ${megabytes(details.thresholdBytes)}). Ask the user whether to create the worktree anyway; only if they confirm, call create again with confirm_large: true.`
+      : '';
+  return Object.assign(new Error(`session: ${error.code}: ${error.message}${size}`), {
+    code: error.code,
+    ...(details ? { details } : {}),
+  });
+}
+
+/** Start task session `sessionId` in its own worktree and return its workspace
+ *  value. A New task never carries the Project folder's changes. Unless
+ *  `explicit`, a repo that cannot have one keeps the Project folder (null).
+ *  The session must end up bound: the brief goes out only after it. */
+async function requestTaskWorktree(sessions, sessionId, { title, requestId, name, confirmLarge, explicit }) {
   try {
-    await sessions.configureSession(
+    const result = await sessions.configureSession(
       {
         sessionId,
         action: 'requestWorktree',
-        args: [{ provision: true, carryChanges: 'leave', prompt: title, txId: requestId }],
+        args: [
+          {
+            provision: true,
+            carryChanges: 'leave',
+            prompt: title,
+            txId: requestId,
+            ...(name ? { name } : {}),
+            ...(confirmLarge ? { confirmLarge: true } : {}),
+          },
+        ],
       },
       { revision: 1 }
     );
+    const value = result?.value;
+    if (value?.pending !== false || typeof value.workspace?.worktreeId !== 'string') {
+      throw worktreeError('WORKTREE_NOT_IMPLEMENTED', 'The session did not enter its worktree before the brief.');
+    }
+    return value;
   } catch (error) {
-    if (error?.code !== 'WORKTREE_UNSUPPORTED_REPO') throw error;
+    if (!explicit && error?.code === 'WORKTREE_UNSUPPORTED_REPO') return null;
+    throw typeof error?.code === 'string' && error.code.startsWith('WORKTREE_') ? taskWorktreeFailure(error) : error;
   }
 }
 
@@ -565,6 +621,9 @@ async function rearmTaskWatch(
   watch
 ) {
   const sessionId = watch.taskSessionId;
+  // The turn that answers: the watched submission's own, or the one it
+  // follows (a room member's turn under another submission id).
+  const turnId = watch.follows || watch.runId;
   const finish = async (status, text = '') =>
     deliver(watch.agentId, {
       runId: `${watch.runId}_end`,
@@ -578,7 +637,7 @@ async function rearmTaskWatch(
       watchId: watch.runId,
       ...(watch.textOnly || text === GONE_TEXT || text === LOST_TEXT
         ? {}
-        : await artifactFields(sessionId, watch.runId)),
+        : await artifactFields(sessionId, turnId)),
     });
   if (!(await loadSession(sessionId))) return finish('cancelled', GONE_TEXT);
   let runtime;
@@ -607,20 +666,20 @@ async function rearmTaskWatch(
     try {
       do {
         again = false;
-        const outcome = submissionOutcome((await loadSession(sessionId))?.messages, watch.runId);
+        const outcome = submissionOutcome((await loadSession(sessionId))?.messages, turnId);
         const state = runtime?.getState?.() || {};
         let end = outcome && outcome !== 'open' ? outcome : null;
         if (!end && !state.busy) {
-          const queued = (state.queued || []).some((entry) => entry?.id === watch.runId);
+          const queued = (state.queued || []).some((entry) => entry?.id === turnId);
           if (outcome === 'open' && !queued) end = { status: 'cancelled', text: '' };
-          else if (!outcome && !queued && !(await queuedSubmissionIds(sessionId)).includes(watch.runId)) {
+          else if (!outcome && !queued && !(await queuedSubmissionIds(sessionId)).includes(turnId)) {
             end = { status: 'cancelled', text: LOST_TEXT };
           }
         }
         if (end?.status === 'completed') {
           follow = followToFinal({
             sessionId,
-            runId: watch.runId,
+            runId: turnId,
             runtime,
             wakeOwed: true,
             progress: (text) =>
@@ -664,6 +723,8 @@ export function createAgentTaskSessions({
     add: async (watch) => (await import('./agent-home-delivery.mjs')).watchAgentTask(watch),
     list: async () => (await import('./agent-home-delivery.mjs')).agentTaskWatches(),
     remove: async (runId) => (await import('./agent-home-delivery.mjs')).unwatchAgentTask(runId),
+    follow: async (runId, submissionId) =>
+      (await import('./agent-home-delivery.mjs')).followAgentTask(runId, submissionId),
   },
   // Submissions still queued (durably) for a session after a restart.
   queuedSubmissionIds = async (sessionId) =>
@@ -736,8 +797,11 @@ export function createAgentTaskSessions({
     );
 
   /** Submit `prompt` as the origin agent's turn; its end (and a wait for the
-   *  user in it) reports to the agent's home. Resolves on intake. */
-  async function agentTurn(sessionId, prompt, origin, id = `atask_${randomUUID()}`, beforeReport = null) {
+   *  user in it) reports to the agent's home. Resolves on intake. `submit`
+   *  takes the turn in another way than a prompt to `sessionId` (a message
+   *  into a group room, whose member answers in `sessionId`): given `{ id,
+   *  onSettled }`, it resolves `{ accepted }`. */
+  async function agentTurn(sessionId, prompt, origin, id = `atask_${randomUUID()}`, beforeReport = null, submit = null) {
     const sessions = service();
     const target = origin.target === 'session' ? { target: 'session' } : {};
     const { notify, noReport } = await watchTurn({ watches, owner: processToken, log }, sessionId, origin, id);
@@ -789,48 +853,49 @@ export function createAgentTaskSessions({
       const sent = origin.envelopeName
         ? wrapAgentMessage(prompt, { name: origin.envelopeName, agentId: origin.agentId })
         : prompt;
-      result = await sessions.submitSession({
-        sessionId,
-        prompt: sent,
-        options: {
-          id,
-          mode: 'prompt',
-          // `fromAgent`: the sending bot, recorded when it writes into another
-          // bot's home chat (otherwise the row would read as the user's);
-          // `hop`: its place in a bot-to-bot chain (bot-hops.mjs).
-          transcriptMeta: {
-            sender: 'lead',
-            ...(origin.envelopeName ? { fromAgent: origin.agentId } : {}),
-            ...(origin.hop > 0 ? { hop: origin.hop } : {}),
-          },
-          ...(notify
-            ? {
-                onSettled: (detail) => {
-                  const status = turnStatus(detail);
-                  const text = detail?.result?.content || detail?.error || '';
-                  // A failed or cancelled turn reports at once; a completed one
-                  // reports the task's final answer (followToFinal).
-                  if (status !== 'completed') {
-                    unwatch();
-                    void report(status, text);
-                    return;
-                  }
-                  follow = followToFinal({
-                    sessionId,
-                    runId: id,
-                    runtime,
-                    immediate: { status, text },
-                    finish: async (endStatus, endText) => {
-                      unwatch();
-                      await report(endStatus, endText);
-                    },
-                    progress: (progressText) => report('working', progressText),
-                  });
-                  follow.check();
-                },
-              }
-            : {}),
+      const take = submit ?? ((options) => sessions.submitSession({ sessionId, prompt: sent, options }));
+      result = await take({
+        id,
+        mode: 'prompt',
+        // `fromAgent`: the sending bot, recorded when it writes into another
+        // bot's home chat (otherwise the row would read as the user's);
+        // `hop`: its place in a bot-to-bot chain (bot-hops.mjs).
+        transcriptMeta: {
+          sender: 'lead',
+          ...(origin.envelopeName ? { fromAgent: origin.agentId } : {}),
+          ...(origin.hop > 0 ? { hop: origin.hop } : {}),
         },
+        ...(notify
+          ? {
+              // A room answers this send in a turn under another submission
+              // id (one turn for several sends, or a fresh turn for one cut
+              // short): the watch follows that turn, recorded before it runs.
+              follow: (submissionId) => watches.follow?.(id, submissionId),
+              onSettled: (detail) => {
+                const status = turnStatus(detail);
+                const text = detail?.result?.content || detail?.error || '';
+                // A failed or cancelled turn reports at once; a completed one
+                // reports the task's final answer (followToFinal).
+                if (status !== 'completed') {
+                  unwatch();
+                  void report(status, text);
+                  return;
+                }
+                follow = followToFinal({
+                  sessionId,
+                  runId: id,
+                  runtime,
+                  immediate: { status, text },
+                  finish: async (endStatus, endText) => {
+                    unwatch();
+                    await report(endStatus, endText);
+                  },
+                  progress: (progressText) => report('working', progressText),
+                });
+                follow.check();
+              },
+            }
+          : {}),
       });
     } catch (error) {
       unwatch();
@@ -882,15 +947,31 @@ export function createAgentTaskSessions({
     return pending.length;
   }
 
-  /** Create the task session for `brief` and start it; returns at once. */
+  /** Create the task session for `brief` and start it; returns at once.
+   *  `callerScope` is the caller's trusted worktree scope (worktree-access.mjs
+   *  worktreeCallerScope): provisioning a worktree is a mutation only an
+   *  attended conversation may make, so an explicit worktree from any other
+   *  caller is refused and the New task default keeps it in the Project folder. */
   async function create(
     args = {},
-    { callerSessionId, callerAgentId, callerCwd, callerHop = 0, attachmentParts = [] } = {}
+    { callerSessionId, callerAgentId, callerCwd, callerHop = 0, callerScope, attachmentParts = [] } = {}
   ) {
     if (!callerAgentId) throw new Error('session: create is only for an agent conversation');
     const brief = typeof args.brief === 'string' ? args.brief.trim() : '';
     if (!brief) throw new Error('session: brief is required for action=create');
-    const where = resolveTaskProject(args.project, { projects: await listProjects(), cwd: callerCwd || process.cwd() });
+    const location = taskLocation(args.worktree);
+    if (location.mode === 'worktree') assertWorktreeMutationAllowed(callerScope, 'session: create with a worktree');
+    const projects = await listProjects();
+    const where = resolveTaskProject(args.project, { projects, cwd: callerCwd || process.cwd() });
+    // An explicit worktree is never silently dropped: it needs a registered Project.
+    const registered = where.project && projects.some((entry) => samePath(entry.path, where.project.path));
+    if (location.mode === 'worktree' && !registered) {
+      throw taskWorktreeFailure(
+        worktreeError('WORKTREE_PROJECT_UNKNOWN', 'A worktree needs a registered Project; run list-projects.', {
+          projectPath: where.project?.path ?? null,
+        })
+      );
+    }
     const requestId = `atask_${randomUUID()}`;
     const title = (clean(args.title) || clean(brief.split('\n')[0])).slice(0, TITLE_LIMIT);
     const taskOrigin = {
@@ -908,6 +989,16 @@ export function createAgentTaskSessions({
       : (await leadRoute()) || (await lastUsedRoute(service()));
     if (!route) throw new Error('session: no model to start the task session on. Choose a Lead model first.');
     const sessions = service();
+    // Where it starts: the `worktree` option, else the user's New task default
+    // for a caller that may provision one. Decided before the session exists,
+    // so a failure here leaves nothing behind.
+    const explicit = location.mode === 'worktree';
+    const inWorktree =
+      explicit ||
+      (location.mode === 'default' &&
+        where.project &&
+        callerScope?.attended === true &&
+        (await newTaskDefault()) === 'worktree');
     const created = await sessions.createSession({
       ...route,
       cwd: where.cwd,
@@ -916,9 +1007,43 @@ export function createAgentTaskSessions({
     });
     const sessionId = String(created?.sessionId || '');
     if (!sessionId) throw new Error('session: task session creation returned no session id');
-    // The user's New task default: a Project task starts in its own worktree.
-    if (where.project && (await newTaskDefault()) === 'worktree') {
-      await requestTaskWorktree(sessions, sessionId, title, requestId);
+    if (inWorktree) {
+      try {
+        await requestTaskWorktree(sessions, sessionId, {
+          title,
+          requestId,
+          name: location.name,
+          confirmLarge: args.confirm_large === true,
+          explicit,
+        });
+      } catch (error) {
+        // Nothing was sent: drop the empty session so a retry starts clean.
+        let dropFailure = null;
+        try {
+          const dropped = await sessions.configureSession(
+            { sessionId, action: 'deleteSession', args: [sessionId] },
+            { revision: 1 }
+          );
+          // A resolved `false` is a refusal, not a deletion.
+          if (dropped?.value === false) dropFailure = new Error('the session service refused the deletion');
+        } catch (deleteError) {
+          dropFailure = deleteError;
+        }
+        if (dropFailure) log(`dropping ${sessionId} failed: ${dropFailure?.message || dropFailure}`);
+        if (!dropFailure) throw error;
+        // The model must know the empty session is still there to delete.
+        throw Object.assign(
+          new Error(
+            `${error?.message || error} The empty task session ${sessionId} could not be deleted either (${dropFailure?.message || dropFailure}); delete it with session action=delete session_id=${sessionId}.`
+          ),
+          {
+            ...(typeof error?.code === 'string' ? { code: error.code } : {}),
+            ...(error?.details ? { details: error.details } : {}),
+            orphanSessionId: sessionId,
+            cause: error,
+          }
+        );
+      }
     }
     // "Started" lands in the home before any report of the brief's turn.
     let started = () => {};
@@ -958,5 +1083,10 @@ export function createAgentTaskSessions({
   const reportOrigin = (sessionId, agentId, callerSessionId) =>
     sendReportOrigin({ loadSession, agentName }, sessionId, agentId, callerSessionId);
 
-  return { create, reportOrigin, recover, send: (sessionId, prompt, origin) => agentTurn(sessionId, prompt, origin) };
+  return {
+    create,
+    reportOrigin,
+    recover,
+    send: (sessionId, prompt, origin, submit = null) => agentTurn(sessionId, prompt, origin, undefined, null, submit),
+  };
 }

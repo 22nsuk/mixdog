@@ -221,6 +221,18 @@ export const loadProviderDisplayNames = async (store) => {
   return names;
 };
 
+/** Provider names for the picker: custom rows' own `providerName` first, then
+ *  setup names over them (setup wins). Works when setup is missing or failed. */
+export const catalogProviderDisplayNames = (models, setupNames = null) => {
+  const names = {};
+  for (const model of Array.isArray(models) ? models : []) {
+    const provider = String(model?.provider || '').trim();
+    const name = String(model?.providerName || '').trim();
+    if (provider.startsWith('custom-') && name) names[provider] = name;
+  }
+  return { ...names, ...setupNames };
+};
+
 /** `{ id, text }` for each provider whose model list failed, with the reason
  *  (the setup row's `catalogError`) and what to do about it. */
 export const loadProviderCatalogFailures = async (store) => {
@@ -368,9 +380,11 @@ const routeModelDetails = (route) =>
     .filter(Boolean)
     .join(' · ');
 
-export const routeLabel = (route) => {
+export const routeLabel = (route, providerNames = null) => {
   if (!route?.provider || !route?.model) return '(unset)';
-  return [providerDisplayName(route.provider), routeModelDetails(route)].filter(Boolean).join(' · ');
+  return [resolveProviderDisplayName(route.provider, providerNames), routeModelDetails(route)]
+    .filter(Boolean)
+    .join(' · ');
 };
 
 export const routeModelLabel = (route) => (route?.model ? routeModelDetails(route) : '(unset)');

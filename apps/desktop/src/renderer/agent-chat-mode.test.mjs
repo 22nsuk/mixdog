@@ -394,6 +394,99 @@ test('a bot chat row that shows nothing renders no node, so the list gives it no
   assert.deepEqual(await nodes([user('u1', DAY1), reply('a1', DAY1), turnDone]), [true, true, false]);
 });
 
+test('a task session shows nothing while it starts and one card without file cards once it ends', async (t) => {
+  const render = rowHarness(t);
+  const task = (id, status, extra = {}) => ({
+    _tag: 'AssistantPart',
+    key: id,
+    turnKey: id,
+    item: {
+      kind: 'notice',
+      id,
+      text: '🛠 Agent task',
+      at: DAY1,
+      routine: { kind: 'task', name: 'Fence fix', status, sessionId: 'sess_task_9', ...extra },
+      attachments: [{ id: 'a1', attachmentRef: 'r1', kind: 'file', name: 'cdp.ts', mimeType: 'text/plain', size: 10 }],
+    },
+  });
+  const files = [
+    { name: 'cdp.ts', path: 'src/cdp.ts', id: 'a1' },
+    { name: 'big.mp4', path: 'out/big.mp4' },
+  ];
+  const nodes = [];
+  const show = (rows) => {
+    function Rows() {
+      const { renderTranscriptRow } = useConversationRowRenderer({
+        snapshot: { sessionId: HOME },
+        disclosureScope: HOME,
+        readOnly: true,
+        transitioning: false,
+        renderAssistantRow: undefined,
+        onOpenSettings() {},
+        settledItems: [],
+        settledTurnKeys: [],
+        optimisticActivityStartedAt: 0,
+        submit: async () => true,
+        questionCard: null,
+        agentMode: true,
+      });
+      nodes.length = 0;
+      return React.createElement(
+        React.Fragment,
+        null,
+        rows.map((row, index) => {
+          const node = renderTranscriptRow(row, index, rows);
+          nodes.push(node !== null);
+          return React.createElement('div', { key: row.key }, node);
+        })
+      );
+    }
+    return render(React.createElement(Rows));
+  };
+  const host = () => document.querySelector('main');
+
+  // Started: no node at all, so the list gives it no room.
+  await show([user('u1', DAY1), task('s', 'started')]);
+  assert.deepEqual(nodes, [true, false]);
+  assert.equal(host().querySelector('.mx-task-card, .mx-chat-routine-failed'), null);
+
+  // Ended: one card, its status, the changed-file count, no file cards or links.
+  for (const [status, label] of [
+    ['completed', 'Completed'],
+    ['failed', 'Failed'],
+    ['cancelled', 'Cancelled'],
+  ]) {
+    await show([user('u1', DAY1), task(status, status, { files })]);
+    const cards = host().querySelectorAll('.mx-task-card');
+    assert.equal(cards.length, 1, status);
+    assert.equal(cards[0].dataset.status, status);
+    assert.equal(cards[0].querySelector('.turn-changes-title strong').textContent, 'Fence fix');
+    assert.equal(cards[0].querySelector('.mx-task-card-meta').textContent, `Task session · ${label} · 2 files changed`);
+    assert.equal(host().querySelector('.message-attachments, .message-body a'), null, `no files (${status})`);
+  }
+  // One file reads in the singular.
+  await show([user('u1', DAY1), task('single', 'completed', { files: files.slice(0, 1) })]);
+  assert.equal(host().querySelector('.mx-task-card-meta').textContent, 'Task session · Completed · 1 file changed');
+  // No files: the count is left out.
+  await show([user('u1', DAY1), task('plain', 'completed')]);
+  assert.equal(host().querySelector('.mx-task-card-meta').textContent, 'Task session · Completed');
+
+  // "Open session" opens the task session.
+  const opened = [];
+  const listener = (event) => opened.push(event.detail.sessionId);
+  const { OPEN_TASK_SESSION_EVENT } = await import('./agent-task-events.ts');
+  // The component builds its event with the global CustomEvent: jsdom's here.
+  const nodeCustomEvent = globalThis.CustomEvent;
+  globalThis.CustomEvent = window.CustomEvent;
+  t.after(() => {
+    globalThis.CustomEvent = nodeCustomEvent;
+  });
+  window.addEventListener(OPEN_TASK_SESSION_EVENT, listener);
+  t.after(() => window.removeEventListener(OPEN_TASK_SESSION_EVENT, listener));
+  await act(async () => host().querySelector('.mx-task-card .turn-changes-view').click());
+  assert.deepEqual(opened, ['sess_task_9']);
+});
+
 test('coding mode renders its rows exactly as before; agent mode frames them', async (t) => {
   const render = rowHarness(t);
   const rows = [user('u1', DAY1), reply('a1', DAY1)];
@@ -769,6 +862,118 @@ test('the agent-mode composer: an editable route under it, `/` and `$` are text,
   assert.equal(document.getElementById('composer-mention-palette'), null);
 });
 
+test('a room composer’s @ offers Everyone: it addresses each current member once, never a bot that left', async (t) => {
+  const publish = (members) =>
+    publishAgentRooms([
+      {
+        id: ROOM,
+        agentRoom: {
+          id: 'release01',
+          name: '릴리스 점검',
+          members,
+          memberNames: { bench: 'Bench', release: '릴리스 관리' },
+          maxRounds: 1,
+          maxMessages: 6,
+          shareTools: false,
+        },
+      },
+    ]);
+  publish(['bench', 'release']);
+  t.after(() => publishAgentRooms([]));
+  const calls = [];
+  const { host, type, key, render } = await mountComposer(t);
+  await render(composerProps(calls, { agentMode: true }));
+  // The room's composer keeps its tags between mounts: start from none.
+  await act(async () => host.querySelector('.mx-chat-tag')?.click());
+  const options = () => [...document.querySelectorAll('#composer-room-ask-palette [role="option"]')];
+  const pick = (label) =>
+    act(async () =>
+      options()
+        .find((option) => option.textContent === label)
+        .click()
+    );
+
+  await type('@');
+  assert.deepEqual(
+    options().map((option) => option.textContent),
+    ['Bench', '릴리스 관리', 'Everyone'],
+    'Everyone is listed with the members'
+  );
+  await type('@ev');
+  assert.deepEqual(
+    options().map((option) => option.textContent),
+    ['Everyone']
+  );
+  await pick('Everyone');
+  assert.equal(host.querySelector('.mx-chat-tag')?.textContent, '@Everyone');
+  await type('hi all');
+  await key('Enter');
+  assert.equal(textOf(calls.at(-1)), '/ask bench, release hi all', 'every member, once');
+
+  // With individual mentions, nobody is called twice.
+  await type('@be');
+  await pick('Bench');
+  await type('@all');
+  await key('Enter');
+  assert.deepEqual(
+    [...host.querySelectorAll('.mx-chat-tag')].map((tag) => tag.textContent),
+    ['@Bench', '@Everyone'],
+    'the keyboard picks Everyone too'
+  );
+  await type('both');
+  await key('Enter');
+  assert.equal(textOf(calls.at(-1)), '/ask bench, release both');
+
+  // Everyone means the room as it is when the message goes out.
+  await type('@all');
+  await key('Enter');
+  publish(['bench']);
+  await type('@');
+  assert.deepEqual(
+    options().map((option) => option.textContent),
+    ['Bench'],
+    'the picker no longer lists the removed member'
+  );
+  await type('now');
+  await key('Enter');
+  assert.equal(textOf(calls.at(-1)), '/ask bench now', 'a member who left is not addressed');
+});
+
+test('a room composer’s @all inside a Markdown code fence is text: no picker opens and Enter tags nobody', async (t) => {
+  publishAgentRooms([
+    {
+      id: ROOM,
+      agentRoom: {
+        id: 'release01',
+        name: '릴리스 점검',
+        members: ['bench', 'release'],
+        memberNames: { bench: 'Bench', release: '릴리스 관리' },
+        maxRounds: 1,
+        maxMessages: 6,
+        shareTools: false,
+      },
+    },
+  ]);
+  t.after(() => publishAgentRooms([]));
+  const calls = [];
+  const { host, type, key, render } = await mountComposer(t);
+  await render(composerProps(calls, { agentMode: true }));
+  await act(async () => host.querySelector('.mx-chat-tag')?.click());
+  const palette = () => document.getElementById('composer-room-ask-palette');
+
+  await type('```\n@all');
+  assert.equal(palette(), null, 'an @ on a line inside an open fence offers nothing');
+  await key('Enter');
+  assert.equal(host.querySelector('.mx-chat-tag'), null, 'Enter does not tag Everyone');
+
+  await type('```js\nconst a = 1;\n```\n@all');
+  assert.ok(palette(), 'once the fence is closed, @ is a tag again');
+  assert.deepEqual(
+    [...palette().querySelectorAll('[role="option"]')].map((option) => option.textContent),
+    ['Everyone']
+  );
+});
+
 test('the agent-mode composer runs /compact and /clear as commands, other `/` lines stay text', async (t) => {
   const calls = [];
   const capabilities = [];
@@ -1060,11 +1265,8 @@ test('a visualize open leaves one card at turn end, above the changed-files line
   assert.equal(turnCards().length, 2, 'one card per turn');
   assert.equal(rows.at(-3)?.dataset.side, 'agent', 'both under the reply');
   assert.equal(cards()[0].querySelector('.transcript-visualize-badge.is-version').textContent, 'Version 1');
-  assert.equal(cards()[0].querySelector('.transcript-visualize-status').textContent, 'Earlier version');
-  assert.equal(
-    cards()[0].getAttribute('aria-label'),
-    `${cards()[0].querySelector('b').textContent}, Version 1 · Earlier version`
-  );
+  assert.equal(cards()[0].querySelector('.transcript-visualize-status'), null, 'no status words, only the version');
+  assert.equal(cards()[0].getAttribute('aria-label'), `${cards()[0].querySelector('b').textContent}, Version 1`);
   // Each card on its own version's picture: the newest from the tab, the
   // earlier one kept by the host for version 1 (never the tab's v2 picture).
   assert.deepEqual(
@@ -1265,7 +1467,7 @@ test('a turn leaves ONE visualize card: a tile per distinct tab on its final ver
   const { resyncVisualizeStates, setVisualizePanelOnScreen } = await import('./visualize-store.ts');
   const render = rowHarness(t);
   const SESSION = 'sess_home_lead_turncard';
-  // The panel is open on screen: its active tab reads "Showing".
+  // The panel is open on screen: its active tab's tile is outlined.
   setVisualizePanelOnScreen(SESSION, true);
   const commands = [];
   const previous = window.mixdogDesktop;
@@ -1371,9 +1573,16 @@ test('a turn leaves ONE visualize card: a tile per distinct tab on its final ver
       ]
     );
     assert.equal(tiles[1].querySelector('.transcript-visualize-badge.is-version').textContent, 'Version 2');
-    assert.equal(tiles[1].querySelector('.transcript-visualize-status').textContent, 'Showing');
+    assert.deepEqual(
+      tiles.map((tile) => tile.getAttribute('aria-current')),
+      [null, 'true', null],
+      'the tile of the tab the panel shows is announced as current'
+    );
     assert.equal(tiles[2].querySelector('.transcript-visualize-badge.is-version'), null);
-    assert.equal(tiles[2].querySelector('.transcript-visualize-status').textContent, 'Closed');
+    assert.ok(
+      tiles.every((tile) => !tile.querySelector('.transcript-visualize-status')),
+      'no status words'
+    );
     assert.ok(tiles[1].querySelector('.transcript-visualize-badge.is-problem'), 'page problems badge');
     // A tile reveals its own tab; a closed one opens again.
     await act(async () => tiles[0].click());
@@ -1488,7 +1697,8 @@ test('bot-to-bot messages: the receiver shows the sending bot, the sender a "sen
       ['user', '', false],
     ]
   );
-  // D: a completed reply of a bot's home session names the answering bot; a start or a plain session stays a line.
+  // D: a completed reply of a bot's home session names the answering bot; a
+  // plain session stays a line, and a start paints nothing (no place at all).
   const taskReply = (id, routine) => ({
     _tag: 'AssistantPart',
     key: id,
@@ -1515,12 +1725,8 @@ test('bot-to-bot messages: the receiver shows the sending bot, the sender a "sen
   assert.deepEqual(
     replies
       .map((_, index) => agentChatPlace(replies, index))
-      .map((place) => [place.side, place.speaker, Boolean(place.bot)]),
-    [
-      ['agent', MARKETER, true],
-      ['aside', '', false],
-      ['aside', '', false],
-    ]
+      .map((place) => place && [place.side, place.speaker, Boolean(place.bot)]),
+    [['agent', MARKETER, true], null, ['aside', '', false]]
   );
   const send = (id, extra = {}) => ({
     kind: 'tool',

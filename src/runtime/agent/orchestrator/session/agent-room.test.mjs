@@ -8,6 +8,7 @@ import {
   normalizeRoomConfig,
   normalizeRoomRow,
   parseRoomAsk,
+  roomMemberNamed,
   roomMemberOfSession,
   roomMemberSessionId,
   roomMentionOf,
@@ -104,6 +105,16 @@ const scripted = (plan, choose) => {
 };
 const SPEAK = (agentId, instruction) => ({ action: 'speak', agentId, ...(instruction ? { instruction } : {}) });
 const FINISH = { action: 'finish' };
+
+test('a room with no members finishes done with zero rounds, steps and messages', async () => {
+  const run = scripted(
+    () => 'speech',
+    () => FINISH
+  );
+  const result = await runRoomExchange({ members: [], maxRounds: 3, maxMessages: 8, ...run });
+  assert.deepEqual(result, { outcome: 'done', rounds: 0, steps: 0, messages: 0 });
+  assert.deepEqual(run.spoken, []);
+});
 
 test('the supervisor picks each speaker, may brief it, and finishes once the user is served', async () => {
   const run = scripted(
@@ -1113,4 +1124,42 @@ test("the log's intake stores a user row's files as a chat prompt's and hands ba
   assert.equal(JSON.stringify(session.messages).includes(b64('png bytes')), false);
   assert.deepEqual(notices[0].attachments, row.attachments);
   assert.deepEqual(notices[0].images, row.images);
+});
+
+test('a member is named exactly by id or name; a row from another session keeps and shows its sender', async () => {
+  assert.equal(roomMemberNamed('bench lead', MEMBERS), 'bench-lead');
+  assert.equal(roomMemberNamed('Bench', MEMBERS), 'bench');
+  assert.equal(roomMemberNamed('Ben', MEMBERS), '');
+  assert.equal(roomMemberNamed('', MEMBERS), '');
+  const row = normalizeRoomRow({
+    id: 'ask_1',
+    kind: 'user',
+    text: 'status?',
+    to: ['gh'],
+    fromSession: 'sess_home_rel',
+    fromAgent: 'rel',
+    fromName: 'Release',
+  });
+  assert.deepEqual([row.fromSession, row.fromAgent, row.fromName], ['sess_home_rel', 'rel', 'Release']);
+  const bot = roomRowItem(roomRowMessage(row), 'm1');
+  assert.deepEqual([bot.kind, bot.fromAgent, bot.sender], ['user', 'rel', undefined]);
+  const lead = roomRowItem(roomRowMessage({ id: 'ask_2', kind: 'user', text: 'hi', fromSession: 'sess_lead_1' }), 'm2');
+  assert.deepEqual([lead.sender, lead.room.fromName], ['lead', 'Lead']);
+  const own = roomRowItem(roomRowMessage({ id: 'u1', kind: 'user', text: 'mine' }), 'm3');
+  assert.deepEqual([own.sender, own.fromAgent], [undefined, undefined], "the user's own row carries no sender");
+  // `only`: the called member answers and the supervisor is never asked.
+  const spoken = [];
+  const result = await runRoomExchange({
+    members: ['bench', 'gh'],
+    to: ['gh'],
+    maxRounds: 3,
+    maxMessages: 8,
+    only: true,
+    speak: async (id) => {
+      spoken.push(id);
+      return 'speech';
+    },
+    decide: async () => assert.fail('no supervisor step'),
+  });
+  assert.deepEqual([result.outcome, spoken], ['done', ['gh']]);
 });

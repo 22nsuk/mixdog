@@ -9,7 +9,24 @@ const cfg = {
     'custom-anthropic': { type: 'custom', protocol: 'anthropic', enabled: true },
   },
 };
-const LEVELS = ['low', 'medium', 'high'];
+test('a custom provider row is hydrated with its configured name; built-ins and unnamed ones get none', () => {
+  const named = { providers: { 'custom-chat': { type: 'custom', name: ' Gateway ' }, 'custom-x': { type: 'custom' } } };
+  assert.equal(hydrateProviderModelRow(named, { provider: 'custom-chat', id: 'm' }).providerName, 'Gateway');
+  assert.equal('providerName' in hydrateProviderModelRow(named, { provider: 'custom-x', id: 'm' }), false);
+  assert.equal('providerName' in hydrateProviderModelRow(named, { provider: 'openai', id: 'm' }), false);
+});
+
+test('a custom row with a stale providerName takes the renamed name, and drops it once the name is removed', () => {
+  const stale = { provider: 'custom-chat', id: 'm', providerName: 'Old' };
+  const renamed = { providers: { 'custom-chat': { type: 'custom', name: 'New' } } };
+  assert.equal(hydrateProviderModelRow(renamed, stale).providerName, 'New');
+  const unnamed = { providers: { 'custom-chat': { type: 'custom' } } };
+  assert.equal('providerName' in hydrateProviderModelRow(unnamed, stale), false);
+  assert.equal('providerName' in hydrateProviderModelRow({ providers: {} }, stale), false);
+  assert.equal(hydrateProviderModelRow(renamed, { provider: 'openai', id: 'm', providerName: 'OpenAI' }).providerName, 'OpenAI');
+});
+
+const LEVELS =['low', 'medium', 'high'];
 const capable = (provider, row) => hydrateProviderModelRow(cfg, { provider, ...row }).autoEffortCapable;
 
 test('autoEffortCapable: custom Chat/Responses with levels on, without levels or on Anthropic off, first-party unchanged', () => {

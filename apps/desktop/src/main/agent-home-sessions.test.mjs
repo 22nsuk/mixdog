@@ -179,6 +179,21 @@ test("a deleted agent's thread is archived by its fixed id; present and switched
   assert.deepEqual(calls.archived, [['sess_home_gone', true]]);
 });
 
+test('a deleted agent leaves every room with its home: on an explicit delete and on a deletion seen later, never a present one', async () => {
+  const forgotten = [];
+  const { deps } = fakeHost({
+    known: HOMES,
+    presence: { 'github-watcher': 'present', gone: 'deleted', off: 'present' },
+  });
+  deps.forgetRoomMember = async (id) => void forgotten.push(id);
+  const wired = createAgentHomeSessions(deps);
+  await wired.retire(['gone']);
+  assert.deepEqual(forgotten, ['gone']);
+  forgotten.length = 0;
+  await wired.reconcile();
+  assert.deepEqual(forgotten, ['gone']);
+});
+
 test('the delete path archives a blank home that no summary or store row lists', async () => {
   // Opened, never messaged, then deleted: nothing lists the session at all.
   const { homes, calls } = fakeHost({ known: [], presence: { 'github-watcher': 'deleted' } });
@@ -355,6 +370,15 @@ test("Mixy's thread keeps sess_home_lead and runs on Mixy's own route, never the
   const plain = fakeHost({ stored: new Set([id]), routes: { [id]: { provider: 'anthropic-oauth', model: 'opus' } } });
   await createAgentHomeSessions({ ...plain.deps, mixyRoute: async () => null }).open('lead');
   assert.deepEqual(plain.calls.routes, []);
+});
+
+test("clearing Mixy's route moves its existing thread onto Main's when it is reopened", async () => {
+  const id = 'sess_home_lead';
+  const main = { provider: 'anthropic-oauth', model: 'claude-main' };
+  // getLeadHomeRoute answers Main's route once Mixy's own is cleared.
+  const host = fakeHost({ stored: new Set([id]), routes: { [id]: { provider: 'openai-oauth', model: 'gpt-6' } } });
+  await createAgentHomeSessions({ ...host.deps, mixyRoute: async () => main }).open('lead');
+  assert.deepEqual(host.calls.routes, [[id, main]]);
 });
 
 test('a migrated bot reopens its existing thread (history kept) on its own stored route', async () => {

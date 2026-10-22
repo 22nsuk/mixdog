@@ -72,14 +72,21 @@ export async function listWorktreesWithRetention({
  * The manual prune (an explicit request, so independent of autoCleanup):
  * the startup reconcile plus removal of clean, merged worktrees that no
  * stored or live session retains. Dirty or unmerged ones are reported kept.
- * @param {{ liveSessionIds?: string[], listSessionIds?: () => Promise<string[]>, manager?: object }} [options]
+ * `repoCommonDir` limits the prune to that repository's worktrees.
+ * @param {{ liveSessionIds?: string[], listSessionIds?: () => Promise<string[]>, manager?: object, repoCommonDir?: string|null }} [options]
  */
-export async function pruneWorktrees({ liveSessionIds = [], listSessionIds = storedSessionIds, manager = null } = {}) {
+export async function pruneWorktrees({
+  liveSessionIds = [],
+  listSessionIds = storedSessionIds,
+  manager = null,
+  repoCommonDir = null,
+} = {}) {
   const backend = manager || (await loadManager());
   return backend.reconcileManagedWorktrees({
     liveSessionIds,
     retainedSessionIds: await listSessionIds(),
     removeOrphans: true,
+    ...(repoCommonDir ? { repoCommonDir } : {}),
   });
 }
 
@@ -93,6 +100,8 @@ export async function pruneWorktrees({ liveSessionIds = [], listSessionIds = sto
 export async function cleanupDeletedSessionWorktree(sessionId, { manager = null, autoCleanup } = {}) {
   const backend = manager || (await loadManager());
   await backend.forgetSharedWorktreeSession?.(sessionId);
+  // Its read-only snapshots go whatever autoCleanup says (they never outlive their holder).
+  await backend.removeSessionSnapshots?.(sessionId);
   const entry = await backend.getSessionWorktree(sessionId);
   if (!entry) return null;
   const enabled = autoCleanup ?? (await backend.currentWorktreeSettings()).autoCleanup;

@@ -182,8 +182,10 @@ export function agentTaskRelayFailedMessage({ count, tries, at = Date.now(), mes
   };
 }
 
-/** Agent-initiated round trips on one task session before each report asks
- *  the agent to check with the user (session create). */
+/** Bot-descended round trips (sent from a turn another bot's message started)
+ *  on one task session before each report asks the agent to check with the
+ *  user (session create). The user's or a routine's own delegations are not
+ *  counted (agent-home-delivery.mjs `add`). */
 export const TASK_LOOP_CAP = 3;
 
 /** A coding task session's report into the home of the agent that created it
@@ -213,7 +215,8 @@ export function agentTaskMessage({
   const summary = typeof givenSummary === 'string' ? givenSummary : routineSummary(text);
   const reply = textChars > String(text ?? '').length ? { text: String(text), chars: textChars } : boundedReply(text);
   // The files the turn produced: listed for the agent, stored ones carried as
-  // the row's attachments (shown with the report, forwardable by id).
+  // the row's attachments (forwardable by id; the chat's result card does not
+  // show them, the task session does).
   const produced = normalizeHandoffFiles(files);
   const attachments = artifactRecords(produced);
   const label = escapeHarnessTags(String(title).replace(/["\r\n]/g, ''));
@@ -310,7 +313,7 @@ export function agentTaskWakePrompt(messages, { more = 0 } = {}) {
     'Relay the report above to the user now, briefly and in your own words; a report marked (working) is still in progress, not done.',
     ...(files
       ? [
-          'Its files are already shown to the user with the report; name the ones that matter by path, and pass them on to another session or agent with attachments.',
+          'Its files are not shown in this chat: the user sees only the result card and can open the task session for details. Name the files that matter by path yourself, and pass them on to another session or agent with attachments.',
         ]
       : []),
   ].join('\n\n');

@@ -21,6 +21,7 @@ import {
 } from '../shared/window-layout';
 import { ProgressSpinner } from './ProgressSpinner';
 import { t, uiFormatLocale } from './i18n';
+import { timeFormatOptions } from './time-format-preference';
 import { RowOverflowMenu, rowOverflowHostProps } from './RowOverflowMenu';
 import { sessionLabel } from './session-sidebar-rows';
 import { projectIdentity, sessionProjectKey } from './project-catalog-cache';
@@ -98,6 +99,7 @@ export function groupAutomationSessions(activityOrderedRows: DesktopSessionSumma
         day: 'numeric',
         hour: '2-digit',
         minute: '2-digit',
+        ...timeFormatOptions(),
       }),
     });
   }
@@ -444,8 +446,18 @@ function AgentsSection({
   );
 }
 
+/** Scroller-level drag handlers: the dead space around the drop targets
+ *  (side padding, gaps between sections) resolves to the nearest target. */
+export interface SessionGapDrop {
+  onDragOver(event: React.DragEvent<HTMLElement>): void;
+  onDragLeave(event: React.DragEvent<HTMLElement>): void;
+  onDrop(event: React.DragEvent<HTMLElement>): void;
+}
+
 /** A session row dragged onto Favorites stars it. */
 export interface FavoriteSessionDrop {
+  /** Drop-zone key of the Favorites section (never a project key). */
+  key: string;
   /** A session that may be starred is being dragged. */
   available: boolean;
   /** Favorites is highlighted as the drop target. */
@@ -478,6 +490,7 @@ export function favoritesSection({
       className="sidebar-recent sidebar-favorites"
       aria-label={t('Favorites')}
       data-session-drop={sessionDrop?.active ? 'true' : undefined}
+      data-session-drop-zone={sessionDrop?.key}
       {...reorder}
       onDragOver={(event) => {
         if (!sessionDrop?.onDragOver(event)) reorder?.onDragOver?.(event);
@@ -708,6 +721,7 @@ function projectFolderGroup(
       key={group.key}
       data-project-key={group.key}
       data-session-drop={sessionDrop?.activeKey === group.key ? 'true' : undefined}
+      data-session-drop-zone={sessionDrop ? group.key : undefined}
       {...reorderTarget(reorder)}
       onDragOver={(event) => {
         if (!sessionDrop?.onDragOver(group, event)) reorder.onDragOver?.(event);

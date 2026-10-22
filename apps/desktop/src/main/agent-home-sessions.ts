@@ -13,7 +13,7 @@ import { isSessionMissingError } from './session-final-answer';
 export interface AgentHomeDeps {
   /** The agent catalog (`listAgents`). */
   listAgents(): Promise<unknown>;
-  /** Mixy's own route (getLeadStatus `route`), null when it has none. */
+  /** The route Mixy's thread follows (`getLeadHomeRoute`): its own, else Main's. */
   mixyRoute?(): Promise<unknown>;
   /** Resolves when the session exists (live or stored); rejects with a
    *  session-missing error when it does not. */
@@ -40,6 +40,8 @@ export interface AgentHomeDeps {
    *  (`agentDefinitionPresence`); anything but 'deleted' keeps a thread. */
   agentPresence(agentIds: string[]): Promise<unknown>;
   taskWorkspace(): Promise<string>;
+  /** An agent proven deleted leaves every room's members. */
+  forgetRoomMember?(agentId: string): Promise<void>;
   /** Switch off (never delete) the schedules and webhooks a deleted agent owns. */
   disableAgentSchedules?(agentId: string): Promise<void>;
   /** Clear `sessionId` in place, its transcript first copied (durably) to the
@@ -114,7 +116,7 @@ export function createAgentHomeSessions(deps: AgentHomeDeps) {
     let route: Record<string, unknown> = {};
     let params: Record<string, unknown> = {};
     if (agentId === MIXY_AGENT_ID) {
-      // Mixy runs on its own model (bots/mixy), never the Lead's route.
+      // Mixy runs on its own model (bots/mixy), Main's once it has none.
       route = routeParams(await deps.mixyRoute?.());
       params = { ...route };
     } else {
@@ -190,6 +192,9 @@ export function createAgentHomeSessions(deps: AgentHomeDeps) {
       await deps
         .disableAgentSchedules?.(id)
         .catch((error) => console.warn('[mixdog-session] Could not switch off the deleted agent schedules:', error));
+      // Its membership goes with it: the one place a deletion is proven here,
+      // whether the delete came through this host or a chat's setup tool.
+      await deps.forgetRoomMember?.(id);
     }
   }
 

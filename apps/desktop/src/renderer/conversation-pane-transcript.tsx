@@ -217,7 +217,6 @@ export function ConversationTranscript({
         }}
         onWheel={follow.handleWheel}
         onPointerDown={follow.handlePointerDown}
-        onPointerMove={follow.handlePointerMove}
         onPointerUp={follow.handlePointerUp}
         onPointerCancel={follow.handlePointerUp}
         onTouchStart={follow.handleTouchStart}
@@ -269,7 +268,6 @@ export function ConversationTranscript({
                 scrollToEndRef={view.scrollToEndRef}
                 renderRow={renderRow}
                 surface={agentMode ? agentSurface : 'coding'}
-                pauseFollow={follow.pause}
               />
             )}
           </TranscriptRowContexts>

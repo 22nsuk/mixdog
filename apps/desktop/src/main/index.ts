@@ -826,7 +826,6 @@ setBrowserApprovalHooks({
     listAgents: browserApprovalGrants.listAgents,
     titleLabels: nativeSessionTitleLabels,
     leadName: () => nativeT('Lead'),
-    taskName: () => nativeT('Task session'),
   }),
   isAllowed: browserApprovalGrants.isAllowed,
   isBlocked: browserApprovalGrants.isBlocked,
@@ -1950,6 +1949,8 @@ function createDesktopPetController(): DesktopPet {
       })().catch(() => {});
     },
     copyText: (text) => clipboard.writeText(text),
+    avatarImage: async (agentId) =>
+      (await localService.invokeCapability('getAgentAvatarImage', [agentId]))?.value ?? null,
   });
 }
 

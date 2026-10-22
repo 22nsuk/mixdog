@@ -21,10 +21,7 @@ export type BrowserApprovalPrompt = {
   origin?: string;
   receiverOrigin?: string;
   files?: Array<{ name: string; path: string; size: number; outside: boolean }>;
-  /** Absent: the card waits until the person answers (no countdown). */
-  expiresAt?: number;
   remember: { kinds: string[] } | null;
-  onceReason: '' | 'confirm' | 'bot';
 };
 
 /** The store action a kind of gated step is allowed under (see main/browser/approval-dialog.ts). */
@@ -219,7 +216,6 @@ export function BrowserApprovalCard({
             : null
       }
       queue={queueLabel}
-      expiresAt={prompt.expiresAt}
       preview={preview}
       buttons={buttons}
       focus={risky ? 'deny' : 'primary'}
@@ -248,15 +244,6 @@ export function BrowserApprovalHost() {
       }),
     []
   );
-  // A prompt with an expiry leaves on it (main denies it then too); one
-  // without waits until answered or closed.
-  const firstId = queue[0]?.id ?? '';
-  const firstExpiry = queue[0]?.expiresAt ?? 0;
-  useEffect(() => {
-    if (!firstId || !firstExpiry) return;
-    const timer = setTimeout(() => drop(firstId), Math.max(0, firstExpiry - Date.now()));
-    return () => clearTimeout(timer);
-  }, [firstId, firstExpiry]);
   const floating = queue.filter((prompt) => !claims.has(surfaceOf(prompt)));
   const prompt = floating[0];
   if (!prompt) return null;
