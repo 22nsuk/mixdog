@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { runInNewContext } from 'node:vm';
 import {
   assessChunkQuality,
   buildCycle1ChunkPrompt,
@@ -78,6 +79,31 @@ test('ascending index ranges expand; reversed or overlapping ranges stay invalid
     assert.equal(validateCycle1Grouping(parseCycle1LineFormat(text), [row(1), row(2), row(3)]).accepted.length, 0);
   }
   assert.equal(validateCycle1Grouping(parseCycle1LineFormat(`${answer('1-2')}\n${answer('2-3')}`), rows.slice(0, 3)).valid, false);
+});
+
+test('unsafe indexes are rejected without losing independent good chunks', () => {
+  for (const indexes of [
+    '9007199254740992',
+    '9007199254740991-9007199254740992',
+    '9'.repeat(400),
+    '1,9007199254740992',
+  ]) {
+    // Bound a synchronous parser regression without hanging the test process.
+    const parsed = runInNewContext(
+      'parse(raw)',
+      { parse: parseCycle1LineFormat, raw: `${answer(indexes)}\n${answer('2')}` },
+      { timeout: 250 }
+    );
+    const result = validateCycle1Grouping(parsed, [row(1), row(2)]);
+    assert.equal(result.valid, false);
+    assert.equal(result.invalid.length, 1);
+    assert.equal(result.invalid[0].reason, 'out_of_range_idx');
+    assert.deepEqual(
+      result.accepted.map((chunk) => chunk._idxList),
+      [[2]]
+    );
+    assert.deepEqual(result.omitted, [1]);
+  }
 });
 
 test('any omission, duplicate, mixed session or incomplete field fails the entire partition', () => {

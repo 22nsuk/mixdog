@@ -95,7 +95,7 @@ export function parseCycle1LineFormat(raw) {
     const indexes = [];
     for (const token of parts[0].split(',')) {
       const [from, to = from] = token.split('-').map((value) => Number(value.trim()));
-      if (to < from || to - from >= 1000) {
+      if (!Number.isSafeInteger(from) || !Number.isSafeInteger(to) || to < from || to - from >= 1000) {
         indexes.length = 0;
         indexes.push(0);
         break;
