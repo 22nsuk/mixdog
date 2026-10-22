@@ -14,6 +14,7 @@ import i18n, {
 } from './i18n';
 import { SourceControlViewControls } from './SourceControlViewControls';
 import { SourceControlCommitForm } from './SourceControlCommitForm';
+import { AgentLeadRows } from './agent-lead-rows';
 import { createAppSideViewDescriptors } from './app-side-view-descriptors';
 import { desktopSlashCommandDescription, SLASH_COMMANDS } from './slash-commands';
 import { partialStagingWarning, resetModePrompt } from './source-control-confirmations';
@@ -105,6 +106,40 @@ test('all selectable languages render source control and slash labels without a 
       assert.equal(desktopSlashCommandDescription(SLASH_COMMANDS[0]), catalog['Start a fresh chat'], language);
     }
   } finally {
+    close();
+  }
+});
+
+test('pinned Lead accessibility labels stay translated in every supported UI language', async () => {
+  const close = browser();
+  const previousLanguage = i18n.language;
+  try {
+    for (const [language, catalog] of catalogs) {
+      await i18n.changeLanguage(language);
+      document.body.innerHTML = renderToStaticMarkup(
+        React.createElement(AgentLeadRows, {
+          rows: [
+            {
+              sessionId: 'pinned-lead',
+              title: 'A pinned session',
+              provider: null,
+              preview: '',
+              at: 0,
+              kind: 'idle',
+              pinned: true,
+              hasSubAgents: false,
+            },
+          ],
+          onOpen: noop,
+        })
+      );
+      const label = document.querySelector('[data-lead-pin] .sr-only');
+      assert.ok(label, language);
+      assert.equal(label.textContent, catalog.Pinned, language);
+      assert.notEqual(label.textContent, 'Pinned', language);
+    }
+  } finally {
+    await i18n.changeLanguage(previousLanguage);
     close();
   }
 });
