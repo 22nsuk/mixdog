@@ -316,6 +316,12 @@ async function memberTurn(
     // short restores the cursor, never this.
     const handed = rows.at(-1)?.id;
     if (handed) room.seen = { ...room.seen, [agentId]: handed };
+    // Stop may have aborted before the daemon accepted this submission.
+    // Abort the accepted turn before releasing the room to another exchange.
+    if (state.stop) {
+      await host.abort(sessionId).catch(() => undefined);
+      return 'stopped';
+    }
     let misses = 0;
     while (!answer) {
       if (state.stop) return 'stopped';
@@ -330,6 +336,7 @@ async function memberTurn(
         if (misses >= 6) throw error;
         continue;
       }
+      if (state.stop) return 'stopped';
       const approval = (snapshot?.toolApproval as Record<string, unknown> | null | undefined) ?? null;
       if (String(approval?.id ?? '') !== String(state.approval?.id ?? '')) {
         state.approval = approval;
@@ -353,7 +360,7 @@ async function memberTurn(
     // decide whether the room can go on.
     void host.persist().catch((error) => host.log(`room ${host.roomId} save failed: ${String(error)}`));
   }
-  if (!answer || (answer.status === 'cancelled' && state.stop)) return 'stopped';
+  if (!answer || state.stop) return 'stopped';
   if (gone()) return await left();
   if (interrupted()) {
     const cut = await cutShort();

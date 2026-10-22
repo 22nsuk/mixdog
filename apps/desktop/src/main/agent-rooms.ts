@@ -229,9 +229,26 @@ export function createAgentRooms(deps: AgentRoomDeps) {
   const records = createRoomRecords(deps);
   const { loadRecords, ready: recordsReady, refreshNames, memberLabels, persist, roomOf, names } = records;
   const running = new Map<string, RunState>();
+  const pendingRequests = new Map<string, Set<{ stopped: boolean }>>();
   const roomLog = createRoomLog(deps, records.rooms);
   const post = roomLog.post;
   const roomRows = roomLog.rows;
+
+  /** A send/ask belongs to Stop while it waits to reach route(), even before
+   *  an exchange exists. Its own latch survives an older exchange ending;
+   *  a later request gets a fresh latch. Released on hand-off or failure. */
+  function receiveRequest(roomId: string) {
+    const pending = pendingRequests.get(roomId) ?? new Set<{ stopped: boolean }>();
+    const request = {
+      stopped: running.get(roomId)?.stop === true,
+      release() {
+        if (pending.delete(request) && !pending.size) pendingRequests.delete(roomId);
+      },
+    };
+    pending.add(request);
+    pendingRequests.set(roomId, pending);
+    return request;
+  }
 
   /** The member's own session in the room, created on first use. Whether the
    *  member still belongs is checked in the room writes' queue, the one a
@@ -600,42 +617,48 @@ export function createAgentRooms(deps: AgentRoomDeps) {
     submissionId = '',
     pasted: Pick<DesktopSubmitOptions, 'pastedImages' | 'pastedTexts'> = {}
   ): Promise<boolean> {
-    await ready();
     const roomId = roomIdOfSession(sessionId);
-    const room = roomOf(roomId);
-    // A retried submission (phone after a lost reply) that was durably
-    // accepted before — this process or an earlier one — is acknowledged once.
-    if (submissionId && room.submissions?.includes(submissionId)) return true;
-    const labels = await memberLabels(room);
-    const parsed = parseRoomAsk(promptText(prompt), [...labels.values()]);
-    if (parsed.error === 'member') throw new Error('No member of this room has that name.');
-    // The files go up with the row: the log's intake stores them as a chat
-    // prompt's are (agent-room-delivery.mjs), and the members the message
-    // reaches get them on their next turn.
-    const upload = roomUpload(prompt, pasted);
-    if (!parsed.text && !upload) throw new Error('Write a message to send.');
-    const row: RoomRow = {
-      // The submission id is the row's id, so the sender's pending bubble
-      // (released by id) gives way to this row instead of standing under it.
-      id: /^[A-Za-z0-9_-]{1,100}$/.test(submissionId) ? submissionId : `user_${newId()}`,
-      kind: 'user',
-      at: now(),
-      text: parsed.text,
-      ...(parsed.to.length ? { to: parsed.to, toName: parsed.to.map((id) => labels.get(id)?.name ?? id) } : {}),
-      ...(upload ? { upload } : {}),
-    };
-    await post(roomId, [row]);
-    Object.assign(room, { lastSpeaker: 'user', lastAt: row.at });
-    // Recorded only once the row is in the log, and saved with the room
-    // before the submission is acknowledged.
-    if (submissionId) room.submissions = [...(room.submissions ?? []), submissionId].slice(-SUBMISSION_IDS);
-    // Taken up as soon as the row is in the log, before the save yields: a
-    // member's older answer cannot land meanwhile, and a second message never
-    // starts an exchange of its own beside this one.
-    route(roomId, { to: parsed.to, waiting: true });
-    await persist();
-    deps.republishCatalog();
-    return true;
+    const request = receiveRequest(roomId);
+    try {
+      await ready();
+      const room = roomOf(roomId);
+      // A retried submission (phone after a lost reply) that was durably
+      // accepted before — this process or an earlier one — is acknowledged once.
+      if (submissionId && room.submissions?.includes(submissionId)) return true;
+      const labels = await memberLabels(room);
+      const parsed = parseRoomAsk(promptText(prompt), [...labels.values()]);
+      if (parsed.error === 'member') throw new Error('No member of this room has that name.');
+      // The files go up with the row: the log's intake stores them as a chat
+      // prompt's are (agent-room-delivery.mjs), and the members the message
+      // reaches get them on their next turn.
+      const upload = roomUpload(prompt, pasted);
+      if (!parsed.text && !upload) throw new Error('Write a message to send.');
+      const row: RoomRow = {
+        // The submission id is the row's id, so the sender's pending bubble
+        // (released by id) gives way to this row instead of standing under it.
+        id: /^[A-Za-z0-9_-]{1,100}$/.test(submissionId) ? submissionId : `user_${newId()}`,
+        kind: 'user',
+        at: now(),
+        text: parsed.text,
+        ...(parsed.to.length ? { to: parsed.to, toName: parsed.to.map((id) => labels.get(id)?.name ?? id) } : {}),
+        ...(upload ? { upload } : {}),
+      };
+      await post(roomId, [row]);
+      Object.assign(room, { lastSpeaker: 'user', lastAt: row.at });
+      // Recorded only once the row is in the log, and saved with the room
+      // before the submission is acknowledged.
+      if (submissionId) room.submissions = [...(room.submissions ?? []), submissionId].slice(-SUBMISSION_IDS);
+      // Taken up as soon as the row is in the log, before the save yields: a
+      // member's older answer cannot land meanwhile, and a second message never
+      // starts an exchange of its own beside this one.
+      if (!request.stopped) route(roomId, { to: parsed.to, waiting: true });
+      request.release();
+      await persist();
+      deps.republishCatalog();
+      return true;
+    } finally {
+      request.release();
+    }
   }
 
   /** The member a message from another session addresses (room host
@@ -677,43 +700,50 @@ export function createAgentRooms(deps: AgentRoomDeps) {
     sessionId: string,
     { agentId, prompt, from, id = '', hop = 0, onSettled, follow }: Parameters<AgentRoomHost['ask']>[1]
   ): Promise<boolean> {
-    await ready();
     const roomId = roomIdOfSession(sessionId);
-    const room = roomOf(roomId);
-    if (!room.members.includes(agentId)) throw new Error(`"${agentId}" is not a member of room "${room.name}".`);
-    const labels = await memberLabels(room);
-    const content = prompt as DesktopPromptContent;
-    const upload = roomUpload(content, {});
-    const text = promptText(content);
-    if (!text && !upload) throw new Error('Write a message to send.');
-    const fromAgent = from.agentId || '';
-    const fromName = fromAgent ? (names.get(fromAgent) ?? fromAgent) : 'Lead';
-    const row: RoomRow = {
-      id: `ask_${newId()}`,
-      kind: 'user',
-      at: now(),
-      text,
-      to: [agentId],
-      toName: [labels.get(agentId)?.name ?? agentId],
-      fromSession: from.sessionId,
-      ...(fromAgent ? { fromAgent } : {}),
-      fromName,
-      ...(upload ? { upload } : {}),
-    };
-    await post(roomId, [row]);
-    room.lastAt = row.at;
-    const call: RoomCall = {
-      agentId,
-      askedBy: fromName,
-      ...(id ? { id } : {}),
-      ...(hop > 0 ? { hop } : {}),
-      ...(onSettled ? { onSettled } : {}),
-      ...(follow ? { follow } : {}),
-    };
-    route(roomId, { to: [agentId], waiting: true, only: true, calls: [call] });
-    await persist();
-    deps.republishCatalog();
-    return true;
+    const request = receiveRequest(roomId);
+    try {
+      await ready();
+      const room = roomOf(roomId);
+      if (!room.members.includes(agentId)) throw new Error(`"${agentId}" is not a member of room "${room.name}".`);
+      const labels = await memberLabels(room);
+      const content = prompt as DesktopPromptContent;
+      const upload = roomUpload(content, {});
+      const text = promptText(content);
+      if (!text && !upload) throw new Error('Write a message to send.');
+      const fromAgent = from.agentId || '';
+      const fromName = fromAgent ? (names.get(fromAgent) ?? fromAgent) : 'Lead';
+      const row: RoomRow = {
+        id: `ask_${newId()}`,
+        kind: 'user',
+        at: now(),
+        text,
+        to: [agentId],
+        toName: [labels.get(agentId)?.name ?? agentId],
+        fromSession: from.sessionId,
+        ...(fromAgent ? { fromAgent } : {}),
+        fromName,
+        ...(upload ? { upload } : {}),
+      };
+      await post(roomId, [row]);
+      room.lastAt = row.at;
+      const call: RoomCall = {
+        agentId,
+        askedBy: fromName,
+        ...(id ? { id } : {}),
+        ...(hop > 0 ? { hop } : {}),
+        ...(onSettled ? { onSettled } : {}),
+        ...(follow ? { follow } : {}),
+      };
+      if (request.stopped) call.onSettled?.({ status: 'cancelled' });
+      else route(roomId, { to: [agentId], waiting: true, only: true, calls: [call] });
+      request.release();
+      await persist();
+      deps.republishCatalog();
+      return true;
+    } finally {
+      request.release();
+    }
   }
 
   /** Member session `sessionId` relays its own reported work (`prompt`, the
@@ -763,12 +793,15 @@ export function createAgentRooms(deps: AgentRoomDeps) {
     start(roomId, {});
   }
 
-  /** The stop button: the speaking member's turn is cancelled and no one
-   *  else gets a turn, not even a relay held back. */
+  /** The stop button: the speaking member's turn and requests still being
+   *  received are cancelled; no queued member or relay gets a turn. */
   function stop(sessionId: string): boolean {
-    dropRelays(roomIdOfSession(sessionId));
-    const state = running.get(roomIdOfSession(sessionId));
-    if (!state) return false;
+    const roomId = roomIdOfSession(sessionId);
+    dropRelays(roomId);
+    const pending = pendingRequests.get(roomId);
+    for (const request of pending ?? []) request.stopped = true;
+    const state = running.get(roomId);
+    if (!state) return Boolean(pending?.size);
     state.stop = true;
     for (const call of state.pending?.calls ?? []) call.onSettled?.({ status: 'cancelled' });
     state.pending = null;
