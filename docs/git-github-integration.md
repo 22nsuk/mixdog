@@ -62,6 +62,12 @@ The heal timer or the next admission retries that release before granting new
 activity, without requiring the caller to keep the release handle. Completed
 leases are not republished as live ownership; other running leases remain protected.
 
+Worker asks also preserve their completed result and hand drained follow-up
+inputs to the turn queue when release fails, logging the pending release
+separately. Provider failures and cancellation keep their original outcome.
+If the release still cannot be persisted when a follow-up tries to start,
+that admission refuses and the unstarted input is requeued for retry.
+
 A damaged or missing ledger is rebuilt from the complete recovery copy.
 Damaged bytes are preserved as `.corrupt-<timestamp>` copies. Live holders remain
 protected even when their runtime is paused or cannot run its heal timer.

@@ -127,7 +127,20 @@ async function runAskTurn({ sessionId, opened, input, askOpts, onToolCall, cwdOv
     });
     throw err;
   } finally {
-    releaseWorkspace?.();
+    try {
+      releaseWorkspace?.();
+    } catch (error) {
+      // Admission retains failed releases for its heal/next-mutation retry.
+      // Cleanup must not replace a published result and its drained inputs,
+      // or mask the provider/cancellation error already being propagated.
+      try {
+        process.stderr.write(
+          `[agent-ask] workspace lease release pending session=${sessionId} code=${error?.code || 'unknown'}\n`
+        );
+      } catch {
+        /* diagnostics must not break result or pending-input delivery */
+      }
+    }
   }
 }
 
