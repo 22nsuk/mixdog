@@ -13,11 +13,11 @@ const FILE = 'mixdog-workspace-admission.json';
 const overlaps = (a, b) => isWithin(a, b) || isWithin(b, a);
 
 /**
- * The admission policy's external exception: a linked checkout Mixdog did not
- * create (not a project's main folder, not a registered managed worktree) is
- * never lock-blocked. Management takes no lease on it and its readers are
- * admitted whatever is held elsewhere; its running readers still refuse a
- * management action that touches it.
+ * The admission policy's external exception is local to this profile's
+ * registry: management takes no new lease on an unregistered linked checkout.
+ * Its readers ignore holds outside that checkout, but respect overlapping
+ * holds published within it by another profile or before registry recovery.
+ * Its running readers still refuse a management action that touches it.
  */
 export function isExternalCheckout(folder) {
   const layout = findGitLayout(folder, { strict: true });
@@ -290,8 +290,8 @@ function release(commonDir, token) {
 }
 
 /**
- * Readers share a checkout freely. Null means a management writer currently
- * owns it; a reader in an external checkout is never held back. Throws
+ * Readers share a checkout freely. Null means an overlapping management hold
+ * applies; external readers ignore only holds outside their checkout. Throws
  * `workspace-admission-unreadable` when the ledger cannot be read, was
  * written by a newer build, or the grant could not be made durable in both
  * copies: no work may run unrecorded.
@@ -305,7 +305,14 @@ export function tryAdmitWorkspaceActivity(sessionId, cwd, { pid = process.pid, k
   const token = randomUUID();
   const lease = { kind, sessionId, pid, token, path };
   const admitted = mutate(layout.commonDir, (leases) => {
-    if (!external && leases.some((other) => other.kind === 'management' && overlaps(other.path, path))) return false;
+    if (
+      leases.some(
+        (other) =>
+          other.kind === 'management' &&
+          overlaps(other.path, path) &&
+          (!external || isWithin(layout.topLevel, other.path))
+      )
+    ) return false;
     leases.push(lease);
     return true;
   });

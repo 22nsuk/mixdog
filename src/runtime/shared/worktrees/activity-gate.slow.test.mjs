@@ -3,7 +3,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import fs, { mkdirSync, readFileSync, readdirSync, rmdirSync, unlinkSync, writeFileSync, existsSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { after, beforeEach, test } from 'node:test';
 import { admitWorkspaceActivity, holdWorkspaceActivity, tryAdmitWorkspaceActivity } from './activity-gate.mjs';
 import { admitTurn, retainAdmittedTurnWorkspace } from '../../../session-runtime/workspace/admission-gate.mjs';
@@ -13,7 +13,7 @@ import {
 } from '../../agent/orchestrator/tools/builtin/lib/shell-job-records.mjs';
 import { cleanupTempDirs, git, makeRepo, tempDir, useTempDataDir } from './test-support.mjs';
 import { withFileLockSync } from '../atomic-file.mjs';
-import { putRecord } from './registry.mjs';
+import { putRecord, readRegistrySync, registryPath } from './registry.mjs';
 import { spawnShellChild } from '../../agent/orchestrator/tools/lib/shell-run-spawn.mjs';
 
 beforeEach(useTempDataDir);
@@ -29,10 +29,11 @@ function reader(t, repo, waiting = false, command = false) {
       `
     import { tryAdmitWorkspaceActivity, admitWorkspaceActivity } from ${JSON.stringify(moduleUrl)};
     const cwd = process.argv[1];
-    let leave = tryAdmitWorkspaceActivity('child', cwd, { kind: ${JSON.stringify(command ? 'command' : 'turn')} });
+    const options = { kind: ${JSON.stringify(command ? 'command' : 'turn')} };
+    let leave = tryAdmitWorkspaceActivity('child', cwd, options);
     if (!leave) {
       process.send('blocked');
-      if (${waiting}) leave = await admitWorkspaceActivity('child', cwd);
+      if (${waiting}) leave = await admitWorkspaceActivity('child', cwd, undefined, options);
       else process.exit(0);
     }
     process.send('active');
@@ -143,22 +144,24 @@ test('a provisioning turn protects its destination before moving, and releases b
   holdWorkspaceActivity([repo, target])();
 });
 
-test('an external checkout is never held, yet its running reader still refuses a writer', () => {
-  const repo = makeRepo();
-  const external = join(tempDir(), 'external');
-  git(repo, 'worktree', 'add', '-q', '-b', 'feature/external', external);
-  const writer = holdWorkspaceActivity([repo, external]);
-  const reader = tryAdmitWorkspaceActivity('external-turn', external);
-  assert.ok(reader, 'the external folder admits new work');
-  assert.equal(tryAdmitWorkspaceActivity('project-turn', repo), null, 'the project folder waits');
-  writer();
-  assert.throws(
-    () => holdWorkspaceActivity([repo, external]),
-    (error) => error.code === 'WORKTREE_BUSY_JOBS' && error.details.reason === 'folder-in-use'
-  );
-  reader();
-  holdWorkspaceActivity([repo, external])();
-});
+for (const location of ['sibling', 'nested']) {
+  test(`an external ${location} checkout is not held, yet its running reader still refuses a writer`, () => {
+    const repo = makeRepo();
+    const external = join(location === 'nested' ? repo : tempDir(), 'external');
+    git(repo, 'worktree', 'add', '-q', '-b', 'feature/external', external);
+    const writer = holdWorkspaceActivity([repo, external]);
+    const reader = tryAdmitWorkspaceActivity('external-turn', external);
+    assert.ok(reader, 'the external folder admits new work');
+    assert.equal(tryAdmitWorkspaceActivity('project-turn', repo), null, 'the project folder waits');
+    writer();
+    assert.throws(
+      () => holdWorkspaceActivity([repo, external]),
+      (error) => error.code === 'WORKTREE_BUSY_JOBS' && error.details.reason === 'folder-in-use'
+    );
+    reader();
+    holdWorkspaceActivity([repo, external])();
+  });
+}
 
 test('a background command retains admission after its parent turn finishes', async () => {
   const repo = makeRepo();
@@ -286,6 +289,66 @@ async function managedWorktree(repo) {
   await putRecord({ id: 'managed', path });
   return path;
 }
+
+for (const kind of ['turn', 'command']) {
+  test(`a published managed-checkout hold blocks another profile's ${kind} until release`, {
+    timeout: 20000,
+  }, async (t) => {
+    const repo = makeRepo();
+    const managed = await managedWorktree(repo);
+    const cwd = kind === 'command' ? join(managed, 'src') : managed;
+    mkdirSync(cwd, { recursive: true });
+    const release = holdWorkspaceActivity([managed]);
+    t.after(release);
+    const held = copiesOf(repo).leases;
+    const child = reader(t, cwd, true, kind === 'command');
+    assert.equal((await once(child, 'message'))[0], 'blocked');
+    assert.deepEqual(copiesOf(repo).leases, held, 'a refused reader adds no lease');
+    const active = once(child, 'message');
+    release();
+    assert.equal((await active)[0], 'active');
+    assert.deepEqual(copiesOf(repo).leases.map((lease) => [lease.kind, lease.pid]), [[kind, child.pid]]);
+    const exited = once(child, 'exit');
+    child.send('release');
+    await exited;
+    assert.deepEqual(copiesOf(repo).leases, []);
+  });
+}
+
+test('registry recovery cannot bypass a published foreign managed-checkout hold', {
+  timeout: 20000,
+}, async (t) => {
+  const repo = makeRepo();
+  const managed = await managedWorktree(repo);
+  const child = await holding(t, [['management', managed]], process.env.MIXDOG_DATA_DIR);
+  const held = copiesOf(repo).leases;
+  const registry = registryPath();
+  const damaged = Buffer.alloc(readFileSync(registry).length);
+  writeFileSync(registry, damaged);
+  if (existsSync(`${registry}.bak`)) unlinkSync(`${registry}.bak`);
+  for (const kind of ['turn', 'command']) {
+    const leave = tryAdmitWorkspaceActivity(`recovered-${kind}`, managed, { kind });
+    t.after(() => leave?.());
+    assert.equal(leave, null, `${kind} waits even when the registry no longer names the checkout`);
+  }
+  assert.deepEqual(readRegistrySync().entries, {});
+  assert.ok(
+    readdirSync(dirname(registry)).some(
+      (name) => name.startsWith('registry.json.corrupt-') && readFileSync(join(dirname(registry), name)).equals(damaged)
+    ),
+    'registry recovery preserves the damaged bytes'
+  );
+  assert.deepEqual(copiesOf(repo).leases, held, 'the live management lease survives registry recovery');
+  const exited = once(child, 'exit');
+  child.send('release');
+  await exited;
+  for (const kind of ['turn', 'command']) {
+    const leave = tryAdmitWorkspaceActivity(`recovered-${kind}`, managed, { kind });
+    assert.ok(leave, `${kind} resumes after release`);
+    leave();
+  }
+  assert.deepEqual(copiesOf(repo).leases, []);
+});
 
 test('a damaged primary copy is restored from the mirror: readers continue and a live holder is never lost', () => {
   const repo = makeRepo();
